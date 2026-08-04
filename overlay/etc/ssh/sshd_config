@@ -1,0 +1,6 @@
+# pipeOS: headless box — root ssh with password enabled out of the box.
+# First login forces a password change (see /etc/profile.d/zz-pipeos-provision.sh).
+PermitRootLogin yes
+PasswordAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+Subsystem sftp internal-sftp

@@ -1,0 +1,10 @@
+alpine-base
+openssh
+chrony
+ripgrep
+libgcc
+libstdc++
+python3
+pipe
+claude-code
+hermes-agent

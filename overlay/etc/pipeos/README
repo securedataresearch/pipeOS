@@ -1,0 +1,4 @@
+pipeOS marker directory.
+The file "provisioned" appears here after first-boot provisioning completes;
+its presence enables the 15-minute lbu autosave and disables the provisioning
+walkthrough. Delete it and remove your secrets to re-provision.

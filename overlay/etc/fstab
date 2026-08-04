@@ -1,0 +1,5 @@
+# Boot media (apkovl + local apk repos + cache), found by label so the same
+# image boots from NVMe, USB, or SATA. /media/usb is Alpine's stock mountpoint
+# dir; the device is whatever the PIPEOS partition lives on.
+# Mounted ro; lbu remounts rw during commits.
+LABEL=PIPEOS	/media/usb	vfat	ro	0 0

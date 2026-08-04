@@ -1,0 +1,6 @@
+#!/bin/sh
+# Belt-and-braces: make sure the boot media (apk repos + cache) is mounted.
+mountpoint -q /media/usb && exit 0
+mount /media/usb 2>/dev/null && exit 0
+dev=$(findfs LABEL=PIPEOS 2>/dev/null || blkid -L PIPEOS 2>/dev/null)
+[ -n "$dev" ] && mount -o ro "$dev" /media/usb || true

@@ -1,0 +1,19 @@
+# Maintainer: Sam Reeves <samtreeves@gmail.com>
+# Prebuilt static musl binaries produced by scripts/20-build-pipe.sh
+# (host cross-compile). pkgver is rewritten by scripts/30-build-apks.sh.
+pkgname=pipe
+pkgver=0.0.0
+pkgrel=0
+pkgdesc="pipe — message bus with identity, encryption, durable delivery"
+url="https://github.com/securedataresearch/pipe"
+arch="x86_64"
+license="proprietary"
+options="!check !strip !tracedeps"
+source=""
+
+package() {
+	install -Dm755 /pipeOS/out/payloads/pipe "$pkgdir"/usr/bin/pipe
+	if [ -f /pipeOS/out/payloads/pipe-daemon ]; then
+		install -Dm755 /pipeOS/out/payloads/pipe-daemon "$pkgdir"/usr/bin/pipe-daemon
+	fi
+}

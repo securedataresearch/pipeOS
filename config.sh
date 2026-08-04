@@ -1,0 +1,52 @@
+# pipeOS shared build configuration. Sourced by every script in scripts/.
+# All paths are absolute so scripts can run from anywhere.
+
+PIPEOS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+OUT="$PIPEOS_ROOT/out"
+
+ALPINE_VERSION=3.24
+ALPINE_PATCH=3.24.1
+ALPINE_ARCH=x86_64
+ALPINE_MIRROR="https://dl-cdn.alpinelinux.org/alpine"
+ALPINE_MAIN="$ALPINE_MIRROR/v$ALPINE_VERSION/main"
+ALPINE_COMMUNITY="$ALPINE_MIRROR/v$ALPINE_VERSION/community"
+
+# ── variants ──────────────────────────────────────────────────────────────
+# One release (3.24.1), one shared chroot/apkovl/repo; what differs per
+# target is the Alpine ISO flavor the boot tree comes from and the grub.cfg
+# written over it. Select with VARIANT=usb (env or `make image VARIANT=usb`).
+#   vm    — virt ISO (virtio-tuned kernel), serial console for -nographic.
+#   usb   — extended ISO: fullest firmware modloop for unknown hardware;
+#           hardware grub.cfg (no `serial` command — it can hang firmware
+#           with no UART), verbose, waitusb, nomodeset fallback entry.
+#   metal — standard ISO, the stock bare-metal experience; hardware
+#           grub.cfg without the usb wait.
+# Secure Boot must be OFF on real hardware: every Alpine flavor ships an
+# unsigned GRUB, and SB-on fails as INVALID SIGNATURE before our code runs.
+VARIANT="${VARIANT:-vm}"
+case "$VARIANT" in
+    vm)    ALPINE_FLAVOR=virt;     KERNEL_FLAVOR=virt; IMG_BASENAME=pipeos-vm.img;    IMG_SIZE_MB=3200 ;;
+    usb)   ALPINE_FLAVOR=extended; KERNEL_FLAVOR=lts;  IMG_BASENAME=pipeos-usb.img;   IMG_SIZE_MB=3600 ;;
+    metal) ALPINE_FLAVOR=standard; KERNEL_FLAVOR=lts;  IMG_BASENAME=pipeos-metal.img; IMG_SIZE_MB=3200 ;;
+    *) echo "unknown VARIANT '$VARIANT' (vm|usb|metal)" >&2; exit 1 ;;
+esac
+ALPINE_ISO="$HOME/Downloads/alpine-$ALPINE_FLAVOR-$ALPINE_PATCH-$ALPINE_ARCH.iso"
+
+CHROOT="$OUT/chroot"
+
+PIPE_SRC="$HOME/Projects/pipe"
+HERMES_SRC="$HOME/.hermes/hermes-agent"
+
+# Flashable image (per variant, see above)
+IMG="$OUT/$IMG_BASENAME"
+# Partition starts at 1MiB (sector 2048)
+PART_OFFSET_MB=1
+
+# Default root password baked into the overlay; provisioning forces a change.
+DEFAULT_ROOT_PW=pipeos
+
+# qemu
+OVMF_CODE=/usr/share/edk2/x64/OVMF_CODE.4m.fd
+OVMF_VARS_SRC=/usr/share/edk2/x64/OVMF_VARS.4m.fd
+VM_SSH_PORT=2222
+VM_RAM_MB=8192

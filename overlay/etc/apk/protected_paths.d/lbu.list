@@ -1,0 +1,13 @@
++root/.claude
++root/.claude.json
++root/.pipe
++root/.hermes/auth.json
++root/.hermes/.env
++root/.hermes/config.yaml
++root/.ssh
+-root/.hermes/cache
+-root/.hermes/audio_cache
+-root/.claude/projects
+-root/.claude/shell-snapshots
+-root/.claude/statsig
+-root/.claude/todos

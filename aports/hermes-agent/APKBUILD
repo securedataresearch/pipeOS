@@ -1,0 +1,41 @@
+# Maintainer: Sam Reeves <samtreeves@gmail.com>
+# hermes-agent packaged as a self-contained venv at /usr/lib/hermes/venv.
+# Source is the vendored checkout at /pipeOS/vendor/hermes-agent (synced by
+# scripts/30-build-apks.sh). pkgver is rewritten by the same script.
+pkgname=hermes-agent
+pkgver=0.0.0
+pkgrel=0
+pkgdesc="Nous Research hermes-agent (bundled venv)"
+url="https://github.com/NousResearch/hermes-agent"
+arch="x86_64"
+license="proprietary"
+depends="python3"
+options="!check !strip !tracedeps"
+source=""
+
+build() {
+	python3 -m venv "$srcdir"/venv
+	"$srcdir"/venv/bin/pip install --no-cache-dir --upgrade pip
+	# Preinstall the anthropic provider extra so nothing lazy-installs at
+	# runtime (runtime installs into tmpfs would not survive reboots).
+	"$srcdir"/venv/bin/pip install --no-cache-dir "/pipeOS/vendor/hermes-agent[anthropic]" \
+		|| "$srcdir"/venv/bin/pip install --no-cache-dir /pipeOS/vendor/hermes-agent
+}
+
+package() {
+	mkdir -p "$pkgdir"/usr/lib/hermes
+	cp -a "$srcdir"/venv "$pkgdir"/usr/lib/hermes/venv
+	# Rewrite build-path shebangs/config to the final install path
+	grep -rIl "$srcdir/venv" "$pkgdir"/usr/lib/hermes/venv/bin "$pkgdir"/usr/lib/hermes/venv/pyvenv.cfg 2>/dev/null \
+		| while read -r f; do
+			sed -i "s|$srcdir/venv|/usr/lib/hermes/venv|g" "$f"
+		done
+	mkdir -p "$pkgdir"/usr/bin
+	for cmd in hermes hermes-agent hermes-acp; do
+		[ -e "$pkgdir"/usr/lib/hermes/venv/bin/$cmd ] \
+			&& ln -s /usr/lib/hermes/venv/bin/$cmd "$pkgdir"/usr/bin/$cmd
+	done
+	# Drop compiled caches referencing $srcdir; python regenerates in RAM
+	find "$pkgdir"/usr/lib/hermes/venv -name __pycache__ -type d -exec rm -rf {} + || true
+	return 0
+}

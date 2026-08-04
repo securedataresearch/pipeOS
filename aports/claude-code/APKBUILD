@@ -1,0 +1,26 @@
+# Maintainer: Sam Reeves <samtreeves@gmail.com>
+# Repackages the official Claude Code musl build, staged by
+# scripts/30-build-apks.sh into /pipeOS/out/claude-stage via the official
+# install.sh (run inside this Alpine chroot so it selects the musl artifact).
+# pkgver is rewritten by scripts/30-build-apks.sh to the staged version.
+pkgname=claude-code
+pkgver=0.0.0
+pkgrel=0
+pkgdesc="Claude Code CLI (official musl build)"
+url="https://claude.com/claude-code"
+arch="x86_64"
+license="proprietary"
+depends="libgcc libstdc++ ripgrep"
+options="!check !strip !tracedeps"
+source=""
+
+package() {
+	install -Dm755 /pipeOS/out/claude-stage/.local/share/claude/versions/"$pkgver" \
+		"$pkgdir"/usr/lib/claude/claude
+	mkdir -p "$pkgdir"/usr/bin
+	ln -s /usr/lib/claude/claude "$pkgdir"/usr/bin/claude
+	# Alpine: use system ripgrep instead of the bundled glibc one
+	install -Dm644 /dev/stdin "$pkgdir"/etc/profile.d/claude.sh <<-EOF
+		export USE_BUILTIN_RIPGREP=0
+	EOF
+}

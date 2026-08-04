@@ -1,0 +1,6 @@
+#!/bin/sh
+# Final state save on shutdown/reboot.
+[ -f /etc/pipeos/provisioned ] || exit 0
+if [ -n "$(lbu status 2>/dev/null)" ]; then
+    lbu commit
+fi

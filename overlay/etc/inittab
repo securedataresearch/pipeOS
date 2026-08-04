@@ -1,0 +1,11 @@
+# /etc/inittab — pipeOS
+::sysinit:/sbin/openrc sysinit
+::sysinit:/sbin/openrc boot
+::wait:/sbin/openrc default
+
+tty1::respawn:/sbin/getty 38400 tty1
+# serial console for qemu (-nographic) and headless debugging
+ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100
+
+::shutdown:/sbin/openrc shutdown
+::ctrlaltdel:/sbin/reboot
