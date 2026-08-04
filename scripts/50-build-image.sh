@@ -52,16 +52,22 @@ else
     # blanking the panel.
     WAITUSB=""
     [ "$VARIANT" = usb ] && WAITUSB="waitusb=3 "
+    # usbcore.autosuspend=-1: USB autosuspend eats keystrokes on real
+    # consoles (login typed as "pipo"/"pies" on the ThinkCentre — first
+    # keys after a pause vanish while the keyboard wakes). loglevel=4:
+    # verbose boot, but stop the kernel spraying over the login prompt
+    # once up.
+    HWARGS="usbcore.autosuspend=-1 loglevel=4"
     cat > "$ISOTREE/boot/grub/grub.cfg" <<EOF
 set timeout=3
 set default=0
 
 menuentry "pipeOS (diskless Alpine, $VARIANT)" {
-    linux /boot/$K modules=$MODULES $ML ${WAITUSB}console=ttyS0,115200 console=tty0
+    linux /boot/$K modules=$MODULES $ML ${WAITUSB}$HWARGS console=ttyS0,115200 console=tty0
     initrd$UCODE_INITRDS /boot/$I
 }
 menuentry "pipeOS (safe graphics: nomodeset)" {
-    linux /boot/$K modules=$MODULES $ML ${WAITUSB}nomodeset console=ttyS0,115200 console=tty0
+    linux /boot/$K modules=$MODULES $ML ${WAITUSB}$HWARGS nomodeset console=ttyS0,115200 console=tty0
     initrd$UCODE_INITRDS /boot/$I
 }
 EOF
