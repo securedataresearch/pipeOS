@@ -49,8 +49,10 @@ for pkg in pipe claude-code hermes-agent; do
     sed "s/^pkgver=.*/pkgver=${VERS[$pkg]}/" "$PIPEOS_ROOT/aports/$pkg/APKBUILD" > "$OUT/pipeos/$pkg/APKBUILD"
 done
 
-# builder (chroot uid) must be able to write into the bind-mounted repo dirs
-chmod -R a+rwX "$OUT/pipeos" "$OUT/repo" 2>/dev/null || true
+# builder (chroot uid) must be able to write into the bind-mounted repo dirs,
+# and into the vendored hermes tree (setuptools writes egg-info into the source
+# dir while resolving build requirements)
+chmod -R a+rwX "$OUT/pipeos" "$OUT/repo" "$PIPEOS_ROOT/vendor" 2>/dev/null || true
 
 for pkg in pipe claude-code hermes-agent; do
     echo "==> abuild $pkg-${VERS[$pkg]}"
