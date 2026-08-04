@@ -21,6 +21,12 @@ sudo cat "$CHROOT/etc/shadow" \
     > "$STAGE/etc/shadow"
 chmod 600 "$STAGE/etc/shadow"
 
+# /etc/passwd: root logs in on bash. bash ships in the image's own repo, so
+# this can never dangle offline — the pairing matters: a bash root shell
+# with no bash on the boot media locks every login out after a reboot.
+awk -F: 'BEGIN{OFS=":"} $1=="root"{$7="/bin/bash"} {print}' \
+    "$CHROOT/etc/passwd" > "$STAGE/etc/passwd"
+
 # runlevel symlinks (kept out of git; generated here)
 mk_runlevel() {
     level=$1; shift

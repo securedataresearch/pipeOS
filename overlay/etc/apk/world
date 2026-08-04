@@ -8,6 +8,7 @@ python3
 pipe
 claude-code
 hermes-agent
+bash
 tmux
 git
 curl

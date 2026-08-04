@@ -66,7 +66,9 @@ echo "==> building extra repo with runtime deps"
 # Beyond the hard runtime deps: the operator/network/hardware/fun set the
 # box ships with (kept in lockstep with overlay/etc/apk/world).
 # (curseofwar and cowsay are not in Alpine 3.24's repos; nethack is.)
-UTILS="tmux git curl jq vim less tree file rsync ncdu htop
+# bash is not optional: Claude Code's Bash tool refuses to run without it
+# ("No suitable shell found"), which leaves an on-box agent armless.
+UTILS="bash tmux git curl jq vim less tree file rsync ncdu htop
        nmap tcpdump mtr iperf3 bind-tools ethtool iftop
        pciutils usbutils dmidecode nvme-cli smartmontools
        nethack cmatrix sl figlet fortune"
