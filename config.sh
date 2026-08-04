@@ -34,8 +34,16 @@ ALPINE_ISO="$HOME/Downloads/alpine-$ALPINE_FLAVOR-$ALPINE_PATCH-$ALPINE_ARCH.iso
 
 CHROOT="$OUT/chroot"
 
-PIPE_SRC="$HOME/Projects/pipe"
-HERMES_SRC="$HOME/.hermes/hermes-agent"
+PIPE_SRC="${PIPE_SRC:-$HOME/Projects/pipe}"
+HERMES_SRC="${HERMES_SRC:-$HOME/.hermes/hermes-agent}"
+# on pipeOS itself the checkouts live on the ext4 workspace
+[ -d "$PIPE_SRC" ] || { [ -d /work/repos/pipe ] && PIPE_SRC=/work/repos/pipe; }
+[ -d "$HERMES_SRC" ] || { [ -d /work/repos/hermes-agent ] && HERMES_SRC=/work/repos/hermes-agent; }
+
+# pipeOS runs these scripts as root with no sudo installed — shim it
+if [ "$(id -u)" = 0 ] && ! command -v sudo >/dev/null 2>&1; then
+    sudo() { "$@"; }
+fi
 
 # Flashable image (per variant, see above)
 IMG="$OUT/$IMG_BASENAME"
