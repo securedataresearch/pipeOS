@@ -63,9 +63,17 @@ ls -lh "$OUT/repo/pipeos/$ALPINE_ARCH/"
 # The standard ISO's onboard repo only carries a subset of main — fetch every
 # runtime dep into a second signed repo (apks/extra) on the boot partition.
 echo "==> building extra repo with runtime deps"
-mkdir -p "$OUT/repo/extra/$ALPINE_ARCH"; chmod -R a+rwX "$OUT/repo/extra"
+# Beyond the hard runtime deps: the operator/network/hardware/fun set the
+# box ships with (kept in lockstep with overlay/etc/apk/world).
+# (curseofwar and cowsay are not in Alpine 3.24's repos; nethack is.)
+UTILS="tmux git curl jq vim less tree file rsync ncdu htop
+       nmap tcpdump mtr iperf3 bind-tools ethtool iftop
+       pciutils usbutils dmidecode nvme-cli smartmontools
+       nethack cmatrix sl figlet fortune"
+mkdir -p "$OUT/repo/extra/$ALPINE_ARCH"; chmod -R a+rwX "$OUT/repo/extra" 2>/dev/null || true
 "$CR" "apk fetch --recursive -o /pipeOS/out/repo/extra/$ALPINE_ARCH \
-    alpine-base openssh chrony ripgrep libgcc libstdc++ python3 openssl"
+    alpine-base openssh chrony ripgrep libgcc libstdc++ python3 openssl \
+    $(echo $UTILS)"
 "$CR" -u builder "cd /pipeOS/out/repo/extra/$ALPINE_ARCH && \
     apk index --rewrite-arch $ALPINE_ARCH -o APKINDEX.tar.gz *.apk && \
     abuild-sign APKINDEX.tar.gz"
