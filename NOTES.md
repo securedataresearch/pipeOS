@@ -8,6 +8,11 @@
   see `overlay/etc/apk/world`).
 - The ThinkCentre's "INVALID SIGNATURE" was **Secure Boot** rejecting
   Alpine's unsigned GRUB — no image can fix that; the firmware setting can.
+- **First hardware boot CONFIRMED 2026-08-04**: ThinkCentre (i5-8500T,
+  32GB) boots `pipeos-usb.img` from the stick with Secure Boot off —
+  tmpfs root, eth0 up via DHCP, ssh reachable, all payloads answering.
+  Console keyboards need `usbcore.autosuspend=-1` (now baked into the
+  hardware variants) or keystrokes drop.
 - Repo: `github.com/securedataresearch/pipeOS` (private). `out/` and
   `vendor/` are reproducible artifacts and stay out of git.
 
