@@ -27,11 +27,20 @@
       "Bash(pipe wait *)",
       "Bash(pipe status*)",
       "Bash(pipe snapshot*)",
-      "Bash(pipe contacts*)"
+      "Bash(pipe contacts*)",
+      "Bash(pipeos status*)",
+      "Bash(pipeos verify*)",
+      "Bash(pipeos diff*)",
+      "Bash(pipeos snapshot ls*)"
     ],
     "deny": [
       "Bash(lbu*)",
       "Bash(pipeos-save*)",
+      "Bash(pipeos save*)",
+      "Bash(pipeos pkg*)",
+      "Bash(pipeos rollback*)",
+      "Bash(pipeos sync-media*)",
+      "Bash(pipeos-selfcheck*)",
       "Bash(apk *)",
       "Bash(extra-add*)",
       "Bash(mount*)",
