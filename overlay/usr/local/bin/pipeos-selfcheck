@@ -80,6 +80,17 @@ elif [ "${use:-0}" -ge 90 ]; then warnn "/work ${use}% full"; fi
 free=$(df -k "$MEDIA" 2>/dev/null | awk 'NR==2{printf "%d", $4/1024}')
 [ "${free:-0}" -lt 300 ] && warnn "boot media only ${free}MB free"
 
+# ---- 5b. agent state layout. root/.claude/projects is meant to be a symlink
+# onto /work so transcripts never reach the apkovl; lbu.list also excludes it
+# defensively, but an unmigrated box should say so rather than silently bloat.
+# A DANGLING link is worse than no link: agent memory is then unreachable.
+if [ -L /root/.claude/projects ]; then
+    [ -d /root/.claude/projects/ ] || \
+        crit "/root/.claude/projects symlink target missing — agent memory unreachable"
+elif [ -d /root/.claude/projects ]; then
+    warnn "/root/.claude/projects is a real directory, not a symlink onto /work — transcripts land in the apkovl (migrate copy-first: link-first destroys agent memory)"
+fi
+
 # ---- 6. known-good promotion: this apkovl booted and nothing is critical.
 # Warnings (e.g. a full-ish disk) do not block promotion — they don't make
 # the *state* bad, and blocking on them would freeze known-good forever.
