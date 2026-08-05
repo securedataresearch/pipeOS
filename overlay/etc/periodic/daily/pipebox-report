@@ -1,0 +1,26 @@
+#!/bin/sh
+# pipebox-report — one DM a day to the owner: health + activity summary.
+# Silent no-op if unconfigured, signed out, or offline.
+
+. /etc/pipeos/pipebox.conf 2>/dev/null || true
+[ -n "$OWNER_NICK" ] || exit 0
+
+export HOME=/root
+export PIPE_AGENT=pipebox
+export PIPE_NO_SPAWN=1
+
+handled=$(grep -c '^.* handling ' /work/logs/pipebox-listener.log 2>/dev/null || echo 0)
+work_free=$(df -h /work 2>/dev/null | awk 'NR==2{print $4}')
+usb_free=$(df -h /media/usb 2>/dev/null | awk 'NR==2{print $4}')
+apkovl_age=$(find /media/usb/pipeos.apkovl.tar.gz -mtime +1 2>/dev/null \
+    && echo ">1d" || echo "<1d")
+inbox_kb=$(du -sk /root/.pipe/inbox 2>/dev/null | cut -f1)
+up=$(uptime)
+
+msg="pipebox daily: up:${up#*up } | handled(total):$handled | /work free:$work_free | usb free:$usb_free | apkovl age:$apkovl_age | inbox:${inbox_kb:-0}KB"
+
+if [ "${inbox_kb:-0}" -gt 102400 ]; then
+    msg="$msg | WARN inbox log.dat >100MB (append-only, no upstream compaction)"
+fi
+
+pipe dm "$OWNER_NICK" "$msg" >/dev/null 2>&1 || true

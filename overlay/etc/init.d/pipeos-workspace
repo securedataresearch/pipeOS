@@ -1,0 +1,25 @@
+#!/sbin/openrc-run
+description="grow PIPEWORK if needed, mount /work, create its skeleton"
+
+# The workspace mount used to live in /etc/local.d, but the stock `local`
+# service declares `after *`, which cycles against pipe-daemon's
+# `after local` — OpenRC broke the cycle by starting pipe-daemon FIRST,
+# so /work reliably lost the race (2026-08-05, twice). A real service in
+# the dependency graph is the only ordering OpenRC will honour: the
+# daemons `need` this.
+
+depend() {
+	need localmount
+	before pipe-daemon pipebox-listener
+}
+
+start() {
+	ebegin "Preparing /work (LABEL=PIPEWORK)"
+	[ -x /etc/local.d/grow.sh ] && /etc/local.d/grow.sh
+	/etc/local.d/workspace.sh
+	eend $?
+}
+
+stop() {
+	return 0
+}

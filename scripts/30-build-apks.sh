@@ -64,19 +64,15 @@ ls -lh "$OUT/repo/pipeos/$ALPINE_ARCH/"
 # ---------------------------------------------------------------- extra repo
 # The standard ISO's onboard repo only carries a subset of main — fetch every
 # runtime dep into a second signed repo (apks/extra) on the boot partition.
-echo "==> building extra repo with runtime deps"
-# Beyond the hard runtime deps: the operator/network/hardware/fun set the
-# box ships with (kept in lockstep with overlay/etc/apk/world).
-# (curseofwar and cowsay are not in Alpine 3.24's repos; nethack is.)
-# bash is not optional: Claude Code's Bash tool refuses to run without it
-# ("No suitable shell found"), which leaves an on-box agent armless.
-UTILS="bash tmux git curl jq vim less tree file rsync ncdu htop
-       nmap tcpdump mtr iperf3 bind-tools ethtool iftop
-       pciutils usbutils dmidecode nvme-cli smartmontools
-       nethack cmatrix sl figlet fortune"
+# The fetch list IS overlay/etc/apk/world (single source of truth — a world
+# entry with no fetched .apk is exactly how the image shipped a dangling
+# chronyd service). The three pipeos-built packages come from apks/pipeos.
+# github-cli lives in community, hence the second --repository.
+echo "==> building extra repo with runtime deps (from overlay/etc/apk/world)"
+UTILS=$(grep -vE '^(pipe|claude-code|hermes-agent)$' "$PIPEOS_ROOT/overlay/etc/apk/world")
 mkdir -p "$OUT/repo/extra/$ALPINE_ARCH"; chmod -R a+rwX "$OUT/repo/extra" 2>/dev/null || true
 "$CR" "apk fetch --recursive -o /pipeOS/out/repo/extra/$ALPINE_ARCH \
-    alpine-base openssh chrony ripgrep libgcc libstdc++ python3 openssl \
+    --repository https://dl-cdn.alpinelinux.org/alpine/v3.24/community \
     $(echo $UTILS)"
 "$CR" -u builder "cd /pipeOS/out/repo/extra/$ALPINE_ARCH && \
     apk index --rewrite-arch $ALPINE_ARCH -o APKINDEX.tar.gz *.apk && \

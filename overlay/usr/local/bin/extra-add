@@ -1,0 +1,62 @@
+#!/bin/sh
+# extra-add [--repo main|community] <pkg>... — one-shot network fetch into the
+# local extra repo, re-index + sign, install. /etc/apk/repositories stays
+# local-only (boot-time apk runs pre-network; a network repo would stall boot).
+# Referenced by the comment block in /etc/apk/repositories.
+set -e
+
+EXTRA=/media/usb/apks/extra/x86_64
+MIRROR=https://dl-cdn.alpinelinux.org/alpine/v3.24
+KEY=$(ls /root/.abuild/*.rsa 2>/dev/null | head -1)
+
+repos="--repository $MIRROR/main"
+case "$1" in
+    --repo)
+        case "$2" in
+            main) ;;
+            community) repos="$repos --repository $MIRROR/community" ;;
+            *) echo "unknown repo: $2 (main|community)" >&2; exit 1 ;;
+        esac
+        shift 2 ;;
+esac
+[ $# -ge 1 ] || { echo "usage: extra-add [--repo main|community] <pkg>..." >&2; exit 1; }
+[ -n "$KEY" ] || { echo "no signing key in /root/.abuild" >&2; exit 1; }
+
+free_kb=$(df -k /media/usb | awk 'NR==2{print $4}')
+[ "${free_kb:-0}" -ge 204800 ] || { echo "refusing: only ${free_kb}KB free on /media/usb" >&2; exit 1; }
+
+restore_ro=""
+if ! touch /media/usb/.rwtest 2>/dev/null; then
+    mount -o remount,rw /media/usb
+    restore_ro=1
+else
+    rm -f /media/usb/.rwtest
+fi
+
+# fetch closure; name deps explicitly if fetch -R skips already-installed ones
+apk fetch --recursive --arch x86_64 -o "$EXTRA" $repos "$@"
+
+# apk 3.x resolves each package from <repo>/<pkg-arch>/, so noarch packages
+# (-openrc, -common, -doc subpackages) must live in ../noarch or installs fail
+# with "package mentioned in index not found". Read arch from .PKGINFO.
+NOARCH="$EXTRA/../noarch"
+mkdir -p "$NOARCH"
+for f in "$EXTRA"/*.apk; do
+    if tar -xzOf "$f" .PKGINFO 2>/dev/null | grep -q '^arch = noarch'; then
+        mv "$f" "$NOARCH/"
+    fi
+done
+
+# apk 3.x: mkndx writes an ADB index; adbsign cannot sign v2 tarballs. This
+# layout is reboot-verified — do not swap in the apk-2.x index/abuild-sign recipe.
+apk mkndx --sign-key "$KEY" -d "pipeos extra $(date +%Y%m%d)" \
+    -o "$EXTRA/APKINDEX.tar.gz.new" $(find "$EXTRA" "$NOARCH" -name '*.apk')
+mv "$EXTRA/APKINDEX.tar.gz.new" "$EXTRA/APKINDEX.tar.gz"
+sync
+
+apk update
+apk add "$@"
+[ -n "$restore_ro" ] && mount -o remount,ro /media/usb
+
+echo "installed: $*"
+echo "now run: lbu status; pipeos-save   (verify across a reboot before trusting)"

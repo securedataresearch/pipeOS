@@ -1,0 +1,37 @@
+#!/sbin/openrc-run
+description="pipe P2P daemon for pipebox"
+
+supervisor=supervise-daemon
+command=/usr/bin/pipe
+command_args="run"
+respawn_delay=5
+respawn_max=0
+
+export HOME=/root
+# OpenRC owns restarts; disable pipe's self-re-exec watcher
+export PIPE_NO_SELF_RESTART=1
+
+output_log=/work/logs/pipe-daemon.log
+error_log=/work/logs/pipe-daemon.log
+
+depend() {
+	need net pipeos-workspace
+	use chronyd
+	after chronyd
+}
+
+start_pre() {
+	# /work is mounted by local.d (01-workspace.start), which can lose a race
+	# with slow device enumeration at boot — wait for it, but still refuse to
+	# run without it rather than silently logging into tmpfs
+	_i=0
+	while ! mountpoint -q /work; do
+		_i=$((_i+1))
+		if [ "$_i" -ge 30 ]; then
+			eerror "/work not mounted after 30s (LABEL=PIPEWORK missing?)"
+			return 1
+		fi
+		sleep 1
+	done
+	checkpath -d -m 0755 /work/logs || return 1
+}

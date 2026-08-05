@@ -1,0 +1,91 @@
+#!/bin/sh
+# pipeos-save — guarded, atomic state save (apkovl -> boot media).
+#
+# Replaces plain `lbu commit`: lbu renames the current apkovl to its rotation
+# name BEFORE installing the new one, so a power cut in that window leaves NO
+# canonical apkovl on the media and the next boot comes up unprovisioned (no
+# ssh keys, no identity). Here the canonical file exists at every instant
+# except inside a single rename(2). The old lbu-commit version is one commit
+# back in git if this ever needs reverting.
+#
+# Guards kept from the original: provisioned marker, nothing-to-do check,
+# free-space floor, candidate-fits probe. New: single-instance lock,
+# candidate integrity check, skip-if-unchanged, rollback fence.
+
+[ -f /etc/pipeos/provisioned ] || exit 0
+[ -n "$(lbu status 2>/dev/null)" ] || exit 0
+
+if [ -f /etc/pipeos/rollback-pending ]; then
+    logger -s -t pipeos-save "refusing: rollback staged — reboot to apply it first"
+    exit 1
+fi
+
+# one save at a time (15min cron, shutdown hook, selfcheck promotion and
+# humans all collide here); busybox flock has no -w, so poll
+exec 9> /run/pipeos-save.lock
+_i=0
+until flock -n 9; do
+    _i=$((_i+1))
+    [ "$_i" -ge 60 ] && { logger -s -t pipeos-save "lock held for 60s; giving up"; exit 1; }
+    sleep 1
+done
+
+. /etc/lbu/lbu.conf 2>/dev/null
+MEDIA=/media/usb
+OVL=$MEDIA/pipeos.apkovl.tar.gz
+LIMIT=${BACKUP_LIMIT:-3}
+
+free_kb=$(df -k "$MEDIA" | awk 'NR==2{print $4}')
+if [ "${free_kb:-0}" -lt 204800 ]; then
+    logger -s -t pipeos-save "refusing: only ${free_kb}KB free on $MEDIA"
+    exit 1
+fi
+
+tmp=/tmp/.pipeos-save.$$
+trap 'rm -f "$tmp"' EXIT
+
+lbu package "$tmp" >/dev/null 2>&1 || { logger -s -t pipeos-save "lbu package failed"; exit 1; }
+
+# never let a corrupt candidate near the media
+if ! gzip -t "$tmp" 2>/dev/null || ! tar -tzf "$tmp" >/dev/null 2>&1; then
+    logger -s -t pipeos-save "candidate apkovl failed integrity check"
+    exit 1
+fi
+
+need_kb=$(( $(wc -c < "$tmp") / 1024 * 12 / 10 ))
+if [ "$need_kb" -ge "$free_kb" ]; then
+    logger -s -t pipeos-save "refusing: candidate ${need_kb}KB vs ${free_kb}KB free"
+    exit 1
+fi
+
+# identical content -> nothing to do (the 15min cron would otherwise burn
+# ~96 vfat write windows a day on no-op commits)
+if [ -f "$OVL" ] && \
+   [ "$(sha256sum "$tmp" | cut -d' ' -f1)" = "$(sha256sum "$OVL" | cut -d' ' -f1)" ]; then
+    exit 0
+fi
+
+mount -o remount,rw "$MEDIA" || { logger -s -t pipeos-save "cannot remount media rw"; exit 1; }
+trap 'rm -f "$tmp" "$OVL.new"; sync; mount -o remount,ro "$MEDIA" 2>/dev/null' EXIT
+
+cp "$tmp" "$OVL.new" || { logger -s -t pipeos-save "write to media failed"; exit 1; }
+sync
+
+# rotate the OLD canonical by copy — canonical never leaves its name
+if [ -f "$OVL" ]; then
+    ts=$(date -u -r "$OVL" +%Y%m%d%H%M%S 2>/dev/null || date -u +%Y%m%d%H%M%S)
+    cp "$OVL" "$MEDIA/pipeos.$ts.tar.gz" || logger -s -t pipeos-save "rotation copy failed (continuing)"
+    sync
+fi
+mv "$OVL.new" "$OVL"   # the only instant the canonical name is in motion
+sync
+
+# prune rotations beyond the limit, oldest first
+n=$(ls -1 "$MEDIA"/pipeos.[0-9]*.tar.gz 2>/dev/null | wc -l)
+if [ "$n" -gt "$LIMIT" ]; then
+    ls -1 "$MEDIA"/pipeos.[0-9]*.tar.gz | sort | head -n $((n - LIMIT)) | \
+        while read -r f; do rm -f "$f"; done
+    sync
+fi
+
+logger -t pipeos-save "saved apkovl ($(wc -c < "$OVL") bytes)"
