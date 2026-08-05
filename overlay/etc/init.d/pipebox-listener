@@ -17,10 +17,16 @@ depend() {
 }
 
 start_pre() {
-	if ! mountpoint -q /work; then
-		eerror "/work not mounted"
-		return 1
-	fi
+	# wait out the boot-time /work mount race (see pipe-daemon start_pre)
+	_i=0
+	while ! mountpoint -q /work; do
+		_i=$((_i+1))
+		if [ "$_i" -ge 30 ]; then
+			eerror "/work not mounted after 30s"
+			return 1
+		fi
+		sleep 1
+	done
 	if [ ! -x /usr/local/bin/pipebox-listener ]; then
 		eerror "listener script missing"
 		return 1

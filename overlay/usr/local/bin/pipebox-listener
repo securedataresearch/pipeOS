@@ -22,9 +22,17 @@ log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG"; }
 
 mkdir -p "$STATE/sessions" "$STATE/state" /work/logs || exit 1
 
-# one listener, ever
+# one listener, ever — wait briefly for a predecessor to release the lock
+# (on service restart the old process can outlive us by a few seconds; a
+# bare flock -n here made supervise-daemon respawn-storm through exit 1).
+# busybox flock has no -w, so poll.
 exec 9> /run/pipebox-listener.lock
-flock -n 9 || { log "another listener holds the lock"; exit 1; }
+_i=0
+until flock -n 9; do
+    _i=$((_i+1))
+    [ "$_i" -ge 30 ] && { log "another listener held the lock for 30s"; exit 1; }
+    sleep 1
+done
 
 [ -r "$MANDATE" ]  || { log "missing $MANDATE — refusing to run unguarded"; exit 1; }
 [ -r "$SETTINGS" ] || { log "missing $SETTINGS — refusing to run unguarded"; exit 1; }
@@ -82,7 +90,7 @@ your text output here goes only to a log file nobody reads in real time."
     log "handling $peer (session $sid, $(printf '%s\n' "$fresh" | grep -c .) msg)"
     if (cd "$STATE" && timeout "$CLAUDE_TIMEOUT" claude -p "$prompt" \
             --settings "$SETTINGS" $resume_args \
-            >> /work/logs/pipebox-claude.log 2>&1); then
+            >> /work/logs/pipebox-claude.log 2>&1 9>&-); then
         :
     else
         log "claude exited nonzero for $peer (batch still acked to avoid poison-loop)"
@@ -97,7 +105,10 @@ your text output here goes only to a log file nobody reads in real time."
 
 log "listener up (owner: ${OWNER_NICK:-<unset>})"
 while :; do
-    batch=$(pipe wait --wait 300 --only me --max 10 --consumer pipebox -o json)
+    # 9>&- : never leak the lock fd into pipe wait — a killed listener leaves
+    # the blocked child alive up to 300s, and with fd 9 it would hold the
+    # flock and starve the respawned listener (the 2026-08-05 respawn storm)
+    batch=$(pipe wait --wait 300 --only me --max 10 --consumer pipebox -o json 9>&-)
     rc=$?
     case $rc in
         4) continue ;;
@@ -111,7 +122,7 @@ while :; do
     n=$(printf '%s\n' "$batch" | grep -c .)
     if handle "$batch"; then
         # ack exactly the handled batch, not whatever arrived since
-        pipe wait --only me --max "$n" --consumer pipebox --ack -o json >/dev/null 2>&1 \
+        pipe wait --only me --max "$n" --consumer pipebox --ack -o json >/dev/null 2>&1 9>&- \
             || log "ack failed (rc=$?) — will redeliver, dedupe covers it"
     fi
 done

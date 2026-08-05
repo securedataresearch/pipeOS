@@ -21,11 +21,17 @@ depend() {
 }
 
 start_pre() {
-	# /work is mounted by local.d (00-workspace.start); refuse to run without
-	# it rather than silently logging into tmpfs
-	if ! mountpoint -q /work; then
-		eerror "/work not mounted (LABEL=PIPEWORK missing?)"
-		return 1
-	fi
+	# /work is mounted by local.d (01-workspace.start), which can lose a race
+	# with slow device enumeration at boot — wait for it, but still refuse to
+	# run without it rather than silently logging into tmpfs
+	_i=0
+	while ! mountpoint -q /work; do
+		_i=$((_i+1))
+		if [ "$_i" -ge 30 ]; then
+			eerror "/work not mounted after 30s (LABEL=PIPEWORK missing?)"
+			return 1
+		fi
+		sleep 1
+	done
 	checkpath -d -m 0755 /work/logs || return 1
 }
