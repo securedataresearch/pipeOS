@@ -22,8 +22,22 @@
 +root/pipe-claude
 -root/.hermes/cache
 -root/.hermes/audio_cache
-# root/.claude/projects is a symlink to /work/claude/projects (ext4) — the link
-# itself rides along inside +root/.claude; transcripts never touch the apkovl
+# root/.claude/projects SHOULD be a symlink to /work/claude/projects (ext4), so
+# the link itself rides along inside +root/.claude and transcripts never reach
+# the apkovl. Do NOT rely on that being true. A box provisioned before the
+# migration, or one where /work was created late, still has a real directory
+# here — and then the blanket +root/.claude above sweeps every transcript into
+# the overlay, on vfat, stored BACKUP_LIMIT+1 times. Observed on .63: the first
+# save after this overlay landed put a session transcript in the apkovl.
+#
+# Both lines below are inert once the symlink exists (nothing to match), and
+# correct the layout when it does not:
+#   the exclude keeps transcripts out of the apkovl on an unmigrated box
+#   the include keeps agent memory in, which must survive either way
+# ORDER IS LOAD-BEARING — apk applies these in file order, so the include must
+# come after the exclude or the memory directory is swallowed by it.
+-root/.claude/projects
++root/.claude/projects/-root/memory
 -root/.claude/shell-snapshots
 -root/.claude/statsig
 -root/.claude/todos
