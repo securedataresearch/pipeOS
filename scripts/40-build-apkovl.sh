@@ -38,7 +38,7 @@ mk_runlevel() {
     for s in "$@"; do ln -sf "/etc/init.d/$s" "$STAGE/etc/runlevels/$level/$s"; done
 }
 mk_runlevel sysinit devfs dmesg mdev hwdrivers modloop
-mk_runlevel boot     modules sysctl hostname bootmisc syslog networking hwclock seedrng
+mk_runlevel boot     modules sysctl hostname bootmisc syslog networking hwclock seedrng watchdog
 mk_runlevel default  crond chronyd sshd local pipe-daemon pipebox-listener pipeos-selfcheck
 mk_runlevel shutdown killprocs mount-ro savecache
 
