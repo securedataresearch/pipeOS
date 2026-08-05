@@ -1,0 +1,57 @@
+#!/bin/sh
+# pipeos-sync-media — push the freshly built pipeos repo onto the boot
+# media: verified, atomic, self-reverting. The ONLY sanctioned repo->media
+# path on a live box; ad-hoc cp is how the 2026-08-05 incident happened.
+#
+# Flow: verify source -> stage complete copy next to the live dir (same
+# vfat) -> verify the staged copy -> two-rename swap -> apk update +
+# fix --simulate against the swapped repo -> on any failure swap back.
+
+SRC=/work/repos/pipeOS/out/repo/pipeos/x86_64
+DST=/media/usb/apks/pipeos
+VERIFY=/work/repos/pipeOS/scripts/verify-repo.sh
+
+die() { echo "pipeos-sync-media: $*" >&2; exit 1; }
+
+[ -f "$SRC/APKINDEX.tar.gz" ] || die "no built repo at $SRC — run make apks"
+[ -x "$VERIFY" ] || die "missing $VERIFY"
+
+"$VERIFY" "$SRC" || die "source repo failed verification; not touching media"
+
+# one media mutator at a time (shared with pipeos-save/rollback)
+exec 9> /run/pipeos-save.lock
+_i=0
+until flock -n 9; do
+    _i=$((_i+1)); [ "$_i" -ge 60 ] && die "save lock busy for 60s"; sleep 1
+done
+
+mount -o remount,rw /media/usb || die "cannot remount media rw"
+finish() { sync; mount -o remount,ro /media/usb 2>/dev/null; }
+
+rm -rf "$DST.new" "$DST.old"
+mkdir -p "$DST.new/x86_64" || { finish; die "cannot stage on media"; }
+if ! cp "$SRC"/*.apk "$SRC/APKINDEX.tar.gz" "$DST.new/x86_64/"; then
+    rm -rf "$DST.new"; finish; die "copy to media failed (space?)"
+fi
+# initramfs discovers repos by this marker on any boot device
+touch "$DST.new/.boot_repository"
+sync
+"$VERIFY" "$DST.new/x86_64" || { rm -rf "$DST.new"; finish; die "staged copy failed verification"; }
+
+mv "$DST" "$DST.old" && mv "$DST.new" "$DST"
+sync
+
+apk update >/dev/null 2>&1
+if apk fix --simulate >/dev/null 2>&1; then
+    rm -rf "$DST.old"
+    finish
+    echo "media pipeos repo synced and verified."
+    echo "next: pipeos verify && pipeos save"
+else
+    mv "$DST" "$DST.failed" && mv "$DST.old" "$DST"
+    sync
+    rm -rf "$DST.failed"
+    apk update >/dev/null 2>&1
+    finish
+    die "world stopped resolving against the new repo — swapped back"
+fi
