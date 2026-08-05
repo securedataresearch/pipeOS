@@ -1,0 +1,80 @@
+#!/bin/sh
+# pipebox-setup — one-command onboarding for the resident agent. Safe to
+# re-run any time; each step skips itself if already done. Run as root at a
+# terminal (the whole point is that a human is present for these approvals).
+
+CONF=/etc/pipeos/pipebox.conf
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'pipebox-setup: %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" = 0 ] || die "run as root"
+[ -f "$CONF" ] || die "$CONF missing — is this a pipeOS box?"
+
+# 0. daemon up (idempotent)
+rc-service pipe-daemon start >/dev/null 2>&1 || true
+
+# 1. sign in as the box's nick
+if pipe status 2>/dev/null | grep -q '^nick: anon'; then
+    say ''
+    say 'Step 1: sign this box in to pipe.'
+    say '  On your phone or laptop, get a one-time key at https://pipe.online'
+    say '  (valid ~15 minutes).'
+    while :; do
+        printf 'paste key (or Enter to skip)> '
+        read -r _key
+        [ -n "$_key" ] || { say '  skipped — re-run pipebox-setup later.'; break; }
+        if pipe "$_key"; then break; fi
+        say '  that key did not work (expired?) — mint a fresh one and retry.'
+    done
+else
+    say "already signed in: $(pipe status 2>/dev/null | head -1)"
+fi
+
+# 2. owner-approved settings (no-ops if already set; harmless when signed out)
+pipe set remember_login on >/dev/null 2>&1 || true
+pipe set agent_events on  >/dev/null 2>&1 || true
+
+# 3. who is the owner
+_cur=$(sed -n 's/^OWNER_NICK="\(.*\)"/\1/p' "$CONF")
+say ''
+say 'Step 2: your own pipe nick. Only this nick can ask the agent to do real'
+say 'work; everyone else just gets conversation.'
+printf 'your nick%s> ' "${_cur:+ [$_cur]}"
+read -r _nick
+[ -n "$_nick" ] || _nick="$_cur"
+if [ -n "$_nick" ]; then
+    sed -i "s/^OWNER_NICK=.*/OWNER_NICK=\"$_nick\"/" "$CONF"
+    # DMs are contacts-only by policy; adding you is what lets the agent reply
+    pipe contacts add "$_nick" >/dev/null 2>&1 || true
+    say "  owner set to: $_nick"
+fi
+
+# 4. the listener's workdir must be pre-trusted or headless claude -p stalls
+#    on the trust dialog nobody is there to answer
+if [ -f /root/.claude.json ] && command -v jq >/dev/null 2>&1; then
+    if ! jq -e '.projects["/work/pipebox"].hasTrustDialogAccepted' /root/.claude.json >/dev/null 2>&1; then
+        jq '.projects["/work/pipebox"] = ((.projects["/work/pipebox"] // {}) + {"hasTrustDialogAccepted": true})' \
+            /root/.claude.json > /root/.claude.json.new \
+            && mv /root/.claude.json.new /root/.claude.json
+    fi
+fi
+
+# 5. wake the listener
+rc-service pipebox-listener restart >/dev/null 2>&1 || true
+
+# 6. persist
+if command -v pipeos-save >/dev/null 2>&1; then
+    pipeos-save >/dev/null 2>&1 || lbu commit || true
+else
+    lbu commit || true
+fi
+
+say ''
+if pipe status 2>/dev/null | grep -q '^nick: anon'; then
+    say 'Not signed in yet — the agent is idle. Re-run pipebox-setup when you'
+    say 'have a key.'
+else
+    _box=$(pipe status 2>/dev/null | sed -n 's/^nick: \([^ ]*\).*/\1/p')
+    say "Done. DM ${_box:-this box} from any pipe client and the agent answers."
+fi

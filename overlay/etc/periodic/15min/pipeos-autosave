@@ -1,7 +1,5 @@
 #!/bin/sh
 # Periodic state save: the whole system lives in RAM; this snapshots changed
-# config/state (per lbu include list) to the NVMe every 15 minutes.
-[ -f /etc/pipeos/provisioned ] || exit 0
-if [ -n "$(lbu status 2>/dev/null)" ]; then
-    lbu commit
-fi
+# config/state (per the lbu include list) to the boot media every 15 minutes.
+# All safety checks (provisioned marker, free space, fit) live in pipeos-save.
+exec /usr/local/bin/pipeos-save

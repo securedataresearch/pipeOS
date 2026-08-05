@@ -1,0 +1,43 @@
+#!/bin/sh
+# pipebox-gh-notify — notify-only GitHub-issues channel (owner's decision:
+# no autonomous work from issues). Polls issues across $GH_OWNER repos and
+# DMs the owner a one-line summary per new/updated issue. Cursor keeps it
+# incremental; silent no-op when offline or not signed in.
+
+. /etc/pipeos/pipebox.conf 2>/dev/null || true
+[ -n "$OWNER_NICK" ] || exit 0
+[ -n "$GH_OWNER" ] || exit 0
+
+export HOME=/root
+export PIPE_AGENT=pipebox
+export PIPE_NO_SPAWN=1
+
+STATE=/work/pipebox/state
+CURSOR="$STATE/gh-cursor"
+LOG=/work/logs/pipebox-gh-notify.log
+mkdir -p "$STATE" /work/logs || exit 0
+
+exec 9> /run/pipebox-gh-notify.lock
+flock -n 9 || exit 0
+
+since=$(cat "$CURSOR" 2>/dev/null)
+[ -n "$since" ] || since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+issues=$(gh search issues --owner "$GH_OWNER" --updated ">${since}" \
+    --json repository,number,title,url,updatedAt --limit 20 2>>"$LOG") || exit 0
+
+count=$(printf '%s' "$issues" | jq 'length' 2>/dev/null) || exit 0
+if [ "$count" -gt 0 ] 2>/dev/null; then
+    summary=$(printf '%s' "$issues" | jq -r \
+        '.[] | "[gh] \(.repository.nameWithOwner)#\(.number) \(.title) \(.url)"' \
+        | head -10)
+    if pipe dm "$OWNER_NICK" "$summary" >>"$LOG" 2>&1; then
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) sent $count issue(s)" >> "$LOG"
+    else
+        # DM failed (offline, rate-limited): leave cursor alone, retry next run
+        exit 0
+    fi
+fi
+
+echo "$now" > "$CURSOR"

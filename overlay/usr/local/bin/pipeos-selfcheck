@@ -1,0 +1,144 @@
+#!/bin/sh
+# pipeos-selfcheck — boot-time health check: remediate, then report.
+#
+# Launched (backgrounded) by /etc/init.d/pipeos-selfcheck once the default
+# runlevel is up. The 2026-08-05 power loss showed this box can come back
+# wounded and silent: packages missing, daemons down, nobody told. This
+# script fixes what it can, DMs the owner the verdict, and — only when
+# nothing is CRITICAL — promotes the canonical apkovl to known-good.
+
+LOG=/work/logs/selfcheck.log
+MARKER=/work/.pipeos/clean-shutdown
+FLAG=/work/pipebox/state/selfcheck-attention   # daily pipebox-report notices this
+MEDIA=/media/usb
+OVL=$MEDIA/pipeos.apkovl.tar.gz
+KNOWN_GOOD=$MEDIA/pipeos.known-good.tar.gz
+
+R=$(mktemp)
+ncrit=0; nfix=0; nwarn=0
+crit()  { echo "CRITICAL: $*" >> "$R"; ncrit=$((ncrit+1)); }
+fixed() { echo "fixed: $*"    >> "$R"; nfix=$((nfix+1)); }
+warnn() { echo "warn: $*"     >> "$R"; nwarn=$((nwarn+1)); }
+log()   { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG" 2>/dev/null; }
+
+# ---- 1. /work first — the marker and the log both live on it
+if mountpoint -q /work; then
+    :
+else
+    # poll: device enumeration can lag well past service start
+    _i=0
+    until dev=$(findfs LABEL=PIPEWORK 2>/dev/null); do
+        _i=$((_i+1)); [ "$_i" -ge 60 ] && break; sleep 1
+    done
+    [ -n "$dev" ] && mount -o noatime "$dev" /work 2>/dev/null
+    if mountpoint -q /work; then
+        fixed "/work was not mounted; mounted it"
+    else
+        crit "/work not mounted and could not mount it (LABEL=PIPEWORK missing?)"
+    fi
+fi
+mkdir -p /work/.pipeos /work/logs /work/pipebox/state 2>/dev/null
+
+# ---- 2. how did the last run end? (marker readable only once /work is up)
+if dmesg 2>/dev/null | grep -qi 'EXT4-fs.*recover'; then
+    down="power loss / hard reset (ext4 journal recovery ran)"
+elif [ -f "$MARKER" ]; then
+    down="clean shutdown"
+else
+    down="unclean (no clean-shutdown marker; first boot on this scheme?)"
+fi
+rm -f "$MARKER" 2>/dev/null
+
+# ---- 3. daemons (remediate: start what should be running)
+for svc in pipe-daemon pipebox-listener; do
+    if rc-service "$svc" status >/dev/null 2>&1; then
+        :
+    elif rc-service "$svc" start >/dev/null 2>&1; then
+        fixed "$svc was down; started it"
+    else
+        crit "$svc down and would not start"
+    fi
+done
+
+# ---- 4. will a reboot reproduce this state? (covers the incident: media
+# repo coherence, world resolution, all packages installed, apkovl readable)
+if vout=$(pipeos verify 2>&1); then
+    :
+else
+    apk fix >/dev/null 2>&1 && log "verify failed; ran apk fix"
+    if vout=$(pipeos verify 2>&1); then
+        fixed "boot path was broken; apk fix repaired it from the media repos"
+    else
+        crit "pipeos verify FAIL: $(echo "$vout" | grep '^FAIL' | head -3 | tr '\n' '; ')"
+    fi
+fi
+
+# ---- 5. disk pressure
+use=$(df /work 2>/dev/null | awk 'NR==2{print $5+0}')
+if [ "${use:-0}" -ge 95 ]; then crit "/work ${use}% full"
+elif [ "${use:-0}" -ge 90 ]; then warnn "/work ${use}% full"; fi
+free=$(df -k "$MEDIA" 2>/dev/null | awk 'NR==2{printf "%d", $4/1024}')
+[ "${free:-0}" -lt 300 ] && warnn "boot media only ${free}MB free"
+
+# ---- 6. known-good promotion: this apkovl booted and nothing is critical.
+# Warnings (e.g. a full-ish disk) do not block promotion — they don't make
+# the *state* bad, and blocking on them would freeze known-good forever.
+promoted=no
+if [ "$ncrit" -eq 0 ] && [ -f "$OVL" ]; then
+    (
+        exec 9> /run/pipeos-save.lock
+        _i=0
+        until flock -n 9; do
+            _i=$((_i+1)); [ "$_i" -ge 60 ] && exit 1; sleep 1
+        done
+        if [ -f "$KNOWN_GOOD" ] && \
+           [ "$(sha256sum "$OVL" | cut -d' ' -f1)" = "$(sha256sum "$KNOWN_GOOD" | cut -d' ' -f1)" ]; then
+            exit 0    # already promoted
+        fi
+        mount -o remount,rw "$MEDIA" || exit 1
+        cp "$OVL" "$KNOWN_GOOD.new" && sync && mv "$KNOWN_GOOD.new" "$KNOWN_GOOD" && sync
+        rc=$?
+        rm -f "$KNOWN_GOOD.new"
+        sync; mount -o remount,ro "$MEDIA" 2>/dev/null
+        exit $rc
+    ) && promoted=yes
+fi
+
+# ---- 7. compose the report
+verdict="all green"
+[ "$nwarn" -gt 0 ] && verdict="green with $nwarn warning(s)"
+[ "$nfix" -gt 0 ] && verdict="recovered ($nfix fix(es) applied)"
+[ "$ncrit" -gt 0 ] && verdict="DEGRADED — $ncrit critical"
+
+msg="pipeos boot report [$(hostname)] $(date -u '+%Y-%m-%d %H:%MZ')
+went down: $down
+verdict: $verdict"
+[ -s "$R" ] && msg="$msg
+$(cat "$R")"
+[ "$promoted" = yes ] && msg="$msg
+apkovl promoted to known-good"
+
+log "boot selfcheck: $verdict (down: $down)"
+[ -s "$R" ] && sed 's/^/  /' "$R" >> "$LOG"
+
+# ---- 8. tell the owner (wait for the daemon; it may still be signing in)
+. /etc/pipeos/pipebox.conf 2>/dev/null || true
+export HOME=/root
+export PIPE_AGENT=pipebox
+export PIPE_NO_SPAWN=1
+sent=no
+if [ -n "$OWNER_NICK" ]; then
+    _i=0
+    until pipe status >/dev/null 2>&1; do
+        _i=$((_i+1)); [ "$_i" -ge 24 ] && break; sleep 5
+    done
+    pipe dm "$OWNER_NICK" "$msg" >/dev/null 2>&1 && sent=yes
+fi
+if [ "$sent" = no ]; then
+    # leave a breadcrumb the daily pipebox-report will surface
+    { echo "undelivered boot report:"; echo "$msg"; } > "$FLAG" 2>/dev/null
+    log "owner DM not delivered (no owner, no daemon, or send failed)"
+fi
+
+rm -f "$R"
+exit 0

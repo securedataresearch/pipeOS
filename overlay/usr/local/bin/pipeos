@@ -1,0 +1,259 @@
+#!/bin/sh
+# pipeos — one front door for the persistence boundary on a pipeOS box.
+#
+# The root fs lives in RAM and is rebuilt at every boot from the boot media:
+# apkovl (config/state) + local apk repos (software). Anything outside that
+# boundary dies at reboot — that is the design. This tool makes crossing the
+# boundary explicit and verified.
+#
+#   pipeos status              box health + persistence state at a glance
+#   pipeos verify              will a reboot reproduce this state? (rc!=0: no)
+#   pipeos diff [TS|known-good]  uncommitted changes / vs a snapshot
+#   pipeos pkg add PKG...      install software persistently (verified)
+#   pipeos pkg del PKG...      remove software persistently
+#   pipeos snapshot ls         apkovl generations on the media
+#   pipeos save                commit state now (guarded, atomic)
+#   pipeos rollback [TS|known-good]  stage an older apkovl for next boot
+#   pipeos sync-media          push freshly built pipeos repo -> media
+#
+# Read-only verbs (status/verify/diff/snapshot) are open to the resident
+# agent; mutating verbs are root/human territory (pipebox-settings.json).
+
+MEDIA=/media/usb
+REPO_DIR=$MEDIA/apks/pipeos/x86_64
+OVL=$MEDIA/pipeos.apkovl.tar.gz
+KNOWN_GOOD=$MEDIA/pipeos.known-good.tar.gz
+OVERLAY=/work/repos/pipeOS/overlay
+
+ok()   { printf 'ok    %s\n' "$*"; }
+warn() { printf 'WARN  %s\n' "$*"; }
+fail() { printf 'FAIL  %s\n' "$*"; FAILED=1; }
+
+sha() { sha256sum "$1" | cut -d' ' -f1; }
+
+take_save_lock() {
+    # shared with pipeos-save: one media mutator at a time
+    exec 9> /run/pipeos-save.lock
+    _i=0
+    until flock -n 9; do
+        _i=$((_i+1))
+        [ "$_i" -ge 60 ] && { echo "save lock busy for 60s; giving up" >&2; exit 1; }
+        sleep 1
+    done
+}
+
+# ---------------------------------------------------------------- status
+drift_count() {
+    [ -d "$OVERLAY" ] || { echo 0; return; }
+    n=0
+    for d in usr/local/bin etc/init.d etc/local.d etc/periodic etc/pipeos; do
+        [ -d "$OVERLAY/$d" ] || continue
+        # pipebox.conf is per-box (owner nick, gh owner) — expected drift
+        c=$(diff -rq "$OVERLAY/$d" "/$d" 2>/dev/null | \
+            grep -e '^Files .* differ' -e "^Only in $OVERLAY" | \
+            grep -cv 'pipebox\.conf')
+        n=$((n + c))
+    done
+    echo "$n"
+}
+
+cmd_status() {
+    printf '%s — up %s\n' "$(hostname)" "$(uptime | sed 's/.*up *//;s/,.*//' 2>/dev/null || uptime)"
+    if mountpoint -q /work; then
+        use=$(df /work | awk 'NR==2{print $5+0}')
+        if [ "$use" -ge 90 ]; then warn "/work ${use}% full"; else ok "/work mounted, ${use}% used"; fi
+    else
+        fail "/work not mounted"
+    fi
+    free=$(df -k $MEDIA | awk 'NR==2{printf "%d", $4/1024}')
+    if [ "${free:-0}" -lt 300 ]; then warn "media ${free}MB free"; else ok "media ${free}MB free"; fi
+    for svc in pipe-daemon pipebox-listener; do
+        if rc-service "$svc" status >/dev/null 2>&1; then ok "$svc running"; else fail "$svc not running"; fi
+    done
+    if [ -f "$OVL" ]; then
+        age=$(( ($(date +%s) - $(date -r "$OVL" +%s)) / 60 ))
+        ok "apkovl saved ${age}min ago"
+    else
+        fail "canonical apkovl MISSING from media"
+    fi
+    dirty=$(lbu status 2>/dev/null | wc -l)
+    if [ "$dirty" -gt 0 ]; then
+        warn "$dirty uncommitted change(s) — see pipeos diff, persist with pipeos save"
+    else
+        ok "state committed"
+    fi
+    if [ -f "$KNOWN_GOOD" ]; then
+        if [ "$(sha "$KNOWN_GOOD")" = "$(sha "$OVL")" ]; then
+            ok "known-good == current apkovl"
+        else
+            warn "known-good differs from current apkovl (no healthy boot on this state yet)"
+        fi
+    else
+        warn "no known-good apkovl yet (first healthy boot promotes one)"
+    fi
+    drift=$(drift_count)
+    if [ "$drift" -gt 0 ]; then
+        warn "overlay drift: $drift file(s) differ from repo overlay (info; backport or deploy)"
+    else
+        ok "repo overlay matches live system"
+    fi
+    [ -f /etc/pipeos/rollback-pending ] && warn "ROLLBACK STAGED — reboot to apply; saves are fenced"
+    return 0
+}
+
+# ---------------------------------------------------------------- verify
+cmd_verify() {
+    FAILED=0
+    tmpd=$(mktemp -d)
+
+    # (a) pipeos repo coherence: the boot-time installer trusts this index;
+    # a mismatch = silent package loss at next boot (the 2026-08-05 incident)
+    if [ -f "$REPO_DIR/APKINDEX.tar.gz" ]; then
+        tar -xzOf "$REPO_DIR/APKINDEX.tar.gz" APKINDEX 2>/dev/null | \
+            awk -v RS='' '{p="";v="";n=split($0,L,"\n");
+                for(i=1;i<=n;i++){if(L[i]~/^P:/)p=substr(L[i],3);if(L[i]~/^V:/)v=substr(L[i],3)}
+                if(p!=""&&v!="")print p"-"v".apk"}' | sort > "$tmpd/indexed"
+        ls "$REPO_DIR" | grep '\.apk$' | sort > "$tmpd/present"
+        missing=$(comm -23 "$tmpd/indexed" "$tmpd/present" | tr '\n' ' ')
+        orphans=$(comm -13 "$tmpd/indexed" "$tmpd/present" | tr '\n' ' ')
+        [ -n "$missing" ] && fail "pipeos repo: indexed but missing on media: $missing"
+        [ -n "$orphans" ] && warn "pipeos repo: on media but not in index (dead weight): $orphans"
+        [ -z "$missing" ] && ok "pipeos repo: index matches $(wc -l < "$tmpd/present") apk(s)"
+    else
+        fail "pipeos repo index missing: $REPO_DIR/APKINDEX.tar.gz"
+    fi
+
+    # (b) boot-path resolution: same resolver + same local-only repos that
+    # boot-time apk uses (extra repo is covered by this too)
+    out=$(apk fix --simulate 2>&1); rc=$?
+    if [ $rc -ne 0 ] || echo "$out" | grep -qi '^ERROR'; then
+        fail "world does not resolve: $(echo "$out" | grep -i error | head -3 | tr '\n' '; ')"
+    else
+        ok "world resolves against media repos (apk fix --simulate)"
+    fi
+
+    # (c) every world entry is installed right now
+    miss=""
+    while read -r e; do
+        [ -n "$e" ] || continue
+        p=${e%%[<>=~]*}
+        apk info -qe "$p" >/dev/null 2>&1 || miss="$miss $p"
+    done < /etc/apk/world
+    if [ -n "$miss" ]; then fail "in world but NOT installed:$miss"; else ok "all world packages installed"; fi
+
+    # (d) content-hash pins strand the box on any rebuild (see repo CLAUDE.md)
+    pins=$(grep -c '><Q1' /etc/apk/world 2>/dev/null)
+    [ "${pins:-0}" -gt 0 ] && warn "$pins content-hash pin(s) in /etc/apk/world — break on any package rebuild"
+
+    # (e) the apkovl the next boot will load
+    if [ -f "$OVL" ] && tar -tzf "$OVL" >/dev/null 2>&1; then
+        ok "canonical apkovl readable ($(wc -c < "$OVL") bytes)"
+    else
+        fail "canonical apkovl missing or unreadable"
+    fi
+
+    rm -rf "$tmpd"
+    if [ "$FAILED" = 0 ]; then
+        echo "verify: PASS — a reboot reproduces this state"
+        return 0
+    fi
+    echo "verify: FAIL — a reboot will NOT reproduce this state"
+    return 1
+}
+
+# ---------------------------------------------------------------- diff
+snapshot_path() {
+    case "$1" in
+        known-good) echo "$KNOWN_GOOD" ;;
+        baseline)   echo "$MEDIA/pipeos-baseline.tar.gz" ;;
+        *)          echo "$MEDIA/pipeos.$1.tar.gz" ;;
+    esac
+}
+
+cmd_diff() {
+    if [ -z "$1" ]; then
+        if [ -n "$(lbu status 2>/dev/null)" ]; then
+            lbu status -v 2>/dev/null || lbu status
+        else
+            echo "no uncommitted changes (live state == canonical apkovl)"
+        fi
+        return 0
+    fi
+    src=$(snapshot_path "$1")
+    [ -f "$src" ] || { echo "no such snapshot: $src (try: pipeos snapshot ls)" >&2; return 1; }
+    tmpd=$(mktemp -d)
+    tar -tzvf "$src" 2>/dev/null | awk '{print $3, $NF}' | sort -k2 > "$tmpd/a"
+    tar -tzvf "$OVL" 2>/dev/null | awk '{print $3, $NF}' | sort -k2 > "$tmpd/b"
+    echo "--- $(basename "$src")   +++ current apkovl   (size path)"
+    diff "$tmpd/a" "$tmpd/b" | grep '^[<>]' || echo "identical file lists and sizes"
+    rm -rf "$tmpd"
+}
+
+# ---------------------------------------------------------------- pkg
+cmd_pkg() {
+    op=$1; shift
+    [ $# -ge 1 ] || { echo "usage: pipeos pkg add|del PKG..." >&2; return 1; }
+    case "$op" in
+        add) extra-add "$@" || return 1 ;;
+        del) apk del "$@"  || return 1 ;;
+        *)   echo "usage: pipeos pkg add|del PKG..." >&2; return 1 ;;
+    esac
+    echo "== verifying the boot path =="
+    if ! cmd_verify; then
+        echo "pkg $op: verification FAILED — state NOT saved." >&2
+        echo "Fix the repo (or undo the change); saving now would persist a broken boot." >&2
+        return 1
+    fi
+    /usr/local/bin/pipeos-save && echo "pkg $op: verified and saved — survives reboot."
+}
+
+# ---------------------------------------------------------------- snapshot
+cmd_snapshot_ls() {
+    printf '%-36s %10s  %-16s %s\n' NAME BYTES "SAVED (UTC)" SHA256/12
+    for f in "$OVL" "$KNOWN_GOOD" "$MEDIA"/pipeos.[0-9]*.tar.gz "$MEDIA"/pipeos-baseline.tar.gz; do
+        [ -f "$f" ] || continue
+        printf '%-36s %10s  %-16s %s\n' "$(basename "$f")" "$(wc -c < "$f")" \
+            "$(date -u -r "$f" '+%Y-%m-%d %H:%M')" "$(sha "$f" | cut -c1-12)"
+    done
+}
+
+# ---------------------------------------------------------------- rollback
+cmd_rollback() {
+    if [ -z "$1" ]; then
+        echo "stage an older apkovl as what the next boot loads:"
+        [ -f "$KNOWN_GOOD" ] && echo "  pipeos rollback known-good"
+        ls "$MEDIA"/pipeos.[0-9]*.tar.gz 2>/dev/null | \
+            sed 's|.*pipeos\.\([0-9]*\)\.tar\.gz|  pipeos rollback \1|'
+        return 0
+    fi
+    src=$(snapshot_path "$1")
+    [ -f "$src" ] || { echo "no such snapshot: $src" >&2; return 1; }
+    tar -tzf "$src" >/dev/null 2>&1 || { echo "snapshot unreadable — refusing" >&2; return 1; }
+
+    take_save_lock
+    mount -o remount,rw "$MEDIA" || { echo "cannot remount media rw" >&2; return 1; }
+    cp "$src" "$OVL.new" && sync && mv "$OVL.new" "$OVL" && sync
+    rc=$?
+    rm -f "$OVL.new"
+    sync; mount -o remount,ro "$MEDIA" 2>/dev/null
+    [ $rc -eq 0 ] || { echo "rollback write failed" >&2; return 1; }
+    touch /etc/pipeos/rollback-pending
+    echo "staged $(basename "$src") as next-boot state — reboot to apply."
+    echo "(saves are fenced until then; the fence lives in tmpfs and clears itself at reboot)"
+}
+
+# ---------------------------------------------------------------- main
+case "$1" in
+    status)      cmd_status ;;
+    verify)      cmd_verify ;;
+    diff)        shift; cmd_diff "$@" ;;
+    pkg)         shift; cmd_pkg "$@" ;;
+    snapshot)    [ "$2" = ls ] || { echo "usage: pipeos snapshot ls" >&2; exit 1; }; cmd_snapshot_ls ;;
+    save)        exec /usr/local/bin/pipeos-save ;;
+    rollback)    shift; cmd_rollback "$@" ;;
+    sync-media)  shift; exec /usr/local/bin/pipeos-sync-media "$@" ;;
+    *)
+        sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+        exit 1
+        ;;
+esac
