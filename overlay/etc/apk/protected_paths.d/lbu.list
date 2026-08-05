@@ -1,3 +1,4 @@
++usr/local
 +root/.claude
 +root/.claude.json
 +root/.pipe
@@ -5,9 +6,31 @@
 +root/.hermes/.env
 +root/.hermes/config.yaml
 +root/.ssh
+# custom init scripts: apk audit skips new files under /etc/init.d (assumes
+# package-owned), so without these + lines the runlevel symlinks commit but
+# the scripts vanish on reboot — the chronyd dangling-symlink failure again
++etc/init.d/pipe-daemon
++etc/init.d/pipebox-listener
+# apk signing key (extra repo index) and gh auth — lose these and you re-key/re-auth
++root/.abuild
++root/.config/gh
+# repo checkouts live on ext4 (/work/repos); these are just symlinks now
++root/pipeOS
++root/pipe
++root/pipe-claude
 -root/.hermes/cache
 -root/.hermes/audio_cache
--root/.claude/projects
+# root/.claude/projects is a symlink to /work/claude/projects (ext4) — the link
+# itself rides along inside +root/.claude; transcripts never touch the apkovl
 -root/.claude/shell-snapshots
 -root/.claude/statsig
 -root/.claude/todos
+# apkovl bloat guards: caches and per-session state that regenerate; on vfat
+# with BACKUP_LIMIT=3 every byte here is stored 4x
+-root/.claude/plugins
+-root/.claude/cache
+-root/.claude/file-history
+-root/.claude/backups
+-root/.claude/session-env
+-root/.claude/sessions
+-root/.claude/tasks

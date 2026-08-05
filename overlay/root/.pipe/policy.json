@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "default": {
+    "allow": ["*"],
+    "deny": [],
+    "confirm": [],
+    "rate": {},
+    "dm_targets": "any"
+  },
+  "agent": {
+    "pipebox": {
+      "allow": ["read", "send.dm", "send.room", "send.lobby"],
+      "deny": ["identity", "admin", "send.bbs", "moderate"],
+      "confirm": ["file.send", "file.accept", "room.create", "room.accept", "contacts.write"],
+      "rate": { "send.*": "30/min" },
+      "dm_targets": "contacts"
+    },
+    "agent.default": {
+      "allow": ["read", "send.dm", "send.room", "send.lobby"],
+      "deny": ["identity", "admin", "send.bbs", "moderate"],
+      "confirm": ["file.send", "file.accept", "room.create", "room.accept", "contacts.write"],
+      "rate": { "send.*": "30/min" },
+      "dm_targets": "contacts"
+    }
+  }
+}

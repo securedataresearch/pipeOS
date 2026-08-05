@@ -8,6 +8,10 @@ STAGE="$OUT/ovl"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 cp -a "$PIPEOS_ROOT/overlay/etc" "$STAGE/etc"
+# the pipebox scripts (+usr/local is in lbu.list) and the agent's pipe policy
+cp -a "$PIPEOS_ROOT/overlay/usr" "$STAGE/usr"
+cp -a "$PIPEOS_ROOT/overlay/root" "$STAGE/root"
+chmod 700 "$STAGE/root"
 
 # apk must trust our repo signing key at initramfs install time
 ls "$OUT/keys/"*.rsa.pub >/dev/null 2>&1 || { echo "no abuild key — run 10-mk-chroot.sh" >&2; exit 1; }
@@ -35,12 +39,15 @@ mk_runlevel() {
 }
 mk_runlevel sysinit devfs dmesg mdev hwdrivers modloop
 mk_runlevel boot     modules sysctl hostname bootmisc syslog networking hwclock seedrng
-mk_runlevel default  crond chronyd sshd local
+mk_runlevel default  crond chronyd sshd local pipe-daemon pipebox-listener
 mk_runlevel shutdown killprocs mount-ro savecache
 
 chmod +x "$STAGE/etc/local.d/"*.start "$STAGE/etc/local.d/"*.stop \
-         "$STAGE/etc/periodic/15min/"* 2>/dev/null || true
+         "$STAGE/etc/init.d/"* \
+         "$STAGE/etc/periodic/15min/"* "$STAGE/etc/periodic/daily/"* \
+         "$STAGE/etc/periodic/weekly/"* \
+         "$STAGE/usr/local/bin/"* 2>/dev/null || true
 
 tar -C "$STAGE" --numeric-owner --owner=0 --group=0 \
-    -czf "$OUT/pipeos.apkovl.tar.gz" etc
+    -czf "$OUT/pipeos.apkovl.tar.gz" etc usr root
 ls -lh "$OUT/pipeos.apkovl.tar.gz"

@@ -1,0 +1,29 @@
+#!/sbin/openrc-run
+description="pipebox inbox listener (pipe wait -> claude -p)"
+
+supervisor=supervise-daemon
+command=/usr/local/bin/pipebox-listener
+respawn_delay=10
+respawn_max=0
+
+export HOME=/root
+
+output_log=/work/logs/pipebox-listener-svc.log
+error_log=/work/logs/pipebox-listener-svc.log
+
+depend() {
+	need pipe-daemon
+	after pipe-daemon
+}
+
+start_pre() {
+	if ! mountpoint -q /work; then
+		eerror "/work not mounted"
+		return 1
+	fi
+	if [ ! -x /usr/local/bin/pipebox-listener ]; then
+		eerror "listener script missing"
+		return 1
+	fi
+	checkpath -d -m 0755 /work/logs /work/pipebox || return 1
+}

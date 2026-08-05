@@ -1,0 +1,24 @@
+#!/bin/sh
+# Guarded lbu commit. Filling the vfat boot media mid-commit is the main brick
+# risk on this box, so refuse when space is low or the candidate would not fit.
+[ -f /etc/pipeos/provisioned ] || exit 0
+[ -n "$(lbu status 2>/dev/null)" ] || exit 0
+
+free_kb=$(df -k /media/usb | awk 'NR==2{print $4}')
+if [ "${free_kb:-0}" -lt 204800 ]; then
+    logger -s -t pipeos-save "refusing lbu commit: only ${free_kb}KB free on /media/usb"
+    exit 1
+fi
+
+# size the candidate apkovl on tmpfs first; require fit + 20% headroom
+probe=/tmp/.pipeos-save-probe.$$
+if lbu package "$probe" >/dev/null 2>&1; then
+    need_kb=$(( $(wc -c < "$probe") / 1024 * 12 / 10 ))
+    rm -f "$probe"
+    if [ "$need_kb" -ge "$free_kb" ]; then
+        logger -s -t pipeos-save "refusing lbu commit: candidate ${need_kb}KB vs ${free_kb}KB free"
+        exit 1
+    fi
+fi
+
+lbu commit

@@ -1,0 +1,8 @@
+#!/bin/sh
+# pipeOS workspace: big, ext4, found by label (USB stick today, NVMe tomorrow).
+# Everything bulky and mutable lives here instead of tmpfs or the vfat apkovl:
+# git checkouts, agent memory/transcripts, logs, caches, backups.
+dev=$(findfs LABEL=PIPEWORK 2>/dev/null) || exit 0
+mkdir -p /work
+mountpoint -q /work || mount -o noatime "$dev" /work || exit 0
+mkdir -p /work/repos /work/logs /work/cache /work/claude /work/pipebox /work/backup
