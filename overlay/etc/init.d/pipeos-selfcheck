@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+description="pipeOS boot self-check (remediate, then DM the owner)"
+
+depend() {
+	need net
+	after local pipe-daemon pipebox-listener
+}
+
+start() {
+	ebegin "Launching pipeos-selfcheck in the background"
+	/usr/local/bin/pipeos-selfcheck >/dev/null 2>&1 &
+	eend 0
+}
+
+stop() {
+	return 0
+}

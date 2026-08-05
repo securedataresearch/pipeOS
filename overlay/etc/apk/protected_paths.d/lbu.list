@@ -11,6 +11,7 @@
 # the scripts vanish on reboot — the chronyd dangling-symlink failure again
 +etc/init.d/pipe-daemon
 +etc/init.d/pipebox-listener
++etc/init.d/pipeos-selfcheck
 # apk signing key (extra repo index) and gh auth — lose these and you re-key/re-auth
 +root/.abuild
 +root/.config/gh

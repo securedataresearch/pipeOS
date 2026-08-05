@@ -1,3 +1,6 @@
 #!/bin/sh
-# Final state save on shutdown/reboot. Safety checks live in pipeos-save.
+# Final state save on shutdown/reboot, plus the clean-shutdown breadcrumb
+# the boot selfcheck reads to tell an orderly stop from a power cut.
+# Safety checks live in pipeos-save.
+mkdir -p /work/.pipeos 2>/dev/null && touch /work/.pipeos/clean-shutdown && sync
 exec /usr/local/bin/pipeos-save
