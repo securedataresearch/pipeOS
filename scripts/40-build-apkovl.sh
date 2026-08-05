@@ -39,7 +39,7 @@ mk_runlevel() {
 }
 mk_runlevel sysinit devfs dmesg mdev hwdrivers modloop
 mk_runlevel boot     modules sysctl hostname bootmisc syslog networking hwclock seedrng watchdog
-mk_runlevel default  crond chronyd sshd local pipe-daemon pipebox-listener pipeos-selfcheck
+mk_runlevel default  crond chronyd sshd local pipeos-workspace pipe-daemon pipebox-listener pipeos-selfcheck
 mk_runlevel shutdown killprocs mount-ro savecache
 
 chmod +x "$STAGE/etc/local.d/"*.start "$STAGE/etc/local.d/"*.stop \

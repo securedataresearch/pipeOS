@@ -21,7 +21,25 @@ fixed() { echo "fixed: $*"    >> "$R"; nfix=$((nfix+1)); }
 warnn() { echo "warn: $*"     >> "$R"; nwarn=$((nwarn+1)); }
 log()   { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG" 2>/dev/null; }
 
-# ---- 1. how did the last run end?
+# ---- 1. /work first — the marker and the log both live on it
+if mountpoint -q /work; then
+    :
+else
+    # poll: device enumeration can lag well past service start
+    _i=0
+    until dev=$(findfs LABEL=PIPEWORK 2>/dev/null); do
+        _i=$((_i+1)); [ "$_i" -ge 60 ] && break; sleep 1
+    done
+    [ -n "$dev" ] && mount -o noatime "$dev" /work 2>/dev/null
+    if mountpoint -q /work; then
+        fixed "/work was not mounted; mounted it"
+    else
+        crit "/work not mounted and could not mount it (LABEL=PIPEWORK missing?)"
+    fi
+fi
+mkdir -p /work/.pipeos /work/logs /work/pipebox/state 2>/dev/null
+
+# ---- 2. how did the last run end? (marker readable only once /work is up)
 if dmesg 2>/dev/null | grep -qi 'EXT4-fs.*recover'; then
     down="power loss / hard reset (ext4 journal recovery ran)"
 elif [ -f "$MARKER" ]; then
@@ -30,19 +48,6 @@ else
     down="unclean (no clean-shutdown marker; first boot on this scheme?)"
 fi
 rm -f "$MARKER" 2>/dev/null
-
-# ---- 2. /work
-if mountpoint -q /work; then
-    :
-else
-    dev=$(findfs LABEL=PIPEWORK 2>/dev/null) && mount -o noatime "$dev" /work 2>/dev/null
-    if mountpoint -q /work; then
-        fixed "/work was not mounted; mounted it"
-    else
-        crit "/work not mounted and could not mount it (LABEL=PIPEWORK missing?)"
-    fi
-fi
-mkdir -p /work/.pipeos /work/logs /work/pipebox/state 2>/dev/null
 
 # ---- 3. daemons (remediate: start what should be running)
 for svc in pipe-daemon pipebox-listener; do

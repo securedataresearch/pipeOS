@@ -15,9 +15,9 @@ output_log=/work/logs/pipe-daemon.log
 error_log=/work/logs/pipe-daemon.log
 
 depend() {
-	need net
+	need net pipeos-workspace
 	use chronyd
-	after chronyd local
+	after chronyd
 }
 
 start_pre() {

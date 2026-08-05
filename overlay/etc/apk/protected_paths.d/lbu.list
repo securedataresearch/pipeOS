@@ -9,6 +9,7 @@
 # custom init scripts: apk audit skips new files under /etc/init.d (assumes
 # package-owned), so without these + lines the runlevel symlinks commit but
 # the scripts vanish on reboot — the chronyd dangling-symlink failure again
++etc/init.d/pipeos-workspace
 +etc/init.d/pipe-daemon
 +etc/init.d/pipebox-listener
 +etc/init.d/pipeos-selfcheck
