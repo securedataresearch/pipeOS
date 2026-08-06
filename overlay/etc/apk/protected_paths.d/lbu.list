@@ -30,12 +30,25 @@
 # the overlay, on vfat, stored BACKUP_LIMIT+1 times. Observed on .63: the first
 # save after this overlay landed put a session transcript in the apkovl.
 #
-# Both lines below are inert once the symlink exists (nothing to match), and
-# correct the layout when it does not:
+# Three lines below. On a migrated box they reproduce the unpatched apkovl
+# byte for byte; on an unmigrated one they correct the layout:
+#   the FIRST include keeps the symlink itself in the apkovl — without it the
+#     link does not survive a reboot and agent memory becomes unreachable
 #   the exclude keeps transcripts out of the apkovl on an unmigrated box
-#   the include keeps agent memory in, which must survive either way
-# ORDER IS LOAD-BEARING — apk applies these in file order, so the include must
-# come after the exclude or the memory directory is swallowed by it.
+#   the LAST include keeps agent memory in, which must survive either way
+#
+# ORDER IS LOAD-BEARING, and in BOTH directions, because two different
+# consumers read this file with different rules:
+#   apk audit --backup honours + and - in FILE ORDER, last match wins. So the
+#     memory include must come AFTER the exclude or it is swallowed by it, and
+#     the symlink include must come BEFORE the exclude or it would re-include
+#     the whole transcript tree on an unmigrated box.
+#   lbu's own filelist pass re-adds a + path only when it is a symlink or a
+#     plain file (see _gen_filelist in /usr/sbin/lbu) and ignores order
+#     entirely. That is what makes the first include self-limiting: it puts
+#     the link back on a migrated box and does nothing at all on one where
+#     projects is still a real directory.
++root/.claude/projects
 -root/.claude/projects
 +root/.claude/projects/-root/memory
 -root/.claude/shell-snapshots
