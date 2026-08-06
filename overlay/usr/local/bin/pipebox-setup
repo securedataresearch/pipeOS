@@ -54,9 +54,18 @@ fi
 #    on the trust dialog nobody is there to answer
 if [ -f /root/.claude.json ] && command -v jq >/dev/null 2>&1; then
     if ! jq -e '.projects["/work/pipebox"].hasTrustDialogAccepted' /root/.claude.json >/dev/null 2>&1; then
-        jq '.projects["/work/pipebox"] = ((.projects["/work/pipebox"] // {}) + {"hasTrustDialogAccepted": true})' \
+        # Say so on failure: silently leaving trust unaccepted does not fail
+        # here, it fails later and elsewhere, as a headless listener hanging
+        # on a dialog nobody can answer.
+        if jq '.projects["/work/pipebox"] = ((.projects["/work/pipebox"] // {}) + {"hasTrustDialogAccepted": true})' \
             /root/.claude.json > /root/.claude.json.new \
-            && mv /root/.claude.json.new /root/.claude.json
+            && mv /root/.claude.json.new /root/.claude.json; then
+            :
+        else
+            rm -f /root/.claude.json.new
+            say '  WARNING: could not pre-accept the workdir trust dialog —'
+            say '           the listener may stall on it. See /root/.claude.json.'
+        fi
     fi
 fi
 
@@ -64,10 +73,33 @@ fi
 rc-service pipebox-listener restart >/dev/null 2>&1 || true
 
 # 6. persist
+#
+# This is the step the whole script exists for: on a tmpfs root, anything not
+# committed here is gone at the next boot. It used to end `|| true`, with both
+# attempts silenced, so a box where persistence failed outright finished setup
+# printing the same success text as one where it worked — and the operator
+# found out at the next reboot, when their nick and their config were gone.
+#
+# A guard that cannot evaluate must refuse (#580). This one cannot refuse
+# — setup has already written the config and there is nothing to roll back —
+# so it does the next honest thing: it says so, loudly, and exits non-zero.
+_saved=no
 if command -v pipeos-save >/dev/null 2>&1; then
-    pipeos-save >/dev/null 2>&1 || lbu commit || true
-else
-    lbu commit || true
+    if pipeos-save; then
+        _saved=yes
+    else
+        say "  pipeos-save failed; falling back to lbu commit"
+    fi
+fi
+if [ "$_saved" = no ] && lbu commit; then
+    _saved=yes
+fi
+if [ "$_saved" = no ]; then
+    say ''
+    say 'SETUP DID NOT PERSIST. Your answers are live in RAM and will be gone'
+    say 'at the next boot. The output above says why. Fix it and re-run'
+    say 'pipeos-save (or `pipeos verify` to see what the box thinks).'
+    exit 1
 fi
 
 say ''

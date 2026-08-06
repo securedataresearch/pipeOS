@@ -3,4 +3,14 @@
 mountpoint -q /media/usb && exit 0
 mount /media/usb 2>/dev/null && exit 0
 dev=$(findfs LABEL=PIPEOS 2>/dev/null || blkid -L PIPEOS 2>/dev/null)
-[ -n "$dev" ] && mount -o ro "$dev" /media/usb || true
+if [ -n "$dev" ] && mount -o ro "$dev" /media/usb; then
+    exit 0
+fi
+# Not fatal — this script is belt-and-braces and the real mount is fstab's —
+# but never silent. Without /media/usb there are no apk repos and no cache, so
+# the next `apk` fails for a reason nothing on the box has recorded. #580: a
+# guard that cannot evaluate must at minimum say so.
+logger -t pipeos-media "could not mount LABEL=PIPEOS (found: ${dev:-none}) — \
+apk repos and cache are unavailable" 2>/dev/null ||
+    echo "pipeos-media: could not mount LABEL=PIPEOS (found: ${dev:-none})" >&2
+exit 0
