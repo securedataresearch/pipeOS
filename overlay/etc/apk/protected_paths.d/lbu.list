@@ -22,8 +22,35 @@
 +root/pipe-claude
 -root/.hermes/cache
 -root/.hermes/audio_cache
-# root/.claude/projects is a symlink to /work/claude/projects (ext4) — the link
-# itself rides along inside +root/.claude; transcripts never touch the apkovl
+# root/.claude/projects SHOULD be a symlink to /work/claude/projects (ext4), so
+# the link itself rides along inside +root/.claude and transcripts never reach
+# the apkovl. Do NOT rely on that being true. A box provisioned before the
+# migration, or one where /work was created late, still has a real directory
+# here — and then the blanket +root/.claude above sweeps every transcript into
+# the overlay, on vfat, stored BACKUP_LIMIT+1 times. Observed on .63: the first
+# save after this overlay landed put a session transcript in the apkovl.
+#
+# Three lines below. On a migrated box they reproduce the unpatched apkovl
+# byte for byte; on an unmigrated one they correct the layout:
+#   the FIRST include keeps the symlink itself in the apkovl — without it the
+#     link does not survive a reboot and agent memory becomes unreachable
+#   the exclude keeps transcripts out of the apkovl on an unmigrated box
+#   the LAST include keeps agent memory in, which must survive either way
+#
+# ORDER IS LOAD-BEARING, and in BOTH directions, because two different
+# consumers read this file with different rules:
+#   apk audit --backup honours + and - in FILE ORDER, last match wins. So the
+#     memory include must come AFTER the exclude or it is swallowed by it, and
+#     the symlink include must come BEFORE the exclude or it would re-include
+#     the whole transcript tree on an unmigrated box.
+#   lbu's own filelist pass re-adds a + path only when it is a symlink or a
+#     plain file (see _gen_filelist in /usr/sbin/lbu) and ignores order
+#     entirely. That is what makes the first include self-limiting: it puts
+#     the link back on a migrated box and does nothing at all on one where
+#     projects is still a real directory.
++root/.claude/projects
+-root/.claude/projects
++root/.claude/projects/-root/memory
 -root/.claude/shell-snapshots
 -root/.claude/statsig
 -root/.claude/todos
