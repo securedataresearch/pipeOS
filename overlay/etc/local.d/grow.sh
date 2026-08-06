@@ -21,7 +21,31 @@ command -v sfdisk >/dev/null 2>&1 || exit 0
 command -v mkfs.ext4 >/dev/null 2>&1 || exit 0
 
 echo "pipeos: claiming remaining space on $disk for PIPEWORK"
-sfdisk --relocate gpt-bak-std "$disk" 2>/dev/null || true
+
+# The geometry repair, CHECKED. This used to end in `2>/dev/null || true`, so a
+# failed relocate was discarded and the partition write proceeded anyway —
+# against a GPT that still under-reports the device.
+#
+# That is not hypothetical: .63 has a valid GPT whose last-lba is 7372766 on a
+# disk of 60604415 sectors, i.e. a header that believes a 31GB stick is 3.5GB.
+# `sfdisk -F` there reports 0 B free. Carving against that header is the one
+# ordering nobody would choose deliberately, and the old line chose it silently
+# whenever the repair failed.
+#
+# A relocate that fails now aborts. Leaving the disk untouched is always a
+# recoverable outcome; writing a partition table against a header we could not
+# fix is not.
+# Only GPT disks have a backup header to relocate, so ask what the label is
+# first: aborting on a *dos* disk would be a regression, since `--relocate
+# gpt-bak-std` legitimately does not apply there. "Not applicable" and "the
+# repair failed" are different answers and only the second is a reason to stop.
+label=$(sfdisk -d "$disk" 2>/dev/null | sed -n 's/^label: *//p')
+if [ "$label" = "gpt" ]; then
+    if ! sfdisk --relocate gpt-bak-std "$disk"; then
+        echo "pipeos: could not relocate the backup GPT on $disk — not carving" >&2
+        exit 0
+    fi
+fi
 echo ',+,L,-' | sfdisk -a --no-reread "$disk" || exit 0
 blockdev --rereadpt "$disk" 2>/dev/null || partx -a "$disk" 2>/dev/null || true
 [ -b "$part2" ] || exit 0
