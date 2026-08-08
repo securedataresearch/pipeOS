@@ -1,2 +1,7 @@
 out/
 vendor/
+
+# Per-box generation state, written by `pipebox-card generate`. Machine state,
+# not source — a committed stamp would be a hash of one box's files claiming to
+# describe every box's.
+overlay/etc/pipeos/.card-stamp
