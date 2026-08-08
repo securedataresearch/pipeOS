@@ -3,6 +3,74 @@
 For securedataresearch/pipe#645. Written by **box2 (SHIP)**; the privileged
 half is executed by the Foreman or the owner, never by a box.
 
+## Path 0 — the media is already broken, and this comes first
+
+Found on box2, 2026-08-07, by running `pipeos verify` for the first time:
+
+```
+ok    pipeos repo: index matches 5 apk(s)
+FAIL  world does not resolve: ERROR: unable to select packages:
+FAIL  in world but NOT installed: diffutils findutils gawk github-cli grep sed
+ok    canonical apkovl readable (15825844 bytes)
+verify: FAIL — a reboot will NOT reproduce this state
+```
+
+Six of the 53 packages in `overlay/etc/apk/world` cannot be installed from this
+box's media, and the world constraint set as a whole does not resolve. This is
+the general form of the `github-cli` hole already noted on #645 — that package
+was not special, it was the one somebody happened to need.
+
+**Do this before any version work.** Updating `pipe` on media that cannot
+satisfy its own `world` means the next boot still fails to converge, and
+`pipeos verify` still says a reboot will not reproduce the running state. The
+update would be built on a base that does not rebuild.
+
+`extra-add` is the tool for it — one-shot network fetch into the local extra
+repo, re-index, re-sign, install. **Two invocations, not one**, because the six
+packages do not all live in the same Alpine repository:
+
+```sh
+extra-add diffutils findutils gawk grep sed      # Alpine main
+extra-add --repo community github-cli            # community
+lbu status && pipeos-save
+# then reboot and re-run `pipeos verify` — it must reach PASS
+```
+
+Confirm the repo split before running rather than trusting this line: I could
+not query the Alpine indexes from the box, so `github-cli` being in community
+and the other five in main is from knowledge of Alpine's layout, not from a
+check. `extra-add` fails loudly on an unknown package, so the cost of being
+wrong is one error message rather than a bad media write.
+
+Three things `extra-add` already handles that a hand-rolled fetch would get
+wrong, listed so nobody is tempted to shortcut it:
+
+- **noarch subpackages** (`-openrc`, `-common`, `-doc`) must live in
+  `../noarch`, because apk 3.x resolves each package from `<repo>/<pkg-arch>/`.
+  It moves them by reading `.PKGINFO`.
+- **apk 3.x indexing** — `apk mkndx --sign-key` writing an ADB index. The
+  apk-2.x `apk index` + `abuild-sign` recipe from most Alpine documentation
+  produces an index apk parses but whose packages fail to install.
+- **Free-space floor and rw/ro remount discipline** on the vfat media, with
+  the remount restored afterwards.
+
+Every command above is hard-banned for a box — `apk`, `extra-add`, `mount`,
+`/media/usb`, `lbu`, `pipeos-save`. This section is written for the operator.
+
+### Why this belongs to #645 rather than its own issue
+
+#645's third acceptance criterion is that the path survives a reboot. On box2
+that criterion is failing *today*, before anything is updated, and for a
+reason unrelated to the pipe version. Fixing the version without fixing the
+media satisfies criteria 1 and 2 and leaves 3 broken — which is the state the
+fleet is already in.
+
+**It also gates the #650 pilot.** That issue's acceptance is a factory
+ThinkCentre reaching full fleet membership from boot media plus one card plus
+two secrets. A box provisioned tomorrow from media whose `world` does not
+resolve cannot meet that bar, and the pilot would be testing card tooling
+against a base that fails verify — learning nothing clean about either.
+
 ## What #645 assumes, and what is actually true
 
 #645 says no musl binary ships, so the only remaining path is manual. That was
