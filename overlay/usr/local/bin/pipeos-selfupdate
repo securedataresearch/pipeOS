@@ -1,0 +1,147 @@
+#!/bin/sh
+# pipeos-selfupdate — a box updates its own OS from a canonical repo, safely.
+#
+# This is the productization of a flow that was run by hand four times on
+# 2026-08-09 (box0/1/2/3, pipe 0.41.15 -> 0.41.31): refresh the local pipeos
+# apk repo from a canonical source, swap it onto the boot media atomically,
+# upgrade, persist, verify, and roll back if the box would not come back.
+#
+# WHY A SEPARATE SOURCE: the running OS lives in tmpfs restored from an apkovl
+# plus an apk repo on the vfat boot media. "Update yourself" therefore means
+# "get the newer signed apks onto the media and re-save" — it cannot mean a
+# plain self-overwrite, because tmpfs forgets. `pipeos sync-media` already does
+# the atomic, verified, self-reverting media swap; this script feeds it.
+#
+# SOURCE OF TRUTH: UPDATE_URL in /etc/pipeos/selfupdate.conf — the base URL of
+# a signed pipeos repo (the same tree `30-build-apks.sh` produces under
+# out/repo/pipeos). Empty = disabled, which is the shipped default: a box does
+# not self-update until an operator points it at a source it trusts. The repo
+# is signed; its index is verified against the box's trusted apk keys by apk
+# itself at `apk update`, so a bad mirror cannot install unsigned packages.
+#
+# IDEMPOTENT and CRON-SAFE: it fetches the remote index digest first and exits
+# 0 unchanged when it already matches the last applied digest, so the daily
+# cron is nearly free on a current box.
+#
+# THE PERSISTENCE GUARANTEE: the 2026-08-09 box3 provisioning found that an
+# older image's lbu include list did not cover /root/.pipe and /root/.ssh, so
+# a reboot after an update reverted the box's identity and sign-in. An update
+# path that can strand a box's identity is worse than no update path. So before
+# it saves, this script asserts the identity paths are in the include list and
+# adds any that are missing — an update never costs a box its identity.
+
+set -u
+
+CONF=/etc/pipeos/selfupdate.conf
+STATE=/work/.pipeos
+STAMP="$STATE/selfupdate.applied"          # last applied remote index digest
+LOG=/work/logs/selfupdate.log
+LOCK=/run/pipeos-selfupdate.lock
+SRC_REPO=/work/repos/pipeOS/out/repo/pipeos/x86_64
+VERIFY=/work/repos/pipeOS/scripts/verify-repo.sh
+ARCH=x86_64
+
+# Identity paths an update must never drop. Kept in sync with the shipped
+# overlay/etc/apk/protected_paths.d/lbu.list; listed here without the leading +.
+IDENTITY_PATHS="root/.pipe root/.ssh root/.abuild root/.config/gh etc/ssh"
+
+UPDATE_URL=""
+[ -r "$CONF" ] && . "$CONF"
+
+log()  { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG" 2>/dev/null; }
+say()  { echo "pipeos-selfupdate: $*"; }
+die()  { echo "pipeos-selfupdate: $*" >&2; log "ERROR $*"; exit 1; }
+
+[ "$(id -u)" = 0 ] || die "run as root"
+
+# Feature is off until pointed at a source. Silent success: a daily cron on an
+# unconfigured box should not nag.
+if [ -z "$UPDATE_URL" ]; then
+    say "no UPDATE_URL in $CONF — self-update disabled (this is the default)."
+    exit 0
+fi
+
+mkdir -p "$STATE" /work/logs "$SRC_REPO" 2>/dev/null
+mountpoint -q /work || die "/work not mounted — refusing to update without persistent staging"
+
+# One updater at a time, and never concurrently with a save/sync.
+exec 9> "$LOCK"
+if ! flock -n 9; then say "another self-update is running"; exit 0; fi
+
+UPDATE_URL="${UPDATE_URL%/}"
+
+# ---- 1. cheap change check: fetch the remote index, compare its digest ------
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+if ! wget -q -T 20 -O "$tmp/APKINDEX.tar.gz" "$UPDATE_URL/$ARCH/APKINDEX.tar.gz"; then
+    die "cannot fetch $UPDATE_URL/$ARCH/APKINDEX.tar.gz (source down?)"
+fi
+remote_digest=$(sha256sum "$tmp/APKINDEX.tar.gz" | cut -d' ' -f1)
+if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$remote_digest" ]; then
+    log "up to date ($remote_digest)"
+    exit 0
+fi
+say "new repo index — updating."
+log "change detected: applied=$( [ -f "$STAMP" ] && cat "$STAMP" || echo none ) remote=$remote_digest"
+
+# ---- 2. fetch the whole repo into ext4 staging ------------------------------
+# Parse the package filenames straight from the index (apk-2 tar or apk-3 ADB).
+list_pkgs() {
+    if tar -xzOf "$1" APKINDEX > "$tmp/raw" 2>/dev/null && [ -s "$tmp/raw" ]; then
+        awk -v RS='' '{p="";v="";n=split($0,L,"\n")
+            for(i=1;i<=n;i++){if(L[i]~/^P:/)p=substr(L[i],3);if(L[i]~/^V:/)v=substr(L[i],3)}
+            if(p!=""&&v!="")print p"-"v".apk"}' "$tmp/raw"
+    elif apk adbdump "$1" > "$tmp/raw" 2>/dev/null && [ -s "$tmp/raw" ]; then
+        awk '/^ *- name: /{n=$3} /^ *version: /{if(n!=""){print n"-"$2".apk"; n=""}}' "$tmp/raw"
+    fi
+}
+pkgs=$(list_pkgs "$tmp/APKINDEX.tar.gz")
+[ -n "$pkgs" ] || die "remote index parsed to zero packages — refusing"
+
+stage="$tmp/repo"
+mkdir -p "$stage"
+cp "$tmp/APKINDEX.tar.gz" "$stage/"
+for f in $pkgs; do
+    wget -q -T 30 -O "$stage/$f" "$UPDATE_URL/$ARCH/$f" || die "fetch failed: $f"
+done
+
+# ---- 3. verify staged repo before it touches media --------------------------
+[ -x "$VERIFY" ] || die "missing $VERIFY (is /work/repos/pipeOS present?)"
+"$VERIFY" "$stage" || die "fetched repo failed verification — not touching media"
+
+# publish into the tree sync-media reads from
+mkdir -p "$SRC_REPO"
+cp "$stage"/*.apk "$stage/APKINDEX.tar.gz" "$SRC_REPO/"
+
+# ---- 4. persistence guarantee: identity survives the coming save ------------
+LBU_LIST=/etc/apk/protected_paths.d/lbu.list
+added=0
+for p in $IDENTITY_PATHS; do
+    if [ -e "/$p" ] && ! grep -qxF "+$p" "$LBU_LIST" 2>/dev/null; then
+        echo "+$p" >> "$LBU_LIST"; added=$((added+1)); log "added +$p to lbu include list"
+    fi
+done
+[ "$added" -gt 0 ] && say "added $added identity path(s) to the persistence list"
+
+# ---- 5. atomic media swap (verified, self-reverting) ------------------------
+/usr/local/bin/pipeos-sync-media || die "sync-media refused the new repo (swapped back); box unchanged"
+
+# ---- 6. upgrade the running system, then persist ----------------------------
+apk update >/dev/null 2>&1 || die "apk update failed after media swap"
+if ! apk upgrade -a >/dev/null 2>&1; then
+    log "apk upgrade -a returned nonzero; verify will decide"
+fi
+/usr/local/bin/pipeos-save || die "pipeos-save failed — running system upgraded but NOT persisted; fix and re-save"
+
+# ---- 7. would a reboot reproduce this? if not, roll back --------------------
+if pipeos verify >/dev/null 2>&1; then
+    echo "$remote_digest" > "$STAMP"
+    ver=$(pipe --version 2>/dev/null || echo "?")
+    say "updated and verified ($ver)."
+    log "OK applied=$remote_digest pipe=$ver"
+else
+    say "verify FAILED after update — rolling back to known-good."
+    log "verify FAILED after update; rolling back"
+    pipeos rollback >/dev/null 2>&1 || log "rollback also failed — needs an operator"
+    die "update did not verify; rolled back (see $LOG)"
+fi
