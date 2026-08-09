@@ -1,0 +1,65 @@
+name: ci
+
+# pipeOS has had no CI. The scripts in this repo are the ones that decide
+# whether a box boots, and until now nothing ran them except a person on a
+# box — and no box in the fleet can execute them from inside its agent
+# sandbox. This runs the card gate on every push, which is the difference
+# between "the generator should be byte-stable" and "it is".
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  cards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck the card tooling
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # -S error: fail on things that are wrong, print things that are
+          # merely unidiomatic. A style-red CI gets disabled within a week.
+          shellcheck -s sh -S error \
+            overlay/usr/local/bin/pipebox-card scripts/check-cards.sh
+          shellcheck -s sh overlay/usr/local/bin/pipebox-card scripts/check-cards.sh || true
+
+      - name: card generation is stable and matches the committed overlay
+        run: ./scripts/check-cards.sh
+
+      - name: derived files are not hand-editable without detection
+        run: |
+          set -eu
+          tmp=$(mktemp -d)
+          sh overlay/usr/local/bin/pipebox-card generate \
+            --card docs/cards/box3.card --root "$tmp" \
+            --templates overlay/usr/local/share/pipeos/card >/dev/null
+          cp docs/cards/box3.card "$tmp/card.conf"
+          sh overlay/usr/local/bin/pipebox-card verify \
+            --card "$tmp/card.conf" --root "$tmp" \
+            --templates overlay/usr/local/share/pipeos/card
+          # a hand edit must be caught, and must exit 1 rather than 0 or 2
+          echo '# hand edit' >> "$tmp/etc/pipeos/mandate.md"
+          set +e
+          sh overlay/usr/local/bin/pipebox-card verify \
+            --card "$tmp/card.conf" --root "$tmp" \
+            --templates overlay/usr/local/share/pipeos/card
+          rc=$?
+          set -e
+          [ "$rc" = 1 ] || { echo "expected exit 1 for a hand-edited file, got $rc"; exit 1; }
+          echo "hand edit detected, exit 1 as specified"
+
+      - name: an unprovisioned box reports "cannot tell", not "fine"
+        run: |
+          set -eu
+          tmp=$(mktemp -d)
+          set +e
+          sh overlay/usr/local/bin/pipebox-card verify \
+            --card "$tmp/absent.conf" --root "$tmp" \
+            --templates overlay/usr/local/share/pipeos/card
+          rc=$?
+          set -e
+          [ "$rc" = 2 ] || { echo "expected exit 2 with no card, got $rc"; exit 1; }
+          echo "no card reports exit 2, not a false PASS"

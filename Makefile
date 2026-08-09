@@ -4,9 +4,23 @@ SHELL := /bin/bash
 VARIANT ?= vm
 export VARIANT
 
-.PHONY: all host-deps chroot pipe apks apkovl image usb metal images vm flash clean-chroot clean
+.PHONY: all host-deps chroot pipe apks apkovl image usb metal images vm flash clean-chroot clean cards check-cards
 
 all: image
+
+# ---------------------------------------------------------------- #650 cards
+# The overlay's per-box config is generated from a model card, never hand-typed.
+# `make cards` regenerates the checked-in defaults; `make check-cards` is the
+# gate that fails if anyone edits the derived files instead of the card.
+cards:
+	chmod +x overlay/usr/local/bin/pipebox-card scripts/check-cards.sh
+	./overlay/usr/local/bin/pipebox-card generate \
+	  --card overlay/etc/pipeos/card.conf \
+	  --root overlay \
+	  --templates overlay/usr/local/share/pipeos/card
+
+check-cards:
+	./scripts/check-cards.sh
 
 # The USB-stick image for real hardware (extended ISO, hardware grub.cfg).
 usb:

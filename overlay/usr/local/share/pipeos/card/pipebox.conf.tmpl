@@ -11,25 +11,25 @@
 
 # This box's own pipe nick. The listener tells the agent who it is; without it
 # an agent cannot tell a message about itself from a message about a sibling.
-NICK=""
+NICK="@@NICK@@"
 
 # This box's function in the pipeline (BUILD / TEST / SHIP, or empty).
 # Advisory to the agent; the enforced fences are the settings file and the
 # GitHub credential, not this string.
-ROLE=""
+ROLE="@@ROLE@@"
 
 # The only pipe nick whose requests authorize real work (see mandate.md).
 # Empty = listener replies conversationally to no one and DMs go nowhere;
 # fill in at sign-in time.
-OWNER_NICK=""
+OWNER_NICK="@@OWNER_NICK@@"
 
 # The nick the owner has placed above the boxes. Authorizes the same work the
 # owner does, minus lifting hard bans and minus changing who the principals
 # are. Empty = no Foreman, and the agent takes direction from the owner only.
-FOREMAN_NICK=""
+FOREMAN_NICK="@@FOREMAN_NICK@@"
 
 # The cohort board this box coordinates on. Read with `pipe cohorts board $COHORT_ID`.
-COHORT_ID=""
+COHORT_ID="@@COHORT_ID@@"
 
 # GitHub owner whose repos the notify cron watches.
-GH_OWNER="securedataresearch"
+GH_OWNER="@@GH_OWNER@@"

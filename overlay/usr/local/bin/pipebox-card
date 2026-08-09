@@ -1,0 +1,261 @@
+#!/bin/sh
+# pipebox-card — generate a box's identity from one declarative model card.
+#
+# For securedataresearch/pipe#650. A box's mandate, agent settings and runtime
+# conf stop being things a human types onto each machine and become output of
+# a card that is itself the record of what the box is.
+#
+#   pipebox-card generate [--card F] [--root D] [--strict]
+#   pipebox-card verify   [--card F] [--root D]
+#   pipebox-card show     [--card F]
+#
+# Exit codes are the point of `verify` and are a stable API:
+#   0  derived files match the card
+#   1  divergent — a hand edit, or a card changed since the last generation
+#   2  cannot tell (no card, no stamp, unreadable template)
+#
+# 2 exists because "no card here" and "card matches" are different answers and
+# a checker that returns 0 for both is the fail-open shape this repo has spent
+# three PRs removing (#15, #16). Callers decide what to do about 2; this
+# script will not decide for them by pretending it checked.
+
+set -u
+
+CARD=/etc/pipeos/card.conf
+ROOT=/
+TMPL=/usr/local/share/pipeos/card
+STRICT=0
+
+STAMP_REL=etc/pipeos/.card-stamp
+OUTPUTS="etc/pipeos/pipebox.conf etc/pipeos/pipebox-settings.json etc/pipeos/mandate.md"
+
+die()  { printf 'pipebox-card: %s\n' "$*" >&2; exit 2; }
+ok()   { printf 'ok    %s\n' "$*"; }
+bad()  { printf 'FAIL  %s\n' "$*"; }
+note() { printf '      %s\n' "$*"; }
+
+# ------------------------------------------------------------------ card
+# Parsed, never sourced. A card is data that arrives with a machine — over
+# HTTP from the boot server under #651 — so it must not be able to run code
+# on the box that reads it.
+NICK= ROLE= OWNER_NICK= FOREMAN_NICK= COHORT_ID= GH_OWNER= MAC=
+
+read_card() {
+    [ -r "$1" ] || die "card not readable: $1"
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in ''|'#'*) continue ;; esac
+        key=${line%%=*}
+        val=${line#*=}
+        [ "$key" != "$line" ] || die "card line is not KEY=value: $line"
+        # strip one layer of quotes and surrounding blanks
+        val=${val#"${val%%[![:space:]]*}"}
+        val=${val%"${val##*[![:space:]]}"}
+        case "$val" in \"*\") val=${val#\"}; val=${val%\"} ;; esac
+        case "$key" in
+            NICK|ROLE|OWNER_NICK|FOREMAN_NICK|COHORT_ID|GH_OWNER|MAC) ;;
+            *) die "unknown card key: $key" ;;
+        esac
+        # Values land in sed expressions and in a shell-sourced conf file.
+        # Refuse anything that is not a plain identifier rather than trying to
+        # quote it correctly in three languages.
+        case "$val" in
+            *[!A-Za-z0-9_.:-]*) die "card value for $key is not a plain identifier: $val" ;;
+        esac
+        eval "$key=\$val"
+    done < "$1"
+
+    case "$ROLE" in ''|BUILD|TEST|SHIP) ;; *) die "unknown ROLE: $ROLE" ;; esac
+    case "$COHORT_ID" in ''|*[!0-9]*) [ -z "$COHORT_ID" ] || die "COHORT_ID must be numeric: $COHORT_ID" ;; esac
+
+    if [ "$STRICT" = 1 ]; then
+        for k in NICK ROLE OWNER_NICK FOREMAN_NICK COHORT_ID GH_OWNER; do
+            eval "v=\$$k"
+            [ -n "$v" ] || die "--strict: card is missing $k"
+        done
+    fi
+}
+
+# ------------------------------------------------------------- rendering
+# Per-role allow entries. Deliberately thin: today's roles barely differ in
+# what shell commands they need, and the fences that matter are the hard-ban
+# deny list and the GitHub credential (#648), not this block.
+#
+# "TEST cannot push product code" is NOT expressible here and must not be
+# attempted here: `git push` is one command whose legitimacy depends on the
+# branch and the files, which a command allowlist cannot see. That fence lives
+# at the platform, on the token. Two layers claiming the same rule is how a
+# later reader ends up unable to tell which one is authoritative.
+role_block() {
+    case "$1" in
+        BUILD|TEST)
+            # BUILD authors, TEST runs the gate; both need the toolchain.
+            printf '      "Bash(cargo *)",\n'
+            printf '      "Bash(rustc *)",\n'
+            printf '      "Bash(just *)",\n'
+            ;;
+        *) : ;;
+    esac
+}
+
+render() {
+    tmpl="$1"
+    [ -r "$tmpl" ] || die "template not readable: $tmpl"
+    sedexpr="s|@@NICK@@|$NICK|g
+s|@@ROLE@@|$ROLE|g
+s|@@OWNER_NICK@@|$OWNER_NICK|g
+s|@@FOREMAN_NICK@@|$FOREMAN_NICK|g
+s|@@COHORT_ID@@|$COHORT_ID|g
+s|@@GH_OWNER@@|$GH_OWNER|g
+s|@@CARD_SHA@@|$CARD_SHA|g"
+    if grep -q '@@ROLE_ALLOW@@' "$tmpl"; then
+        n=$(grep -n '@@ROLE_ALLOW@@' "$tmpl" | head -1 | cut -d: -f1)
+        head -n $((n - 1)) "$tmpl" | sed "$sedexpr"
+        role_block "$ROLE"
+        tail -n +$((n + 1)) "$tmpl" | sed "$sedexpr"
+    else
+        sed "$sedexpr" "$tmpl"
+    fi
+}
+
+tmpl_for() {
+    case "$1" in
+        etc/pipeos/pipebox.conf)           echo "$TMPL/pipebox.conf.tmpl" ;;
+        etc/pipeos/pipebox-settings.json)  echo "$TMPL/pipebox-settings.json.tmpl" ;;
+        etc/pipeos/mandate.md)             echo "$TMPL/mandate.md.tmpl" ;;
+        *) die "no template for $1" ;;
+    esac
+}
+
+sha() { sha256sum "$1" | cut -d' ' -f1; }
+
+# Render every output into $1, a directory, preserving relative paths.
+render_all() {
+    for rel in $OUTPUTS; do
+        mkdir -p "$1/${rel%/*}" || die "mkdir failed under $1"
+        render "$(tmpl_for "$rel")" > "$1/$rel" || die "render failed: $rel"
+    done
+    # mandate.md is fed to the model verbatim as a prompt, so it carries no
+    # generator header — its provenance is the stamp, not a line of chatter
+    # in the agent's own instructions.
+    if command -v jq >/dev/null 2>&1; then
+        jq -e . "$1/etc/pipeos/pipebox-settings.json" >/dev/null 2>&1 \
+            || die "generated settings are not valid JSON — refusing to install"
+    fi
+}
+
+# ------------------------------------------------------------- generate
+cmd_generate() {
+    read_card "$CARD"
+    tmpd=$(mktemp -d) || die "mktemp failed"
+    trap 'rm -rf "$tmpd"' EXIT INT TERM
+    render_all "$tmpd"
+
+    {
+        echo "# generated by pipebox-card — regenerate, do not edit"
+        echo "card sha256:$CARD_SHA"
+        for rel in $OUTPUTS; do echo "$(sha "$tmpd/$rel")  $rel"; done
+    } > "$tmpd/$STAMP_REL"
+
+    for rel in $OUTPUTS $STAMP_REL; do
+        dst="${ROOT%/}/$rel"
+        mkdir -p "${dst%/*}" || die "mkdir failed for $dst"
+        # write-then-rename: a power cut must not leave a half-written mandate,
+        # which the listener would refuse to run on and the box would go quiet
+        cp "$tmpd/$rel" "$dst.new" || die "write failed: $dst.new"
+        mv "$dst.new" "$dst" || die "install failed: $dst"
+        echo "wrote $dst"
+    done
+    echo "pipebox-card: generated from $CARD (sha256:$CARD_SHA)"
+    printf '%s\n' "note: nothing here survives a reboot until it is committed —" \
+                  "      run 'pipeos save' (operator; hard-banned for the agent)."
+}
+
+# --------------------------------------------------------------- verify
+cmd_verify() {
+    stamp="${ROOT%/}/$STAMP_REL"
+    if [ ! -r "$CARD" ]; then
+        printf 'skip  no model card at %s — this box is not card-provisioned\n' "$CARD"
+        note "cannot tell whether its config matches anything; exit 2"
+        return 2
+    fi
+    [ -r "$stamp" ] || { printf 'skip  card present but no stamp at %s\n' "$stamp"
+                         note "generate has never run here; exit 2"; return 2; }
+
+    read_card "$CARD"
+    rc=0
+
+    # (a) is any derived file hand-edited since it was generated?
+    while read -r want rel; do
+        case "$want" in '#'*|card) continue ;; esac
+        [ -n "${rel:-}" ] || continue
+        f="${ROOT%/}/$rel"
+        if [ ! -r "$f" ]; then bad "derived file missing: $f"; rc=1; continue; fi
+        got=$(sha "$f")
+        if [ "$got" = "$want" ]; then ok "unmodified since generation: $rel"
+        else bad "hand-edited since generation: $rel"; rc=1; fi
+    done < "$stamp"
+
+    # (b) does the stamp still describe what this card would produce?
+    stamped_card=$(sed -n 's/^card sha256://p' "$stamp" | head -1)
+    if [ "$stamped_card" != "$CARD_SHA" ]; then
+        bad "stale: card changed since generation (stamp $stamped_card, card $CARD_SHA)"
+        note "run 'pipebox-card generate'"
+        rc=1
+    else
+        ok "stamp matches the current card (sha256:$CARD_SHA)"
+    fi
+
+    # (c) byte-stability: regenerating from an unchanged card must reproduce
+    # the same bytes, or (a) and (b) are both meaningless
+    tmpd=$(mktemp -d) || die "mktemp failed"
+    trap 'rm -rf "$tmpd"' EXIT INT TERM
+    render_all "$tmpd"
+    for rel in $OUTPUTS; do
+        want=$(sed -n "s|^\([0-9a-f]*\)  $rel\$|\1|p" "$stamp" | head -1)
+        [ -n "$want" ] || { bad "stamp has no entry for $rel"; rc=1; continue; }
+        [ "$(sha "$tmpd/$rel")" = "$want" ] || {
+            bad "generator is not byte-stable for $rel"; rc=1; }
+    done
+    [ "$rc" = 0 ] && ok "regeneration reproduces the stamped bytes"
+
+    if [ "$rc" = 0 ]; then echo "card: PASS — derived files match the card"
+    else echo "card: FAIL — derived files do not match the card"; fi
+    return $rc
+}
+
+cmd_show() {
+    read_card "$CARD"
+    echo "card:        $CARD (sha256:$CARD_SHA)"
+    for k in NICK ROLE OWNER_NICK FOREMAN_NICK COHORT_ID GH_OWNER MAC; do
+        eval "v=\$$k"
+        printf '%-12s %s\n' "$k:" "${v:-<unset>}"
+    done
+}
+
+# ----------------------------------------------------------------- main
+verb=${1:-}; [ $# -gt 0 ] && shift
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --card)      CARD=${2:?--card needs a path}; shift 2 ;;
+        --root)      ROOT=${2:?--root needs a path}; shift 2 ;;
+        --templates) TMPL=${2:?--templates needs a path}; shift 2 ;;
+        --strict)    STRICT=1; shift ;;
+        *) die "unknown option: $1" ;;
+    esac
+done
+
+CARD_SHA=$([ -r "$CARD" ] && sha "$CARD" || echo none)
+
+case "$verb" in
+    generate) cmd_generate ;;
+    verify)   cmd_verify ;;
+    show)     cmd_show ;;
+    *) cat >&2 <<'EOF'
+usage: pipebox-card {generate|verify|show} [--card F] [--root D] [--templates D] [--strict]
+
+  generate   write the derived files and their stamp
+  verify     0 = matches the card, 1 = divergent, 2 = cannot tell
+  show       print the resolved card
+EOF
+       exit 2 ;;
+esac
