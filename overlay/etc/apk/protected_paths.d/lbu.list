@@ -16,6 +16,10 @@
 # apk signing key (extra repo index) and gh auth — lose these and you re-key/re-auth
 +root/.abuild
 +root/.config/gh
+# self-update: the applied-digest stamp lives on /work (ext4), but the config
+# and the cron wrapper are custom files under /etc that apk audit would drop
++etc/pipeos/selfupdate.conf
++etc/periodic/daily/pipeos-selfupdate
 # repo checkouts live on ext4 (/work/repos); these are just symlinks now
 +root/pipeOS
 +root/pipe

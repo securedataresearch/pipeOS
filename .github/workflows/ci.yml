@@ -23,7 +23,8 @@ jobs:
           # -S error: fail on things that are wrong, print things that are
           # merely unidiomatic. A style-red CI gets disabled within a week.
           shellcheck -s sh -S error \
-            overlay/usr/local/bin/pipebox-card scripts/check-cards.sh
+            overlay/usr/local/bin/pipebox-card scripts/check-cards.sh \
+            overlay/usr/local/bin/pipeos-selfupdate
           shellcheck -s sh overlay/usr/local/bin/pipebox-card scripts/check-cards.sh || true
 
       - name: card generation is stable and matches the committed overlay

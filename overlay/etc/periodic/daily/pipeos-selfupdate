@@ -1,0 +1,5 @@
+#!/bin/sh
+# Daily self-update. No-op (exit 0, silent) when UPDATE_URL is unset, so this
+# is safe to ship enabled: an unconfigured box simply never updates. All the
+# safety — verify, atomic swap, rollback, persistence guard — is in the script.
+exec /usr/local/bin/pipeos-selfupdate
