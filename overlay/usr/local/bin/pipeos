@@ -252,6 +252,7 @@ case "$1" in
     save)        exec /usr/local/bin/pipeos-save ;;
     rollback)    shift; cmd_rollback "$@" ;;
     sync-media)  shift; exec /usr/local/bin/pipeos-sync-media "$@" ;;
+    selfupdate)  shift; exec /usr/local/bin/pipeos-selfupdate "$@" ;;
     *)
         sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
         exit 1
