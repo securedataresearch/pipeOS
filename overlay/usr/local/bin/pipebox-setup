@@ -4,6 +4,7 @@
 # terminal (the whole point is that a human is present for these approvals).
 
 CONF=/etc/pipeos/pipebox.conf
+CARD=/etc/pipeos/card.conf
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'pipebox-setup: %s\n' "$*" >&2; exit 1; }
@@ -36,7 +37,12 @@ pipe set remember_login on >/dev/null 2>&1 || true
 pipe set agent_events on  >/dev/null 2>&1 || true
 
 # 3. who is the owner
-_cur=$(sed -n 's/^OWNER_NICK="\(.*\)"/\1/p' "$CONF")
+#
+# The owner nick goes into the CARD, not into pipebox.conf. pipebox.conf is
+# generated (#650); writing it directly here would be the first hand edit on a
+# brand-new box, and `pipebox-card verify` would then report the machine as
+# divergent from the moment it was provisioned.
+_cur=$(sed -n 's/^OWNER_NICK=["]*\([^"]*\)["]*$/\1/p' "$CARD" 2>/dev/null)
 say ''
 say 'Step 2: your own pipe nick. Only this nick can ask the agent to do real'
 say 'work; everyone else just gets conversation.'
@@ -44,10 +50,32 @@ printf 'your nick%s> ' "${_cur:+ [$_cur]}"
 read -r _nick
 [ -n "$_nick" ] || _nick="$_cur"
 if [ -n "$_nick" ]; then
-    sed -i "s/^OWNER_NICK=.*/OWNER_NICK=\"$_nick\"/" "$CONF"
-    # DMs are contacts-only by policy; adding you is what lets the agent reply
-    pipe contacts add "$_nick" >/dev/null 2>&1 || true
-    say "  owner set to: $_nick"
+    case "$_nick" in
+        *[!A-Za-z0-9_.-]*) die "'$_nick' is not a plain nick — refusing to write it to the card" ;;
+    esac
+    if [ -f "$CARD" ]; then
+        sed -i "s/^OWNER_NICK=.*/OWNER_NICK=$_nick/" "$CARD"
+        if pipebox-card generate --card "$CARD"; then
+            say "  owner set to: $_nick (card regenerated)"
+        else
+            die "card regeneration failed — /etc/pipeos is now inconsistent with $CARD"
+        fi
+    else
+        # pre-card box being upgraded in place: say so rather than silently
+        # writing the derived file and leaving a machine nobody can verify
+        say '  WARNING: no /etc/pipeos/card.conf on this box — writing the'
+        say '           derived conf directly. This box is not card-managed;'
+        say '           `pipebox-card verify` will report "cannot tell".'
+        sed -i "s/^OWNER_NICK=.*/OWNER_NICK=\"$_nick\"/" "$CONF"
+        say "  owner set to: $_nick"
+    fi
+    # DMs are contacts-only by policy; adding you is what lets the agent reply.
+    # NOTE: `pipe contacts` does not exist on clients before 0.41.18 — on the
+    # current fleet build this line fails and is swallowed. Reported, not hidden.
+    if ! pipe contacts add "$_nick" >/dev/null 2>&1; then
+        say "  note: could not add $_nick as a contact (client too old?) —"
+        say "        contacts-only DM policy may block the agent's replies."
+    fi
 fi
 
 # 4. the listener's workdir must be pre-trusted or headless claude -p stalls
