@@ -13,8 +13,12 @@ cp -a "$PIPEOS_ROOT/overlay/usr" "$STAGE/usr"
 cp -a "$PIPEOS_ROOT/overlay/root" "$STAGE/root"
 chmod 700 "$STAGE/root"
 
-# apk must trust our repo signing key at initramfs install time
+# apk must trust our repo signing key at initramfs install time.
+# overlay/etc/apk/keys is an empty dir in the tree, and git does not track
+# empty dirs — so on a clean checkout it is absent and the cp below fails with
+# "Not a directory". Create it rather than depend on the checkout carrying it.
 ls "$OUT/keys/"*.rsa.pub >/dev/null 2>&1 || { echo "no abuild key — run 10-mk-chroot.sh" >&2; exit 1; }
+mkdir -p "$STAGE/etc/apk/keys"
 cp "$OUT/keys/"*.rsa.pub "$STAGE/etc/apk/keys/"
 
 # /etc/shadow: take the chroot's stock alpine-base shadow, set root's hash to
@@ -48,6 +52,15 @@ chmod +x "$STAGE/etc/local.d/"*.start "$STAGE/etc/local.d/"*.stop \
          "$STAGE/etc/periodic/weekly/"* \
          "$STAGE/usr/local/bin/"* 2>/dev/null || true
 
-tar -C "$STAGE" --numeric-owner --owner=0 --group=0 \
-    -czf "$OUT/pipeos.apkovl.tar.gz" etc usr root
+# busybox tar (pipeOS's own tar, so a box can build itself) rejects
+# --owner/--group and prints usage. Running as root — which the build always is
+# on a box — the staged tree is already root-owned, so --numeric-owner alone
+# gives 0:0. GNU tar (a non-root dev host) needs the explicit flags to force it.
+if tar --version 2>/dev/null | grep -q GNU; then
+    tar -C "$STAGE" --numeric-owner --owner=0 --group=0 \
+        -czf "$OUT/pipeos.apkovl.tar.gz" etc usr root
+else
+    tar -C "$STAGE" --numeric-owner \
+        -czf "$OUT/pipeos.apkovl.tar.gz" etc usr root
+fi
 ls -lh "$OUT/pipeos.apkovl.tar.gz"
