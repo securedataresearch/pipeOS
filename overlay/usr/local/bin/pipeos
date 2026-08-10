@@ -70,6 +70,20 @@ cmd_status() {
     for svc in pipe-daemon pipebox-listener; do
         if rc-service "$svc" status >/dev/null 2>&1; then ok "$svc running"; else fail "$svc not running"; fi
     done
+    # A running daemon with a revoked token is not healthy: it silently
+    # destroys every inbound sealed message (pipe#641) and cannot send the
+    # boot report (pipeOS#13/#19). Liveness above says nothing about this —
+    # assert auth in both directions, not only on failure. See pipeOS#19.
+    if authj=$(pipe status -o json 2>/dev/null); then
+        if [ "$(echo "$authj" | jq -r '.status.authenticated // empty' 2>/dev/null)" = "true" ]; then
+            ok "auth ok"
+        else
+            aerr=$(echo "$authj" | jq -r '.status.auth_error // empty' 2>/dev/null)
+            fail "auth FAILED${aerr:+ — $aerr}"
+        fi
+    else
+        fail "auth unknown — pipe status did not answer"
+    fi
     if [ -f "$OVL" ]; then
         age=$(( ($(date +%s) - $(date -r "$OVL" +%s)) / 60 ))
         ok "apkovl saved ${age}min ago"
