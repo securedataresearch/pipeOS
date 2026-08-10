@@ -27,7 +27,11 @@ TMPL=/usr/local/share/pipeos/card
 STRICT=0
 
 STAMP_REL=etc/pipeos/.card-stamp
-OUTPUTS="etc/pipeos/pipebox.conf etc/pipeos/pipebox-settings.json etc/pipeos/mandate.md"
+# root/.pipe/policy.json is pipe#650 item 9. It is NOT under /etc like the
+# others: the daemon reads it from $HOME, so its path is fixed by pipe rather
+# than by us. Listed here anyway so `verify` treats a hand-edit to it as the
+# same defect as a hand-edit to the mandate — which it is, and more dangerous.
+OUTPUTS="etc/pipeos/pipebox.conf etc/pipeos/pipebox-settings.json etc/pipeos/mandate.md root/.pipe/policy.json"
 
 die()  { printf 'pipebox-card: %s\n' "$*" >&2; exit 2; }
 ok()   { printf 'ok    %s\n' "$*"; }
@@ -39,7 +43,34 @@ note() { printf '      %s\n' "$*"; }
 # HTTP from the boot server under #651 — so it must not be able to run code
 # on the box that reads it.
 NICK= ROLE= OWNER_NICK= FOREMAN_NICK= COHORT_ID= GH_OWNER= MAC=
-TOOLCHAIN= REPOS=
+TOOLCHAIN= REPOS= PIPE_CAPS=
+
+# pipe#650 item 9. The capabilities a card is ALLOWED to grant the agent —
+# every other spelling in pipe's vocabulary is refused here, by this script,
+# regardless of what the card says.
+#
+# THE CEILING IS THE POINT, and it is not paranoia about our own cards. A card
+# is data that arrives with a machine, over HTTP from a boot server (#651),
+# which is exactly why read_card parses rather than sources it. A card key
+# that wrote straight into the policy allow list would hand that boot server
+# `admin` — the capability that reaches Config::apply_patch and can repoint
+# the relay the daemon talks to. So the card CHOOSES WITHIN a ceiling it
+# cannot raise, the same way pipebox-settings.json's deny list is fixed in the
+# template rather than card-tunable.
+#
+# Deliberately absent, and each for its own reason rather than as a blanket:
+#   identity  registers/rotates/releases the nick — the account itself
+#   admin     shutdown and prefs; prefs reach the relay address
+#   moderate  acts on OTHER PEOPLE: kick, mute, topic, vote
+#   file.*    reads an arbitrary local path off the machine / writes attacker-named bytes
+#   room.*    puts our peer key in front of a chosen peer
+#   contacts.write  a contact pins a peer key, so writing one poisons trust grading
+#   *         a glob would defeat the enumeration entirely
+# The last five are not banned outright — they sit in the template's `confirm`
+# list, which is where the mandate already puts them ("confirm-gated
+# capabilities; leave them to the owner"). A card cannot promote them to
+# allow; an operator editing the template can.
+PIPE_CAPS_CEILING="read send.dm send.room send.lobby send.bbs claim"
 
 read_card() {
     [ -r "$1" ] || die "card not readable: $1"
@@ -54,7 +85,7 @@ read_card() {
         case "$val" in \"*\") val=${val#\"}; val=${val%\"} ;; esac
         case "$key" in
             NICK|ROLE|OWNER_NICK|FOREMAN_NICK|COHORT_ID|GH_OWNER|MAC) ;;
-            TOOLCHAIN|REPOS) ;;
+            TOOLCHAIN|REPOS|PIPE_CAPS) ;;
             *) die "unknown card key: $key" ;;
         esac
         # Values land in sed expressions and in a shell-sourced conf file.
@@ -68,7 +99,7 @@ read_card() {
         # keeps a card that arrives over HTTP from a boot server (#651) out of
         # the shell, and it should stay strict everywhere it can.
         case "$key" in
-            TOOLCHAIN|REPOS)
+            TOOLCHAIN|REPOS|PIPE_CAPS)
                 case "$val" in
                     *[!A-Za-z0-9_.:,-]*) die "card value for $key is not a comma-separated list of plain identifiers: $val" ;;
                     *,,*|,*|*,) die "card value for $key has an empty list element: $val" ;;
@@ -84,6 +115,18 @@ read_card() {
     done < "$1"
 
     case "$ROLE" in ''|BUILD|TEST|SHIP) ;; *) die "unknown ROLE: $ROLE" ;; esac
+
+    # Every declared capability must be inside the ceiling. Checked HERE, at
+    # parse time, so a card naming `admin` never reaches a rendered file at
+    # all — not filtered silently during render, which would leave an operator
+    # believing a grant they wrote had taken effect.
+    for _c in $(printf '%s' "$PIPE_CAPS" | tr ',' ' '); do
+        _hit=0
+        for _ok in $PIPE_CAPS_CEILING; do
+            [ "$_c" = "$_ok" ] && { _hit=1; break; }
+        done
+        [ "$_hit" = 1 ] || die "PIPE_CAPS entry '$_c' is not grantable by a card (allowed: $PIPE_CAPS_CEILING)"
+    done
     case "$COHORT_ID" in ''|*[!0-9]*) [ -z "$COHORT_ID" ] || die "COHORT_ID must be numeric: $COHORT_ID" ;; esac
 
     if [ "$STRICT" = 1 ]; then
@@ -105,6 +148,24 @@ read_card() {
 # branch and the files, which a command allowlist cannot see. That fence lives
 # at the platform, on the token. Two layers claiming the same rule is how a
 # later reader ends up unable to tell which one is authoritative.
+# pipe#650 item 9: the card's PIPE_CAPS as a JSON array body.
+#
+# EMPTY MEANS EMPTY, NOT "DEFAULT". A card with no PIPE_CAPS generates an
+# agent that can do nothing, and that is the safe direction — pipe's own
+# PolicySet::default is what applies when there is NO FILE, and this generator
+# always writes one. The two are not the same state and conflating them is how
+# a box ends up with a policy nobody chose. The card is the declaration; if it
+# declares nothing, nothing is granted.
+caps_block() {
+    _cfirst=1
+    for _cc in $(printf '%s' "$PIPE_CAPS" | tr ',' ' '); do
+        [ "$_cfirst" = 1 ] || printf ',\n'
+        printf '        "%s"' "$_cc"
+        _cfirst=0
+    done
+    [ "$_cfirst" = 1 ] || printf '\n'
+}
+
 role_block() {
     case "$1" in
         BUILD|TEST)
@@ -266,7 +327,7 @@ s|@@CARD_SHA@@|$CARD_SHA|g"
     _rcur=$(mktemp) || die "mktemp failed"
     _rnxt=$(mktemp) || die "mktemp failed"
     cat "$tmpl" > "$_rcur" || die "read failed: $tmpl"
-    for _rmark in @@ROLE_ALLOW@@ @@ROLE_CHARTER@@ @@FOREMAN_CHARTER@@; do
+    for _rmark in @@ROLE_ALLOW@@ @@ROLE_CHARTER@@ @@FOREMAN_CHARTER@@ @@PIPE_ALLOW@@; do
         while grep -q "^$_rmark\$" "$_rcur"; do
             _rn=$(grep -n "^$_rmark\$" "$_rcur" | head -1 | cut -d: -f1)
             {
@@ -275,6 +336,7 @@ s|@@CARD_SHA@@|$CARD_SHA|g"
                     @@ROLE_ALLOW@@)   role_block "$ROLE" ;;
                     @@ROLE_CHARTER@@) charter_block "$ROLE" ;;
                     @@FOREMAN_CHARTER@@) foreman_block ;;
+                    @@PIPE_ALLOW@@)   caps_block ;;
                 esac
                 tail -n +$((_rn + 1)) "$_rcur"
             } > "$_rnxt" || die "render failed at $_rmark"
@@ -292,6 +354,7 @@ tmpl_for() {
         etc/pipeos/pipebox.conf)           echo "$TMPL/pipebox.conf.tmpl" ;;
         etc/pipeos/pipebox-settings.json)  echo "$TMPL/pipebox-settings.json.tmpl" ;;
         etc/pipeos/mandate.md)             echo "$TMPL/mandate.md.tmpl" ;;
+        root/.pipe/policy.json)            echo "$TMPL/policy.json.tmpl" ;;
         *) die "no template for $1" ;;
     esac
 }
@@ -310,6 +373,22 @@ render_all() {
     if command -v jq >/dev/null 2>&1; then
         jq -e . "$1/etc/pipeos/pipebox-settings.json" >/dev/null 2>&1 \
             || die "generated settings are not valid JSON — refusing to install"
+        # The policy file fails DIFFERENTLY from the settings file and that is
+        # why it gets its own check rather than sharing the line above. Claude
+        # refuses to start on malformed settings — loud. The pipe daemon falls
+        # back to PolicySet::default and logs a fault (policy/mod.rs `load`) —
+        # quiet, and in the permissive direction relative to a card that meant
+        # to grant less. An unparseable policy must never reach the box.
+        jq -e . "$1/root/.pipe/policy.json" >/dev/null 2>&1 \
+            || die "generated policy is not valid JSON — refusing to install"
+        # A policy with no `default` key is not a small mistake. PolicySet's
+        # `default` field is #[serde(default)], so an absent key deserializes
+        # to empty allow lists, and decide() default-denies — which locks the
+        # OPERATOR out of their own CLI while leaving the agent working. The
+        # template carries "default": {"allow": ["*"]}; this asserts it
+        # survived rendering.
+        jq -e '.default.allow | index("*")' "$1/root/.pipe/policy.json" >/dev/null 2>&1 \
+            || die "generated policy does not grant the human at the terminal — refusing to install"
     fi
 }
 
