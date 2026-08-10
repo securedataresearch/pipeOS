@@ -98,6 +98,30 @@ for svc in pipe-daemon pipebox-listener; do
     fi
 done
 
+# ---- 3b. auth: a live daemon with a revoked token is not healthy. Per
+# pipe#641 it silently destroys every inbound sealed message, and it is
+# exactly what stops the boot report (section 8) from reaching the owner —
+# the same check feeds both. Boot mode gets the same patience section 8
+# already gave a freshly-started daemon ("it may still be signing in"); a
+# hand-run checks once, since there is no boot-time signin race to wait out.
+# See pipeOS#19.
+_i=0
+while :; do
+    authj=$(pipe status -o json 2>/dev/null)
+    auth_ok=$(echo "${authj:-}" | jq -r '.status.authenticated // empty' 2>/dev/null)
+    [ "$auth_ok" = "true" ] && break
+    [ "$BOOT" != yes ] && break
+    _i=$((_i+1)); [ "$_i" -ge 24 ] && break; sleep 5
+done
+if [ "$auth_ok" = "true" ]; then
+    :
+elif [ -n "$authj" ]; then
+    aerr=$(echo "$authj" | jq -r '.status.auth_error // empty' 2>/dev/null)
+    crit "pipe daemon unauthenticated${aerr:+ ($aerr)}"
+else
+    crit "pipe status did not answer (daemon down or still signing in)"
+fi
+
 # ---- 4. will a reboot reproduce this state? (covers the incident: media
 # repo coherence, world resolution, all packages installed, apkovl readable)
 # `pipeos verify` only reads; `apk fix` installs, so it is the boot-only half.
@@ -189,23 +213,31 @@ echo "$msg"
 log "boot selfcheck: $verdict (down: $down)"
 [ -s "$R" ] && sed 's/^/  /' "$R" >> "$LOG"
 
-# ---- 8. tell the owner (wait for the daemon; it may still be signing in)
+# ---- 8. tell the owner. Gated on authenticated == true (section 3b already
+# waited out the signin race), not on pipe status merely answering — an
+# unauthenticated daemon answers pipe status fine and cannot send. See
+# pipeOS#19: this was the circularity, the boot report failing for the same
+# reason it needed sending, with no way to tell which of three causes it was.
 . /etc/pipeos/pipebox.conf 2>/dev/null || true
 export HOME=/root
 export PIPE_AGENT=pipebox
 export PIPE_NO_SPAWN=1
 sent=no
-if [ -n "$OWNER_NICK" ]; then
-    _i=0
-    until pipe status >/dev/null 2>&1; do
-        _i=$((_i+1)); [ "$_i" -ge 24 ] && break; sleep 5
-    done
+if [ -n "$OWNER_NICK" ] && [ "$auth_ok" = "true" ]; then
     pipe dm "$OWNER_NICK" "$msg" >/dev/null 2>&1 && sent=yes
 fi
 if [ "$sent" = no ]; then
     # leave a breadcrumb the daily pipebox-report will surface
     { echo "undelivered boot report:"; echo "$msg"; } > "$FLAG" 2>/dev/null
-    log "owner DM not delivered (no owner, no daemon, or send failed)"
+    if [ -z "$OWNER_NICK" ]; then
+        cause="no OWNER_NICK configured"
+    elif [ "$auth_ok" != "true" ]; then
+        aerr=$(echo "${authj:-}" | jq -r '.status.auth_error // empty' 2>/dev/null)
+        cause="daemon unauthenticated${aerr:+ ($aerr)}"
+    else
+        cause="pipe dm send failed"
+    fi
+    log "owner DM not delivered: $cause"
 fi
 
 rm -f "$R"
