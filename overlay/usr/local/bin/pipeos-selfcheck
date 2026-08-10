@@ -7,6 +7,15 @@
 # script fixes what it can, DMs the owner the verdict, and — only when
 # nothing is CRITICAL — promotes the canonical apkovl to known-good.
 
+# Only --boot (passed by the init.d hook) opts into the two effects that
+# matter beyond this box: DMing the owner and promoting the apkovl to
+# known-good. A bare hand-run only ever observes: prints the verdict, writes
+# and sends nothing. See pipeOS#13.
+BOOT=no
+case "$1" in
+    --boot) BOOT=yes ;;
+esac
+
 LOG=/work/logs/selfcheck.log
 MARKER=/work/.pipeos/clean-shutdown
 FLAG=/work/pipebox/state/selfcheck-attention   # daily pipebox-report notices this
@@ -94,8 +103,10 @@ fi
 # ---- 6. known-good promotion: this apkovl booted and nothing is critical.
 # Warnings (e.g. a full-ish disk) do not block promotion — they don't make
 # the *state* bad, and blocking on them would freeze known-good forever.
+# Boot-only: a hand-run must never mutate the boot media.
 promoted=no
-if [ "$ncrit" -eq 0 ] && [ -f "$OVL" ]; then
+skipped_promotion=no
+if [ "$BOOT" = yes ] && [ "$ncrit" -eq 0 ] && [ -f "$OVL" ]; then
     (
         exec 9> /run/pipeos-save.lock
         _i=0
@@ -113,6 +124,8 @@ if [ "$ncrit" -eq 0 ] && [ -f "$OVL" ]; then
         sync; mount -o remount,ro "$MEDIA" 2>/dev/null
         exit $rc
     ) && promoted=yes
+elif [ "$BOOT" != yes ] && [ "$ncrit" -eq 0 ]; then
+    skipped_promotion=yes
 fi
 
 # ---- 7. compose the report
@@ -128,6 +141,15 @@ verdict: $verdict"
 $(cat "$R")"
 [ "$promoted" = yes ] && msg="$msg
 apkovl promoted to known-good"
+[ "$skipped_promotion" = yes ] && msg="$msg
+apkovl promotion skipped (hand-run — rerun with --boot to apply it)"
+[ "$BOOT" != yes ] && msg="$msg
+hand-run: boot media untouched, owner not DMed"
+
+# ---- 7b. a hand-run only ever prints; the boot path also logs and DMs.
+echo "$msg"
+
+[ "$BOOT" = yes ] || { rm -f "$R"; exit 0; }
 
 log "boot selfcheck: $verdict (down: $down)"
 [ -s "$R" ] && sed 's/^/  /' "$R" >> "$LOG"
