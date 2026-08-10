@@ -260,6 +260,35 @@ fi
 # nothing must not be told its missing toolchain is a fault. Read-only in the
 # sense that matters — it builds into a temp dir and removes it; it never
 # installs, and provisioning a missing toolchain is the generator's job.
+#
+# A PURE-RUST PROBE IS NOT ENOUGH, and that is pipeOS#52 (found by box3).
+# After a reboot box3 could still `rustc` a Rust file to a working binary while
+# `cargo test` died in cc-rs on "stdint.h: No such file or directory" — the
+# tmpfs root's libc headers were gone (machine notes §1: apk-added live, never
+# in world). Compile and link both worked; the HEADER path was missing.
+#
+# So the probe this section exists to be — "a version string is not evidence" —
+# was itself blind one layer down, on the exact box that proved it. A box
+# declaring `cargo` is declaring it can build the workspace, and this workspace
+# has C build scripts (ring is transitive to both relay crates). So `cargo`
+# additionally requires a C compile of a file that includes a system header.
+#
+# Verified to discriminate rather than assumed: with the system include path
+# hidden, the Rust probe still passes with a real artifact while the C probe
+# fails with "no include path in which to search for stdint.h".
+#
+# THE ONE WAY THIS PROBE CAN GO WRONG, named because box3 found the workaround
+# that implies it. This runs a BARE `cc`. box3's box builds fine with
+# `cargo --config 'env.CFLAGS="--sysroot=/work/buildroot"'` while bare cc still
+# fails — cc finds the buildroot compiler but searches the tmpfs root for libc
+# headers. Today that flag is passed by hand and nothing commits it, so bare cc
+# and cargo agree and this check is honest.
+#
+# If that flag ever lands in pipe's `.cargo/config.toml` (which is committed and
+# currently holds only aliases), cargo would build while bare cc still failed,
+# and this check would CRIT a box that is fine. Whoever adds it must teach this
+# probe the same flag in the same commit. Naming the file so the next person
+# does not have to rediscover the coupling.
 _tc_conf=/etc/pipeos/pipebox.conf
 [ -r "$_tc_conf" ] && . "$_tc_conf" 2>/dev/null
 if [ -n "${TOOLCHAIN:-}" ]; then
@@ -278,6 +307,23 @@ if [ -n "${TOOLCHAIN:-}" ]; then
                     :
                 else
                     crit "card declares TOOLCHAIN=$_probe and $_probe --version answers, but a real compile FAILS: $(head -2 "$_tcd/err" 2>/dev/null | tr '\n' ' ')"
+                fi
+                # cargo means "builds the workspace", and the workspace has C
+                # build scripts. Rust alone passing proves nothing about them
+                # (pipeOS#52). Only for cargo: a bare `rustc` declaration is a
+                # narrower claim and this would be answering a question the
+                # card did not ask.
+                if [ "$_probe" = cargo ]; then
+                    if ! command -v cc >/dev/null 2>&1; then
+                        crit "card declares TOOLCHAIN=cargo but there is no cc — the workspace's C build scripts cannot run"
+                    else
+                        printf '#include <stdint.h>\nint main(void){ return (int)(uint8_t)0; }\n' > "$_tcd/p.c"
+                        if cc -o "$_tcd/pc" "$_tcd/p.c" >"$_tcd/cerr" 2>&1 && [ -x "$_tcd/pc" ]; then
+                            :
+                        else
+                            crit "card declares TOOLCHAIN=cargo and Rust compiles, but a C compile including <stdint.h> FAILS — build scripts (cc-rs) cannot build: $(head -2 "$_tcd/cerr" 2>/dev/null | tr '\n' ' ')"
+                        fi
+                    fi
                 fi
                 rm -rf "$_tcd"
                 ;;
