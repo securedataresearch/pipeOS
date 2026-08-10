@@ -1,0 +1,125 @@
+#!/bin/sh
+# dev-push [--remove PKGNAME]... <apk-or-dir>... — stage locally built
+# packages for rollback-safe on-box testing, without touching the known-good
+# pipeos repo. See pipeOS#8.
+#
+# Push: copies .apk files (or every .apk under a given out/repo/pipeos/x86_64
+# dir) into /media/usb/apks/dev/x86_64, re-indexes, installs. /etc/apk/repositories
+# lists apks/dev after apks/pipeos (see the one-time setup below) — apk always
+# prefers the higher pkgver regardless of repo order, so a dev build wins over
+# the shipped version until it is removed.
+#
+# Rollback: dev-push --remove PKGNAME deletes that package's .apk from the dev
+# repo, re-indexes, and re-resolves apk add so the box falls back to whatever
+# apks/pipeos or apks/extra ships. The known-good pipeos repo is never written.
+#
+# Index recipe: pipeos-format packages are v2 (abuild -r already wrote and
+# signed out/repo/pipeos/x86_64/APKINDEX.tar.gz in the chroot with the on-box
+# key from #3) — so this uses `apk index` + `abuild-sign`, the SAME recipe as
+# apks/pipeos, not `apk mkndx` (that is apks/extra's ADB recipe, for CDN
+# fetches). Mixing the two produces an index apk parses but whose packages
+# fail install — see repo CLAUDE.md, "Two index formats — never mix the
+# recipes". This is a correction to #8's own scope text, which named mkndx.
+set -e
+
+DEV=/media/usb/apks/dev/x86_64
+[ -n "$(ls /root/.abuild/*.rsa 2>/dev/null)" ] || { echo "no signing key in /root/.abuild" >&2; exit 1; }
+
+mode=push
+remove_pkgs=""
+push_srcs=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --remove) mode=remove; shift; remove_pkgs="$remove_pkgs $1"; shift ;;
+        *) push_srcs="$push_srcs $1"; shift ;;
+    esac
+done
+
+if [ "$mode" = push ] && [ -z "$push_srcs" ]; then
+    echo "usage: dev-push <apk-file-or-out/repo/pipeos/x86_64-dir>..." >&2
+    echo "       dev-push --remove PKGNAME [--remove PKGNAME]..." >&2
+    exit 1
+fi
+if [ "$mode" = remove ] && [ -z "$remove_pkgs" ]; then
+    echo "usage: dev-push --remove PKGNAME [--remove PKGNAME]..." >&2
+    exit 1
+fi
+
+free_kb=$(df -k /media/usb | awk 'NR==2{print $4}')
+[ "${free_kb:-0}" -ge 204800 ] || { echo "refusing: only ${free_kb}KB free on /media/usb" >&2; exit 1; }
+
+restore_ro=""
+if ! touch /media/usb/.rwtest 2>/dev/null; then
+    mount -o remount,rw /media/usb
+    restore_ro=1
+else
+    rm -f /media/usb/.rwtest
+fi
+mkdir -p "$DEV"
+
+installed=""
+copied=""
+if [ "$mode" = push ]; then
+    for src in $push_srcs; do
+        if [ -d "$src" ]; then
+            # box0's PR #37 review: the old install-list loop below only ever
+            # tested `[ -f "$src" ]` against push_srcs, so a directory arg
+            # copied its .apk files here but was silently skipped there —
+            # reindexed, never installed. Record what actually landed instead
+            # of re-deriving install candidates from the original arguments.
+            for f in "$src"/*.apk; do
+                [ -f "$f" ] || continue
+                cp -f "$f" "$DEV/"
+                copied="$copied $(basename "$f")"
+            done
+        elif [ -f "$src" ]; then
+            cp -f "$src" "$DEV/"
+            copied="$copied $(basename "$src")"
+        else
+            echo "not a file or dir: $src" >&2
+            [ -n "$restore_ro" ] && mount -o remount,ro /media/usb
+            exit 1
+        fi
+    done
+else
+    for pkg in $remove_pkgs; do
+        rm -f "$DEV/$pkg"-*.apk
+    done
+fi
+
+# no nullglob in POSIX sh: with zero .apk files present (dev-push --remove
+# on the only package, or a first push from an empty/wrong source), the glob
+# below would pass through as the literal string "$DEV/*.apk", apk index
+# would fail to open it, and set -e would abort BEFORE the restore_ro remount
+# further down — leaving /media/usb stuck rw with no signal to the operator.
+# Guard explicitly instead.
+if ! ls "$DEV"/*.apk >/dev/null 2>&1; then
+    echo "no .apk files in $DEV; nothing to index" >&2
+    [ -n "$restore_ro" ] && mount -o remount,ro /media/usb
+    exit 1
+fi
+
+# bare abuild-sign, no -k: relies on PACKAGER_PRIVKEY in /root/.abuild/abuild.conf,
+# same as the chroot build (30-build-apks.sh) — keeps one signing convention
+# for the pipeos-format recipe instead of introducing a second one here.
+apk index --rewrite-arch x86_64 -o "$DEV/APKINDEX.tar.gz.new" "$DEV"/*.apk
+abuild-sign "$DEV/APKINDEX.tar.gz.new"
+mv "$DEV/APKINDEX.tar.gz.new" "$DEV/APKINDEX.tar.gz"
+sync
+
+apk update
+if [ "$mode" = push ]; then
+    for f in $copied; do
+        installed="$installed $(echo "$f" | sed -E 's/-[0-9][^-]*-r[0-9]+\.apk$//')"
+    done
+    [ -n "$installed" ] && apk add $installed
+fi
+
+[ -n "$restore_ro" ] && mount -o remount,ro /media/usb
+
+if [ "$mode" = push ]; then
+    echo "dev repo now has: $(ls "$DEV"/*.apk | xargs -n1 basename | tr '\n' ' ')"
+else
+    echo "removed:$remove_pkgs; re-resolve with: apk fix"
+fi
+echo "not persisted yet: pipeos verify   (then, once trusted, commit /etc/apk/repositories if this is first-time setup)"

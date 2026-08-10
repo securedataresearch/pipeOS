@@ -11,6 +11,13 @@
 #     --repository https://dl-cdn.alpinelinux.org/alpine/v3.24/main <pkg> <deps>
 #   (re-index + sign the extra repo, then apk add <pkg>; lbu commit)
 #   mount -o remount,ro /media/usb
+#
+# apks/dev: rollback-safe staging for locally built packages (pipeOS#8). Listed
+# after apks/pipeos so a local rebuild's higher pkgver wins without ever
+# writing to the known-good pipeos repo; `dev-push`/`dev-push --remove` manage
+# it. apk always resolves the highest pkgver regardless of repo order, so this
+# ordering documents intent rather than changing resolution.
 /media/usb/apks
 /media/usb/apks/pipeos
+/media/usb/apks/dev
 /media/usb/apks/extra
