@@ -90,14 +90,20 @@ your text output here goes only to a log file nobody reads in real time."
     [ -f "$STATE/sessions/.started-$sid" ] && resume_args="--resume $sid"
 
     log "handling $peer (session $sid, $(printf '%s\n' "$fresh" | grep -c .) msg)"
-    if (cd "$STATE" && timeout "$CLAUDE_TIMEOUT" claude -p "$prompt" \
+    # Prompt on STDIN, not argv: a large DM batch can exceed MAX_ARG_STRLEN and
+    # fail execve with E2BIG. claude -p reads the prompt from stdin.
+    rc=0
+    (cd "$STATE" && printf '%s' "$prompt" | timeout "$CLAUDE_TIMEOUT" claude -p \
             --settings "$SETTINGS" $resume_args \
-            >> /work/logs/pipebox-claude.log 2>&1 9>&-); then
-        :
-    else
-        log "claude exited nonzero for $peer (batch still acked to avoid poison-loop)"
-    fi
+            >> /work/logs/pipebox-claude.log 2>&1 9>&-) || rc=$?
     touch "$STATE/sessions/.started-$sid"
+
+    if [ "$rc" = 126 ] || [ "$rc" = 127 ]; then
+        # never started (exec error) — do NOT mark processed, so it retries
+        log "claude failed to start for $peer (rc=$rc) — not marking processed, will retry"
+        return 0
+    fi
+    [ "$rc" = 0 ] || log "claude exited nonzero for $peer (rc=$rc; batch acked to avoid poison-loop)"
 
     # record processed ids (keep the tail bounded)
     printf '%s\n' "$fresh" | jq -r '.Dm.msg_id // .PeerMessage.msg_id // empty' >> "$seen"
