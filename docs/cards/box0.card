@@ -21,3 +21,14 @@ MAC=e8:6a:64:5c:ac:74
 # REPOS is what it must have on disk, with the right origin.
 TOOLCHAIN=cargo,rustc
 REPOS=pipe,pipeOS
+
+# pipe#650 item 9. What this box may do over pipe WITHOUT asking, as an agent
+# labelled `pipebox` -- the label pipebox-listener:12 and
+# pipebox-cohort-watch:22 both export. The generator refuses any entry outside
+# its own ceiling, so this list chooses within a bound it cannot raise.
+#
+# send.bbs is the one entry that differs from pipe's built-in agent default
+# (PolicySet::default denies it, as the permanent-and-public send), and it is
+# the whole reason the Foreman was hand-editing policy.json: this fleet
+# coordinates on the cohort board, so a box that cannot post cannot work.
+PIPE_CAPS=read,send.dm,send.bbs,claim
