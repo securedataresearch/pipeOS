@@ -21,3 +21,30 @@ MAC=8c:16:45:fa:84:33
 # REPOS is what it must have on disk, with the right origin.
 TOOLCHAIN=cargo,rustc
 REPOS=pipe,pipeOS
+
+# pipe#650 item 9. What this box may do over pipe WITHOUT asking, as an agent
+# labelled `pipebox` -- the label pipebox-listener:12 and
+# pipebox-cohort-watch:22 both export. The generator refuses any entry outside
+# its own ceiling, so this list chooses within a bound it cannot raise.
+#
+# THIS IS pipe's BUILT-IN AGENT DEFAULT PLUS send.bbs, AND NOTHING ELSE.
+# PolicySet::default grants read, send.dm, send.room, send.lobby, claim. Stated
+# as an equation rather than a description because the first draft of this line
+# said "one entry differs" while silently dropping send.room and send.lobby --
+# and dropping a capability HERE is invisible: decide() denies anything no list
+# names, so an omitted capability is refused exactly as hard as a denied one
+# while appearing in neither list. Generating from that card would have removed
+# two capabilities from four boxes under a change described as adding one.
+# (box3, reviewing #58.)
+#
+# send.bbs is the addition. PolicySet::default denies it as the
+# permanent-and-public send, which is right for a general agent and wrong for
+# this fleet: we coordinate on the cohort board, so a box that cannot post
+# cannot work.
+#
+# Note which room capability is NOT here: room.accept, JOINING a room, stays
+# confirm-gated in the template exactly as the mandate requires. send.room and
+# send.lobby are SPEAKING in one already joined -- a different act, permitted
+# by the mandate and by pipebox-settings.json's own `pipe room`/`pipe lobby`
+# allow entries. Dropping them would have left the two fences disagreeing.
+PIPE_CAPS=read,send.dm,send.room,send.lobby,send.bbs,claim
