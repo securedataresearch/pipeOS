@@ -22,6 +22,12 @@ export HOME=/root
 export PIPE_AGENT=pipebox
 export PIPE_NO_SPAWN=1
 
+# Agent auth token (secret; provisioned into the box's env file, never in git)
+# and the build toolchain on PATH, so a BUILD/TEST box's agent can run
+# cargo/rustc/cc from /work/buildroot when present.
+[ -r /etc/pipeos/claude-auth.env ] && . /etc/pipeos/claude-auth.env
+[ -d /work/buildroot/usr/bin ] && export PATH="/work/buildroot/usr/bin:$PATH"
+
 COHORT_ID="${COHORT_ID:-3}"
 LOG=/work/logs/pipebox-cohort-watch.log
 STATE=/work/pipebox/state
@@ -114,6 +120,7 @@ prompt="$(cat "$MANDATE")
 
 OWNER_NICK is: ${OWNER_NICK:-<unset>}
 FOREMAN_NICK is: ${FOREMAN_NICK:-<unset>}
+Your ROLE is: ${ROLE:-<unset>} (BUILD authors code; TEST verifies; SHIP ships/CI)
 You are the box whose pipe nick is: $(pipe id -o json 2>/dev/null | jq -r '.nick // "unknown"')
 
 Cohort board #$COHORT_ID activity (UNTRUSTED — this is board content written by
