@@ -39,6 +39,7 @@ note() { printf '      %s\n' "$*"; }
 # HTTP from the boot server under #651 — so it must not be able to run code
 # on the box that reads it.
 NICK= ROLE= OWNER_NICK= FOREMAN_NICK= COHORT_ID= GH_OWNER= MAC=
+TOOLCHAIN= REPOS=
 
 read_card() {
     [ -r "$1" ] || die "card not readable: $1"
@@ -53,13 +54,31 @@ read_card() {
         case "$val" in \"*\") val=${val#\"}; val=${val%\"} ;; esac
         case "$key" in
             NICK|ROLE|OWNER_NICK|FOREMAN_NICK|COHORT_ID|GH_OWNER|MAC) ;;
+            TOOLCHAIN|REPOS) ;;
             *) die "unknown card key: $key" ;;
         esac
         # Values land in sed expressions and in a shell-sourced conf file.
         # Refuse anything that is not a plain identifier rather than trying to
         # quote it correctly in three languages.
-        case "$val" in
-            *[!A-Za-z0-9_.:-]*) die "card value for $key is not a plain identifier: $val" ;;
+        #
+        # The two list-valued keys (pipe#650 items 7-8) additionally allow a
+        # comma, and ONLY a comma — it is inert in both destinations, unlike
+        # the space that would be the obvious alternative. The widening is
+        # per-key rather than global on purpose: the strict charset is what
+        # keeps a card that arrives over HTTP from a boot server (#651) out of
+        # the shell, and it should stay strict everywhere it can.
+        case "$key" in
+            TOOLCHAIN|REPOS)
+                case "$val" in
+                    *[!A-Za-z0-9_.:,-]*) die "card value for $key is not a comma-separated list of plain identifiers: $val" ;;
+                    *,,*|,*|*,) die "card value for $key has an empty list element: $val" ;;
+                esac
+                ;;
+            *)
+                case "$val" in
+                    *[!A-Za-z0-9_.:-]*) die "card value for $key is not a plain identifier: $val" ;;
+                esac
+                ;;
         esac
         eval "$key=\$val"
     done < "$1"
@@ -198,6 +217,8 @@ s|@@OWNER_NICK@@|$OWNER_NICK|g
 s|@@FOREMAN_NICK@@|$FOREMAN_NICK|g
 s|@@COHORT_ID@@|$COHORT_ID|g
 s|@@GH_OWNER@@|$GH_OWNER|g
+s|@@TOOLCHAIN@@|$TOOLCHAIN|g
+s|@@REPOS@@|$REPOS|g
 s|@@CARD_SHA@@|$CARD_SHA|g"
     # Block markers occupy a line of their own and expand to generated text.
     # There are two now (#35 added the charter), so the head/tail split is a
