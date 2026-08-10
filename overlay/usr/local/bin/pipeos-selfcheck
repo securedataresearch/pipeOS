@@ -157,6 +157,29 @@ elif [ -d /root/.claude/projects ]; then
     warnn "/root/.claude/projects is a real directory, not a symlink onto /work — transcripts land in the apkovl (migrate copy-first: link-first destroys agent memory)"
 fi
 
+# ---- 5c. does this box still match its own model card? (pipe#650)
+#
+# `pipebox-card verify` is read-only and its exit codes are a stable API, so
+# this is an observation and runs on the hand-run path too — same rule as
+# `pipeos verify` above. There is no remediation half: regenerating writes
+# /etc/pipeos/*, which is `pipebox-card generate`'s job under an operator, not
+# something a health check should do to a running box behind its back.
+#
+# Exit 2 is deliberately NOT a failure. It means "cannot tell" — no card, or
+# no stamp — which is exactly true of every box provisioned before the card
+# path existed. Grading that as a fault would make the check cry wolf on the
+# whole fleet on day one, and a check nobody believes is worse than no check.
+if command -v pipebox-card >/dev/null 2>&1; then
+    cout=$(pipebox-card verify 2>&1); crc=$?
+    case "$crc" in
+        0) : ;;
+        1) crit "model card divergence: $(echo "$cout" | grep '^FAIL' | head -3 | tr '\n' '; ')"
+           note_fix="run 'pipebox-card generate' (operator; it writes /etc)"
+           [ "$BOOT" = yes ] || would "$note_fix" ;;
+        *) warnn "cannot verify the model card (exit $crc) — not card-provisioned, or never generated" ;;
+    esac
+fi
+
 # ---- 6. known-good promotion: this apkovl booted and nothing is critical.
 # Warnings (e.g. a full-ish disk) do not block promotion — they don't make
 # the *state* bad, and blocking on them would freeze known-good forever.
