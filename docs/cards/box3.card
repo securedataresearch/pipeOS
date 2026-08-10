@@ -56,3 +56,9 @@ REPOS=pipe,pipeOS
 # by the mandate and by pipebox-settings.json's own `pipe room`/`pipe lobby`
 # allow entries. Dropping them would have left the two fences disagreeing.
 PIPE_CAPS=read,send.dm,send.room,send.lobby,send.bbs,claim
+
+# pipeOS#41 (Foreman ruling 2026-08-10): TEST's 25G /work, same size as box0
+# but measured with much lower churn — 3.8G/25G (17%) with 2.5G in target/.
+# Same disk, slower accumulation, so an interval between box0's 6h and
+# box1's 24h rather than sharing either.
+GC_INTERVAL_HOURS=12

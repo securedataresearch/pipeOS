@@ -1,0 +1,149 @@
+#!/bin/sh
+# pipeos-gc — proactive reclamation of regenerable build cache under /work.
+#
+# For pipeOS#41's reclamation half (Foreman ruling, 2026-08-10, quoting Sam:
+# "we badly need some automatic garbage collection in pipeos" / "disk health
+# and performance deteriorates when it gets high usage"). Section 5 of
+# pipeos-selfcheck (DISK_WARN_PCT / DISK_CRIT_PCT) is DETECTION: it catches a
+# surprise consumer once a threshold is already crossed. This is the
+# different half the ruling asked for — RECLAMATION: a scheduled pass that
+# keeps usage low continuously, run whether or not any threshold is anywhere
+# near firing. Neither replaces the other; if this script is doing its job,
+# section 5 should mostly have nothing to say.
+#
+# Fleet measurement behind this (Foreman, 2026-08-10): box0 13G/25G with 12G
+# in target/, box1 23G/53G with 13G, box3 3.8G/25G with 2.5G, box2 26M with
+# none. "Every one of those bytes is regenerable from source." box0 held no
+# claim and had a clean tree, so the Foreman reclaimed it by hand right then
+# (`Removed 52086 files, 12.2GiB total`, 53% -> 6%) — proof the safety
+# predicate below is the right one, not a new one invented for this script.
+#
+# Cron-only, by design (pipeOS#57 / #482): this is a shell script deciding
+# something that does not need an agent session — no judgement call here that
+# a human or an agent would resolve differently, just a mechanical
+# claim-and-clean-tree check. Failure mode is "skipped a cycle", not
+# "silently wrong", so it costs no session.
+#
+# ---- scheduling: hourly cron tick, per-box interval on top
+#
+# Installed under /etc/periodic/hourly, which the existing
+# `0 * * * * run-parts /etc/periodic/hourly` line in /etc/crontabs/root
+# already invokes — no crontab change needed. A single global constant would
+# make a 25G TEST box and a 53G BUILD box share a schedule despite reclaiming
+# at very different rates, so the real interval is the card-declared
+# GC_INTERVAL_HOURS (fallback 24, once a day): every hourly tick checks
+# whether that many hours have passed since the last COMPLETED pass and
+# exits immediately if not. A tick skipped because the box was mid-claim or
+# mid-build does NOT advance that clock, so the very next hourly tick tries
+# again rather than waiting out a full interval for a window that may have
+# already passed — see the STATE handling below.
+
+set -u
+
+LOG=/work/logs/pipeos-gc.log
+STATE=/work/pipebox/state/gc-last-run
+CONF=/etc/pipeos/pipebox.conf
+
+log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG" 2>/dev/null; }
+
+[ -r "$CONF" ] && . "$CONF" 2>/dev/null
+interval=${GC_INTERVAL_HOURS:-24}
+
+mkdir -p "$(dirname "$STATE")" 2>/dev/null
+
+now=$(date -u +%s)
+if [ -f "$STATE" ]; then
+    last=$(cat "$STATE" 2>/dev/null)
+    case "$last" in ''|*[!0-9]*) last=0 ;; esac
+    elapsed_h=$(( (now - last) / 3600 ))
+    [ "$elapsed_h" -lt "$interval" ] && exit 0   # not due; quiet, same as a
+                                                  # healthy selfcheck tick
+fi
+
+# ---- safety gate 1: this box holds NO claim (pipeOS#41 / Foreman ruling).
+# "Never under live work — a cargo clean mid-build costs a session, which is
+# the constrained resource." `pipe claims -o json` lists every LIVE claim
+# fleet-wide as {"claims":[{"key","holder","expires_ts"}, ...]}; this only
+# ever reclaims when NICK (this box's own identity, card-declared) holds none
+# of them. A daemon that will not answer is treated the same as "holds a
+# claim" — refusing to guess "no claim" from silence, not the same failure
+# shape as fail-open.
+export HOME=/root
+export PIPE_AGENT=pipebox
+export PIPE_NO_SPAWN=1
+
+if [ -z "${NICK:-}" ]; then
+    log "skip: NICK unset in $CONF — cannot tell whether this box holds a claim"
+    exit 0
+fi
+
+claimsj=$(pipe claims -o json 2>/dev/null)
+if [ -z "$claimsj" ]; then
+    log "skip: 'pipe claims' did not answer (daemon down or unauthenticated?) — refusing to assume no claim is held"
+    exit 0
+fi
+
+held=$(printf '%s' "$claimsj" | jq -r --arg n "$NICK" \
+    '.claims[]? | select(.holder == $n) | .key' 2>/dev/null)
+if [ -n "$held" ]; then
+    log "skip: $NICK holds claim(s) [$(printf '%s' "$held" | tr '\n' ' ' | sed 's/ *$//')] — never reclaim under live work"
+    exit 0
+fi
+
+# ---- safety gate 2: every repo this box is expected to hold (card REPOS,
+# same list pipeos-selfcheck section 5h already verifies is on disk) has a
+# CLEAN working tree. Checked box-wide, not per-repo: one dirty repo reads as
+# "this box is mid-work" regardless of which checkout the work is in, so the
+# whole pass defers rather than reclaiming everything except the one repo in
+# use. Deferring (not advancing $STATE) means the very next hourly tick
+# checks again, so a session that finishes mid-window is caught promptly
+# rather than waiting out the rest of a 24h interval.
+dirty=""
+for _repo in $(printf '%s' "${REPOS:-}" | tr ',' ' '); do
+    [ -n "$_repo" ] || continue
+    rp="/work/repos/$_repo"
+    [ -d "$rp/.git" ] || continue
+    if [ -n "$(git -C "$rp" status --porcelain 2>/dev/null)" ]; then
+        dirty="$dirty $_repo"
+    fi
+done
+if [ -n "$dirty" ]; then
+    log "skip: working tree not clean:$dirty — never reclaim under live work"
+    exit 0
+fi
+
+# ---- reclaim: only regenerable build output, never source or git objects.
+# `cargo clean` is the tool that owns target/ and knows what is safe to
+# remove inside it; this does not reach into target/ with rm itself. Skipped
+# entirely (not an error) when a repo has no target/ (nothing to reclaim, the
+# box2 case per the Foreman's own measurement: "26M with none") or no cargo
+# on PATH (a SHIP box may hold REPOS without ever having built them).
+did_any=no
+for _repo in $(printf '%s' "${REPOS:-}" | tr ',' ' '); do
+    [ -n "$_repo" ] || continue
+    rp="/work/repos/$_repo"
+    [ -d "$rp/target" ] || continue
+    if ! command -v cargo >/dev/null 2>&1; then
+        log "skip $rp/target: cargo not on PATH — not touching build output without the tool that owns it"
+        continue
+    fi
+    before_kb=$(du -xsk "$rp/target" 2>/dev/null | cut -f1)
+    out=$(cd "$rp" && cargo clean 2>&1)
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        # cargo clean's own summary line is already in shrek's manual-relief
+        # style ("Removed 52086 files, 12.2GiB total") — logged verbatim
+        # rather than re-derived, so this reads the same way his report did.
+        summary=$(printf '%s\n' "$out" | tail -1)
+        log "reclaimed $rp/target (was ${before_kb:-?}KB): $summary"
+        did_any=yes
+    else
+        log "cargo clean FAILED in $rp: $(printf '%s\n' "$out" | tail -3 | tr '\n' ' ')"
+    fi
+done
+
+[ "$did_any" = yes ] || log "pass complete: nothing to reclaim (no target/ dirs on this box, or cargo not on PATH)"
+
+# Only a completed pass (claim-clear, tree-clean, ran to the end) advances
+# the clock. A pass that exited early above already returned before this.
+echo "$now" > "$STATE" 2>/dev/null

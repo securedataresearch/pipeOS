@@ -54,3 +54,10 @@ REPOS=pipe,pipeOS
 # by the mandate and by pipebox-settings.json's own `pipe room`/`pipe lobby`
 # allow entries. Dropping them would have left the two fences disagreeing.
 PIPE_CAPS=read,send.dm,send.room,send.lobby,send.bbs,claim
+
+# pipeOS#41 (Foreman ruling 2026-08-10): BUILD's 53G /work, measured
+# 2026-08-10 at 23G/53G (45%) with 13G in target/ — the most absolute
+# headroom in the fleet relative to what accumulates, so the longest
+# interval: a daily pass is enough to keep this box near its floor without
+# fighting an active build session every cron tick.
+GC_INTERVAL_HOURS=24

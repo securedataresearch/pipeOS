@@ -51,3 +51,8 @@ REPOS="@@REPOS@@"
 # 53G box hitting the same percentage have very different GB of headroom left.
 DISK_WARN_PCT="@@DISK_WARN_PCT@@"
 DISK_CRIT_PCT="@@DISK_CRIT_PCT@@"
+
+# Reclamation interval, hours (pipeOS#41). Empty = pipeos-gc falls back to 24
+# (once a day). Declared per box because accumulation rate, not just disk
+# size, drives how often a proactive cargo-clean pass is worth running.
+GC_INTERVAL_HOURS="@@GC_INTERVAL_HOURS@@"

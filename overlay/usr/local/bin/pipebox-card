@@ -45,6 +45,7 @@ note() { printf '      %s\n' "$*"; }
 NICK= ROLE= OWNER_NICK= FOREMAN_NICK= COHORT_ID= GH_OWNER= MAC=
 TOOLCHAIN= REPOS= PIPE_CAPS=
 DISK_WARN_PCT= DISK_CRIT_PCT=
+GC_INTERVAL_HOURS=
 
 # pipe#650 item 9. The capabilities a card is ALLOWED to grant the agent —
 # every other spelling in pipe's vocabulary is refused here, by this script,
@@ -88,6 +89,7 @@ read_card() {
             NICK|ROLE|OWNER_NICK|FOREMAN_NICK|COHORT_ID|GH_OWNER|MAC) ;;
             TOOLCHAIN|REPOS|PIPE_CAPS) ;;
             DISK_WARN_PCT|DISK_CRIT_PCT) ;;
+            GC_INTERVAL_HOURS) ;;
             *) die "unknown card key: $key" ;;
         esac
         # Values land in sed expressions and in a shell-sourced conf file.
@@ -111,6 +113,13 @@ read_card() {
             # the generic plain-identifier charset below (which would also take
             # letters and dots) — a threshold is a number or it is nothing.
             DISK_WARN_PCT|DISK_CRIT_PCT)
+                case "$val" in
+                    ''|*[!0-9]*) [ -z "$val" ] || die "card value for $key must be a plain integer: $val" ;;
+                esac
+                ;;
+            # pipeOS#41 (Foreman ruling 2026-08-10): same digits-only rule as
+            # the thresholds above — an interval is a number or it is nothing.
+            GC_INTERVAL_HOURS)
                 case "$val" in
                     ''|*[!0-9]*) [ -z "$val" ] || die "card value for $key must be a plain integer: $val" ;;
                 esac
@@ -150,6 +159,16 @@ read_card() {
     if [ -n "$DISK_WARN_PCT" ] && [ -n "$DISK_CRIT_PCT" ]; then
         [ "$DISK_WARN_PCT" -lt "$DISK_CRIT_PCT" ] || \
             die "DISK_WARN_PCT ($DISK_WARN_PCT) must be less than DISK_CRIT_PCT ($DISK_CRIT_PCT)"
+    fi
+
+    # pipeOS#41 (Foreman ruling 2026-08-10): the reclamation half's own
+    # per-box constant. 1-168 (an hour to a week) — a GC pass that never runs
+    # more often than weekly is not the "keep usage low continuously" this
+    # was ruled for, and a value below an hour is finer than pipeos-gc's own
+    # hourly cron tick can even honor.
+    if [ -n "$GC_INTERVAL_HOURS" ]; then
+        [ "$GC_INTERVAL_HOURS" -ge 1 ] 2>/dev/null && [ "$GC_INTERVAL_HOURS" -le 168 ] 2>/dev/null || \
+            die "GC_INTERVAL_HOURS must be 1-168: $GC_INTERVAL_HOURS"
     fi
 
     if [ "$STRICT" = 1 ]; then
@@ -336,6 +355,7 @@ s|@@TOOLCHAIN@@|$TOOLCHAIN|g
 s|@@REPOS@@|$REPOS|g
 s|@@DISK_WARN_PCT@@|$DISK_WARN_PCT|g
 s|@@DISK_CRIT_PCT@@|$DISK_CRIT_PCT|g
+s|@@GC_INTERVAL_HOURS@@|$GC_INTERVAL_HOURS|g
 s|@@CARD_SHA@@|$CARD_SHA|g"
     # Block markers occupy a line of their own and expand to generated text.
     # There are three now (#35 added the role charter, #39 the Foreman's), so
@@ -514,7 +534,7 @@ cmd_show() {
     read_card "$CARD"
     echo "card:        $CARD (sha256:$CARD_SHA)"
     for k in NICK ROLE OWNER_NICK FOREMAN_NICK COHORT_ID GH_OWNER MAC \
-             DISK_WARN_PCT DISK_CRIT_PCT; do
+             DISK_WARN_PCT DISK_CRIT_PCT GC_INTERVAL_HOURS; do
         eval "v=\$$k"
         printf '%-12s %s\n' "$k:" "${v:-<unset>}"
     done
