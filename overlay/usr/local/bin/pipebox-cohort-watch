@@ -36,6 +36,14 @@ SESSION="$STATE/cohort-$COHORT_ID.session"
 MANDATE=/etc/pipeos/mandate.md
 SETTINGS=/etc/pipeos/pipebox-settings.json
 CLAUDE_TIMEOUT=900
+# rc=1 from `claude -p` is what a session-limit rejection looks like from
+# here (see pipeOS#44) — we can't tell it apart from a generic agent error
+# without parsing stderr text, so we back off either way. Fixed backoff
+# (not the parsed reset time) per the issue: "a fixed backoff is
+# acceptable, silently eating the post is not."
+BACKOFF_SECS=900
+BACKOFF_FILE="$STATE/cohort-$COHORT_ID.backoff-until"
+STARTFAIL_FILE="$STATE/cohort-$COHORT_ID.startfail"
 
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG"; }
 
@@ -43,6 +51,18 @@ mkdir -p "$STATE" /work/logs 2>/dev/null || exit 1
 
 [ -r "$MANDATE" ]  || { log "missing $MANDATE — refusing to run unguarded"; exit 1; }
 [ -r "$SETTINGS" ] || { log "missing $SETTINGS — refusing to run unguarded"; exit 1; }
+
+# Backing off after a prior rc=1 (agent-could-not-start)? Skip this tick
+# entirely rather than burning it on a board fetch we can't act on.
+if [ -s "$BACKOFF_FILE" ]; then
+    until_ts=$(cat "$BACKOFF_FILE" 2>/dev/null)
+    now_ts=$(date -u +%s)
+    if [ -n "$until_ts" ] && [ "$now_ts" -lt "$until_ts" ] 2>/dev/null; then
+        log "backing off (prior rc=1, likely session-limit) until epoch $until_ts — $((until_ts - now_ts))s remaining"
+        exit 0
+    fi
+    rm -f "$BACKOFF_FILE"
+fi
 
 # one watcher at a time; cron fires every 2 min and a claude run can take longer.
 # busybox flock has no -w, so -n and bail: the next tick picks it up.
@@ -147,12 +167,22 @@ rc=0
 touch "$STATE/.cohort-started-$sid"
 
 # Advance state only if the agent actually RAN. rc 126/127 means it never
-# started (exec error, missing binary) — do NOT advance, so the next tick
-# retries instead of eating the post. Any other outcome (0, agent error,
+# started (exec error, missing binary). rc=1 is what a shared-pool
+# session-limit rejection looks like from here (pipeOS#44) — indistinguishable
+# from a generic invocation failure without parsing stderr, so we treat it
+# the same way: as a hard failure, not as "ran with no output". In all three
+# cases do NOT advance $SEEN, so the next tick retries the same batch instead
+# of the post being silently eaten. Any other outcome (0, agent error,
 # timeout=124) advances, preserving the original poison-loop guard.
 if [ "$rc" = 126 ] || [ "$rc" = 127 ]; then
     log "claude failed to start (rc=$rc) — state NOT advanced, will retry next tick"
+    date -u +%s > "$STARTFAIL_FILE" 2>/dev/null
+elif [ "$rc" = 1 ]; then
+    log "claude invocation failed (rc=1, likely session-limit) — NOT advancing cursor, backing off ${BACKOFF_SECS}s"
+    date -u +%s > "$STARTFAIL_FILE" 2>/dev/null
+    echo $(( $(date -u +%s) + BACKOFF_SECS )) > "$BACKOFF_FILE"
 else
     [ "$rc" = 0 ] || log "claude exited nonzero (rc=$rc); advancing state to avoid a poison loop"
+    rm -f "$STARTFAIL_FILE" "$BACKOFF_FILE"
     printf '%s\n' "$current" > "$SEEN"
 fi
