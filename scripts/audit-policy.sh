@@ -42,6 +42,13 @@ ok()   { printf 'ok    %s\n' "$*"; }
 bad()  { printf 'FAIL  %s\n' "$*"; rc=1; }
 note() { printf '      %s\n' "$*"; }
 
+# One loop below runs as the RHS of a pipeline, which POSIX puts in a SUBSHELL —
+# so an `rc=1` set inside it dies with that subshell and the script would exit 0
+# having printed FAIL. A file is the only thing that crosses that boundary here.
+RC_MARK=$(mktemp) || { printf 'audit-policy: mktemp failed\n' >&2; exit 2; }
+rm -f "$RC_MARK"
+trap 'rm -f "$RC_MARK"' EXIT INT TERM
+
 command -v jq >/dev/null 2>&1 || { printf 'audit-policy: jq is required\n' >&2; exit 2; }
 
 [ -r "$CARD" ]   || { printf 'audit-policy: card not readable: %s\n' "$CARD" >&2; exit 2; }
@@ -103,19 +110,45 @@ fi
 # had. Instrument versus thing, one more time — the repo copy is authoritative
 # for what a card MAY grant today, which is the question being asked, but say
 # so rather than letting the reader assume they are the same file.
-for granted in $(jq -r --arg l "$LABEL" '.agent[$l].allow // [] | .[]' "$POLICY"); do
+# READ, NOT WORD-SPLIT, and the reason is a defect box3 found in the version
+# directly above this one. That loop was `for granted in $(jq ...)`, unquoted,
+# under `set -u` alone — so a policy granting `*` was PATHNAME-EXPANDED against
+# the working directory. `$granted` became filenames, never `*`, and the branch
+# written for the single worst case was dead code. It replaced a `jq index("*")`
+# check that was correct.
+#
+# Measured, same construct, two directories:
+#
+#   cwd with alpha+beta   granted=[read] granted=[alpha] granted=[beta] granted=[loop.sh]
+#   "empty" cwd           granted=[read] granted=[loop.sh]
+#
+# An unmatched glob stays literal in POSIX sh, so the natural expectation is
+# "it only breaks in a populated directory". It does not: the script itself is
+# a file, so the glob ALWAYS matches something and `*` never survives.
+#
+# `set -f` fixes it and is what box3 proposed. This uses a read loop instead
+# because the fix is then LOCAL to the thing that needed it — no global shell
+# option whose next reader has to work out what depends on it — and because
+# `read` does no splitting or globbing at all rather than disabling one of two.
+jq -r --arg l "$LABEL" '.agent[$l].allow // [] | .[]' "$POLICY" \
+| while IFS= read -r granted; do
+    [ -n "$granted" ] || continue
     permitted=0
     for allowed in $CEILING; do
         [ "$granted" = "$allowed" ] && { permitted=1; break; }
     done
     [ "$permitted" = 1 ] && continue
-    bad "the live policy GRANTS '$granted' to the agent"
+    printf 'FAIL  the live policy GRANTS %s to the agent\n' "'$granted'"
     if [ "$granted" = "*" ]; then
-        note "'*' is every capability at once — every fence in the card is void"
+        printf "      '*' is every capability at once — every fence in the card is void\n"
     else
-        note "no card can produce this — it was hand-edited or the file is not ours"
+        printf '      no card can produce this — it was hand-edited or the file is not ours\n'
     fi
+    # A pipeline runs its RHS in a subshell, so `bad`'s rc=1 would be lost.
+    # The marker file carries the failure back out; checked below.
+    : > "$RC_MARK"
 done
+[ -e "$RC_MARK" ] && rc=1
 
 # THE CONFIRM LIST, which the first cut never looked at and which is what makes
 # the loop above bite. Precedence is deny > confirm > allow, so a hand-edit
