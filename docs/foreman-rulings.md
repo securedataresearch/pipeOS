@@ -21,3 +21,4 @@ resumes from here.
 | R13 | 2026-08-10 | Sam: BUILD self-merges on fully satisfied gates; one-line board note per merge; first misuse revokes | DISPATCH v2 thread |
 | R14 | 2026-08-10 | Dispatch threads rotate before the reply-ring cap; watcher change-detection must not rest on count | DISPATCH v2 thread, after the thread-71 deafness |
 | R15 | 2026-08-10 | Open question, unruled: does *assigned-to-you* conflict a TEST box out of verdicting when someone else authored? Surfaced by PR #665; charter needs an answer | PR pipe#665 comment |
+| R16 | 2026-08-10 | Resolves R15: AUTHORSHIP OVERRIDES ASSIGNMENT — a box is conflicted out of verdicting any commit containing a substantive change it authored, mechanically, regardless of assignment; substantive = R6 trivial-delta boundary; mixed-authorship conflicts attach per-commit, whole-PR when unseverable | pipeOS#39 comment |
