@@ -277,19 +277,38 @@ fi
 # hidden, the Rust probe still passes with a real artifact while the C probe
 # fails with "no include path in which to search for stdint.h".
 #
-# WHERE THE BUILD ENV LIVES, and a correction worth keeping. An earlier
-# version of this comment said the sysroot flag was passed by hand, nothing
-# committed it, and the hazard was FUTURE — if it ever landed in pipe's
-# `.cargo/config.toml`. box3 refuted that: it had already landed, in
-# `/work/buildroot/env.sh`, five days earlier. The reasoning was right and the
-# premise was false, because I checked the one file the comment named instead
-# of asking which files could carry it.
+# THE PROBE RUNS A BARE `cc`, AND THAT IS DELIBERATE. It took three attempts
+# to land on that, so the reasoning is recorded rather than left to be
+# rediscovered by whoever next thinks it looks wrong.
 #
-# So the coupling is real but it is not hypothetical, and the check now honours
-# the env file rather than warning about it. Anything that changes how the
-# workspace's C build scripts are invoked — env.sh, `.cargo/config.toml`, a
-# wrapper — has to reach this probe too, or the probe stops describing the
-# build.
+# `/work/buildroot/env.sh` documents that buildroot's gcc needs
+# `CFLAGS=--sysroot=/work/buildroot` to find libc headers, and exports it.
+# That file is real, correct, and — this is the part that decides it —
+# **NOTHING SOURCES IT**. `pipebox-cohort-watch` and `pipebox-listener`, the
+# two scripts that start every unattended agent, each export
+# `PATH=/work/buildroot/usr/bin:$PATH` and nothing else; a grep across
+# `overlay/`, `scripts/` and `.github/` for `env.sh` or `CFLAGS` finds those
+# PATH lines and no other caller.
+#
+# So a bare `cc` is EXACTLY what the agent gets. An earlier version of this
+# check sourced env.sh, on the theory that it was the documented build
+# procedure; that made the probe test an environment no agent ever runs in,
+# which is the original blindness in mirror image — it would have reported
+# healthy on a box whose agent genuinely cannot build. Reverted.
+#
+# The proof is box3: started by cohort-watch, its `cargo` died in cc-rs on
+# exactly this, which is a measurement of the agent's environment rather than
+# a hypothesis about it. A CRIT there is a TRUE positive.
+#
+# Note also that which way a bare `cc` goes is box-specific — box1 and box0
+# have `/usr/include/stdint.h` on their tmpfs roots and box3 does not — so the
+# check reports a real per-box difference rather than a fleet-wide constant.
+#
+# The live defect this leaves is not in this file: `pipebox-cohort-watch`'s own
+# comment says putting buildroot on PATH lets "a BUILD/TEST box's agent run
+# cargo/rustc/cc", which is false on box3, because PATH alone does not carry
+# the sysroot. Either that script sources env.sh or the headers belong in
+# `world`; both fix it, and this check reports the symptom under either.
 _tc_conf=/etc/pipeos/pipebox.conf
 [ -r "$_tc_conf" ] && . "$_tc_conf" 2>/dev/null
 if [ -n "${TOOLCHAIN:-}" ]; then
@@ -314,42 +333,15 @@ if [ -n "${TOOLCHAIN:-}" ]; then
                 # (pipeOS#52). Only for cargo: a bare `rustc` declaration is a
                 # narrower claim and this would be answering a question the
                 # card did not ask.
-                # IT MUST COMPILE THE WAY THE BOX IS DOCUMENTED TO COMPILE.
-                #
-                # The first cut ran a bare `cc`, and box3 showed that is the
-                # wrong instrument: `/work/buildroot/env.sh` (dated 2026-08-05,
-                # predating any of this) already documents the exact failure
-                # and fixes it — "Without a sysroot, buildroot's gcc resolves
-                # libc headers against the HOST root ... Not a missing package;
-                # a missing search path" — and exports
-                # `CFLAGS=--sysroot=/work/buildroot`.
-                #
-                # So the product builds through that env, and a bare `cc` tests
-                # a toolchain nobody is supposed to use. On box3 bare `cc`
-                # fails while the documented build succeeds: a CRIT on a box
-                # that is fine. This sources the same file the build does.
-                #
-                # Note it is genuinely box-specific which way bare `cc` goes:
-                # box1 has `/usr/include/stdint.h` on its tmpfs root and box3
-                # does not, so the bare probe would have passed on one and
-                # failed the other for reasons unrelated to whether either can
-                # build. That divergence is why the env file is the authority
-                # here and a hand-run compiler is not.
                 if [ "$_probe" = cargo ]; then
                     if ! command -v cc >/dev/null 2>&1; then
                         crit "card declares TOOLCHAIN=cargo but there is no cc — the workspace's C build scripts cannot run"
                     else
                         printf '#include <stdint.h>\nint main(void){ return (int)(uint8_t)0; }\n' > "$_tcd/p.c"
-                        # Subshell so the sourced env cannot leak into the rest
-                        # of selfcheck. `$CFLAGS` is deliberately unquoted: it
-                        # is a flag list, and the env file is ours.
-                        if sh -c '. /work/buildroot/env.sh 2>/dev/null
-                                  exec cc $CFLAGS -o "$1" "$2"' _ \
-                                 "$_tcd/pc" "$_tcd/p.c" >"$_tcd/cerr" 2>&1 \
-                           && [ -x "$_tcd/pc" ]; then
+                        if cc -o "$_tcd/pc" "$_tcd/p.c" >"$_tcd/cerr" 2>&1 && [ -x "$_tcd/pc" ]; then
                             :
                         else
-                            crit "card declares TOOLCHAIN=cargo and Rust compiles, but a C compile including <stdint.h> FAILS even through the documented build env — build scripts (cc-rs) cannot build: $(head -2 "$_tcd/cerr" 2>/dev/null | tr '\n' ' ')"
+                            crit "card declares TOOLCHAIN=cargo and Rust compiles, but a C compile including <stdint.h> FAILS — build scripts (cc-rs) cannot build: $(head -2 "$_tcd/cerr" 2>/dev/null | tr '\n' ' ')"
                         fi
                     fi
                 fi
