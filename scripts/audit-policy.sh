@@ -70,16 +70,57 @@ fi
 # The ceiling again, checked against what is ACTUALLY ON DISK rather than
 # against what the generator would have written. This is the half that catches
 # a hand-edit, and a hand-edit is the whole reason item 9 exists.
-for forbidden in identity admin moderate; do
-    if jq -e --arg l "$LABEL" --arg c "$forbidden" \
+#
+# DERIVED FROM THE CEILING, NOT RESTATED. The first cut hardcoded three names
+# — identity, admin, moderate — and so checked three of the EIGHT capabilities
+# no card can grant. The five it missed (room.create, room.accept, file.send,
+# file.accept, contacts.write) are the ones the generator's own comment
+# describes most alarmingly: file.send reads an arbitrary local path off the
+# machine, contacts.write pins a peer key and poisons trust grading.
+#
+# Restating it was also two lists that must agree, maintained separately in
+# different files — the exact shape I argued against in pipe#682 and was right
+# about, reproduced here by me one PR later. Now there is one list and this
+# reads it. (box3, reviewing #58.)
+CEILING=$(sed -n 's/^PIPE_CAPS_CEILING="\(.*\)"$/\1/p' \
+    "$(dirname "$0")/../overlay/usr/local/bin/pipebox-card" 2>/dev/null \
+    || true)
+if [ -z "$CEILING" ]; then
+    printf 'audit-policy: cannot read PIPE_CAPS_CEILING from pipebox-card\n' >&2
+    exit 2
+fi
+ALL_CAPS="read send.dm send.room send.lobby send.bbs room.create room.accept
+file.send file.accept contacts.write identity moderate claim admin"
+for cap in $ALL_CAPS; do
+    grantable=0
+    for allowed in $CEILING; do
+        [ "$cap" = "$allowed" ] && { grantable=1; break; }
+    done
+    [ "$grantable" = 1 ] && continue
+    if jq -e --arg l "$LABEL" --arg c "$cap" \
         '(.agent[$l].allow // []) | index($c)' "$POLICY" >/dev/null 2>&1; then
-        bad "the live policy GRANTS '$forbidden' to the agent"
+        bad "the live policy GRANTS '$cap' to the agent"
         note "no card can produce this — it was hand-edited or the file is not ours"
     fi
 done
 if jq -e --arg l "$LABEL" '(.agent[$l].allow // []) | index("*")' "$POLICY" >/dev/null 2>&1; then
     bad "the live policy grants '*' to the agent — every fence in the card is void"
 fi
+
+# THE CONFIRM LIST, which the first cut never looked at and which is what makes
+# the loop above bite. Precedence is deny > confirm > allow, so a hand-edit
+# that merely ADDS file.send to allow is still stopped by confirm. The edit
+# that defeats the human gate MOVES it — out of confirm, into allow — and that
+# one passed the first version of this audit clean, because nothing verified
+# confirm had survived. It is the single most valuable hand-edit to make and
+# was the single one not checked.
+for gated in file.send file.accept room.create room.accept contacts.write; do
+    if ! jq -e --arg l "$LABEL" --arg c "$gated" \
+        '(.agent[$l].confirm // []) | index($c)' "$POLICY" >/dev/null 2>&1; then
+        bad "'$gated' is missing from the agent's confirm list"
+        note "the human gate on it is gone; check whether it moved into allow"
+    fi
+done
 
 # The operator's own access. A policy with no `default` key deserializes to
 # empty allow lists and decide() default-denies, so this locks the human out
