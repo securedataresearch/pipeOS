@@ -260,6 +260,55 @@ fi
 # nothing must not be told its missing toolchain is a fault. Read-only in the
 # sense that matters — it builds into a temp dir and removes it; it never
 # installs, and provisioning a missing toolchain is the generator's job.
+#
+# A PURE-RUST PROBE IS NOT ENOUGH, and that is pipeOS#52 (found by box3).
+# After a reboot box3 could still `rustc` a Rust file to a working binary while
+# `cargo test` died in cc-rs on "stdint.h: No such file or directory" — the
+# tmpfs root's libc headers were gone (machine notes §1: apk-added live, never
+# in world). Compile and link both worked; the HEADER path was missing.
+#
+# So the probe this section exists to be — "a version string is not evidence" —
+# was itself blind one layer down, on the exact box that proved it. A box
+# declaring `cargo` is declaring it can build the workspace, and this workspace
+# has C build scripts (ring is transitive to both relay crates). So `cargo`
+# additionally requires a C compile of a file that includes a system header.
+#
+# Verified to discriminate rather than assumed: with the system include path
+# hidden, the Rust probe still passes with a real artifact while the C probe
+# fails with "no include path in which to search for stdint.h".
+#
+# THE PROBE RUNS A BARE `cc`, AND THAT IS DELIBERATE. It took three attempts
+# to land on that, so the reasoning is recorded rather than left to be
+# rediscovered by whoever next thinks it looks wrong.
+#
+# `/work/buildroot/env.sh` documents that buildroot's gcc needs
+# `CFLAGS=--sysroot=/work/buildroot` to find libc headers, and exports it.
+# That file is real, correct, and — this is the part that decides it —
+# **NOTHING SOURCES IT**. `pipebox-cohort-watch` and `pipebox-listener`, the
+# two scripts that start every unattended agent, each export
+# `PATH=/work/buildroot/usr/bin:$PATH` and nothing else; a grep across
+# `overlay/`, `scripts/` and `.github/` for `env.sh` or `CFLAGS` finds those
+# PATH lines and no other caller.
+#
+# So a bare `cc` is EXACTLY what the agent gets. An earlier version of this
+# check sourced env.sh, on the theory that it was the documented build
+# procedure; that made the probe test an environment no agent ever runs in,
+# which is the original blindness in mirror image — it would have reported
+# healthy on a box whose agent genuinely cannot build. Reverted.
+#
+# The proof is box3: started by cohort-watch, its `cargo` died in cc-rs on
+# exactly this, which is a measurement of the agent's environment rather than
+# a hypothesis about it. A CRIT there is a TRUE positive.
+#
+# Note also that which way a bare `cc` goes is box-specific — box1 and box0
+# have `/usr/include/stdint.h` on their tmpfs roots and box3 does not — so the
+# check reports a real per-box difference rather than a fleet-wide constant.
+#
+# The live defect this leaves is not in this file: `pipebox-cohort-watch`'s own
+# comment says putting buildroot on PATH lets "a BUILD/TEST box's agent run
+# cargo/rustc/cc", which is false on box3, because PATH alone does not carry
+# the sysroot. Either that script sources env.sh or the headers belong in
+# `world`; both fix it, and this check reports the symptom under either.
 _tc_conf=/etc/pipeos/pipebox.conf
 [ -r "$_tc_conf" ] && . "$_tc_conf" 2>/dev/null
 if [ -n "${TOOLCHAIN:-}" ]; then
@@ -278,6 +327,23 @@ if [ -n "${TOOLCHAIN:-}" ]; then
                     :
                 else
                     crit "card declares TOOLCHAIN=$_probe and $_probe --version answers, but a real compile FAILS: $(head -2 "$_tcd/err" 2>/dev/null | tr '\n' ' ')"
+                fi
+                # cargo means "builds the workspace", and the workspace has C
+                # build scripts. Rust alone passing proves nothing about them
+                # (pipeOS#52). Only for cargo: a bare `rustc` declaration is a
+                # narrower claim and this would be answering a question the
+                # card did not ask.
+                if [ "$_probe" = cargo ]; then
+                    if ! command -v cc >/dev/null 2>&1; then
+                        crit "card declares TOOLCHAIN=cargo but there is no cc — the workspace's C build scripts cannot run"
+                    else
+                        printf '#include <stdint.h>\nint main(void){ return (int)(uint8_t)0; }\n' > "$_tcd/p.c"
+                        if cc -o "$_tcd/pc" "$_tcd/p.c" >"$_tcd/cerr" 2>&1 && [ -x "$_tcd/pc" ]; then
+                            :
+                        else
+                            crit "card declares TOOLCHAIN=cargo and Rust compiles, but a C compile including <stdint.h> FAILS — build scripts (cc-rs) cannot build: $(head -2 "$_tcd/cerr" 2>/dev/null | tr '\n' ' ')"
+                        fi
+                    fi
                 fi
                 rm -rf "$_tcd"
                 ;;
