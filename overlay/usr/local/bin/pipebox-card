@@ -165,6 +165,19 @@ cmd_generate() {
         mv "$dst.new" "$dst" || die "install failed: $dst"
         echo "wrote $dst"
     done
+
+    # A card with a real NICK means this box has been provisioned. pipeos-save
+    # gates on etc/pipeos/provisioned and silently exits 0 without it — so a
+    # box brought up by the card path (no interactive login, hence
+    # zz-pipeos-provision.sh never runs) would never persist anything: sign-in,
+    # config, all lost at the next reboot. Set the marker here so the #650
+    # headless path is actually durable. The empty default card (NICK unset)
+    # leaves the box unprovisioned, as intended.
+    if [ -n "$NICK" ]; then
+        marker="${ROOT%/}/etc/pipeos/provisioned"
+        [ -f "$marker" ] || { : > "$marker" && echo "wrote $marker"; }
+    fi
+
     echo "pipebox-card: generated from $CARD (sha256:$CARD_SHA)"
     printf '%s\n' "note: nothing here survives a reboot until it is committed —" \
                   "      run 'pipeos save' (operator; hard-banned for the agent)."
