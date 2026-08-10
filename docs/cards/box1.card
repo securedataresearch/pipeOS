@@ -16,6 +16,12 @@ GH_OWNER=securedataresearch
 # the media path; identity rides the stick until netboot lands.
 MAC=e8:6a:64:fa:48:b3
 
+# pipeOS#41: BUILD's 53G /work. Measured 2026-08-10: 79% (40G/53G) was already
+# a single-directory cargo incremental cache (24G) with nobody warned; WARN 70
+# / CRIT 85 leaves real headroom (~16G / ~8G) to act before a repeat.
+DISK_WARN_PCT=70
+DISK_CRIT_PCT=85
+
 # pipe#650 items 7-8. TOOLCHAIN is what this box must be able to BUILD --
 # selfcheck compiles a real artifact per entry, not a version string.
 # REPOS is what it must have on disk, with the right origin.
