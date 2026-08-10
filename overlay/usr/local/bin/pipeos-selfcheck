@@ -68,6 +68,25 @@ fi
 # under them (LOG, FLAG) is written only on the boot path anyway.
 [ "$BOOT" = yes ] && mkdir -p /work/.pipeos /work/logs /work/pipebox/state 2>/dev/null
 
+# ---- 1b. /work is the declared block device, not just "something mounted
+# there" (pipe#650 item 11). box0's /work was tmpfs silently masking an
+# unmounted PIPEWORK partition; `mountpoint -q /work` was true the whole
+# time, so section 1's check above would not have caught it — a tmpfs
+# mount is still a mountpoint. LABEL=PIPEWORK is the declared device (same
+# label section 1 already searches for); confirm the live backing device
+# actually resolves to it. Read-only: this only reports, never remounts —
+# swapping a live /work out from under running writes is not something a
+# health check should do to itself.
+if mountpoint -q /work; then
+    _want=$(findfs LABEL=PIPEWORK 2>/dev/null)
+    _have=$(findmnt -n -o SOURCE --target /work 2>/dev/null)
+    if [ -z "$_want" ]; then
+        crit "/work is mounted but LABEL=PIPEWORK does not resolve to any device"
+    elif [ "$_have" != "$_want" ]; then
+        crit "/work is mounted from ${_have:-unknown}, not the declared device $_want (LABEL=PIPEWORK) — writes may not persist across reboot"
+    fi
+fi
+
 # ---- 2. how did the last run end? (marker readable only once /work is up)
 if dmesg 2>/dev/null | grep -qi 'EXT4-fs.*recover'; then
     down="power loss / hard reset (ext4 journal recovery ran)"
@@ -206,6 +225,29 @@ for sf in /work/pipebox/state/cohort-*.startfail; do
         warnn "cohort-watch ($sf): claude -p failed to start on the last tick — agent could not run (pipeOS#44)"
     fi
 done
+
+# ---- 5e. apk index signing trust — loud, not silent (pipe#650 item 10).
+# box0's /etc/apk/keys lacked the pipebox signing pubkey, so the index read
+# UNTRUSTED and apk silently kept an old package version — no error, just a
+# quiet pin. Read-only on both paths, same as 5c: this observes, it does not
+# install a key (that is an operator/provisioning action, not a health-check
+# remediation).
+if [ -z "$(ls -A /etc/apk/keys 2>/dev/null)" ]; then
+    crit "no apk signing keys in /etc/apk/keys — index reads UNTRUSTED and apk silently falls back to whatever is already installed"
+else
+    akout=$(apk update 2>&1)
+    if echo "$akout" | grep -qi 'untrusted'; then
+        crit "apk index UNTRUSTED: $(echo "$akout" | grep -i untrusted | head -3 | tr '\n' '; ')"
+    fi
+fi
+
+# ---- 5f. default route present (pipe#650 item 12). Not a card field and not
+# remediated here — udhcpc has been seen to drop the default route on link
+# bounce (pipeOS#645) and the fix belongs in the base image/network config.
+# This just makes the symptom visible instead of a silently degraded box.
+if ! ip route show default 2>/dev/null | grep -q default; then
+    warnn "no default route — network reachability degraded (udhcpc route-drop, see pipeOS#645)"
+fi
 
 # ---- 6. known-good promotion: this apkovl booted and nothing is critical.
 # Warnings (e.g. a full-ish disk) do not block promotion — they don't make
