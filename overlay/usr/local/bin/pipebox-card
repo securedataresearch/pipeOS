@@ -72,6 +72,7 @@ read_card() {
             eval "v=\$$k"
             [ -n "$v" ] || die "--strict: card is missing $k"
         done
+        has_charter "$ROLE" || die "--strict: no role charter for ROLE=$ROLE"
     fi
 }
 
@@ -97,6 +98,97 @@ role_block() {
     esac
 }
 
+# Per-role charter (pipeOS#35). ROLE used to expand to an allow-block and a
+# token class and nothing else; what a role actually DOES lived as oral
+# tradition on the board, and every out-of-lane incident this week traces to
+# that gap. The charter is the varying block of an otherwise common mandate.
+#
+# This is prose the model obeys, so two rules govern edits: it states the lane
+# and the handoffs, and it does NOT restate a fence that is enforced elsewhere
+# as though the text were the enforcement. The charter says *why* the PAT
+# fence exists so a box stops mistaking enforcement for the definition.
+#
+# The text is the Foreman's draft on pipeOS#35 and is pending the owner's
+# blessing — the mandate is his document. Amending it is an edit to this
+# function alone; no caller changes.
+charter_block() {
+    case "$1" in
+        BUILD) cat <<'EOF'
+Your ROLE is **BUILD** — the write lane.
+
+- You author and land product code. Yours is the only PAT carrying Contents
+  write. Push over HTTPS so the credential is the thing being checked; never
+  reach for a side-channel remote.
+- You land other roles' completed work unchanged — `git am` or a byte-identical
+  transfer that preserves authorship. Their commit, your push.
+- You never merge your own PRs. Two TEST verdicts plus green CI, and the
+  Foreman merges.
+- Branch per issue. Fix with new commits. `--force-with-lease` only to remove
+  something that must not stay published, and disclose it in the same post.
+- You may decline work; you must not take it. Assignment comes from the
+  Foreman. The one standing exception is mechanical formatter output needed to
+  green a gate.
+EOF
+            ;;
+        TEST) cat <<'EOF'
+Your ROLE is **TEST** — the verification lane, doubled because verification is
+the scarce resource.
+
+- You produce verdicts: LGTM or CHANGES, with the defect named concretely.
+  Verify against an exact commit, say which SHA your verdict covers, and
+  re-verify after any rewrite.
+- Build the reproduction before the fix is written. A repro that discriminates
+  between competing fixes outranks one that merely fails.
+- Authoring conflicts you out of the verdict on your own work; the other TEST
+  box carries it. Reach your verdict independently — do not coordinate it.
+- You cannot push product code. That is your PAT, not a rule you are keeping,
+  and it is deliberate. Hand patches to BUILD or the Foreman with the scope
+  stated from `git status --short` — `git diff --stat` cannot see untracked
+  files, which is how stray files reach a PR.
+- State verification limits plainly: "diff-reviewed, not run-verified" when
+  execution was unavailable. Silence is never a pass.
+EOF
+            ;;
+        SHIP) cat <<'EOF'
+Your ROLE is **SHIP** — release, pipeline health, and specification.
+
+- You own CI and release-pipeline health: watch the gates, read the timing
+  rows, call the regressions.
+- You write the specs and design notes for work your read-only PAT bars you
+  from implementing. The spec is the deliverable; BUILD types it in.
+- Fixes you author route to BUILD or the Foreman to land. Never invent a
+  workaround remote.
+- You run the release verbs — `sync-media`, `save`, `verify` — when the
+  Foreman calls the update.
+EOF
+            ;;
+        *) cat <<'EOF'
+Your ROLE is **unset**. This box is unprovisioned: its card names no role, so
+nothing below has assigned you a lane.
+
+Take direction from nobody and author nothing. Answer questions in text, say
+plainly that you are unprovisioned, and ask for a card with a ROLE before
+doing any work. An unprovisioned box guessing at a lane is the failure this
+posture exists to prevent.
+EOF
+            ;;
+    esac
+    cat <<'EOF'
+
+When you cannot tell whether an action is in your lane, ask on the board
+instead of acting. "I would rather be told off for acting" was this week's
+failure shape; the charter exists so that neither happens.
+EOF
+}
+
+# True when $1 names a role this generator has a charter for. --strict refuses
+# to write a mandate whose charter would silently fall through to the
+# unprovisioned posture — a box told it has no lane when the card says BUILD is
+# worse than a hard failure at generation time.
+has_charter() {
+    case "$1" in BUILD|TEST|SHIP) return 0 ;; *) return 1 ;; esac
+}
+
 render() {
     tmpl="$1"
     [ -r "$tmpl" ] || die "template not readable: $tmpl"
@@ -107,14 +199,39 @@ s|@@FOREMAN_NICK@@|$FOREMAN_NICK|g
 s|@@COHORT_ID@@|$COHORT_ID|g
 s|@@GH_OWNER@@|$GH_OWNER|g
 s|@@CARD_SHA@@|$CARD_SHA|g"
-    if grep -q '@@ROLE_ALLOW@@' "$tmpl"; then
-        n=$(grep -n '@@ROLE_ALLOW@@' "$tmpl" | head -1 | cut -d: -f1)
-        head -n $((n - 1)) "$tmpl" | sed "$sedexpr"
-        role_block "$ROLE"
-        tail -n +$((n + 1)) "$tmpl" | sed "$sedexpr"
-    else
-        sed "$sedexpr" "$tmpl"
-    fi
+    # Block markers occupy a line of their own and expand to generated text.
+    # There are two now (#35 added the charter), so the head/tail split is a
+    # loop rather than a single special case — the old form handled exactly one
+    # marker and would have emitted the other verbatim into the model's own
+    # instructions.
+    #
+    # Every variable here is _r-prefixed. This function has no `local` (POSIX
+    # sh), so a plain name like `rc` is global and silently clobbers the
+    # caller's — cmd_verify accumulates its failures in `rc` and calls
+    # render_all halfway through, so a bare `rc` here turned a detected
+    # hand-edit back into a PASS. Fail-open, in the one function whose exit
+    # code is documented as a stable API.
+    _rcur=$(mktemp) || die "mktemp failed"
+    _rnxt=$(mktemp) || die "mktemp failed"
+    cat "$tmpl" > "$_rcur" || die "read failed: $tmpl"
+    for _rmark in @@ROLE_ALLOW@@ @@ROLE_CHARTER@@; do
+        while grep -q "^$_rmark\$" "$_rcur"; do
+            _rn=$(grep -n "^$_rmark\$" "$_rcur" | head -1 | cut -d: -f1)
+            {
+                head -n $((_rn - 1)) "$_rcur"
+                case "$_rmark" in
+                    @@ROLE_ALLOW@@)   role_block "$ROLE" ;;
+                    @@ROLE_CHARTER@@) charter_block "$ROLE" ;;
+                esac
+                tail -n +$((_rn + 1)) "$_rcur"
+            } > "$_rnxt" || die "render failed at $_rmark"
+            cat "$_rnxt" > "$_rcur" || die "render failed at $_rmark"
+        done
+    done
+    sed "$sedexpr" "$_rcur"
+    _rrc=$?
+    rm -f "$_rcur" "$_rnxt"
+    return $_rrc
 }
 
 tmpl_for() {
