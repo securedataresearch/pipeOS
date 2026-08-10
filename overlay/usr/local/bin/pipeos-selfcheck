@@ -180,6 +180,33 @@ if command -v pipebox-card >/dev/null 2>&1; then
     esac
 fi
 
+# ---- 5d. cohort-watch could-not-start vs nothing-to-do (pipeOS#44)
+#
+# `pipebox-cohort-watch` (cron, every 2 min) drops a timestamp in
+# cohort-*.startfail whenever `claude -p` fails to even start — rc 126/127
+# (exec error) or rc=1, which is what a shared session-pool exhaustion looks
+# like from here. That file is cleared on the next successful start. Its
+# presence is exactly the "agent could not run" condition that pipeOS#44
+# says must not look identical to "nothing to do": without it, an exhausted
+# session pool and a quiet board are indistinguishable from outside the box.
+#
+# Read-only observation on both paths — there is nothing to remediate here,
+# only to report; the fix is either the next cron tick succeeding on its own
+# (rc=1/126/127 already retry without advancing $SEEN) or a human addressing
+# the shared token. A stale startfail (older than 30 min, i.e. well past the
+# 15-min backoff pipebox-cohort-watch uses for rc=1) means it's not just a
+# single blip.
+for sf in /work/pipebox/state/cohort-*.startfail; do
+    [ -e "$sf" ] || continue
+    ts=$(cat "$sf" 2>/dev/null)
+    now=$(date -u +%s)
+    if [ -n "$ts" ] && [ "$((now - ts))" -ge 1800 ] 2>/dev/null; then
+        crit "cohort-watch ($sf): claude -p has failed to start for $(( (now - ts) / 60 ))min — agent could not run, not just idle (pipeOS#44)"
+    else
+        warnn "cohort-watch ($sf): claude -p failed to start on the last tick — agent could not run (pipeOS#44)"
+    fi
+done
+
 # ---- 6. known-good promotion: this apkovl booted and nothing is critical.
 # Warnings (e.g. a full-ish disk) do not block promotion — they don't make
 # the *state* bad, and blocking on them would freeze known-good forever.
