@@ -15,3 +15,9 @@ GH_OWNER=securedataresearch
 # Netboot key under #651 (machine MAC as surveyed 2026-08-09). Ignored by
 # the media path; identity rides the stick until netboot lands.
 MAC=8c:16:45:fa:84:33
+
+# pipe#650 items 7-8. TOOLCHAIN is what this box must be able to BUILD --
+# selfcheck compiles a real artifact per entry, not a version string.
+# REPOS is what it must have on disk, with the right origin.
+TOOLCHAIN=cargo,rustc
+REPOS=pipe,pipeOS
