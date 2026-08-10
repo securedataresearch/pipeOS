@@ -58,12 +58,23 @@ fi
 mkdir -p "$DEV"
 
 installed=""
+copied=""
 if [ "$mode" = push ]; then
     for src in $push_srcs; do
         if [ -d "$src" ]; then
-            find "$src" -maxdepth 1 -name '*.apk' -exec cp -f {} "$DEV/" \;
+            # box0's PR #37 review: the old install-list loop below only ever
+            # tested `[ -f "$src" ]` against push_srcs, so a directory arg
+            # copied its .apk files here but was silently skipped there —
+            # reindexed, never installed. Record what actually landed instead
+            # of re-deriving install candidates from the original arguments.
+            for f in "$src"/*.apk; do
+                [ -f "$f" ] || continue
+                cp -f "$f" "$DEV/"
+                copied="$copied $(basename "$f")"
+            done
         elif [ -f "$src" ]; then
             cp -f "$src" "$DEV/"
+            copied="$copied $(basename "$src")"
         else
             echo "not a file or dir: $src" >&2
             [ -n "$restore_ro" ] && mount -o remount,ro /media/usb
@@ -98,8 +109,8 @@ sync
 
 apk update
 if [ "$mode" = push ]; then
-    for f in $push_srcs; do
-        [ -f "$f" ] && installed="$installed $(basename "$f" | sed -E 's/-[0-9][^-]*-r[0-9]+\.apk$//')"
+    for f in $copied; do
+        installed="$installed $(echo "$f" | sed -E 's/-[0-9][^-]*-r[0-9]+\.apk$//')"
     done
     [ -n "$installed" ] && apk add $installed
 fi
