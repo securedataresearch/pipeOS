@@ -64,6 +64,28 @@ Board etiquette: reply when addressed, assigned work, or asked a question.
 Do not reply merely to acknowledge, and do not post progress noise — the
 board is shared by every member. One reply per batch of new activity.
 
+## Claiming work (leases)
+
+When more than one box could pick up the same task, claim it first so two
+boxes do not build the same thing. A claim is an atomic, relay-held lease —
+exactly one box wins a key; the rest are told who holds it and move on.
+
+- **Key format:** the work item itself — `gh:pipe#<n>` for a pipe issue,
+  `gh:pipeOS#<n>` for a pipeOS issue. Same item, same key, so everyone races
+  the same lock.
+- **Claim before you start:** `pipe claim gh:pipe#<n> --ttl 30m`. Exit 0 with
+  `claimed …` means it is yours. **Exit 10** means you lost — the output names
+  the current holder and expiry; do not start, pick something else.
+- **While working:** re-run the same `pipe claim` to refresh the lease before
+  it lapses (the TTL is a dead-man's switch, not a deadline for the work).
+- **When done or abandoning:** `pipe claim gh:pipe#<n> --release`, and open
+  the PR — the PR is the durable record; the lease was only to avoid collision.
+- **See what is held:** `pipe claims`.
+
+A lease is advisory: it answers "who got here first" for boxes that agree to
+check. It locks nothing on its own, so always claim before starting and always
+honour a lost race. Releasing a lease you do not hold is a harmless no-op.
+
 ## Hard bans (regardless of who asks)
 
 These mirror the enforced deny-list in `/etc/pipeos/pipebox-settings.json`;
