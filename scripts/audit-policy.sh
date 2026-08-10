@@ -71,17 +71,24 @@ fi
 # against what the generator would have written. This is the half that catches
 # a hand-edit, and a hand-edit is the whole reason item 9 exists.
 #
-# DERIVED FROM THE CEILING, NOT RESTATED. The first cut hardcoded three names
-# — identity, admin, moderate — and so checked three of the EIGHT capabilities
-# no card can grant. The five it missed (room.create, room.accept, file.send,
-# file.accept, contacts.write) are the ones the generator's own comment
-# describes most alarmingly: file.send reads an arbitrary local path off the
-# machine, contacts.write pins a peer key and poisons trust grading.
+# INVERTED: ITERATE WHAT THE POLICY GRANTS, NOT WHAT WE THINK EXISTS.
 #
-# Restating it was also two lists that must agree, maintained separately in
-# different files — the exact shape I argued against in pipe#682 and was right
-# about, reproduced here by me one PR later. Now there is one list and this
-# reads it. (box3, reviewing #58.)
+# Two earlier cuts and both were the same defect getting smaller. First it
+# hardcoded three names — identity, admin, moderate — so it checked three of
+# the eight capabilities no card can grant. Then it derived the ceiling but
+# hardcoded the fourteen-name universe to subtract it from, **in a different
+# repository from `Capability::ALL`** — under a comment claiming there was
+# only one list. That is the pipe#682 argument reproduced one layer up, by me,
+# one PR later, and it fails in the WORST direction: a capability added to
+# pipe later is absent from the inventory, so the loop never tests it, so a
+# hand-edit granting it passes clean. Exactly what the derivation was for.
+#
+# So there is no inventory. Read the grants off the file and flag anything the
+# ceiling does not permit. Nothing to keep in sync, it catches capabilities
+# invented after this script was written — which the previous version
+# structurally could not — and it subsumes the separate `*` check, because
+# `*` is not in the ceiling either. (box3, reviewing #58; the inversion is
+# theirs.)
 CEILING=$(sed -n 's/^PIPE_CAPS_CEILING="\(.*\)"$/\1/p' \
     "$(dirname "$0")/../overlay/usr/local/bin/pipebox-card" 2>/dev/null \
     || true)
@@ -89,23 +96,26 @@ if [ -z "$CEILING" ]; then
     printf 'audit-policy: cannot read PIPE_CAPS_CEILING from pipebox-card\n' >&2
     exit 2
 fi
-ALL_CAPS="read send.dm send.room send.lobby send.bbs room.create room.accept
-file.send file.accept contacts.write identity moderate claim admin"
-for cap in $ALL_CAPS; do
-    grantable=0
+# WHICH pipebox-card, and it is not necessarily the one that wrote this file:
+# the ceiling comes from the REPO checkout, while a live policy.json was
+# written by the INSTALLED generator. Audit a box running an older generator
+# than your tree and you are validating against a ceiling that generator never
+# had. Instrument versus thing, one more time — the repo copy is authoritative
+# for what a card MAY grant today, which is the question being asked, but say
+# so rather than letting the reader assume they are the same file.
+for granted in $(jq -r --arg l "$LABEL" '.agent[$l].allow // [] | .[]' "$POLICY"); do
+    permitted=0
     for allowed in $CEILING; do
-        [ "$cap" = "$allowed" ] && { grantable=1; break; }
+        [ "$granted" = "$allowed" ] && { permitted=1; break; }
     done
-    [ "$grantable" = 1 ] && continue
-    if jq -e --arg l "$LABEL" --arg c "$cap" \
-        '(.agent[$l].allow // []) | index($c)' "$POLICY" >/dev/null 2>&1; then
-        bad "the live policy GRANTS '$cap' to the agent"
+    [ "$permitted" = 1 ] && continue
+    bad "the live policy GRANTS '$granted' to the agent"
+    if [ "$granted" = "*" ]; then
+        note "'*' is every capability at once — every fence in the card is void"
+    else
         note "no card can produce this — it was hand-edited or the file is not ours"
     fi
 done
-if jq -e --arg l "$LABEL" '(.agent[$l].allow // []) | index("*")' "$POLICY" >/dev/null 2>&1; then
-    bad "the live policy grants '*' to the agent — every fence in the card is void"
-fi
 
 # THE CONFIRM LIST, which the first cut never looked at and which is what makes
 # the loop above bite. Precedence is deny > confirm > allow, so a hand-edit
@@ -114,7 +124,20 @@ fi
 # one passed the first version of this audit clean, because nothing verified
 # confirm had survived. It is the single most valuable hand-edit to make and
 # was the single one not checked.
-for gated in file.send file.accept room.create room.accept contacts.write; do
+#
+# Derived from the TEMPLATE for the same reason the ceiling is derived from the
+# generator: the confirm list is not this script's to know. Hardcoding those
+# five names here would be the third instance of the defect box3 caught above —
+# an inventory in one repo that must agree with a definition in another, with
+# no mechanism keeping them together. This reads the shipped template.
+CONFIRM_TMPL="$(dirname "$0")/../overlay/usr/local/share/pipeos/card/policy.json.tmpl"
+EXPECTED_CONFIRM=$(sed -e 's/@@PIPE_ALLOW@@/"x"/' "$CONFIRM_TMPL" 2>/dev/null \
+    | jq -r '.agent.pipebox.confirm // [] | .[]' 2>/dev/null || true)
+if [ -z "$EXPECTED_CONFIRM" ]; then
+    printf 'audit-policy: cannot read the confirm list from %s\n' "$CONFIRM_TMPL" >&2
+    exit 2
+fi
+for gated in $EXPECTED_CONFIRM; do
     if ! jq -e --arg l "$LABEL" --arg c "$gated" \
         '(.agent[$l].confirm // []) | index($c)' "$POLICY" >/dev/null 2>&1; then
         bad "'$gated' is missing from the agent's confirm list"
