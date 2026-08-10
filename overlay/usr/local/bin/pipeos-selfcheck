@@ -7,10 +7,17 @@
 # script fixes what it can, DMs the owner the verdict, and — only when
 # nothing is CRITICAL — promotes the canonical apkovl to known-good.
 
-# Only --boot (passed by the init.d hook) opts into the two effects that
-# matter beyond this box: DMing the owner and promoting the apkovl to
-# known-good. A bare hand-run only ever observes: prints the verdict, writes
-# and sends nothing. See pipeOS#13.
+# Only --boot (passed by the init.d hook) opts into changing anything. A bare
+# hand-run observes and prints: it writes no file, starts no service, installs
+# no package, touches neither /work nor the boot media, and sends no DM. Every
+# remediation it declined is reported as "would fix", so read-only does not
+# mean quiet. See pipeOS#13.
+#
+# Gating only the DM and the known-good promotion is not enough, which is what
+# the first pass at #13 did: the mount fixup, the state-dir mkdir, consuming
+# the clean-shutdown marker, the daemon starts and `apk fix` all ran before
+# that gate, so a hand-run still mutated the box. #13 asks for "safe to run any
+# time, by anyone, on any box", and that is the whole of it.
 BOOT=no
 case "$1" in
     --boot) BOOT=yes ;;
@@ -24,16 +31,21 @@ OVL=$MEDIA/pipeos.apkovl.tar.gz
 KNOWN_GOOD=$MEDIA/pipeos.known-good.tar.gz
 
 R=$(mktemp)
-ncrit=0; nfix=0; nwarn=0
+ncrit=0; nfix=0; nwarn=0; nwould=0
 crit()  { echo "CRITICAL: $*" >> "$R"; ncrit=$((ncrit+1)); }
 fixed() { echo "fixed: $*"    >> "$R"; nfix=$((nfix+1)); }
 warnn() { echo "warn: $*"     >> "$R"; nwarn=$((nwarn+1)); }
+# The hand-run counterpart to fixed(): names the remediation that was skipped
+# rather than performing it. An operator inspecting a sick box needs to know
+# what the boot path *would* have done — silence there reads as "nothing to
+# fix", which is the same wrong answer #13 is about.
+would() { echo "would fix: $*" >> "$R"; nwould=$((nwould+1)); }
 log()   { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG" 2>/dev/null; }
 
 # ---- 1. /work first — the marker and the log both live on it
 if mountpoint -q /work; then
     :
-else
+elif [ "$BOOT" = yes ]; then
     # poll: device enumeration can lag well past service start
     _i=0
     until dev=$(findfs LABEL=PIPEWORK 2>/dev/null); do
@@ -45,8 +57,16 @@ else
     else
         crit "/work not mounted and could not mount it (LABEL=PIPEWORK missing?)"
     fi
+else
+    # Still CRITICAL — an unmounted /work is the condition, not the mount
+    # attempt. The hand-run just reports it instead of correcting it, and
+    # does not spend 60s polling for a device it will not mount.
+    crit "/work not mounted"
+    would "mount LABEL=PIPEWORK on /work"
 fi
-mkdir -p /work/.pipeos /work/logs /work/pipebox/state 2>/dev/null
+# Creating the state dirs is a write, so it waits for --boot too. Everything
+# under them (LOG, FLAG) is written only on the boot path anyway.
+[ "$BOOT" = yes ] && mkdir -p /work/.pipeos /work/logs /work/pipebox/state 2>/dev/null
 
 # ---- 2. how did the last run end? (marker readable only once /work is up)
 if dmesg 2>/dev/null | grep -qi 'EXT4-fs.*recover'; then
@@ -56,12 +76,21 @@ elif [ -f "$MARKER" ]; then
 else
     down="unclean (no clean-shutdown marker; first boot on this scheme?)"
 fi
-rm -f "$MARKER" 2>/dev/null
+# Consuming the marker is what makes it mean "the *last* run"; a hand-run
+# that ate it would make the next boot report an unclean shutdown that never
+# happened. Boot-only, and not merely because it is a write.
+[ "$BOOT" = yes ] && rm -f "$MARKER" 2>/dev/null
 
 # ---- 3. daemons (remediate: start what should be running)
+# `status` observes; `start` mutates. Only the second waits for --boot, so a
+# hand-run still reports a down daemon — which is the thing an operator ran
+# this for.
 for svc in pipe-daemon pipebox-listener; do
     if rc-service "$svc" status >/dev/null 2>&1; then
         :
+    elif [ "$BOOT" != yes ]; then
+        crit "$svc down"
+        would "start $svc"
     elif rc-service "$svc" start >/dev/null 2>&1; then
         fixed "$svc was down; started it"
     else
@@ -71,8 +100,12 @@ done
 
 # ---- 4. will a reboot reproduce this state? (covers the incident: media
 # repo coherence, world resolution, all packages installed, apkovl readable)
+# `pipeos verify` only reads; `apk fix` installs, so it is the boot-only half.
 if vout=$(pipeos verify 2>&1); then
     :
+elif [ "$BOOT" != yes ]; then
+    crit "pipeos verify FAIL: $(echo "$vout" | grep '^FAIL' | head -3 | tr '\n' '; ')"
+    would "run apk fix to repair the boot path from the media repos"
 else
     apk fix >/dev/null 2>&1 && log "verify failed; ran apk fix"
     if vout=$(pipeos verify 2>&1); then
@@ -131,6 +164,7 @@ fi
 # ---- 7. compose the report
 verdict="all green"
 [ "$nwarn" -gt 0 ] && verdict="green with $nwarn warning(s)"
+[ "$nwould" -gt 0 ] && verdict="needs $nwould remediation(s) — none applied (hand-run)"
 [ "$nfix" -gt 0 ] && verdict="recovered ($nfix fix(es) applied)"
 [ "$ncrit" -gt 0 ] && verdict="DEGRADED — $ncrit critical"
 
@@ -144,7 +178,8 @@ apkovl promoted to known-good"
 [ "$skipped_promotion" = yes ] && msg="$msg
 apkovl promotion skipped (hand-run — rerun with --boot to apply it)"
 [ "$BOOT" != yes ] && msg="$msg
-hand-run: boot media untouched, owner not DMed"
+hand-run: nothing was changed — no writes, no services started, no packages
+installed, boot media untouched, owner not DMed. Rerun with --boot to apply."
 
 # ---- 7b. a hand-run only ever prints; the boot path also logs and DMs.
 echo "$msg"
