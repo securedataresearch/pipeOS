@@ -204,27 +204,34 @@ s|@@CARD_SHA@@|$CARD_SHA|g"
     # loop rather than a single special case — the old form handled exactly one
     # marker and would have emitted the other verbatim into the model's own
     # instructions.
-    cur=$(mktemp) || die "mktemp failed"
-    nxt=$(mktemp) || die "mktemp failed"
-    cat "$tmpl" > "$cur" || die "read failed: $tmpl"
-    for marker in @@ROLE_ALLOW@@ @@ROLE_CHARTER@@; do
-        while grep -q "^$marker\$" "$cur"; do
-            n=$(grep -n "^$marker\$" "$cur" | head -1 | cut -d: -f1)
+    #
+    # Every variable here is _r-prefixed. This function has no `local` (POSIX
+    # sh), so a plain name like `rc` is global and silently clobbers the
+    # caller's — cmd_verify accumulates its failures in `rc` and calls
+    # render_all halfway through, so a bare `rc` here turned a detected
+    # hand-edit back into a PASS. Fail-open, in the one function whose exit
+    # code is documented as a stable API.
+    _rcur=$(mktemp) || die "mktemp failed"
+    _rnxt=$(mktemp) || die "mktemp failed"
+    cat "$tmpl" > "$_rcur" || die "read failed: $tmpl"
+    for _rmark in @@ROLE_ALLOW@@ @@ROLE_CHARTER@@; do
+        while grep -q "^$_rmark\$" "$_rcur"; do
+            _rn=$(grep -n "^$_rmark\$" "$_rcur" | head -1 | cut -d: -f1)
             {
-                head -n $((n - 1)) "$cur"
-                case "$marker" in
+                head -n $((_rn - 1)) "$_rcur"
+                case "$_rmark" in
                     @@ROLE_ALLOW@@)   role_block "$ROLE" ;;
                     @@ROLE_CHARTER@@) charter_block "$ROLE" ;;
                 esac
-                tail -n +$((n + 1)) "$cur"
-            } > "$nxt" || die "render failed at $marker"
-            cat "$nxt" > "$cur" || die "render failed at $marker"
+                tail -n +$((_rn + 1)) "$_rcur"
+            } > "$_rnxt" || die "render failed at $_rmark"
+            cat "$_rnxt" > "$_rcur" || die "render failed at $_rmark"
         done
     done
-    sed "$sedexpr" "$cur"
-    rc=$?
-    rm -f "$cur" "$nxt"
-    return $rc
+    sed "$sedexpr" "$_rcur"
+    _rrc=$?
+    rm -f "$_rcur" "$_rnxt"
+    return $_rrc
 }
 
 tmpl_for() {
