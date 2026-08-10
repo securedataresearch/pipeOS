@@ -1,9 +1,12 @@
 {
+  "model": "opus",
+  "effortLevel": "medium",
   "permissions": {
     "defaultMode": "acceptEdits",
     "additionalDirectories": ["/work"],
     "allow": [
       "Read(/work/**)",
+      "Bash(sh -n *)",
       "Bash(git *)",
       "Bash(gh *)",
       "Bash(make *)",
