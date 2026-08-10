@@ -249,6 +249,79 @@ if ! ip route show default 2>/dev/null | grep -q default; then
     warnn "no default route — network reachability degraded (udhcpc route-drop, see pipeOS#645)"
 fi
 
+# ---- 5g. the declared toolchain actually BUILDS (pipe#650 item 7).
+#
+# The acceptance criterion names its own counter-example: `cargo --version`
+# answered fine on three boxes whose linker was broken, three times, so a
+# version string is not evidence and this check does not accept one. It
+# compiles a real artifact and looks for the artifact.
+#
+# Card-declared and skipped when empty: a TEST or SHIP box that compiles
+# nothing must not be told its missing toolchain is a fault. Read-only in the
+# sense that matters — it builds into a temp dir and removes it; it never
+# installs, and provisioning a missing toolchain is the generator's job.
+_tc_conf=/etc/pipeos/pipebox.conf
+[ -r "$_tc_conf" ] && . "$_tc_conf" 2>/dev/null
+if [ -n "${TOOLCHAIN:-}" ]; then
+    for _probe in $(echo "$TOOLCHAIN" | tr ',' ' '); do
+        case "$_probe" in
+            cargo|rustc)
+                if ! command -v "$_probe" >/dev/null 2>&1; then
+                    crit "card declares TOOLCHAIN=$_probe but $_probe is not on PATH"
+                    continue
+                fi
+                _tcd=$(mktemp -d) || continue
+                printf 'fn main() { println!("ok"); }\n' > "$_tcd/p.rs"
+                # rustc is the link step for both names: a broken linker fails
+                # here and answers a --version probe, which is the whole point.
+                if rustc -o "$_tcd/p" "$_tcd/p.rs" >"$_tcd/err" 2>&1 && [ -x "$_tcd/p" ]; then
+                    :
+                else
+                    crit "card declares TOOLCHAIN=$_probe and $_probe --version answers, but a real compile FAILS: $(head -2 "$_tcd/err" 2>/dev/null | tr '\n' ' ')"
+                fi
+                rm -rf "$_tcd"
+                ;;
+            *)
+                if ! command -v "$_probe" >/dev/null 2>&1; then
+                    crit "card declares TOOLCHAIN=$_probe but $_probe is not on PATH"
+                elif ! "$_probe" --version >/dev/null 2>&1; then
+                    crit "card declares TOOLCHAIN=$_probe but '$_probe --version' fails"
+                else
+                    # Named but with no build probe here: say so rather than
+                    # let a PATH hit read as a verified toolchain.
+                    warnn "card declares TOOLCHAIN=$_probe — present on PATH, but this check has no real-build probe for it, so it is NOT verified to compile"
+                fi
+                ;;
+        esac
+    done
+fi
+
+# ---- 5h. the declared repos are on disk and point where the card says
+# (pipe#650 item 8). box0 posted a claim against a branch in `pipe` on a box
+# with no `pipe` checkout at all; presence, git-ness and remote are each a
+# different way that goes wrong.
+#
+# Fetch reachability is deliberately a warn, not a crit: the network is not
+# this box's to guarantee and 5f already reports a missing route. A wrong
+# remote IS a crit — it means work would land somewhere nobody is looking.
+if [ -n "${REPOS:-}" ]; then
+    for _repo in $(echo "$REPOS" | tr ',' ' '); do
+        _rp=/work/repos/$_repo
+        if [ ! -d "$_rp" ]; then
+            crit "card declares REPOS=$_repo but $_rp does not exist — this box cannot work an issue in it"
+        elif [ ! -e "$_rp/.git" ]; then
+            crit "$_rp exists but is not a git repo"
+        else
+            _rem=$(git -C "$_rp" remote get-url origin 2>/dev/null)
+            if [ -z "$_rem" ]; then
+                crit "$_rp is a git repo with no 'origin' remote"
+            elif ! echo "$_rem" | grep -q "$_repo"; then
+                crit "$_rp origin is $_rem, which does not name $_repo — pushes would go somewhere unexpected"
+            fi
+        fi
+    done
+fi
+
 # ---- 6. known-good promotion: this apkovl booted and nothing is critical.
 # Warnings (e.g. a full-ish disk) do not block promotion — they don't make
 # the *state* bad, and blocking on them would freeze known-good forever.
