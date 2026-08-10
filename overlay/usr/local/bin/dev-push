@@ -76,6 +76,18 @@ else
     done
 fi
 
+# no nullglob in POSIX sh: with zero .apk files present (dev-push --remove
+# on the only package, or a first push from an empty/wrong source), the glob
+# below would pass through as the literal string "$DEV/*.apk", apk index
+# would fail to open it, and set -e would abort BEFORE the restore_ro remount
+# further down — leaving /media/usb stuck rw with no signal to the operator.
+# Guard explicitly instead.
+if ! ls "$DEV"/*.apk >/dev/null 2>&1; then
+    echo "no .apk files in $DEV; nothing to index" >&2
+    [ -n "$restore_ro" ] && mount -o remount,ro /media/usb
+    exit 1
+fi
+
 # bare abuild-sign, no -k: relies on PACKAGER_PRIVKEY in /root/.abuild/abuild.conf,
 # same as the chroot build (30-build-apks.sh) — keeps one signing convention
 # for the pipeos-format recipe instead of introducing a second one here.
