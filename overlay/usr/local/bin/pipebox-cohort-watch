@@ -129,14 +129,23 @@ resume_args="--session-id $sid"
 [ -f "$STATE/.cohort-started-$sid" ] && resume_args="--resume $sid"
 
 log "handling $(printf '%s\n' "$changed" | grep -c .) changed thread(s)${ANNOUNCE:+ (announce)}"
-if (cd /work/pipebox && timeout "$CLAUDE_TIMEOUT" claude -p "$prompt" \
+# Feed the prompt on STDIN, not as an argv string. A busy board thread can push
+# the prompt past Linux MAX_ARG_STRLEN (~128KB); as an argv it then fails execve
+# with E2BIG and the dispatch is silently dropped. claude -p reads the prompt
+# from stdin, which has no such limit.
+rc=0
+(cd /work/pipebox && printf '%s' "$prompt" | timeout "$CLAUDE_TIMEOUT" claude -p \
         --settings "$SETTINGS" $resume_args \
-        >> /work/logs/pipebox-cohort-claude.log 2>&1 9>&-); then
-    :
-else
-    log "claude exited nonzero (state still advanced to avoid a poison loop)"
-fi
+        >> /work/logs/pipebox-cohort-claude.log 2>&1 9>&-) || rc=$?
 touch "$STATE/.cohort-started-$sid"
 
-# advance state only after the batch has been handed off
-printf '%s\n' "$current" > "$SEEN"
+# Advance state only if the agent actually RAN. rc 126/127 means it never
+# started (exec error, missing binary) — do NOT advance, so the next tick
+# retries instead of eating the post. Any other outcome (0, agent error,
+# timeout=124) advances, preserving the original poison-loop guard.
+if [ "$rc" = 126 ] || [ "$rc" = 127 ]; then
+    log "claude failed to start (rc=$rc) — state NOT advanced, will retry next tick"
+else
+    [ "$rc" = 0 ] || log "claude exited nonzero (rc=$rc); advancing state to avoid a poison loop"
+    printf '%s\n' "$current" > "$SEEN"
+fi
