@@ -80,6 +80,21 @@ for rel in $OUTPUTS; do
 done
 [ "$drift" = 0 ] && ok "committed overlay matches the shipped card"
 
+# 4. the Foreman charter has exactly one text (#39).
+#
+# `docs/foreman.md` is the citable document; the copy beside the templates is
+# what ships and what the generator reads into every mandate. Two files, so
+# this gate is what makes them one text — without it the box-facing charter
+# could drift from the one Sam blessed and nothing would say so, which is
+# pipe#668's defect class aimed at the mandate itself.
+if cmp -s docs/foreman.md "$TMPLDIR/foreman.md"; then
+    ok "the Foreman charter ships exactly as docs/foreman.md says it does"
+else
+    bad "$TMPLDIR/foreman.md differs from docs/foreman.md"
+    say "      the mandate would teach a Foreman charter Sam did not bless"
+    say "      run: cp docs/foreman.md $TMPLDIR/foreman.md"
+fi
+
 if [ "$fails" = 0 ]; then
     say "check-cards: PASS"
 else

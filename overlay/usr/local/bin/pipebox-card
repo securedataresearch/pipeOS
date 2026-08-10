@@ -181,6 +181,37 @@ failure shape; the charter exists so that neither happens.
 EOF
 }
 
+# The Foreman charter (pipeOS#39), identical in every box's mandate whatever
+# its ROLE — that sameness is the point. Roles differ; who the Foreman is and
+# what it owes the fleet does not, and a box that learned the Foreman's duties
+# from a different text than its neighbour is the drift this closes.
+#
+# READ, NOT INLINED. The per-role charters above are heredocs because they have
+# no home outside this generator. The Foreman's does: `docs/foreman.md` is the
+# citable document Sam blessed, and a heredoc copy of it here would be a second
+# text that can silently disagree with the first — the exact defect class of
+# pipe#668. So the doc ships beside the templates and this function emits it.
+# `scripts/check-cards.sh` fails the build if the two copies ever differ.
+#
+# A missing file is fatal rather than an empty section: a mandate that simply
+# omits the Foreman's duties reads as complete and is not, which is the
+# fail-open shape `has_charter` was written to avoid.
+#
+# Headings are demoted one level. The doc is a standalone `#`-titled document;
+# the mandate is also `#`-titled, and pasting one inside the other would put a
+# second document title mid-file and lift the charter's sections above the
+# mandate's own. Mechanical, and it keeps the source single.
+foreman_block() {
+    _fsrc="$TMPL/foreman.md"
+    [ -r "$_fsrc" ] || die "foreman charter not readable: $_fsrc"
+    printf '%s\n' '## The Foreman charter'
+    printf '%s\n' ''
+    # Drop the doc's own title, demote what is left, then strip the blank line
+    # the title left behind — otherwise the heading above is followed by two.
+    sed -e '1{/^# /d;}' -e 's|^#|##|' "$_fsrc" | sed -e '/./,$!d' \
+        || die "render failed: $_fsrc"
+}
+
 # True when $1 names a role this generator has a charter for. --strict refuses
 # to write a mandate whose charter would silently fall through to the
 # unprovisioned posture — a box told it has no lane when the card says BUILD is
@@ -200,10 +231,10 @@ s|@@COHORT_ID@@|$COHORT_ID|g
 s|@@GH_OWNER@@|$GH_OWNER|g
 s|@@CARD_SHA@@|$CARD_SHA|g"
     # Block markers occupy a line of their own and expand to generated text.
-    # There are two now (#35 added the charter), so the head/tail split is a
-    # loop rather than a single special case — the old form handled exactly one
-    # marker and would have emitted the other verbatim into the model's own
-    # instructions.
+    # There are three now (#35 added the role charter, #39 the Foreman's), so
+    # the head/tail split is a loop rather than a single special case — the old
+    # form handled exactly one marker and would have emitted the others
+    # verbatim into the model's own instructions.
     #
     # Every variable here is _r-prefixed. This function has no `local` (POSIX
     # sh), so a plain name like `rc` is global and silently clobbers the
@@ -214,7 +245,7 @@ s|@@CARD_SHA@@|$CARD_SHA|g"
     _rcur=$(mktemp) || die "mktemp failed"
     _rnxt=$(mktemp) || die "mktemp failed"
     cat "$tmpl" > "$_rcur" || die "read failed: $tmpl"
-    for _rmark in @@ROLE_ALLOW@@ @@ROLE_CHARTER@@; do
+    for _rmark in @@ROLE_ALLOW@@ @@ROLE_CHARTER@@ @@FOREMAN_CHARTER@@; do
         while grep -q "^$_rmark\$" "$_rcur"; do
             _rn=$(grep -n "^$_rmark\$" "$_rcur" | head -1 | cut -d: -f1)
             {
@@ -222,6 +253,7 @@ s|@@CARD_SHA@@|$CARD_SHA|g"
                 case "$_rmark" in
                     @@ROLE_ALLOW@@)   role_block "$ROLE" ;;
                     @@ROLE_CHARTER@@) charter_block "$ROLE" ;;
+                    @@FOREMAN_CHARTER@@) foreman_block ;;
                 esac
                 tail -n +$((_rn + 1)) "$_rcur"
             } > "$_rnxt" || die "render failed at $_rmark"
