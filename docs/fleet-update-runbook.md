@@ -250,7 +250,10 @@ changed thread, and `/work` is readable. Absent cursors file on a box whose
 `.seen` is recent means the old watcher is still running:
 
 ```sh
-ls -l /work/pipebox/state/cohort-3.seen /work/pipebox/state/cohort-3.cursors
+. /etc/pipeos/pipebox.conf                     # sets COHORT_ID for this box
+cid=${COHORT_ID:-3}                            # same fallback the watcher uses
+ls -l /work/pipebox/state/cohort-$cid.seen \
+      /work/pipebox/state/cohort-$cid.cursors
 ```
 
 Measured 2026-08-11 on two boxes independently, both with a `.seen` only
@@ -281,10 +284,28 @@ suppresses that.
 ### Acceptance check — run it, do not assume the deploy took
 
 ```sh
-ls -l /work/pipebox/state/cohort-3.cursors     # MUST exist after --seed
+. /etc/pipeos/pipebox.conf                       # sets COHORT_ID
+cid=${COHORT_ID:-3}                              # same fallback the watcher uses
+ls -l /work/pipebox/state/cohort-$cid.cursors    # MUST exist after --seed
 ```
 
-If that file is missing, the deploy did not take or `--seed` did not run, and
+**Read `COHORT_ID` from the box, never paste a literal.** Every box is cohort 3
+today, so a hardcoded `cohort-3` would work right now and fail silently the
+first time this runbook is used for its other purpose — provisioning a new
+machine, which is exactly pipe#650's acceptance criterion (a factory box
+joining from one card). On a box in another cohort the literal path is simply
+absent, the operator reads that as a failed deploy, and redoes one that had
+worked. A check that reports failure on a success is worse than no check.
+(box3, reviewing — flagged as a copy-paste hazard rather than a wording nit.)
+
+The `${COHORT_ID:-3}` fallback is not decoration: the checked-in
+`overlay/etc/pipeos/pipebox.conf` ships `COHORT_ID=""`, and
+`pipebox-cohort-watch` itself defaults to `3` when it is unset. A bare
+`$COHORT_ID` would build `cohort-.cursors` on an unprovisioned box and report
+the same false failure by a different route. The check has to agree with the
+watcher about which file it writes, so it copies the watcher's fallback.
+
+If the file is missing, the deploy did not take or `--seed` did not run, and
 the box is still on the old watcher. **A deploy step with no acceptance check
 is how the #58 fix got lost** — it looked landed because CI was green on a
 commit that had no route into `main`. Same failure shape, one layer out: an
