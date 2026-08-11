@@ -199,11 +199,34 @@ free=$(df -k "$MEDIA" 2>/dev/null | awk 'NR==2{printf "%d", $4/1024}')
 # onto /work so transcripts never reach the apkovl; lbu.list also excludes it
 # defensively, but an unmigrated box should say so rather than silently bloat.
 # A DANGLING link is worse than no link: agent memory is then unreachable.
+#
+# THE ABSENT CASE IS THE ONE THAT MATTERS AT BOOT, and it used to fall through
+# both arms in silence (pipeOS#80). On an unmigrated box `projects` is a real
+# directory, and lbu.list keeps it OUT of the apkovl — the `+root/.claude/
+# projects` include is self-limiting (lbu's `_gen_filelist` re-adds a `+` path
+# only when it is a symlink or a plain file) and the `-` line excludes the
+# tree. So at boot the path does not exist at all: not a symlink, not a
+# directory, and neither arm above fires. `claude` then creates it as a real
+# directory on its first run, long after this check has already passed.
+#
+# That made this check structurally blind on exactly the boxes it exists to
+# find. box3 booted 2026-08-10 20:28 and logged "all green" — the verdict is
+# only "all green" when nwarn is 0 — while `/root/.claude/projects` was a real
+# tmpfs directory the whole time. Three of four boxes are in that state.
+#
+# Absence is a clean signal precisely BECAUSE of the include above: on a
+# migrated box the symlink itself rides in the apkovl and is restored, so it
+# exists at boot. Absent here therefore means unmigrated, not "too early".
 if [ -L /root/.claude/projects ]; then
     [ -d /root/.claude/projects/ ] || \
         crit "/root/.claude/projects symlink target missing — agent memory unreachable"
 elif [ -d /root/.claude/projects ]; then
     warnn "/root/.claude/projects is a real directory, not a symlink onto /work — transcripts land in the apkovl (migrate copy-first: link-first destroys agent memory)"
+elif [ -d /root/.claude ]; then
+    # Guarded on /root/.claude existing so a box with no agent installed at
+    # all stays quiet — this is about an agent box that is unmigrated, not
+    # about every machine that has never run claude.
+    warnn "/root/.claude/projects does not exist at boot — on a migrated box the symlink is restored from the apkovl, so its absence means this box is UNMIGRATED: claude will create a real directory on tmpfs and every transcript and memory file will die at the next reboot (pipeOS#80)"
 fi
 
 # ---- 5c. does this box still match its own model card? (pipe#650)
