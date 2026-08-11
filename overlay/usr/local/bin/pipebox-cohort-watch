@@ -76,8 +76,12 @@ ANNOUNCE=""
 # Used at install time so a box does not "wake up" to a year of backlog.
 if [ "$1" = "--seed" ]; then
     seed_board=$(pipe cohorts board "$COHORT_ID" -o json 2>/dev/null)
+    # Same (id, reply_count, last_reply_ts) triple the live path keys on — see
+    # the pipeOS#64 note there. Seeding the two-field form would make every
+    # thread look changed on the first real tick.
     printf '%s' "$seed_board" \
-        | jq -r '.threads[] | "\(.id) \(.reply_count)"' > "$SEEN" 2>/dev/null
+        | jq -r '.threads[] | "\(.id) \(.reply_count) \(.last_reply_ts)"' \
+        > "$SEEN" 2>/dev/null
     # Seed the reply cursors too, or seeding is only half done: $SEEN would
     # suppress the wake until a thread moved, and then the missing cursor would
     # read as "first sighting" and deliver the whole backlog anyway — exactly
@@ -97,14 +101,45 @@ if [ -z "$board" ]; then
     exit 1
 fi
 
-current=$(printf '%s' "$board" | jq -r '.threads[] | "\(.id) \(.reply_count)"' 2>/dev/null)
+current=$(printf '%s' "$board" \
+    | jq -r '.threads[] | "\(.id) \(.reply_count) \(.last_reply_ts)"' 2>/dev/null)
 [ -n "$current" ] || { log "board $COHORT_ID has no threads"; exit 0; }
 
 touch "$SEEN"
 
-# A thread is "new to us" if its exact (id, reply_count) pair is not in state.
-# reply_count in the key is what makes a reply to an already-seen thread count
-# as news — matching on id alone would go deaf after the first sighting.
+# A thread is "new to us" if its exact (id, reply_count, last_reply_ts) triple
+# is not in state. reply_count is what makes a reply to an already-seen thread
+# count as news — matching on id alone would go deaf after the first sighting.
+#
+# last_reply_ts IS IN THE KEY BECAUSE reply_count STOPS MOVING (pipeOS#64).
+# pipe-relay-core caps a thread's replies:
+#
+#   BBS_REPLY_CAP = 100
+#   replies.push(r); if replies.len() > CAP { remove(min_by_key(pot, ts)) }
+#   reply_count = replies.len()        <- the wire field, PINNED at 100
+#
+# So on a capped thread every further reply leaves reply_count at exactly 100.
+# Keyed on (id, reply_count) alone the triple never changes, the thread never
+# registers as changed, and THE BOX GOES PERMANENTLY DEAF TO IT. Not a missed
+# tick — it never recovers, and the reply cursor cannot rescue it because the
+# cursor is only consulted for threads that already registered as changed.
+#
+# Measured on this board, not theorised: thread 71 sits at exactly 100 right
+# now, and thread 75 — the active dispatch thread — was at 48 and climbing when
+# this was written. box0 raised the eviction gap as "theoretical"; the ring is
+# real, it is 100, and one thread is already sitting on it.
+#
+# last_reply_ts is set on every reply (bbs.rs, `thread.last_reply_ts = ts`) and
+# ships in the board listing, so it costs no extra fetch and keeps moving after
+# the count stops. Both fields are kept: a moderation delete can change the
+# count without a new reply, and a new reply changes the ts, so the pair covers
+# each other's blind spot.
+#
+# RESIDUAL, stated rather than left to be found: ts is whole seconds. Two
+# replies to the SAME capped thread within one second still collapse to an
+# identical triple and the later one waits for the next reply. That window is
+# one second wide instead of forever, and the cursor delivers the backlog once
+# anything moves.
 changed=$(printf '%s\n' "$current" | while IFS= read -r line; do
     [ -n "$line" ] || continue
     grep -qxF "$line" "$SEEN" || printf '%s\n' "$line"
