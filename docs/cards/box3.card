@@ -6,7 +6,7 @@
 # scarce resource, so TEST is the doubled role.
 
 NICK=box3
-ROLE=TEST
+ROLE=BUILD
 OWNER_NICK=sam
 FOREMAN_NICK=shrek
 COHORT_ID=3
