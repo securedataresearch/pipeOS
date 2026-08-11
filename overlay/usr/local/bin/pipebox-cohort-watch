@@ -436,7 +436,28 @@ if [ -z "$detail" ] && [ -z "$ANNOUNCE" ]; then
         exit 0
     fi
     if [ "$holds_claim" != yes ]; then
-        log "board moved but no unseen replies — not waking the agent, state advanced"
+        # UNKNOWN IS NOT NO, AND THIS PATH USED TO SAY IT WAS (box0, #77).
+        # nick_unknown=yes forces holds_claim=no — the block that could set it
+        # never runs without a nick — so a misconfigured box took the ordinary
+        # skip and logged the line a HEALTHY skip logs. The queue wake was
+        # dead and the log said everything was fine: #67/#71's
+        # misconfiguration-hiding-as-normal-operation, one gate over from
+        # where I had just caught it in the spec.
+        #
+        # NOT FIXED BY WAKING, deliberately, and this is where I depart from
+        # the "identity unknown -> wake" line in the #50 block below. There it
+        # is right: something was posted, and a box that cannot tell whether
+        # it was addressed should read it. HERE there is no news and no
+        # knowable queue, so waking buys the agent nothing — and this path
+        # runs on EVERY quiet tick, so waking would mint a session every two
+        # minutes forever. That is a wake storm, which is the disease #50
+        # exists to cure. The defect box0 found is the LOG, and the log is
+        # what gets fixed.
+        if [ "$nick_unknown" = yes ]; then
+            log "no unseen replies, and CANNOT DETERMINE NICK — so whether this box holds a claim is UNKNOWN, not no. Not waking (there is nothing to act on), state advanced. The pipeOS#43 queue wake cannot run until the nick resolves."
+        else
+            log "board moved but no unseen replies — not waking the agent, state advanced"
+        fi
         advance_state
         exit 0
     fi
@@ -450,12 +471,20 @@ fi
 # WHICH WAY THIS FAILS IS CHOSEN, not inherited. A false wake costs one
 # session; a false skip costs a missed dispatch, and a box that never learns it
 # was addressed cannot be told so by the same channel that failed. So every
-# ambiguity below resolves toward WAKING:
+# ambiguity HERE — on a tick that HAS news — resolves toward WAKING:
 #
 #   - identity unknown          -> wake, and say the predicate could not run
 #   - claim held                -> wake (that is #43's arm, above and here)
 #   - --announce                -> wake (an operator asked)
 #   - anything matched          -> wake
+#
+# THE SCOPE OF THAT LIST IS THIS GATE ONLY, and the qualifier is load-bearing
+# rather than pedantic: the no-news path above reaches the opposite conclusion
+# on the same input, because there the alternative is a session every two
+# minutes forever with nothing to act on. An earlier draft of this comment said
+# "every ambiguity below" without the "has news" clause, which described the
+# no-news path wrongly — a comment promising behaviour the code does not have,
+# which is the defect this file has been corrected for four times now.
 #
 # It is the opposite direction from pipeos-gc's claim gate, where an unreadable
 # answer means SKIP because a wrong reclaim destroys a build cache. Same
