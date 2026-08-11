@@ -215,8 +215,99 @@ changed=$(printf '%s\n' "$current" | while IFS= read -r line; do
     grep -qxF "$line" "$SEEN" || printf '%s\n' "$line"
 done)
 
+# pipeOS#43's OTHER half, and the one main never had (#79).
+#
+# The queue-wake arm further down fires only when the board MOVED but nothing
+# was deliverable. This exit is the truly-quiet path — no changed threads at
+# all — and it returns unconditionally, without ever asking whether this box
+# holds work. So on a silent board a claim-holder still never wakes, which is
+# #43's report verbatim: "boxes idle between wakes while holding non-empty
+# queues". A silent board is exactly when that happens.
+#
+# WHY THIS IS NOT THE WAKE STORM THE #43 ARM REFUSES. That arm declines to
+# wake a no-claim box because it "runs on EVERY quiet tick, so waking would
+# mint a session every two minutes forever". Correct, and the stamp is what
+# defeats it: at most one wake per `WORK_HEARTBEAT` seconds per box, and only
+# when a cheap shell probe finds something to act on. Worst case on a totally
+# idle fleet is one session per box per half hour, not one per tick.
+#
+# TRANSCRIBED FROM A RUNNING BOX, NOT DESIGNED HERE (#79). box1's deployed
+# watcher carries this and `main` does not; the deployed copy is `0fec41d`
+# plus this, the feed slice, and the standing-orders task text. Landing it
+# means a future overlay deploy is a fast-forward instead of silently
+# removing a behaviour four boxes already depend on.
+WORK_HEARTBEAT=${WORK_HEARTBEAT:-1800}
+HB_STAMP="$STATE/.last-workcheck"
+
+# Is there anything worth minting a session for, on a board that said nothing?
+#
+# Probes only — no agent, no claude, four `gh`/`pipe` calls.
+#
+# WHAT A FAILED PROBE DOES, measured rather than asserted. An earlier draft of
+# this comment claimed a network blip "produces a skipped heartbeat rather
+# than a spurious wake". IT DOES THE OPPOSITE, and the probe harness caught
+# it: every call failing leaves `_hb_held` at 0, which is the idle disjunct,
+# which wakes. The comment was describing an intention the code did not have —
+# the defect this file has been corrected for repeatedly, written by the same
+# hand that keeps naming it.
+#
+# The BEHAVIOUR is kept and the comment is what changes. A box whose `gh` and
+# `pipe` have both stopped answering has something worth an agent looking at,
+# and the stamp bounds the cost at one session per interval. But it must be
+# LEGIBLE: `gh` prints `0` when there are genuinely no PRs and prints nothing
+# when it fails, so the two are distinguishable and the log says which.
+# RESOLVES ITS OWN NICK, and that is not tidiness. `$_nick` is assigned ~260
+# lines below this, so reading it here would read an EMPTY string: the claim
+# grep would match nothing, `_hb_held` would be 0, the idle disjunct would be
+# permanently true and the heartbeat would fire every interval regardless of
+# held work. That is byte-for-byte the defect found in #50's own spec — a
+# variable read above its assignment in this same file, with no `set -u` to
+# catch it — and the first draft of this function had it.
+work_pending() {
+    _hb_pr=$(gh pr list -R securedataresearch/pipe --state open --json number -q "length" 2>/dev/null)
+    _hb_pr2=$(gh pr list -R securedataresearch/pipeOS --state open --json number -q "length" 2>/dev/null)
+    _hb_me="${NICK:-}"
+    [ -n "$_hb_me" ] || _hb_me=$(pipe id -o json 2>/dev/null | jq -r '.nick // empty' 2>/dev/null)
+    if [ -n "$_hb_me" ]; then
+        _hb_held=$(pipe claims -o json 2>/dev/null | grep -c "\"holder\":\"${_hb_me}\"")
+    else
+        # Unknown nick: "how many claims do I hold" has no answer, and 0 is a
+        # different claim from "cannot tell" (box0, #77). Wake — bounded to
+        # once per interval, and a box that cannot name itself has a problem
+        # worth an agent looking at. This is the opposite call from the #43
+        # arm below, and the reason is the stamp: there, waking meant every
+        # tick forever; here it means twice an hour.
+        _hb_held=0
+        log "work-heartbeat: CANNOT DETERMINE NICK — held-claim count is unknown, not zero; waking so it gets looked at"
+    fi
+    _hb_ready=$(gh project item-list 1 --owner securedataresearch --format json -L 100 2>/dev/null \
+        | grep -c '"name": "Ready"')
+    # Empty is not zero. `gh` prints `0` for "no open PRs" and nothing at all
+    # when it could not run, so a wake caused by both repos failing to answer
+    # says so rather than presenting itself as an ordinary idle-box wake.
+    if [ -z "$_hb_pr" ] && [ -z "$_hb_pr2" ]; then
+        log "work-heartbeat: BOTH PR PROBES RETURNED NOTHING (not '0') — gh may be failing on this box; waking so it gets looked at"
+    fi
+    # Wake if a PR might want a verdict, or this box is idle while Ready work
+    # exists. Holding a claim with no open PRs and no Ready cards is the one
+    # quiet state that needs nothing.
+    [ "${_hb_pr:-0}" != "0" ] || [ "${_hb_pr2:-0}" != "0" ] \
+        || [ "${_hb_held:-0}" = "0" ] || [ "${_hb_ready:-0}" != "0" ]
+}
+
+HEARTBEAT=""
 if [ -z "$changed" ] && [ -z "$ANNOUNCE" ]; then
-    exit 0
+    _hb_now=$(date -u +%s)
+    _hb_last=$(cat "$HB_STAMP" 2>/dev/null || echo 0)
+    [ $(( _hb_now - _hb_last )) -ge "$WORK_HEARTBEAT" ] || exit 0
+    # Stamp BEFORE deciding, not after. A probe that decides "nothing to do"
+    # and leaves the stamp alone would re-probe on the very next tick and
+    # every tick after — four `gh` calls every two minutes forever, which is
+    # the wake storm one layer down, made of API calls instead of sessions.
+    echo "$_hb_now" > "$HB_STAMP"
+    work_pending || exit 0
+    HEARTBEAT=1
+    log "work-heartbeat: PRs=${_hb_pr:-?}/${_hb_pr2:-?} held=${_hb_held:-?} ready=${_hb_ready:-?} — waking to drain"
 fi
 
 # Pull each changed thread and feed ONLY THE REPLIES THIS BOX HAS NOT SEEN.
@@ -453,7 +544,7 @@ _held_1line=$(printf '%s' "$_held" | tr '\n' ' ' | sed 's/ *$//')
 # "boxes idle between wakes while holding non-empty queues". The board was the
 # only thing that could start a session, so a box could only make progress when
 # somebody posted.
-if [ -z "$detail" ] && [ -z "$ANNOUNCE" ]; then
+if [ -z "$detail" ] && [ -z "$ANNOUNCE" ] && [ -z "$HEARTBEAT" ]; then
     # The incomplete check stays FIRST and unconditional. A failed fetch must
     # not advance state (#62), and that outranks waking to work a queue: the
     # queue will still be there on the next tick, whereas state advanced over
@@ -549,7 +640,14 @@ elif printf '%s' "$detail" \
     addressed=yes
 fi
 
-if [ "$addressed" = no ] && [ "$holds_claim" != yes ] && [ -z "$ANNOUNCE" ]; then
+# `$HEARTBEAT` is exempt, and not as a convenience. This gate asks "was this
+# box addressed by what was POSTED" — on a heartbeat wake nothing was posted,
+# so `addressed` is not false, it is undefined, and the gate would answer a
+# question it never evaluated. The heartbeat already ran its own predicate
+# (`work_pending`) against a different signal entirely: open PRs, held claims,
+# Ready cards. Two gates, two questions; passing the second is not grounds to
+# fail the first.
+if [ "$addressed" = no ] && [ "$holds_claim" != yes ] && [ -z "$ANNOUNCE" ] && [ -z "$HEARTBEAT" ]; then
     log "no-op wake: nothing addressed to ${_nick:-this box}${ROLE:+/$ROLE} and no claim held — skipping, state advanced"
     advance_state
     exit 0
@@ -729,6 +827,20 @@ welcome thread: which box you are, that you can read and write here, and your
 ACTUAL pump status — run the checks yourself (\`rc-service pipebox-listener
 status\`, \`pipe status\`). Note the shipped pump is --only me, so board posts
 reach you via this cron watcher and not via the daemon."
+elif [ -n "$HEARTBEAT" ]; then
+    # The heartbeat wake states ITS OWN cause, and it is not the queue wake's.
+    # A box can arrive here holding nothing at all — that is one of the
+    # conditions that woke it — so borrowing the arm below would tell it "you
+    # hold [$_held_1line]" with an empty list, asserting a cause that did not
+    # happen. Same defect this file has been corrected for three times, one
+    # arm over.
+    task="NO NEW BOARD ACTIVITY THIS WAKE, and nothing was posted. The work
+heartbeat woke you: open PRs ${_hb_pr:-?}/${_hb_pr2:-?}, claims held by you
+${_hb_held:-?}, Ready cards ${_hb_ready:-?}. Act on whichever of those is
+non-trivial — a green PR you did not author and have not verdicted, or an
+unclaimed card in your lane if you hold nothing. Work it in this session, to
+completion or to a real blocker. Do not post to the board to say you are
+starting."
 elif [ -z "$detail" ]; then
     # pipeOS#43's wake. Saying "handle the new board activity above" with
     # nothing above it is a prompt asserting a cause it did not observe — the
@@ -739,7 +851,36 @@ elif [ -z "$detail" ]; then
 posted. Continue that work now, to completion or to a real blocker. Do not
 post to the board to say you are working; the claim already says so."
 else
-    task="Handle the new board activity above per the mandate."
+    # STANDING ORDERS, transcribed from the deployed watcher (#79) — the
+    # second thing box1's live copy has that `main` does not, and the one that
+    # actually drives a box to pick up work between dispatches.
+    #
+    # EDITED, AND THE EDIT IS FLAGGED RATHER THAN SILENT. The live text opens
+    # by restating the mandate's own "reply only if addressed / do not reply
+    # merely to acknowledge". That is exactly the paraphrase-beside-the-
+    # authority this block's header refuses, so those two sentences are
+    # dropped and the mandate keeps saying them alone. What is kept is the
+    # part the mandate does NOT contain: go look for a verdict to give and a
+    # card to claim.
+    #
+    # That drop is a judgement call by a box about text four boxes read as
+    # instructions, so it wants @shrek's eye rather than mine. Everything
+    # below is otherwise verbatim from the running script.
+    task="Handle the new board activity above per the mandate. THEN, ALWAYS,
+whether or not you replied:
+1. Run: gh pr list -R securedataresearch/pipe --state open (and the same for
+   securedataresearch/pipeOS). If a PR is green, lacks your verdict, and you
+   are not its author, review it and post your verdict NOW (R18: two
+   non-author technical readers; crypto/entitlement needs box0 + one).
+2. If you hold no claim (pipe claims -o json), find an issue labelled for
+   your lane that no box is already claiming, and take it:
+   BUILD -> lane:build, SHIP -> lane:ship, TEST -> lane:test.
+   gh issue list -R securedataresearch/pipe --label lane:build --state open
+   (and the same for pipeOS). Cross-check pipe claims so two boxes do not
+   take the same key. Claim it (pipe claim \"gh:<repo>#<n>\") and START THE
+   WORK in this session — to completion or a real blocker.
+An empty claim table while Ready cards exist is a fleet failure (Sam).
+Doing the work beats reporting about it."
 fi
 
 # The activity block is omitted entirely on a queue wake rather than printed
