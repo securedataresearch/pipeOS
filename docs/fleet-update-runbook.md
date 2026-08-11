@@ -230,3 +230,91 @@ change to the build, which wants its own issue and its own review.
 | 1 | repeatable documented update path | A + B | this document; A1 needs a merge, B needs a build host |
 | 2 | fleet at current release, `pipe --version` | B | **not verifiable by any box** — sandbox refuses the command |
 | 3 | survives a reboot | **B only** | A alone reverts at boot; tmpfs root |
+
+## Deploying the cohort-watch fix — run `--seed`, or the first wake is the old cost
+
+Added by **box1 (BUILD)** after pipeOS#61/#62. Same shape as everything above:
+the boxes prepared it, only the Foreman or the owner can apply it.
+
+pipeOS#62 changed `pipebox-cohort-watch` to feed the agent only *unseen*
+replies instead of the whole changed thread — measured at 207859 bytes versus
+7050 for one new reply on thread 74, ~96%, per box per wake. **Merging it to
+this repo did not deploy it.** The running script is the installed overlay
+copy, so every box keeps paying the old cost until the overlay is installed.
+
+**A box cannot read the installed script, but it CAN tell whether the new one
+has run.** Those are different questions and only the first is fenced: the
+agent sandbox refuses `/usr/local/bin/pipebox-cohort-watch`, but the new code
+writes `/work/pipebox/state/cohort-<id>.cursors` on every tick that has a
+changed thread, and `/work` is readable. Absent cursors file on a box whose
+`.seen` is recent means the old watcher is still running:
+
+```sh
+. /etc/pipeos/pipebox.conf                     # sets COHORT_ID for this box
+cid=${COHORT_ID:-3}                            # same fallback the watcher uses
+ls -l /work/pipebox/state/cohort-$cid.seen \
+      /work/pipebox/state/cohort-$cid.cursors
+```
+
+Measured 2026-08-11 on two boxes independently, both with a `.seen` only
+minutes old and **no cursors file at all** — box3 (who found this check) and
+box1. Both were still on the old whole-thread watcher, observed rather than
+assumed.
+
+Do not write this off as unknowable. An earlier draft of this section called
+"is the fix live" unanswerable from inside a box, which was wrong in the
+direction that matters: it discouraged the check that works, and "unknowable,
+therefore accept the risk" is the fail-open shape §5 exists to name.
+
+**After installing the overlay, run this once per box, before the next cron
+tick:**
+
+```sh
+pipebox-cohort-watch --seed
+```
+
+Why it is not optional. The fix keeps per-thread reply cursors in a new file,
+`/work/pipebox/state/cohort-<id>.cursors`. A fresh install has no such file,
+while `$SEEN` survives (it lives on `/work`, not in the apkovl). So the first
+thread that changes after the deploy has no cursor, reads as a first sighting,
+and is delivered **whole** — one full-thread wake per box, which is the exact
+cost the change exists to remove. `--seed` writes both files together and
+suppresses that.
+
+### Acceptance check — run it, do not assume the deploy took
+
+```sh
+. /etc/pipeos/pipebox.conf                       # sets COHORT_ID
+cid=${COHORT_ID:-3}                              # same fallback the watcher uses
+ls -l /work/pipebox/state/cohort-$cid.cursors    # MUST exist after --seed
+```
+
+**Read `COHORT_ID` from the box, never paste a literal.** Every box is cohort 3
+today, so a hardcoded `cohort-3` would work right now and fail silently the
+first time this runbook is used for its other purpose — provisioning a new
+machine, which is exactly pipe#650's acceptance criterion (a factory box
+joining from one card). On a box in another cohort the literal path is simply
+absent, the operator reads that as a failed deploy, and redoes one that had
+worked. A check that reports failure on a success is worse than no check.
+(box3, reviewing — flagged as a copy-paste hazard rather than a wording nit.)
+
+The `${COHORT_ID:-3}` fallback is not decoration: the checked-in
+`overlay/etc/pipeos/pipebox.conf` ships `COHORT_ID=""`, and
+`pipebox-cohort-watch` itself defaults to `3` when it is unset. A bare
+`$COHORT_ID` would build `cohort-.cursors` on an unprovisioned box and report
+the same false failure by a different route. The check has to agree with the
+watcher about which file it writes, so it copies the watcher's fallback.
+
+If the file is missing, the deploy did not take or `--seed` did not run, and
+the box is still on the old watcher. **A deploy step with no acceptance check
+is how the #58 fix got lost** — it looked landed because CI was green on a
+commit that had no route into `main`. Same failure shape, one layer out: an
+install looks done because the merge is done.
+
+Reading a *wake* instead is slower and more ambiguous, and worth stating so
+nobody substitutes it for the check above: a wake that delivers a whole thread
+right after a deploy does **not** prove the fix is absent, because an unseeded
+first sighting looks identical. Only a *later* wake delivering just the new
+replies is conclusive. (box3 proposed the wake test first, then found the
+cursors check — faster and unambiguous — and noted it only exists because the
+file's location is documented here.)
