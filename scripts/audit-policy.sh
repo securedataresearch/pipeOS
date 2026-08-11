@@ -42,13 +42,6 @@ ok()   { printf 'ok    %s\n' "$*"; }
 bad()  { printf 'FAIL  %s\n' "$*"; rc=1; }
 note() { printf '      %s\n' "$*"; }
 
-# One loop below runs as the RHS of a pipeline, which POSIX puts in a SUBSHELL —
-# so an `rc=1` set inside it dies with that subshell and the script would exit 0
-# having printed FAIL. A file is the only thing that crosses that boundary here.
-RC_MARK=$(mktemp) || { printf 'audit-policy: mktemp failed\n' >&2; exit 2; }
-rm -f "$RC_MARK"
-trap 'rm -f "$RC_MARK"' EXIT INT TERM
-
 command -v jq >/dev/null 2>&1 || { printf 'audit-policy: jq is required\n' >&2; exit 2; }
 
 [ -r "$CARD" ]   || { printf 'audit-policy: card not readable: %s\n' "$CARD" >&2; exit 2; }
@@ -130,25 +123,32 @@ fi
 # because the fix is then LOCAL to the thing that needed it — no global shell
 # option whose next reader has to work out what depends on it — and because
 # `read` does no splitting or globbing at all rather than disabling one of two.
-jq -r --arg l "$LABEL" '.agent[$l].allow // [] | .[]' "$POLICY" \
-| while IFS= read -r granted; do
+# FED BY A HERE-DOC, NOT A PIPE, so this loop runs in the CURRENT shell and
+# `bad` can just set rc the way it does everywhere else in this script.
+#
+# The previous cut piped jq into the loop, which POSIX runs in a subshell — so
+# `rc=1` died with it and a marker file carried the failure back out. box3
+# found the hole in that apparatus: if the marker WRITE fails, the audit prints
+# FAIL and EXITS 0. Narrow, but fail-open in a script whose entire contract is
+# its exit code, and it was machinery I added to work around a subshell I chose.
+# Their fix is better than patching it because it deletes the apparatus: no
+# mktemp, no trap, no marker, no window in which a write failure is silent.
+while IFS= read -r granted; do
     [ -n "$granted" ] || continue
     permitted=0
     for allowed in $CEILING; do
         [ "$granted" = "$allowed" ] && { permitted=1; break; }
     done
     [ "$permitted" = 1 ] && continue
-    printf 'FAIL  the live policy GRANTS %s to the agent\n' "'$granted'"
+    bad "the live policy GRANTS '$granted' to the agent"
     if [ "$granted" = "*" ]; then
-        printf "      '*' is every capability at once — every fence in the card is void\n"
+        note "'*' is every capability at once — every fence in the card is void"
     else
-        printf '      no card can produce this — it was hand-edited or the file is not ours\n'
+        note "no card can produce this — it was hand-edited or the file is not ours"
     fi
-    # A pipeline runs its RHS in a subshell, so `bad`'s rc=1 would be lost.
-    # The marker file carries the failure back out; checked below.
-    : > "$RC_MARK"
-done
-[ -e "$RC_MARK" ] && rc=1
+done <<EOF
+$(jq -r --arg l "$LABEL" '.agent[$l].allow // [] | .[]' "$POLICY")
+EOF
 
 # THE CONFIRM LIST, which the first cut never looked at and which is what makes
 # the loop above bite. Precedence is deny > confirm > allow, so a hand-edit
