@@ -171,6 +171,7 @@ fi
 # box2 case per the Foreman's own measurement: "26M with none") or no cargo
 # on PATH (a SHIP box may hold REPOS without ever having built them).
 did_any=no
+failed=no
 for _repo in $(printf '%s' "${REPOS:-}" | tr ',' ' '); do
     [ -n "$_repo" ] || continue
     rp="/work/repos/$_repo"
@@ -191,11 +192,32 @@ for _repo in $(printf '%s' "${REPOS:-}" | tr ',' ' '); do
         did_any=yes
     else
         log "cargo clean FAILED in $rp: $(printf '%s\n' "$out" | tail -3 | tr '\n' ' ')"
+        failed=yes
     fi
 done
 
 [ "$did_any" = yes ] || log "pass complete: nothing to reclaim (no target/ dirs on this box, or cargo not on PATH)"
 
-# Only a completed pass (claim-clear, tree-clean, ran to the end) advances
-# the clock. A pass that exited early above already returned before this.
+# Only a completed pass (claim-clear, tree-clean, ran to the end, nothing
+# failed) advances the clock. A pass that exited early above already returned
+# before this.
+#
+# A FAILED RECLAIM IS A SKIP, NOT A PASS (box0, reviewing pipeOS#66). The clock
+# used to advance even when a `cargo clean` returned nonzero, so one failing
+# repo waited out the whole interval — up to 24h here — instead of retrying on
+# the next hourly tick. That is inconsistent with every other "could not do the
+# work" path in this script: each of those declines to advance precisely so the
+# next tick retries rather than waiting out a window. This applies the same
+# rule to the one case that was getting a pass for having tried.
+#
+# The tradeoff, stated rather than discovered later: a PERSISTENTLY failing
+# repo now attempts a reclaim every hour and logs every hour. That is the right
+# direction — a box that cannot reclaim its disk should be noisy rather than
+# quietly deferring for a day at a time — and it is bounded at one attempt per
+# repo per hour. The successful repos in a mixed pass get cleaned again next
+# tick, which is close to free since they are already clean.
+if [ "$failed" = yes ]; then
+    log "not advancing the interval clock: a reclaim failed, retrying next hourly tick"
+    exit 0
+fi
 echo "$now" > "$STATE" 2>/dev/null
