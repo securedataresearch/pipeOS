@@ -42,6 +42,10 @@ set -u
 
 LOG=/work/logs/pipeos-gc.log
 STATE=/work/pipebox/state/gc-last-run
+# Repos whose last `cargo clean` failed. Named per repo, NOT a box-global
+# "something failed" flag — see the retry handling at the bottom for why that
+# distinction is the whole fix (pipeOS#66, box3).
+RETRY=/work/pipebox/state/gc-retry
 CONF=/etc/pipeos/pipebox.conf
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG" 2>/dev/null; }
@@ -52,7 +56,28 @@ interval=${GC_INTERVAL_HOURS:-24}
 mkdir -p "$(dirname "$STATE")" 2>/dev/null
 
 now=$(date -u +%s)
-if [ -f "$STATE" ]; then
+
+# RETRY MODE: some repo's reclaim failed last pass. Attempt ONLY those repos,
+# and do it on the next hourly tick rather than waiting out the interval.
+#
+# The healthy repos are deliberately left alone here. That is the correction
+# box3 found: a box-global "failed" flag pinning the clock made the WHOLE loop
+# re-run hourly, re-cleaning repos that had succeeded. `target/` is gitignored,
+# so a box that has just built has a clean git tree and a full cache — the
+# normal resting state of a box that compiles, not an edge case. Measured on
+# box1 while writing this: tree clean, /work/repos/pipe/target = 12.4G. Under
+# the global flag, one persistently failing repo meant rebuilding that hourly,
+# on the box already measured as the fleet's serial bottleneck. Before the fix
+# it was lost at most once per 24h, so the "fix" regressed the axis nobody was
+# watching while correcting the one they were.
+retry_repos=""
+if [ -s "$RETRY" ]; then
+    retry_repos=$(tr -s ' \n' ' ' < "$RETRY" 2>/dev/null)
+fi
+
+if [ -n "$retry_repos" ]; then
+    log "retry pass: only previously-failed repo(s) [$retry_repos]"
+elif [ -f "$STATE" ]; then
     last=$(cat "$STATE" 2>/dev/null)
     case "$last" in ''|*[!0-9]*) last=0 ;; esac
     elapsed_h=$(( (now - last) / 3600 ))
@@ -171,8 +196,15 @@ fi
 # box2 case per the Foreman's own measurement: "26M with none") or no cargo
 # on PATH (a SHIP box may hold REPOS without ever having built them).
 did_any=no
-failed=no
-for _repo in $(printf '%s' "${REPOS:-}" | tr ',' ' '); do
+still_failed=""
+# In a retry pass the work list is the failed repos only; otherwise it is the
+# card's REPOS. One list, chosen once, so the loop body stays the same.
+if [ -n "$retry_repos" ]; then
+    work_list="$retry_repos"
+else
+    work_list=$(printf '%s' "${REPOS:-}" | tr ',' ' ')
+fi
+for _repo in $work_list; do
     [ -n "$_repo" ] || continue
     rp="/work/repos/$_repo"
     [ -d "$rp/target" ] || continue
@@ -192,7 +224,7 @@ for _repo in $(printf '%s' "${REPOS:-}" | tr ',' ' '); do
         did_any=yes
     else
         log "cargo clean FAILED in $rp: $(printf '%s\n' "$out" | tail -3 | tr '\n' ' ')"
-        failed=yes
+        still_failed="$still_failed $_repo"
     fi
 done
 
@@ -207,17 +239,34 @@ done
 # repo waited out the whole interval — up to 24h here — instead of retrying on
 # the next hourly tick. That is inconsistent with every other "could not do the
 # work" path in this script: each of those declines to advance precisely so the
-# next tick retries rather than waiting out a window. This applies the same
-# rule to the one case that was getting a pass for having tried.
+# next tick retries rather than waiting out a window.
 #
-# The tradeoff, stated rather than discovered later: a PERSISTENTLY failing
-# repo now attempts a reclaim every hour and logs every hour. That is the right
-# direction — a box that cannot reclaim its disk should be noisy rather than
-# quietly deferring for a day at a time — and it is bounded at one attempt per
-# repo per hour. The successful repos in a mixed pass get cleaned again next
-# tick, which is close to free since they are already clean.
-if [ "$failed" = yes ]; then
-    log "not advancing the interval clock: a reclaim failed, retrying next hourly tick"
+# BUT THE RETRY IS PER REPO, NOT PER BOX, and that distinction is the whole
+# design (box3, reviewing the first cut of this fix). A box-global `failed`
+# flag pinning the clock re-ran the ENTIRE loop hourly, re-cleaning the repos
+# that had succeeded. My own comment claimed that was "close to free since they
+# are already clean". It is false the moment the box rebuilds: `target/` is
+# gitignored, so a box that has just built has a CLEAN git tree and a full
+# cache, which is the resting state of any box that compiles rather than an
+# edge case. Measured on box1 while writing this — tree clean,
+# /work/repos/pipe/target = 12.4G. One persistently failing repo would have
+# meant rebuilding that every hour, on the box already measured as the fleet's
+# serial bottleneck, where the pre-fix behaviour lost it at most once a day.
+#
+# Same shape as `incomplete` on #62/#65, one script over: a global flag
+# standing for a per-item condition, gating a global action, so one bad item
+# couples to every other item's progress. The resolution is the same one —
+# hold back only the offending item's state.
+#
+# So: failures are remembered BY NAME. The next hourly tick attempts exactly
+# those repos and leaves the healthy ones alone; the clock stays put until they
+# all come back clean. Noisy about the repo that cannot be reclaimed, free for
+# the ones that can. box0's axis and box3's axis at the same time.
+still_failed=$(printf '%s' "$still_failed" | tr -s ' ' ' ' | sed 's/^ //;s/ $//')
+if [ -n "$still_failed" ]; then
+    printf '%s\n' "$still_failed" > "$RETRY" 2>/dev/null
+    log "not advancing the interval clock: reclaim failed for [$still_failed] — retrying ONLY those next hourly tick"
     exit 0
 fi
+rm -f "$RETRY" 2>/dev/null
 echo "$now" > "$STATE" 2>/dev/null
