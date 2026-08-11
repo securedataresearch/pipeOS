@@ -138,9 +138,10 @@ next_cursors=$(cat "$CURSORS")
 # have turned a transient jq failure into replies never delivered.)
 #
 # WHAT IT GUARDS, EXACTLY: the no-news exit below, and only that. The
-# post-agent block advances state on rc (126/127/1) and does not consult this
-# flag. An earlier version of this comment called it "the ONE flag that keeps
-# state from advancing", which overstated its reach — pipeOS#65, box3.
+# post-agent block decides on rc alone — 126/127/1 WITHHOLD the advance, any
+# other outcome takes it — and never consults this flag. An earlier version of
+# this comment called it "the ONE flag that keeps state from advancing", which
+# overstated its reach — pipeOS#65, box3.
 #
 # That is deliberate, and the reason is structural rather than an oversight:
 # `incomplete` is a GLOBAL flag standing for a PER-THREAD condition. Gating the
