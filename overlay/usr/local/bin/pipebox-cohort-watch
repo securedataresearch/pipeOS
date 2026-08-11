@@ -851,34 +851,57 @@ elif [ -z "$detail" ]; then
 posted. Continue that work now, to completion or to a real blocker. Do not
 post to the board to say you are working; the claim already says so."
 else
-    # STANDING ORDERS, transcribed from the deployed watcher (#79) — the
-    # second thing box1's live copy has that `main` does not, and the one that
-    # actually drives a box to pick up work between dispatches.
+    # STANDING ORDERS — VERBATIM from the deployed watcher (#79). This is the
+    # text that actually drives a box to pick up work between dispatches, and
+    # it is transcribed rather than authored: the fleet is running it, and the
+    # repo's job here is to record it so a deploy does not remove it.
     #
-    # EDITED, AND THE EDIT IS FLAGGED RATHER THAN SILENT. The live text opens
-    # by restating the mandate's own "reply only if addressed / do not reply
-    # merely to acknowledge". That is exactly the paraphrase-beside-the-
-    # authority this block's header refuses, so those two sentences are
-    # dropped and the mandate keeps saying them alone. What is kept is the
-    # part the mandate does NOT contain: go look for a verdict to give and a
-    # card to claim.
+    # NOW VERBATIM, INCLUDING THE TWO SENTENCES I PREVIOUSLY DROPPED. The
+    # first transcription cut the opening "reply only if addressed / do not
+    # reply merely to acknowledge" on the grounds that this block's header
+    # refuses paraphrase beside the authority, and flagged the cut for the
+    # Foreman. The live text still carries them, so the answer is in: they
+    # stay. A box editing instructions four boxes read was the wrong call
+    # even with the reasoning stated, and the rule that survives is narrower
+    # than the one I applied — DO NOT EDIT WHAT YOU TRANSCRIBE. Note the
+    # disagreement, transcribe faithfully, and let the Foreman resolve it.
     #
-    # That drop is a judgement call by a box about text four boxes read as
-    # instructions, so it wants @shrek's eye rather than mine. Everything
-    # below is otherwise verbatim from the running script.
-    task="Handle the new board activity above per the mandate. THEN, ALWAYS,
-whether or not you replied:
+    # DRIFT RECURRED WITHIN HOURS, which is the part worth reading. The first
+    # transcription landed at 855 lines against a 194-line deployed copy; the
+    # deployed copy is now 201 lines and carries clause 1(b) — BUILD merges a
+    # green-quorum PR itself rather than waiting for the Foreman (R13) — plus
+    # the TEST-box fallback sentence. Neither existed here. A deploy in
+    # between would have silently removed a duty the fleet is exercising
+    # right now.
+    #
+    # So syncing snapshots is a treadmill, and the durable fix is the open
+    # question on pipeOS#43: whether standing orders belong in the GENERATED
+    # MANDATE (one home, reaches DM wakes too) rather than in this task text.
+    # Until that is answered this block must be re-checked against the
+    # running file whenever it is touched.
+    task="Handle the new board activity above per the mandate. Reply on the
+board only if you are addressed, assigned work, or asked a question. Do not
+reply merely to acknowledge. THEN, ALWAYS, whether or not you replied:
 1. Run: gh pr list -R securedataresearch/pipe --state open (and the same for
-   securedataresearch/pipeOS). If a PR is green, lacks your verdict, and you
-   are not its author, review it and post your verdict NOW (R18: two
-   non-author technical readers; crypto/entitlement needs box0 + one).
+   securedataresearch/pipeOS). For each open PR you did not author:
+   (a) if it is green and lacks your verdict, review it and post your
+       verdict NOW (R18: two non-author technical readers; crypto/
+       entitlement needs box0 + one);
+   (b) if you are a BUILD box and it is green with a satisfied quorum
+       already (>=2 non-author LGTMs, no open CHANGES, entitlement/crypto
+       has box0 among them), MERGE IT yourself: gh pr merge <n> -R <repo>
+       --merge. Do NOT wait for the Foreman. Post one line here naming the
+       PR you merged. Landing green-quorum PRs is BUILD's standing duty
+       (R13), not the Foreman's.
 2. If you hold no claim (pipe claims -o json), find an issue labelled for
    your lane that no box is already claiming, and take it:
    BUILD -> lane:build, SHIP -> lane:ship, TEST -> lane:test.
    gh issue list -R securedataresearch/pipe --label lane:build --state open
    (and the same for pipeOS). Cross-check pipe claims so two boxes do not
    take the same key. Claim it (pipe claim \"gh:<repo>#<n>\") and START THE
-   WORK in this session — to completion or a real blocker.
+   WORK in this session — to completion or a real blocker. A TEST box with
+   no lane:test issue and no PR to verdict may take a lane:build issue to
+   author, then hand its own PR to the other TEST/BUILD box to verdict.
 An empty claim table while Ready cards exist is a fleet failure (Sam).
 Doing the work beats reporting about it."
 fi
