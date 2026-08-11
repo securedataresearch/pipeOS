@@ -62,12 +62,31 @@ fi
 
 # ---- safety gate 1: this box holds NO claim (pipeOS#41 / Foreman ruling).
 # "Never under live work — a cargo clean mid-build costs a session, which is
-# the constrained resource." `pipe claims -o json` lists every LIVE claim
-# fleet-wide as {"claims":[{"key","holder","expires_ts"}, ...]}; this only
-# ever reclaims when NICK (this box's own identity, card-declared) holds none
-# of them. A daemon that will not answer is treated the same as "holds a
-# claim" — refusing to guess "no claim" from silence, not the same failure
-# shape as fail-open.
+# the constrained resource." This only ever reclaims when NICK (this box's own
+# identity, card-declared) holds none of the live claims. A daemon that will
+# not answer is treated the same as "holds a claim" — refusing to guess "no
+# claim" from silence, not the same failure shape as fail-open.
+#
+# THE ENVELOPE IS DOUBLE-NESTED, and getting that wrong silently voided this
+# gate. box2 authored the two commits below this one from a sandbox that could
+# not run `pipe claims`, read the shape off pipe-relay-core's ClaimRow, and
+# disclosed the guess plainly — "if the live JSON differs, the jq filter needs
+# a one-line fix". It differs. Measured on box1, holding gh:pipe#650 at the
+# time:
+#
+#   {"claims":{"claims":[{"expires_ts":...,"holder":"box1","key":"gh:pipe#650"}]}}
+#
+# `.claims[]?` iterates an OBJECT there, not an array, so it matched nothing
+# and `held` came back EMPTY while this box demonstrably held a claim — the
+# gate reported "clear" and would have run `cargo clean` mid-claim, the one
+# thing it exists to prevent. Struct-shape-derived is not the same as
+# observed, and the difference here was a fail-open.
+#
+# So the filter is corrected AND the exit status is now load-bearing. jq exits
+# 5 on that malformed-input case, which the original discarded along with
+# stderr. Checking it turns every future shape drift into a SKIP rather than
+# into a silent reclaim: the failure mode of a wrong guess about the envelope
+# should be "GC did not run", never "GC ran while the box was working".
 export HOME=/root
 export PIPE_AGENT=pipebox
 export PIPE_NO_SPAWN=1
@@ -84,7 +103,12 @@ if [ -z "$claimsj" ]; then
 fi
 
 held=$(printf '%s' "$claimsj" | jq -r --arg n "$NICK" \
-    '.claims[]? | select(.holder == $n) | .key' 2>/dev/null)
+    '.claims.claims[]? | select(.holder == $n) | .key' 2>/dev/null)
+jq_rc=$?
+if [ "$jq_rc" -ne 0 ]; then
+    log "skip: could not parse 'pipe claims -o json' (jq rc=$jq_rc) — treating as claim-held rather than reading a parse failure as 'no claim'"
+    exit 0
+fi
 if [ -n "$held" ]; then
     log "skip: $NICK holds claim(s) [$(printf '%s' "$held" | tr '\n' ' ' | sed 's/ *$//')] — never reclaim under live work"
     exit 0
