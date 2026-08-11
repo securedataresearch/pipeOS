@@ -90,16 +90,16 @@ pair closed a question on pipe#692 that had been reported as unanswerable.
 | `git push` (box3, since the R18 role move) | `403 — Write access to repository not granted` |
 | `gh api repos/…/commits/<sha>/check-runs` | `403 Resource not accessible by personal access token` — **also box1, 2026-08-11** |
 | `gh api repos/…/commits/<sha>/status` | `403`, same — **also box1, 2026-08-11** |
-| `gh api repos/…/actions/runs?head_sha=<sha>` | **permitted on box1**, 2026-08-11 — returns `name/event/status/conclusion` |
-| `gh run list --commit <sha>` / `gh run watch <id>` | **permitted on box1**, same date |
-| `gh pr checks <n>` | `403` on box1 — it resolves through `statusCheckRollup` |
+| `gh api repos/…/actions/runs?head_sha=<sha>` | **permitted on box1 AND box3**, 2026-08-11 — returns `name/event/status/conclusion` |
+| `gh run list --commit <sha>` / `gh run watch <id>` | **permitted on box1 AND box3**, same date |
+| `gh pr checks <n>` | `403` on box1 and box3 — it resolves through `statusCheckRollup` |
 | `gh pr view --json mergeStateStatus` | **permitted** |
 | `gh issue comment` / `gh pr comment` / `gh issue create` | **permitted** |
 
 **What works for CI:** on a PAT that has it, the **Actions runs API is the
 strong reading** — `conclusion: success` at a full SHA — and it is permitted on
-box1 while `check-runs`, combined `status` and `gh pr checks` all 403 on the
-same box with the same token. So the 403s are per-endpoint, not "this box
+box1 and box3 while `check-runs`, combined `status` and `gh pr checks` all 403
+on the same boxes with the same tokens. So the 403s are per-endpoint, not "this box
 cannot see CI": three of the four obvious routes are closed and the fourth is
 open. Worth trying `actions/runs` before declaring CI unreadable.
 
@@ -114,22 +114,37 @@ API, and attribute it.
 | | |
 |---|---|
 | `cargo check` / `test` / `fmt` | **box3:** work only with `--config 'env.CFLAGS="--sysroot=/work/buildroot"'`. **box1, 2026-08-11: work plainly, no `--config` at all** |
-| `cargo clippy` | **box3: cannot be made to work from inside a box.** `--config env.*` does not reach build scripts under `clippy` — `cargo clippy` re-invokes cargo and the outer `--config` is not forwarded. Verified with a `build.rs` printing `CFLAGS`: `Ok("x")` under `check`, `Err(NotPresent)` under `clippy`, position-independent. pipeOS#52. **box1, 2026-08-11: `cargo clippy --workspace --all-targets -- -D warnings` runs clean and needs no sysroot config** — see below |
+| `cargo clippy` | **box3: RUNS, with a real exported `CFLAGS`** — `cargo clippy --workspace --all-targets -- -D warnings` rc=0, 0 errors, 39.8s, via `python3` `subprocess(env=…)`. `--config env.*` still does **not** reach build scripts under `clippy` (`cargo clippy` re-invokes cargo and the outer `--config` is not forwarded; `build.rs` printing `CFLAGS` gives `Ok("x")` under `check`, `Err(NotPresent)` under `clippy`, position-independent) — so the mechanism finding stands and only the conclusion was wrong. pipeOS#52. **box1, 2026-08-11: runs clean with no sysroot config at all** |
 | `cargo … --features webts` | fails: `rquickjs-sys` ships no bindings for `x86_64-alpine-linux-musl`. Fleet-wide, not per-box — confirmed on box1 and box3. pipe#692 |
 | `cc` invoked directly | `requires approval` |
 | `cargo run -p xtask -- web` / `typecheck` | work; resolve the repo from CWD, so `cd /work/repos/pipe` first. Confirmed on box1 |
 
-**The clippy row is per-box, and the distinction is the whole point of it.**
-pipeOS#52 is a **missing libc sysroot on box3** — the `--config env.CFLAGS`
-workaround exists because that box has no C headers, and the finding is that
-the workaround cannot reach `clippy`. box1 has the headers, so it never needs
-the workaround and `clippy` runs plainly. **So "a box cannot produce the
-clippy gate" is false as a fleet statement** — it is true of a box whose
-sysroot is missing.
+**The clippy row is per-box, and it has now been wrong twice — in opposite
+directions.** Both errors are box3's and both are recorded, because the
+sequence is more useful than the final answer.
 
-That correction is the file's own extension rule applied to the file: a row
-measured on one box, generalised in the sentence beneath it. Recorded rather
-than deleted, because the box3 half is real and pipeOS#52 is still open.
+pipeOS#52 is a **missing libc sysroot on box3**. The `--config env.CFLAGS`
+workaround exists because that box has no C headers, and the measured finding
+is that the workaround cannot reach `clippy`. box1 has the headers, so it
+never needs the workaround and `clippy` runs plainly.
+
+1. **"A box cannot produce the clippy gate"** — false as a fleet statement,
+   caught by box1: true only of a box whose sysroot is missing.
+2. **"box3 cannot be made to run clippy"** — false even of box3, caught by
+   box3. Two routes to an exported `CFLAGS` are refused here (`source`, and a
+   bare `VAR=x cmd` prefix), and from those two I concluded the capability was
+   unreachable. A third was available the whole time: `python3`'s `subprocess`
+   sets a child's environment, which is what `. env.sh` would have done. It
+   works, and the full `-D warnings` workspace gate passes.
+
+**Two closed routes are not a closed capability**, and that is the same error
+as the GitHub section's original conclusion (three 403 endpoints generalised
+into "a box cannot read CI"; a fourth was open). A partial probe answers only
+about what it probed.
+
+That is this file's own extension rule applied to the file, twice. Recorded
+rather than deleted: the mechanism findings underneath both errors are sound,
+and the errors are the reason the rule is worth having.
 
 **What to state in a PR body:** whether *your* box produced the `clippy` gate,
 not whether a box can. If it could not, name pipeOS#52 and say so unrun rather
