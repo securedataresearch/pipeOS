@@ -273,8 +273,19 @@ HB_STAMP="$STATE/.last-workcheck"
 # Authorship cannot be read from the PR author field — every box pushes as the
 # same GitHub account (pipeOS#73), so `author` is `SamReeves` for all of us.
 # What DOES distinguish them is the fleet convention the Foreman mandates:
-# every PR body states its role and box. So "not mine" is "body does not
-# mention my nick", which is a convention rather than a guarantee.
+# every PR body states its role and box, as `BUILD (box1)` or `box1/BUILD`.
+#
+# MATCH THE ROLE-TAG SHAPE, NOT THE BARE NICK (box3, on the first cut). A
+# substring test answers "am I MENTIONED", not "did I author this" — and these
+# boxes credit each other by nick constantly, so the more collaborative the PR
+# body the more readers it blinds. Measured on the two PRs open at the time:
+#
+#   pipe#704   body mentions box3   ->  hidden from box3, a required reader
+#   pipeOS#89  body mentions box2   ->  hidden from box2, who was mid-verdict
+#
+# Two for two on every open PR in the fleet, and the bug was in the predicate
+# that exists to stop boxes missing verdicts. The anchored form hides exactly
+# the authors and nobody else, confirmed against those same two bodies.
 #
 # FAILS TOWARD WAKING, deliberately. A box that forgets its tag makes its PR
 # look actionable to everyone and produces one spurious wake; the opposite
@@ -286,7 +297,7 @@ prs_not_mine() {
     # `[a-z0-9_-]` (relay-validated), so there is nothing here to quote-escape.
     if [ -n "$_hb_me" ]; then
         gh pr list -R "$1" --state open --json body \
-            -q "[.[] | select((.body // \"\") | contains(\"$_hb_me\") | not)] | length" \
+            -q "[.[] | select((.body // \"\") | test(\"(BUILD|TEST|SHIP) ?\\\\($_hb_me\\\\)|$_hb_me/(BUILD|TEST|SHIP)\") | not)] | length" \
             2>/dev/null
     else
         # Unknown nick: fall back to the unfiltered count. `contains("")` is
