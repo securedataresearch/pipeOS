@@ -281,6 +281,13 @@ and is delivered **whole** — one full-thread wake per box, which is the exact
 cost the change exists to remove. `--seed` writes both files together and
 suppresses that.
 
+**A second reason, added with the pipeOS#64 fix:** `$SEEN`'s line format
+changed from `<id> <count>` to `<id> <count> <last_reply_ts>`. A surviving
+two-field `$SEEN` matches nothing, so *every* thread reads as changed on the
+first tick — and with no cursors yet, every one of them is delivered whole.
+The two reasons compound rather than overlap, and `--seed` is what closes
+both.
+
 ### Acceptance check — run it, do not assume the deploy took
 
 ```sh

@@ -42,6 +42,48 @@ CLAUDE_TIMEOUT=900
 # (not the parsed reset time) per the issue: "a fixed backoff is
 # acceptable, silently eating the post is not."
 BACKOFF_SECS=900
+# pipeOS#68 item 3. The most replies handed to the agent for ONE thread in one
+# wake. 20 is the issue's own suggestion and it is a ration, not a limit on
+# what exists: anything past it is named in a `[truncated: ...]` marker with
+# its id range, so the reader knows precisely what to fetch. The steady state
+# never reaches this — the cursor makes a wake one reply wide — so it only
+# fires on a first sighting, which is exactly the case it is for.
+MAX_REPLIES=20
+# ...and the byte ration, which is the one that actually bites. Measured on
+# thread 71 (the real 100-reply thread on this board): the newest 20 replies
+# are 49KB, because this fleet writes long posts. A count cap alone therefore
+# MISSES #68's acceptance criterion of a wake under ~20KB — the probe caught
+# that against real data, having passed every count assertion first.
+#
+# 16384 IS THE ISSUE'S FIGURE AND IT DOES NOT FIT INSIDE 20KB. An earlier
+# version of this comment said it "leaves room for the 8.4KB mandate in the
+# same prompt". That was false twice over (box3):
+#
+#   mandate that actually ships   11714 B   (overlay/etc/pipeos/mandate.md)
+#   the 8.4KB figure              from #68's issue text, never measured;
+#                                 the TEMPLATE is 7464 B and the template is
+#                                 not what rides the prompt — the card
+#                                 substitutes the role and Foreman charters in
+#   20000 - 11714                 8286 B for scaffolding AND detail combined
+#
+# So MAX_BYTES does not fit even one thread inside the 20KB figure, and the
+# sentence claiming headroom was reassuring about the thing that costs most.
+# I inherited 8.4KB from the issue and repeated it as though I had measured it.
+#
+# THE VALUE STAYS ANYWAY, and the reason is a trade rather than an oversight.
+# box3 measured the whole prompt three ways:
+#
+#   acceptance as written, 1 new reply on the capped thread    16826 B  UNDER
+#   first sighting of thread 71 alone                          30697 B  1.5x
+#   first wake after a deploy with no --seed, all 8 threads    133613 B 6.5x
+#
+# The criterion #68 actually sets is the first line, and it passes with room
+# to spare. Halving MAX_BYTES to fit a FIRST SIGHTING under 20KB would cut that
+# delivery to about five replies — and one signalled 30KB prompt is better than
+# silently rationing a thread's first delivery to five posts. The third line is
+# what --seed exists to prevent, which is the third independent reason that
+# step is mandatory.
+MAX_BYTES=16384
 BACKOFF_FILE="$STATE/cohort-$COHORT_ID.backoff-until"
 STARTFAIL_FILE="$STATE/cohort-$COHORT_ID.startfail"
 
@@ -76,8 +118,12 @@ ANNOUNCE=""
 # Used at install time so a box does not "wake up" to a year of backlog.
 if [ "$1" = "--seed" ]; then
     seed_board=$(pipe cohorts board "$COHORT_ID" -o json 2>/dev/null)
+    # Same (id, reply_count, last_reply_ts) triple the live path keys on — see
+    # the pipeOS#64 note there. Seeding the two-field form would make every
+    # thread look changed on the first real tick.
     printf '%s' "$seed_board" \
-        | jq -r '.threads[] | "\(.id) \(.reply_count)"' > "$SEEN" 2>/dev/null
+        | jq -r '.threads[] | "\(.id) \(.reply_count) \(.last_reply_ts)"' \
+        > "$SEEN" 2>/dev/null
     # Seed the reply cursors too, or seeding is only half done: $SEEN would
     # suppress the wake until a thread moved, and then the missing cursor would
     # read as "first sighting" and deliver the whole backlog anyway — exactly
@@ -97,14 +143,45 @@ if [ -z "$board" ]; then
     exit 1
 fi
 
-current=$(printf '%s' "$board" | jq -r '.threads[] | "\(.id) \(.reply_count)"' 2>/dev/null)
+current=$(printf '%s' "$board" \
+    | jq -r '.threads[] | "\(.id) \(.reply_count) \(.last_reply_ts)"' 2>/dev/null)
 [ -n "$current" ] || { log "board $COHORT_ID has no threads"; exit 0; }
 
 touch "$SEEN"
 
-# A thread is "new to us" if its exact (id, reply_count) pair is not in state.
-# reply_count in the key is what makes a reply to an already-seen thread count
-# as news — matching on id alone would go deaf after the first sighting.
+# A thread is "new to us" if its exact (id, reply_count, last_reply_ts) triple
+# is not in state. reply_count is what makes a reply to an already-seen thread
+# count as news — matching on id alone would go deaf after the first sighting.
+#
+# last_reply_ts IS IN THE KEY BECAUSE reply_count STOPS MOVING (pipeOS#64).
+# pipe-relay-core caps a thread's replies:
+#
+#   BBS_REPLY_CAP = 100
+#   replies.push(r); if replies.len() > CAP { remove(min_by_key(pot, ts)) }
+#   reply_count = replies.len()        <- the wire field, PINNED at 100
+#
+# So on a capped thread every further reply leaves reply_count at exactly 100.
+# Keyed on (id, reply_count) alone the triple never changes, the thread never
+# registers as changed, and THE BOX GOES PERMANENTLY DEAF TO IT. Not a missed
+# tick — it never recovers, and the reply cursor cannot rescue it because the
+# cursor is only consulted for threads that already registered as changed.
+#
+# Measured on this board, not theorised: thread 71 sits at exactly 100 right
+# now, and thread 75 — the active dispatch thread — was at 48 and climbing when
+# this was written. box0 raised the eviction gap as "theoretical"; the ring is
+# real, it is 100, and one thread is already sitting on it.
+#
+# last_reply_ts is set on every reply (bbs.rs, `thread.last_reply_ts = ts`) and
+# ships in the board listing, so it costs no extra fetch and keeps moving after
+# the count stops. Both fields are kept: a moderation delete can change the
+# count without a new reply, and a new reply changes the ts, so the pair covers
+# each other's blind spot.
+#
+# RESIDUAL, stated rather than left to be found: ts is whole seconds. Two
+# replies to the SAME capped thread within one second still collapse to an
+# identical triple and the later one waits for the next reply. That window is
+# one second wide instead of forever, and the cursor delivers the backlog once
+# anything moves.
 changed=$(printf '%s\n' "$current" | while IFS= read -r line; do
     [ -n "$line" ] || continue
     grep -qxF "$line" "$SEEN" || printf '%s\n' "$line"
@@ -182,8 +259,72 @@ for tid in $(printf '%s\n' "$changed" | awk '{print $1}'); do
 
     top=$(printf '%s' "$t" | jq --argjson s "$seen_id" \
         '(.replies // []) | map(select(.id > $s)) | (map(.id) | max) // 0' 2>/dev/null)
+    # pipeOS#68 item 3: CAP THE SLICE, AND SAY SO WHEN IT BITES.
+    #
+    # The cursor handles the steady state — one new reply is one new reply. It
+    # does nothing for a FIRST SIGHTING, where seen_id is 0, `select(.id > 0)`
+    # keeps every reply, and the delivery is the whole thread again. That is
+    # deliberate (truncating a thread's first delivery silently would be this
+    # script's own failure mode in a quieter form) but it is not rare: a new
+    # box, a restored or lost cursors file, or a thread that got fat before
+    # this box ever saw it. box3 named it as the case #62 leaves behind.
+    #
+    # And it just got MORE reachable, not less. The pipeOS#64 fix above
+    # restores hearing on a thread pinned at BBS_REPLY_CAP — thread 71 is at
+    # 100 right now — so the first sighting of a capped thread is a 100-reply
+    # delivery. `--seed` writes a cursor for every thread and prevents that,
+    # which is why the runbook makes it mandatory; this is the belt for the
+    # box that deploys without it.
+    #
+    # SIGNALLED, NOT SILENT (pipe#658). The marker is a reply object in the
+    # array rather than a side channel, so it cannot be dropped by anything
+    # downstream that only looks at replies, and it names the count and the
+    # id range so the reader can fetch exactly what was withheld. Dropping the
+    # marker and keeping the cap would trade one silent failure for another,
+    # which is box3's point and the reason this is not a bare `[-20:]`.
+    #
+    # Newest kept, oldest omitted: recency is what a wake is for, and the
+    # cursor does not advance past what was delivered... it advances to `top`,
+    # which IS the newest kept, so the omitted replies are genuinely gone for
+    # this box. That is the trade the marker exists to make visible.
     body=$(printf '%s' "$t" | jq -c --argjson s "$seen_id" \
-        '.replies = ((.replies // []) | map(select(.id > $s)))' 2>/dev/null)
+        --argjson m "$MAX_REPLIES" --argjson b "$MAX_BYTES" '
+        ((.replies // []) | map(select(.id > $s)))         as $new  |
+        # Walk newest-first, taking while BOTH rations hold. Always keep at
+        # least one: a wake that delivers nothing new is worse than one that
+        # overshoots the byte target, and a single reply is bounded by the
+        # relay(MAX_BBS_TEXT_LEN) anyway.
+        ($new | reverse) as $rev |
+        # STOP at the first reply that does not fit -- do not skip it and take
+        # a smaller older one. The kept set must be a CONTIGUOUS SUFFIX, or the
+        # marker lies: it reports one omitted id RANGE, and a best-fit walk
+        # leaves holes inside that range that were actually delivered. Caught
+        # by the probe, which printed kept ids 345,348,353,... against a
+        # marker claiming everything below 353 was dropped.
+        (reduce range(0; ($rev | length)) as $i
+           ({ keep: [], bytes: 0, done: false };
+            if .done then . else
+              ($rev[$i] | tojson | length) as $L |
+              if (.keep | length) == 0
+                 or ((.keep | length) < $m and (.bytes + $L) <= $b)
+              then { keep: (.keep + [$rev[$i]]), bytes: (.bytes + $L),
+                     done: false }
+              else { keep: .keep, bytes: .bytes, done: true }
+              end
+            end)
+         | .keep | reverse)                                as $keep |
+        ($new | length) - ($keep | length)                 as $ncut |
+        $new[0:$ncut]                                      as $cut  |
+        .replies = (
+          if $ncut > 0 then
+            [{ id: 0, nick: "pipebox-cohort-watch", pot: "0",
+               subject: "[truncated]",
+               text: ("[truncated: \($ncut) older repl" +
+                      (if $ncut == 1 then "y" else "ies" end) +
+                      " omitted, ids \($cut[0].id)-\($cut[-1].id) — " +
+                      "fetch the thread if you need them]"),
+               thread_id: (.thread.id // 0), ts: 0, upvotes: 0 }] + $keep
+          else $keep end)' 2>/dev/null)
 
     if [ -z "$top" ] || [ -z "$body" ]; then
         # jq could not tell us what is new. Deliver the thread WHOLE and do not
@@ -252,19 +393,28 @@ else
     echo "$sid" > "$SESSION"
 fi
 
+# pipeOS#68 item 4: THE TASK LINE SAYS WHAT THE MANDATE DOES NOT.
+#
+# The mandate is 8.4KB and rides every prompt. Anything the task block repeats
+# is paid for twice per wake, per box — and worse, a second copy of a rule is
+# a second place for it to drift out of agreement with the first.
+#
+# Both blocks used to restate the mandate's own "Board etiquette" paragraph
+# ("reply when addressed, assigned work, or asked a question... do not reply
+# merely to acknowledge") and its "Conduct" line about not claiming unverified
+# health. Deleted here, not softened: the mandate is the authority, and a
+# paraphrase beside the authority is the thing that eventually contradicts it.
+#
+# What stays is what the mandate CANNOT know — which board and thread this
+# wake is about, and that this is a first check-in.
 if [ -n "$ANNOUNCE" ]; then
-    task="This is your FIRST check-in on this board. Post exactly one reply to
-the welcome thread that: names which box you are, confirms you can read and
-write this board, and reports your ACTUAL message-pump status — run the checks
-yourself (\`rc-service pipebox-listener status\`, \`pipe status\`, and note that
-the shipped pump is --only me so board posts reach you via this cron watcher,
-not via the daemon). Sam asked specifically to be told if the pump is not
-working. Be honest and specific; do not claim health you have not verified.
-Keep it short."
+    task="This is your FIRST check-in on this board. Post one reply to the
+welcome thread: which box you are, that you can read and write here, and your
+ACTUAL pump status — run the checks yourself (\`rc-service pipebox-listener
+status\`, \`pipe status\`). Note the shipped pump is --only me, so board posts
+reach you via this cron watcher and not via the daemon."
 else
-    task="Handle the new board activity above per the mandate. Reply on the
-board only if you are addressed, assigned work, or asked a question. Otherwise
-stay quiet and just note it. Do not reply merely to acknowledge."
+    task="Handle the new board activity above per the mandate."
 fi
 
 prompt="$(cat "$MANDATE")
