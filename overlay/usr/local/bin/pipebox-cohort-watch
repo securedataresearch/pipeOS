@@ -385,17 +385,88 @@ if [ -z "$detail" ] && [ -z "$ANNOUNCE" ]; then
     exit 0
 fi
 
-# stable session per board, so the box keeps board context across ticks
-if [ -s "$SESSION" ]; then
-    sid=$(cat "$SESSION")
-else
+# pipeOS#70: SESSIONS ARE PER-TASK, NOT PER-BOARD-LIFETIME.
+#
+# This used to keep one session per board forever and pass --resume once it had
+# started, so EVERY WAKE CARRIED EVERY PRIOR WAKE FORWARD -- every thread ever
+# fed, every reply ever drafted, growing without bound. The #68 delta feed cuts
+# what each wake ADDS; it does nothing about the accumulated total. The only
+# thing that ever reset it was the pipeOS#51 reboot bug, which means a bug was
+# doing the job of a policy.
+#
+# DEFAULT IS FRESH, and the reason it costs nothing is that the session was
+# never where the durable state lived: the board says what happened, GitHub
+# says the work state, the claim table says who holds what, and the mandate --
+# re-fed in full every prompt anyway -- says who this box is. A wake that reads
+# those four is not missing anything a transcript would have told it.
+#
+# RESUME ONLY MID-TASK. If this box holds a claim it took in an EARLIER wake,
+# it is part-way through something and the working context is worth carrying.
+# Release the claim and the next wake is fresh again. The claim table already
+# means "who is mid-task" socially; this makes it mean that mechanically.
+#
+# WHICH WAY THIS FAILS, deliberately: if the claim state cannot be read, we
+# start FRESH. That is the opposite direction from pipeos-gc's claim gate,
+# where an unreadable answer means SKIP -- and the difference is the cost of
+# being wrong. There, a wrong "no claim" destroys a build cache; here, a wrong
+# "no claim" costs one wake's conversational context, which the four durable
+# sources above can reconstruct. Fail toward the cheap mistake, not toward the
+# uniform one.
+SESSION_META="$STATE/cohort-$COHORT_ID.session-meta"
+MAX_RESUMES=8
+MAX_SESSION_HOURS=6
+
+# Does this box hold a claim RIGHT NOW? Same double-nested envelope and the
+# same type assertion as pipeos-gc -- `pipe claims -o json` returns
+# {"claims":{"claims":[...]}}, and `pipe` prints a JSON error object on STDOUT
+# under -o json, which parses cleanly and would otherwise read as "no claims".
+holds_claim=no
+if [ -n "${NICK:-}" ]; then
+    _cj=$(pipe claims -o json 2>/dev/null)
+    if [ -n "$_cj" ] && printf '%s' "$_cj" \
+        | jq -e '.claims.claims | type == "array"' >/dev/null 2>&1; then
+        _held=$(printf '%s' "$_cj" | jq -r --arg n "$NICK" \
+            '.claims.claims[]? | select(.holder == $n) | .key' 2>/dev/null)
+        [ -n "$_held" ] && holds_claim=yes
+    fi
+fi
+
+now_s=$(date -u +%s)
+sid=""
+do_resume=no
+reason=fresh
+if [ "$holds_claim" = yes ] && [ -s "$SESSION" ] && [ -s "$SESSION_META" ]; then
+    _sid=$(cat "$SESSION" 2>/dev/null)
+    _started=$(awk '{print $1}' "$SESSION_META" 2>/dev/null)
+    _count=$(awk '{print $2}' "$SESSION_META" 2>/dev/null)
+    case "$_started" in ''|*[!0-9]*) _started=0 ;; esac
+    case "$_count"   in ''|*[!0-9]*) _count=0 ;; esac
+    _age_h=$(( (now_s - _started) / 3600 ))
+    # A claim taken in THIS wake does not justify resuming: the session it
+    # would resume predates the claim, so it is not "the context of this task".
+    # $SESSION_META only exists once a session has actually been handed a
+    # prompt, so its presence is the prior-wake evidence.
+    if [ -n "$_sid" ] && [ -f "$STATE/.cohort-started-$_sid" ] \
+       && [ "$_count" -lt "$MAX_RESUMES" ] && [ "$_age_h" -lt "$MAX_SESSION_HOURS" ]; then
+        sid="$_sid"
+        do_resume=yes
+        reason="resume (claim held, $_count/$MAX_RESUMES resumes, ${_age_h}h/${MAX_SESSION_HOURS}h)"
+        printf '%s %s\n' "$_started" "$(( _count + 1 ))" > "$SESSION_META" 2>/dev/null
+    else
+        reason="fresh (claim held but session capped: $_count resumes, ${_age_h}h)"
+    fi
+fi
+
+if [ -z "$sid" ]; then
     sid=$(cat /proc/sys/kernel/random/uuid)
     echo "$sid" > "$SESSION"
+    printf '%s 0\n' "$now_s" > "$SESSION_META" 2>/dev/null
 fi
+log "session: $reason"
 
 # pipeOS#68 item 4: THE TASK LINE SAYS WHAT THE MANDATE DOES NOT.
 #
-# The mandate is 8.4KB and rides every prompt. Anything the task block repeats
+# The mandate is 11714 B and rides every prompt. Anything the task block repeats
 # is paid for twice per wake, per box — and worse, a second copy of a rule is
 # a second place for it to drift out of agreement with the first.
 #
@@ -433,8 +504,15 @@ $task
 Post with: pipe cohorts board $COHORT_ID reply <thread-id> \"<text>\"
 Your text output here goes only to a log file nobody reads in real time."
 
-resume_args="--session-id $sid"
-[ -f "$STATE/.cohort-started-$sid" ] && resume_args="--resume $sid"
+# ONE decision, made once above, read once here. This used to re-derive
+# "should we resume" from the marker file, which is a second place for the
+# same rule to live and therefore a second place for it to disagree with the
+# first -- the shape that cost this file three separate fixes tonight.
+if [ "$do_resume" = yes ]; then
+    resume_args="--resume $sid"
+else
+    resume_args="--session-id $sid"
+fi
 
 log "handling $(printf '%s\n' "$changed" | grep -c .) changed thread(s)${ANNOUNCE:+ (announce)}"
 # Feed the prompt on STDIN, not as an argv string. A busy board thread can push
