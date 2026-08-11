@@ -70,20 +70,50 @@ now=$(date -u +%s)
 # on the box already measured as the fleet's serial bottleneck. Before the fix
 # it was lost at most once per 24h, so the "fix" regressed the axis nobody was
 # watching while correcting the one they were.
+# TWO INDEPENDENT SCHEDULES, NOT TWO EXCLUSIVE ONES, and that is the second
+# correction on this block (box3, reviewing the per-repo retry). Making retry
+# and interval an if/elif meant a pending retry SUPPRESSED the full pass, and
+# because the clock only advanced on a clean pass, a persistently failing repo
+# stopped the full pass forever:
+#
+#   t+0h    pipe=cleaned  pipeOS=FAIL
+#   t+25h   pipeOS=FAIL          <- full pass was DUE at t+24h, did not run
+#   t+73h   pipeOS=FAIL
+#   healthy repo reclaimed in 73h: 1, where the schedule says 3
+#
+# So the GC would log hourly about the repo it cannot fix while quietly
+# ceasing to reclaim the ones it can — the exact inversion of the ruling this
+# file exists to serve. The mirror of the defect it was fixing: first a global
+# flag punished the healthy repos with too much work, then it punished them
+# with none.
+#
+# $STATE now means what its name says: WHEN THE FULL PASS LAST RAN. It advances
+# whenever a full pass has run, whether or not every repo succeeded; failures
+# are carried in $RETRY instead, which is the per-item state they belong in.
+# The two answer different questions and no longer gate each other.
 retry_repos=""
 if [ -s "$RETRY" ]; then
     retry_repos=$(tr -s ' \n' ' ' < "$RETRY" 2>/dev/null)
 fi
 
-if [ -n "$retry_repos" ]; then
-    log "retry pass: only previously-failed repo(s) [$retry_repos]"
-elif [ -f "$STATE" ]; then
+due=yes
+if [ -f "$STATE" ]; then
     last=$(cat "$STATE" 2>/dev/null)
     case "$last" in ''|*[!0-9]*) last=0 ;; esac
     elapsed_h=$(( (now - last) / 3600 ))
-    [ "$elapsed_h" -lt "$interval" ] && exit 0   # not due; quiet, same as a
-                                                  # healthy selfcheck tick
+    [ "$elapsed_h" -lt "$interval" ] && due=no
 fi
+
+# A due full pass wins: it covers the failed repos too, so there is nothing a
+# retry would add on that tick.
+if [ "$due" = yes ]; then
+    mode=full
+elif [ -n "$retry_repos" ]; then
+    mode=retry
+    log "retry pass: only previously-failed repo(s) [$retry_repos]"
+else
+    exit 0                                        # not due, nothing pending;
+fi                                                # quiet, like a healthy tick
 
 # ---- safety gate 1: this box holds NO claim (pipeOS#41 / Foreman ruling).
 # "Never under live work — a cargo clean mid-build costs a session, which is
@@ -199,7 +229,7 @@ did_any=no
 still_failed=""
 # In a retry pass the work list is the failed repos only; otherwise it is the
 # card's REPOS. One list, chosen once, so the loop body stays the same.
-if [ -n "$retry_repos" ]; then
+if [ "$mode" = retry ]; then
     work_list="$retry_repos"
 else
     work_list=$(printf '%s' "${REPOS:-}" | tr ',' ' ')
@@ -259,14 +289,25 @@ done
 # hold back only the offending item's state.
 #
 # So: failures are remembered BY NAME. The next hourly tick attempts exactly
-# those repos and leaves the healthy ones alone; the clock stays put until they
-# all come back clean. Noisy about the repo that cannot be reclaimed, free for
-# the ones that can. box0's axis and box3's axis at the same time.
+# those repos and leaves the healthy ones alone. Noisy about the repo that
+# cannot be reclaimed, free for the ones that can. box0's axis and box3's axis
+# at the same time.
+#
+# AND THE CLOCK IS NOT PART OF THAT DECISION. $STATE records when the FULL PASS
+# LAST RAN, so a full pass advances it whether or not every repo succeeded — the
+# failures are already carried per-name in $RETRY, and making the clock depend
+# on them as well is what stopped the full pass from ever running again.
+# Two pieces of state, two questions: "when did the whole thing last run" and
+# "which repos still owe a reclaim".
 still_failed=$(printf '%s' "$still_failed" | tr -s ' ' ' ' | sed 's/^ //;s/ $//')
 if [ -n "$still_failed" ]; then
     printf '%s\n' "$still_failed" > "$RETRY" 2>/dev/null
-    log "not advancing the interval clock: reclaim failed for [$still_failed] — retrying ONLY those next hourly tick"
-    exit 0
+    log "reclaim failed for [$still_failed] — retrying ONLY those next hourly tick"
+else
+    rm -f "$RETRY" 2>/dev/null
 fi
-rm -f "$RETRY" 2>/dev/null
+
+if [ "$mode" = retry ]; then
+    exit 0                                        # a retry is not a full pass;
+fi                                                # the schedule is untouched
 echo "$now" > "$STATE" 2>/dev/null
