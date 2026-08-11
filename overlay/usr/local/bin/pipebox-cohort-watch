@@ -413,6 +413,15 @@ fi
 # sources above can reconstruct. Fail toward the cheap mistake, not toward the
 # uniform one.
 SESSION_META="$STATE/cohort-$COHORT_ID.session-meta"
+# Cohort-namespaced like every other file in $STATE (seen, cursors, session,
+# session-meta, backoff-until, startfail). The marker was the one exception,
+# which was harmless while nothing ever deleted markers -- the prune below is
+# the first code to act on this glob, and an un-namespaced glob would sweep
+# another cohort's marker. Latent today (one COHORT_ID, and the lockfile is
+# global so one watcher per box is the intent) and fixed while the reason is
+# in view. (box3, #71.) Renaming means the first wake after deploy finds no
+# marker and starts fresh, which is this script's default anyway.
+MARKER_PREFIX="$STATE/cohort-$COHORT_ID.started-"
 #
 # THE RESUME COUNTER BILLS ATTEMPTS, NOT SUCCESSES, AND THAT IS DELIBERATE.
 # It increments here at selection time, before claude is invoked, so a run that
@@ -480,7 +489,7 @@ if [ "$holds_claim" = yes ] && [ -s "$SESSION" ] && [ -s "$SESSION_META" ]; then
     # version of this comment credited $SESSION_META, and that was false:
     # $SESSION_META is written at SELECTION time (below), before claude is
     # invoked, so it exists for a session that was minted and never ran.
-    # .cohort-started-$sid is touched AFTER the invocation, so it is the only
+    # $MARKER_PREFIX$sid is touched AFTER the invocation, so it is the only
     # file here that means "this session id was actually handed a prompt".
     #
     # That distinction is load-bearing, not bookkeeping: if claude fails to
@@ -489,7 +498,7 @@ if [ "$holds_claim" = yes ] && [ -s "$SESSION" ] && [ -s "$SESSION_META" ]; then
     # wake. The marker is what turns that into a fresh start. So the marker
     # cannot be dropped as "duplicated by $SESSION_META" (box3, #71) -- the two
     # files answer different questions and only this one answers this one.
-    if [ -n "$_sid" ] && [ -f "$STATE/.cohort-started-$_sid" ] \
+    if [ -n "$_sid" ] && [ -f "$MARKER_PREFIX$_sid" ] \
        && [ "$_count" -lt "$MAX_RESUMES" ] && [ "$_age_h" -lt "$MAX_SESSION_HOURS" ]; then
         sid="$_sid"
         do_resume=yes
@@ -497,7 +506,7 @@ if [ "$holds_claim" = yes ] && [ -s "$SESSION" ] && [ -s "$SESSION_META" ]; then
         printf '%s %s\n' "$_started" "$(( _count + 1 ))" > "$SESSION_META" 2>/dev/null
     elif [ -z "$_sid" ]; then
         reason="fresh (claim held, but \$SESSION names no session id)"
-    elif [ ! -f "$STATE/.cohort-started-$_sid" ]; then
+    elif [ ! -f "$MARKER_PREFIX$_sid" ]; then
         # Not a cap. The previous wake minted this id and never got a prompt
         # into it -- claude failed to start, or the run was killed before the
         # marker. Resuming would pass --resume a session that does not exist.
@@ -580,10 +589,20 @@ rc=0
 # created. This touch was unconditional, which made the marker mean "an
 # invocation was attempted" while the resume gate reads it as "this id was
 # handed a prompt" -- so a box whose claude is missing would resume a dead id
-# every wake while holding a claim. Same rc split the state advance already
-# uses below, for the same reason.
-if [ "$rc" != 126 ] && [ "$rc" != 127 ]; then
-    touch "$STATE/.cohort-started-$sid"
+# every wake while holding a claim.
+#
+# rc=1 IS EXCLUDED TOO, and an earlier version of this guard took only
+# 126/127 while its comment claimed "the same rc split the state advance
+# uses" -- that split is 126/127/1 (below), so the sentence was false about
+# its own line. box3 asked the question on #71: line 39 calls rc=1 a
+# session-limit REJECTION, and a rejected invocation plausibly never created
+# the session, so marking it asserts something nobody observed. Neither of us
+# can settle which it is without invoking claude against a live session, so
+# it goes the way the rest of this block goes -- toward the cheap mistake.
+# Wrong here costs one needless fresh session; wrong the other way resumes an
+# id that does not exist, every wake, for as long as the claim is held.
+if [ "$rc" != 126 ] && [ "$rc" != 127 ] && [ "$rc" != 1 ]; then
+    touch "$MARKER_PREFIX$sid"
 fi
 # ONE MARKER, NOT ONE PER WAKE. Under the old always-resume behaviour there was
 # a single session id per board forever, so this file was written once and the
@@ -593,9 +612,9 @@ fi
 # (the resume gate tests exactly one id), so the rest are dead the moment they
 # are superseded. Prune after the touch, never before: a failed run must leave
 # this wake's marker absent, which is the whole signal. (box3, #71.)
-for _m in "$STATE"/.cohort-started-*; do
+for _m in "$MARKER_PREFIX"*; do
     [ -e "$_m" ] || continue
-    [ "$_m" = "$STATE/.cohort-started-$sid" ] || rm -f "$_m"
+    [ "$_m" = "$MARKER_PREFIX$sid" ] || rm -f "$_m"
 done
 
 # Advance state only if the agent actually RAN. rc 126/127 means it never
