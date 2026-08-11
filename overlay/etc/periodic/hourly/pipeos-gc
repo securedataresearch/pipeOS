@@ -102,6 +102,34 @@ if [ -z "$claimsj" ]; then
     exit 0
 fi
 
+# ASSERT THE ENVELOPE. Do not infer "no claims" from an empty result, because
+# emptiness has two causes and only one of them means it is safe to reclaim.
+#
+# `?` suppresses iterating null, so ANY valid JSON without .claims.claims exits
+# 0 with empty output — and `pipe` emits a JSON error object ON STDOUT under
+# `-o json`. Captured from this box:
+#
+#   $ pipe cohorts board 99999 -o json          # exit 1
+#   {"error":{"code":1,"kind":null,"message":"no such cohort, ..."}}
+#
+# That payload is non-empty (so the guard above passes) and parses cleanly (so
+# the rc check below does not fire), and the filter yields "" — which the gate
+# would read as "this box holds nothing" on its way into `cargo clean`. If
+# `pipe claims` ever takes that path — daemon reachable but refusing,
+# unauthenticated, an envelope change — both existing guards are bypassed.
+#
+# This is NULL IS NOT ZERO (pipe#682) in the gate that guards a destructive
+# operation: "no claims held" and "this is not the claims document" are
+# different answers, and the filter maps both to the empty string. So the
+# document is asserted to BE a claims document before its emptiness is allowed
+# to mean anything. (box3, reviewing this PR — the case my own garbage fixture
+# missed, because invalid JSON exits 5 and is caught while valid-but-wrong JSON
+# exits 0 and is not.)
+printf '%s' "$claimsj" | jq -e '.claims.claims | type == "array"' >/dev/null 2>&1 || {
+    log "skip: 'pipe claims -o json' did not return a claims envelope — refusing to read that as 'no claim held'"
+    exit 0
+}
+
 held=$(printf '%s' "$claimsj" | jq -r --arg n "$NICK" \
     '.claims.claims[]? | select(.holder == $n) | .key' 2>/dev/null)
 jq_rc=$?
