@@ -44,6 +44,8 @@ note() { printf '      %s\n' "$*"; }
 # on the box that reads it.
 NICK= ROLE= OWNER_NICK= FOREMAN_NICK= COHORT_ID= GH_OWNER= MAC=
 TOOLCHAIN= REPOS= PIPE_CAPS=
+DISK_WARN_PCT= DISK_CRIT_PCT=
+GC_INTERVAL_HOURS=
 
 # pipe#650 item 9. The capabilities a card is ALLOWED to grant the agent —
 # every other spelling in pipe's vocabulary is refused here, by this script,
@@ -86,6 +88,8 @@ read_card() {
         case "$key" in
             NICK|ROLE|OWNER_NICK|FOREMAN_NICK|COHORT_ID|GH_OWNER|MAC) ;;
             TOOLCHAIN|REPOS|PIPE_CAPS) ;;
+            DISK_WARN_PCT|DISK_CRIT_PCT) ;;
+            GC_INTERVAL_HOURS) ;;
             *) die "unknown card key: $key" ;;
         esac
         # Values land in sed expressions and in a shell-sourced conf file.
@@ -103,6 +107,21 @@ read_card() {
                 case "$val" in
                     *[!A-Za-z0-9_.:,-]*) die "card value for $key is not a comma-separated list of plain identifiers: $val" ;;
                     *,,*|,*|*,) die "card value for $key has an empty list element: $val" ;;
+                esac
+                ;;
+            # pipeOS#41: disk-pressure thresholds are digits-only, tighter than
+            # the generic plain-identifier charset below (which would also take
+            # letters and dots) — a threshold is a number or it is nothing.
+            DISK_WARN_PCT|DISK_CRIT_PCT)
+                case "$val" in
+                    ''|*[!0-9]*) [ -z "$val" ] || die "card value for $key must be a plain integer: $val" ;;
+                esac
+                ;;
+            # pipeOS#41 (Foreman ruling 2026-08-10): same digits-only rule as
+            # the thresholds above — an interval is a number or it is nothing.
+            GC_INTERVAL_HOURS)
+                case "$val" in
+                    ''|*[!0-9]*) [ -z "$val" ] || die "card value for $key must be a plain integer: $val" ;;
                 esac
                 ;;
             *)
@@ -128,6 +147,29 @@ read_card() {
         [ "$_hit" = 1 ] || die "PIPE_CAPS entry '$_c' is not grantable by a card (allowed: $PIPE_CAPS_CEILING)"
     done
     case "$COHORT_ID" in ''|*[!0-9]*) [ -z "$COHORT_ID" ] || die "COHORT_ID must be numeric: $COHORT_ID" ;; esac
+
+    # pipeOS#41: each threshold, if declared, must be a sane percent (1-99),
+    # and if both are declared WARN must actually be below CRIT — a card that
+    # declares them backwards would make selfcheck crit before it warns.
+    for k in DISK_WARN_PCT DISK_CRIT_PCT; do
+        eval "v=\$$k"
+        [ -z "$v" ] && continue
+        [ "$v" -ge 1 ] 2>/dev/null && [ "$v" -le 99 ] 2>/dev/null || die "$k must be 1-99: $v"
+    done
+    if [ -n "$DISK_WARN_PCT" ] && [ -n "$DISK_CRIT_PCT" ]; then
+        [ "$DISK_WARN_PCT" -lt "$DISK_CRIT_PCT" ] || \
+            die "DISK_WARN_PCT ($DISK_WARN_PCT) must be less than DISK_CRIT_PCT ($DISK_CRIT_PCT)"
+    fi
+
+    # pipeOS#41 (Foreman ruling 2026-08-10): the reclamation half's own
+    # per-box constant. 1-168 (an hour to a week) — a GC pass that never runs
+    # more often than weekly is not the "keep usage low continuously" this
+    # was ruled for, and a value below an hour is finer than pipeos-gc's own
+    # hourly cron tick can even honor.
+    if [ -n "$GC_INTERVAL_HOURS" ]; then
+        [ "$GC_INTERVAL_HOURS" -ge 1 ] 2>/dev/null && [ "$GC_INTERVAL_HOURS" -le 168 ] 2>/dev/null || \
+            die "GC_INTERVAL_HOURS must be 1-168: $GC_INTERVAL_HOURS"
+    fi
 
     if [ "$STRICT" = 1 ]; then
         for k in NICK ROLE OWNER_NICK FOREMAN_NICK COHORT_ID GH_OWNER; do
@@ -311,6 +353,9 @@ s|@@COHORT_ID@@|$COHORT_ID|g
 s|@@GH_OWNER@@|$GH_OWNER|g
 s|@@TOOLCHAIN@@|$TOOLCHAIN|g
 s|@@REPOS@@|$REPOS|g
+s|@@DISK_WARN_PCT@@|$DISK_WARN_PCT|g
+s|@@DISK_CRIT_PCT@@|$DISK_CRIT_PCT|g
+s|@@GC_INTERVAL_HOURS@@|$GC_INTERVAL_HOURS|g
 s|@@CARD_SHA@@|$CARD_SHA|g"
     # Block markers occupy a line of their own and expand to generated text.
     # There are three now (#35 added the role charter, #39 the Foreman's), so
@@ -488,7 +533,8 @@ cmd_verify() {
 cmd_show() {
     read_card "$CARD"
     echo "card:        $CARD (sha256:$CARD_SHA)"
-    for k in NICK ROLE OWNER_NICK FOREMAN_NICK COHORT_ID GH_OWNER MAC; do
+    for k in NICK ROLE OWNER_NICK FOREMAN_NICK COHORT_ID GH_OWNER MAC \
+             DISK_WARN_PCT DISK_CRIT_PCT GC_INTERVAL_HOURS; do
         eval "v=\$$k"
         printf '%-12s %s\n' "$k:" "${v:-<unset>}"
     done

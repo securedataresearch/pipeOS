@@ -45,3 +45,14 @@ TOOLCHAIN="@@TOOLCHAIN@@"
 # remote — a claim posted against a branch in a repo that was never cloned is
 # what this closes.
 REPOS="@@REPOS@@"
+
+# /work disk-pressure thresholds, percent-used (pipeOS#41). Empty = selfcheck
+# falls back to WARN 70 / CRIT 85. Declared per box because a 25G box and a
+# 53G box hitting the same percentage have very different GB of headroom left.
+DISK_WARN_PCT="@@DISK_WARN_PCT@@"
+DISK_CRIT_PCT="@@DISK_CRIT_PCT@@"
+
+# Reclamation interval, hours (pipeOS#41). Empty = pipeos-gc falls back to 24
+# (once a day). Declared per box because accumulation rate, not just disk
+# size, drives how often a proactive cargo-clean pass is worth running.
+GC_INTERVAL_HOURS="@@GC_INTERVAL_HOURS@@"

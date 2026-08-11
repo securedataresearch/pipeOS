@@ -16,6 +16,14 @@ GH_OWNER=securedataresearch
 # the media path; identity rides the stick until netboot lands.
 MAC=8c:16:45:fa:84:33
 
+# pipeOS#41: TEST's 25G /work — less than half of box1's 53G, so the same
+# percentage leaves much less absolute headroom. Measured 2026-08-10: this box
+# reached 57% (12G) from target/ alone before the Foreman took relief. WARN 65
+# / CRIT 80 warns and crits earlier than BUILD's 70/85 so there is still real
+# free space (~8.75G / ~5G) left to act on at each threshold on this smaller disk.
+DISK_WARN_PCT=65
+DISK_CRIT_PCT=80
+
 # pipe#650 items 7-8. TOOLCHAIN is what this box must be able to BUILD --
 # selfcheck compiles a real artifact per entry, not a version string.
 # REPOS is what it must have on disk, with the right origin.
@@ -48,3 +56,9 @@ REPOS=pipe,pipeOS
 # by the mandate and by pipebox-settings.json's own `pipe room`/`pipe lobby`
 # allow entries. Dropping them would have left the two fences disagreeing.
 PIPE_CAPS=read,send.dm,send.room,send.lobby,send.bbs,claim
+
+# pipeOS#41 (Foreman ruling 2026-08-10): TEST's 25G /work, same size as box0
+# but measured with much lower churn — 3.8G/25G (17%) with 2.5G in target/.
+# Same disk, slower accumulation, so an interval between box0's 6h and
+# box1's 24h rather than sharing either.
+GC_INTERVAL_HOURS=12

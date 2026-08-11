@@ -158,10 +158,40 @@ else
     fi
 fi
 
-# ---- 5. disk pressure
+# ---- 5. disk pressure (pipeOS#41). Thresholds are card-declared
+# (DISK_WARN_PCT / DISK_CRIT_PCT) because a 53G box and a 25G box hitting the
+# same percentage have very different GB of headroom left — box1 measured a
+# single cargo incremental cache eating 24G (60% of ALL disk on that box) in
+# one busy day, and nothing warned before the owner happened to look at a
+# dashboard. Falls back to 70/85 when the card leaves them unset (unprovisioned
+# boxes, or boxes not yet carrying this field), well below the old 90/95 that
+# let box1 reach 79% in silence. /work also holds this agent's own state
+# (/work/claude/projects — transcripts, file memory), so losing it is not just
+# a stalled build, it is losing the box's ability to report the problem — the
+# reason this is a crit near the top end and not just a warn.
+_dp_conf=/etc/pipeos/pipebox.conf
+[ -r "$_dp_conf" ] && . "$_dp_conf" 2>/dev/null
+disk_warn=${DISK_WARN_PCT:-70}
+disk_crit=${DISK_CRIT_PCT:-85}
 use=$(df /work 2>/dev/null | awk 'NR==2{print $5+0}')
-if [ "${use:-0}" -ge 95 ]; then crit "/work ${use}% full"
-elif [ "${use:-0}" -ge 90 ]; then warnn "/work ${use}% full"; fi
+if [ "${use:-0}" -ge "$disk_crit" ] || [ "${use:-0}" -ge "$disk_warn" ]; then
+    # Named, not just a percentage: "full-ish disk" with no culprit is exactly
+    # how box1's 24G incremental cache went unnoticed. `du` here is read-only
+    # (no writes, nothing mutated) and is only run once a threshold is already
+    # crossed, so a healthy box never pays for it. Depth-1 under /work finds
+    # the big-ticket subtree (e.g. repos/); a second pass one level into
+    # repos/*/target catches the specific cargo cache pattern box1 found,
+    # without hardcoding it as the only thing this check can name.
+    top=$(du -xsk /work/*/ 2>/dev/null | sort -rn | head -1)
+    topt=$(du -xsk /work/repos/*/target 2>/dev/null | sort -rn | head -1)
+    culprit="top consumer: ${top:-unknown}"
+    [ -n "$topt" ] && culprit="$culprit; ${topt}"
+    if [ "${use:-0}" -ge "$disk_crit" ]; then
+        crit "/work ${use}% full (>= ${disk_crit}% crit) — $culprit"
+    else
+        warnn "/work ${use}% full (>= ${disk_warn}% warn) — $culprit"
+    fi
+fi
 free=$(df -k "$MEDIA" 2>/dev/null | awk 'NR==2{printf "%d", $4/1024}')
 [ "${free:-0}" -lt 300 ] && warnn "boot media only ${free}MB free"
 
