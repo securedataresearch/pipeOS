@@ -441,6 +441,61 @@ if [ -n "${REPOS:-}" ]; then
     done
 fi
 
+# ---- 5i. is the box RUNNING the code it is developing? (pipeOS#79)
+#
+# Three times in one day the fleet found something merged and not installed:
+# the watcher (#79 itself), the `pipe` binary (21 releases behind, so
+# `pipe wait --only board` — merged in #639 — does not exist on any box), and
+# two patches queued behind the same wall. Each was discovered by accident, by
+# someone about to build a thing that already existed.
+#
+# **A merged, unshipped feature is indistinguishable from one never built.**
+# That is the whole failure class, and nothing on the box says so. Every input
+# to this check is already on disk, needs no network, and takes one command —
+# it just was not being run.
+#
+# WARN, NOT CRIT, and deliberately. A box mid-development is SUPPOSED to have
+# a repo ahead of its installed copy; that is not a fault, it is the job. What
+# is worth reporting is the GAP, and how big it is, so nobody re-derives it
+# from a rejected CLI flag an hour into a card.
+#
+# Both halves compare against the local checkout only. `origin/main` is
+# whatever the last fetch left, so this can be stale — it cannot be WRONG in
+# the dangerous direction, because a stale ref understates the gap.
+_pipe_repo=/work/repos/pipe
+if [ -d "$_pipe_repo/.git" ] && command -v pipe >/dev/null 2>&1; then
+    _v_run=$(pipe --version 2>/dev/null | awk '{print $NF}')
+    _v_repo=$(git -C "$_pipe_repo" show origin/main:Cargo.toml 2>/dev/null \
+        | awk -F'"' '/^version = "/ {print $2; exit}')
+    if [ -n "$_v_run" ] && [ -n "$_v_repo" ] && [ "$_v_run" != "$_v_repo" ]; then
+        warnn "installed pipe is $_v_run but origin/main declares $_v_repo — this box is not running the code it is developing, so a feature merged in between exists in the repo and not on the box (pipeOS#79)"
+    fi
+fi
+
+# The overlay half. This is #79's own finding: the running watcher had
+# features `main` did not, so a routine deploy would have REVERTED them.
+# Compared by content rather than by mtime, because a deploy rewrites both.
+#
+# Only files present in both are compared — a script that exists in the repo
+# and not on the box is a different condition (never deployed), and one on the
+# box and not in the repo is a local edit; both are worth knowing but neither
+# is what this line is for, so they are named separately rather than folded in.
+_ov=/work/repos/pipeOS/overlay/usr/local/bin
+if [ -d "$_ov" ]; then
+    _drift=""
+    for _f in "$_ov"/*; do
+        [ -f "$_f" ] || continue
+        _n=${_f##*/}
+        if [ ! -e "/usr/local/bin/$_n" ]; then
+            _drift="$_drift $_n(absent)"
+        elif ! cmp -s "$_f" "/usr/local/bin/$_n"; then
+            _drift="$_drift $_n"
+        fi
+    done
+    [ -z "$_drift" ] || \
+        warnn "installed overlay scripts differ from the repo copy:$_drift — a deploy would replace the running version with the repo's, which is how #79's watcher features were nearly reverted"
+fi
+
 # ---- 6. known-good promotion: this apkovl booted and nothing is critical.
 # Warnings (e.g. a full-ish disk) do not block promotion — they don't make
 # the *state* bad, and blocking on them would freeze known-good forever.
