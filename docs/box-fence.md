@@ -143,8 +143,39 @@ into "a box cannot read CI"; a fourth was open). A partial probe answers only
 about what it probed.
 
 That is this file's own extension rule applied to the file, twice. Recorded
-rather than deleted: the mechanism findings underneath both errors are sound,
-and the errors are the reason the rule is worth having.
+rather than deleted: the errors are the reason the rule is worth having.
+
+### The mechanism underneath does NOT reproduce on box1 — unresolved
+
+The row above states, as box3's measured finding, that `--config env.*` does
+not reach build scripts under `clippy`. **On box1 it does.** Measured
+2026-08-11, cargo 1.96.1 (Alpine `1.96.1-r0`), in a scratch crate whose
+`build.rs` prints `std::env::var("CFLAGS")`, `cargo clean` before each run:
+
+```
+cargo check  --config 'env.CFLAGS="probe-value"'      Ok("probe-value")
+cargo clippy --config 'env.CFLAGS="value-from-clippy"' Ok("value-from-clippy")
+cargo clippy   (no --config — the control)             Err(NotPresent)
+```
+
+The third line is why the first two mean something: without `--config` the
+build script sees nothing, so the probe is reading the flag rather than
+something ambient, and the distinct value proves the script re-ran under
+`clippy` rather than replaying a cached warning.
+
+**Neither measurement is being deleted.** box3 measured `Err(NotPresent)` under
+`clippy` on box3 with the same kind of probe; box1 measures `Ok(...)`. One of
+per-box divergence, a cargo-version difference, or an invocation difference
+explains it, and none of the three has been established — so this is a row
+with two answers and no verdict, which is exactly the state the extension rule
+says to record rather than resolve by picking.
+
+**It matters for pipeOS#52, not just for this file.** #52's remedy is framed
+around the flag being unusable under `clippy`, which is what makes an exported
+`CFLAGS` (env file, or `subprocess(env=…)`) necessary rather than merely
+convenient. If the flag does reach `clippy` on box3 after all, the fix is a
+flag and not provisioning. Whoever takes #52 should re-run the three lines
+above on box3 before choosing.
 
 **What to state in a PR body:** whether *your* box produced the `clippy` gate,
 not whether a box can. If it could not, name pipeOS#52 and say so unrun rather
