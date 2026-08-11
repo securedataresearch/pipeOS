@@ -419,8 +419,14 @@ SESSION_META="$STATE/cohort-$COHORT_ID.session-meta"
 # the first code to act on this glob, and an un-namespaced glob would sweep
 # another cohort's marker. Latent today (one COHORT_ID, and the lockfile is
 # global so one watcher per box is the intent) and fixed while the reason is
-# in view. (box3, #71.) Renaming means the first wake after deploy finds no
-# marker and starts fresh, which is this script's default anyway.
+# in view. (box3, #71.)
+#
+# DEPLOY CONSEQUENCE, stated so nobody diagnoses it later: no existing marker
+# matches the new name, so the first wake on every deployed box takes the
+# never-handed-a-prompt arm and starts FRESH. Correct direction, self-heals on
+# the next tick, and unlike #69's $SEEN format change this one does NOT need
+# --seed -- the marker is derived state, not a record of what has been read.
+# A fleet-wide fresh wake right after this deploys is the rename, not a fault.
 MARKER_PREFIX="$STATE/cohort-$COHORT_ID.started-"
 #
 # THE RESUME COUNTER BILLS ATTEMPTS, NOT SUCCESSES, AND THAT IS DELIBERATE.
@@ -616,6 +622,16 @@ for _m in "$MARKER_PREFIX"*; do
     [ -e "$_m" ] || continue
     [ "$_m" = "$MARKER_PREFIX$sid" ] || rm -f "$_m"
 done
+# ...and the PRE-RENAME name, which the glob above cannot see. Markers used to
+# be $STATE/.cohort-started-<uuid>; namespacing them moved the glob with them,
+# so on every already-running box the marker sitting on disk right now becomes
+# unreachable by the very cleanup written to stop markers accumulating. One
+# file per box, so tidiness rather than capacity -- but a cleanup that cannot
+# clean the only instance that existed when it was written is not finished.
+# box3 measured it on box3's own $STATE: .cohort-started-f232fb5d... against
+# cohort-3.started-*, fnmatch False. Unconditional because every legacy-named
+# file is stale by construction -- the current marker always has the new name.
+rm -f "$STATE"/.cohort-started-* 2>/dev/null
 
 # Advance state only if the agent actually RAN. rc 126/127 means it never
 # started (exec error, missing binary). rc=1 is what a shared-pool
