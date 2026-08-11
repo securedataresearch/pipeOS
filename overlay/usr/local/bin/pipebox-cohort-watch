@@ -495,8 +495,17 @@ if [ "$holds_claim" = yes ] && [ -s "$SESSION" ] && [ -s "$SESSION_META" ]; then
         do_resume=yes
         reason="resume (claim held, $_count/$MAX_RESUMES resumes, ${_age_h}h/${MAX_SESSION_HOURS}h)"
         printf '%s %s\n' "$_started" "$(( _count + 1 ))" > "$SESSION_META" 2>/dev/null
+    elif [ -z "$_sid" ]; then
+        reason="fresh (claim held, but \$SESSION names no session id)"
+    elif [ ! -f "$STATE/.cohort-started-$_sid" ]; then
+        # Not a cap. The previous wake minted this id and never got a prompt
+        # into it -- claude failed to start, or the run was killed before the
+        # marker. Resuming would pass --resume a session that does not exist.
+        reason="fresh (claim held, but session $_sid was never handed a prompt)"
+    elif [ "$_count" -ge "$MAX_RESUMES" ]; then
+        reason="fresh (resume cap: $_count/$MAX_RESUMES resumes)"
     else
-        reason="fresh (claim held but session capped: $_count resumes, ${_age_h}h)"
+        reason="fresh (age cap: ${_age_h}h/${MAX_SESSION_HOURS}h)"
     fi
 fi
 
