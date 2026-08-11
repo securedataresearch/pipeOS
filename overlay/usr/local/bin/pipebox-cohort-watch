@@ -385,17 +385,155 @@ if [ -z "$detail" ] && [ -z "$ANNOUNCE" ]; then
     exit 0
 fi
 
-# stable session per board, so the box keeps board context across ticks
-if [ -s "$SESSION" ]; then
-    sid=$(cat "$SESSION")
+# pipeOS#70: SESSIONS ARE PER-TASK, NOT PER-BOARD-LIFETIME.
+#
+# This used to keep one session per board forever and pass --resume once it had
+# started, so EVERY WAKE CARRIED EVERY PRIOR WAKE FORWARD -- every thread ever
+# fed, every reply ever drafted, growing without bound. The #68 delta feed cuts
+# what each wake ADDS; it does nothing about the accumulated total. The only
+# thing that ever reset it was the pipeOS#51 reboot bug, which means a bug was
+# doing the job of a policy.
+#
+# DEFAULT IS FRESH, and the reason it costs nothing is that the session was
+# never where the durable state lived: the board says what happened, GitHub
+# says the work state, the claim table says who holds what, and the mandate --
+# re-fed in full every prompt anyway -- says who this box is. A wake that reads
+# those four is not missing anything a transcript would have told it.
+#
+# RESUME ONLY MID-TASK. If this box holds a claim it took in an EARLIER wake,
+# it is part-way through something and the working context is worth carrying.
+# Release the claim and the next wake is fresh again. The claim table already
+# means "who is mid-task" socially; this makes it mean that mechanically.
+#
+# WHICH WAY THIS FAILS, deliberately: if the claim state cannot be read, we
+# start FRESH. That is the opposite direction from pipeos-gc's claim gate,
+# where an unreadable answer means SKIP -- and the difference is the cost of
+# being wrong. There, a wrong "no claim" destroys a build cache; here, a wrong
+# "no claim" costs one wake's conversational context, which the four durable
+# sources above can reconstruct. Fail toward the cheap mistake, not toward the
+# uniform one.
+SESSION_META="$STATE/cohort-$COHORT_ID.session-meta"
+# Cohort-namespaced like every other file in $STATE (seen, cursors, session,
+# session-meta, backoff-until, startfail). The marker was the one exception,
+# which was harmless while nothing ever deleted markers -- the prune below is
+# the first code to act on this glob, and an un-namespaced glob would sweep
+# another cohort's marker. Latent today (one COHORT_ID, and the lockfile is
+# global so one watcher per box is the intent) and fixed while the reason is
+# in view. (box3, #71.)
+#
+# DEPLOY CONSEQUENCE, stated so nobody diagnoses it later: no existing marker
+# matches the new name, so the first wake on every deployed box takes the
+# never-handed-a-prompt arm and starts FRESH. Correct direction, self-heals on
+# the next tick, and unlike #69's $SEEN format change this one does NOT need
+# --seed -- the marker is derived state, not a record of what has been read.
+# A fleet-wide fresh wake right after this deploys is the rename, not a fault.
+MARKER_PREFIX="$STATE/cohort-$COHORT_ID.started-"
+#
+# THE RESUME COUNTER BILLS ATTEMPTS, NOT SUCCESSES, AND THAT IS DELIBERATE.
+# It increments here at selection time, before claude is invoked, so a run that
+# fails to start (rc 126/127) still spends one of the 8. box0 flagged that as a
+# wasted budget on #71, and it is -- but billing only successful runs reopens
+# the bug this whole block exists to close. The case that grows a session MOST
+# is a long run killed by `timeout $CLAUDE_TIMEOUT` (rc=124): the prompt was
+# consumed and the context grew, and nothing here can tell that apart from a
+# clean run. Bill after, and the heaviest sessions are exactly the ones that
+# never pay, so the cap stops binding on the boxes that need it.
+#
+# The wasted-budget case is cheap by comparison: rc 126/127 is a missing or
+# non-executable binary -- a box doing no work at all, where 8 unused resumes
+# cost nothing. Refunding it would add a second writer of this counter, which
+# is the two-places-for-one-rule shape this same PR removed from resume_args.
+MAX_RESUMES=8
+MAX_SESSION_HOURS=6
+
+# Does this box hold a claim RIGHT NOW? Same double-nested envelope and the
+# same type assertion as pipeos-gc -- `pipe claims -o json` returns
+# {"claims":{"claims":[...]}}, and `pipe` prints a JSON error object on STDOUT
+# under -o json, which parses cleanly and would otherwise read as "no claims".
+#
+# NICK NEEDS A FALLBACK BECAUSE pipebox.conf SHIPS IT EMPTY (line 14), exactly
+# as COHORT_ID does -- and COHORT_ID has had a fallback since PR#67 while this
+# had none. On a box where the conf is not fully provisioned, an empty NICK
+# matches no claim holder, holds_claim stays "no", and the resume path is dead.
+# The daemon knows the nick regardless of the conf, and the prompt scaffolding
+# below already asks it that way. (box3, #71.)
+holds_claim=no
+nick_unknown=no
+_nick="${NICK:-}"
+[ -n "$_nick" ] || _nick=$(pipe id -o json 2>/dev/null | jq -r '.nick // empty' 2>/dev/null)
+if [ -z "$_nick" ]; then
+    nick_unknown=yes
 else
+    _cj=$(pipe claims -o json 2>/dev/null)
+    if [ -n "$_cj" ] && printf '%s' "$_cj" \
+        | jq -e '.claims.claims | type == "array"' >/dev/null 2>&1; then
+        _held=$(printf '%s' "$_cj" | jq -r --arg n "$_nick" \
+            '.claims.claims[]? | select(.holder == $n) | .key' 2>/dev/null)
+        [ -n "$_held" ] && holds_claim=yes
+    fi
+fi
+
+now_s=$(date -u +%s)
+sid=""
+do_resume=no
+reason=fresh
+# A predicate that COULD NOT RUN must not log the same word as one that ran and
+# said no -- otherwise the feature failing and the feature working are the same
+# line in the log. (box3, #71.)
+[ "$nick_unknown" = yes ] && reason="fresh (CANNOT DETERMINE NICK — resume predicate did not run)"
+if [ "$holds_claim" = yes ] && [ -s "$SESSION" ] && [ -s "$SESSION_META" ]; then
+    _sid=$(cat "$SESSION" 2>/dev/null)
+    _started=$(awk '{print $1}' "$SESSION_META" 2>/dev/null)
+    _count=$(awk '{print $2}' "$SESSION_META" 2>/dev/null)
+    case "$_started" in ''|*[!0-9]*) _started=0 ;; esac
+    case "$_count"   in ''|*[!0-9]*) _count=0 ;; esac
+    _age_h=$(( (now_s - _started) / 3600 ))
+    # A claim taken in THIS wake does not justify resuming: the session it
+    # would resume predates the claim, so it is not "the context of this task".
+    #
+    # THE PRIOR-WAKE EVIDENCE IS THE MARKER, NOT $SESSION_META. An earlier
+    # version of this comment credited $SESSION_META, and that was false:
+    # $SESSION_META is written at SELECTION time (below), before claude is
+    # invoked, so it exists for a session that was minted and never ran.
+    # $MARKER_PREFIX$sid is touched AFTER the invocation, so it is the only
+    # file here that means "this session id was actually handed a prompt".
+    #
+    # That distinction is load-bearing, not bookkeeping: if claude fails to
+    # start (rc 126/127) the session id was minted and written to $SESSION but
+    # no such session exists. Resuming it would pass --resume a dead id every
+    # wake. The marker is what turns that into a fresh start. So the marker
+    # cannot be dropped as "duplicated by $SESSION_META" (box3, #71) -- the two
+    # files answer different questions and only this one answers this one.
+    if [ -n "$_sid" ] && [ -f "$MARKER_PREFIX$_sid" ] \
+       && [ "$_count" -lt "$MAX_RESUMES" ] && [ "$_age_h" -lt "$MAX_SESSION_HOURS" ]; then
+        sid="$_sid"
+        do_resume=yes
+        reason="resume (claim held, $_count/$MAX_RESUMES resumes, ${_age_h}h/${MAX_SESSION_HOURS}h)"
+        printf '%s %s\n' "$_started" "$(( _count + 1 ))" > "$SESSION_META" 2>/dev/null
+    elif [ -z "$_sid" ]; then
+        reason="fresh (claim held, but \$SESSION names no session id)"
+    elif [ ! -f "$MARKER_PREFIX$_sid" ]; then
+        # Not a cap. The previous wake minted this id and never got a prompt
+        # into it -- claude failed to start, or the run was killed before the
+        # marker. Resuming would pass --resume a session that does not exist.
+        reason="fresh (claim held, but session $_sid was never handed a prompt)"
+    elif [ "$_count" -ge "$MAX_RESUMES" ]; then
+        reason="fresh (resume cap: $_count/$MAX_RESUMES resumes)"
+    else
+        reason="fresh (age cap: ${_age_h}h/${MAX_SESSION_HOURS}h)"
+    fi
+fi
+
+if [ -z "$sid" ]; then
     sid=$(cat /proc/sys/kernel/random/uuid)
     echo "$sid" > "$SESSION"
+    printf '%s 0\n' "$now_s" > "$SESSION_META" 2>/dev/null
 fi
+log "session: $reason"
 
 # pipeOS#68 item 4: THE TASK LINE SAYS WHAT THE MANDATE DOES NOT.
 #
-# The mandate is 8.4KB and rides every prompt. Anything the task block repeats
+# The mandate is 11714 B and rides every prompt. Anything the task block repeats
 # is paid for twice per wake, per box — and worse, a second copy of a rule is
 # a second place for it to drift out of agreement with the first.
 #
@@ -433,8 +571,15 @@ $task
 Post with: pipe cohorts board $COHORT_ID reply <thread-id> \"<text>\"
 Your text output here goes only to a log file nobody reads in real time."
 
-resume_args="--session-id $sid"
-[ -f "$STATE/.cohort-started-$sid" ] && resume_args="--resume $sid"
+# ONE decision, made once above, read once here. This used to re-derive
+# "should we resume" from the marker file, which is a second place for the
+# same rule to live and therefore a second place for it to disagree with the
+# first -- the shape that cost this file three separate fixes tonight.
+if [ "$do_resume" = yes ]; then
+    resume_args="--resume $sid"
+else
+    resume_args="--session-id $sid"
+fi
 
 log "handling $(printf '%s\n' "$changed" | grep -c .) changed thread(s)${ANNOUNCE:+ (announce)}"
 # Feed the prompt on STDIN, not as an argv string. A busy board thread can push
@@ -445,7 +590,48 @@ rc=0
 (cd /work/pipebox && printf '%s' "$prompt" | timeout "$CLAUDE_TIMEOUT" claude -p \
         --settings "$SETTINGS" $resume_args \
         >> /work/logs/pipebox-cohort-claude.log 2>&1 9>&-) || rc=$?
-touch "$STATE/.cohort-started-$sid"
+# MARK ONLY IF THE SESSION ACTUALLY EXISTS NOW. rc 126/127 means claude never
+# started, so the id in $SESSION names a session that was minted and never
+# created. This touch was unconditional, which made the marker mean "an
+# invocation was attempted" while the resume gate reads it as "this id was
+# handed a prompt" -- so a box whose claude is missing would resume a dead id
+# every wake while holding a claim.
+#
+# rc=1 IS EXCLUDED TOO, and an earlier version of this guard took only
+# 126/127 while its comment claimed "the same rc split the state advance
+# uses" -- that split is 126/127/1 (below), so the sentence was false about
+# its own line. box3 asked the question on #71: line 39 calls rc=1 a
+# session-limit REJECTION, and a rejected invocation plausibly never created
+# the session, so marking it asserts something nobody observed. Neither of us
+# can settle which it is without invoking claude against a live session, so
+# it goes the way the rest of this block goes -- toward the cheap mistake.
+# Wrong here costs one needless fresh session; wrong the other way resumes an
+# id that does not exist, every wake, for as long as the claim is held.
+if [ "$rc" != 126 ] && [ "$rc" != 127 ] && [ "$rc" != 1 ]; then
+    touch "$MARKER_PREFIX$sid"
+fi
+# ONE MARKER, NOT ONE PER WAKE. Under the old always-resume behaviour there was
+# a single session id per board forever, so this file was written once and the
+# leak did not exist. Fresh-per-wake mints a new uuid every tick, so without
+# this prune $STATE grows a file per wake, unbounded, on the boxes whose disk
+# pressure is why pipeos-gc exists. Only the CURRENT sid's marker is ever read
+# (the resume gate tests exactly one id), so the rest are dead the moment they
+# are superseded. Prune after the touch, never before: a failed run must leave
+# this wake's marker absent, which is the whole signal. (box3, #71.)
+for _m in "$MARKER_PREFIX"*; do
+    [ -e "$_m" ] || continue
+    [ "$_m" = "$MARKER_PREFIX$sid" ] || rm -f "$_m"
+done
+# ...and the PRE-RENAME name, which the glob above cannot see. Markers used to
+# be $STATE/.cohort-started-<uuid>; namespacing them moved the glob with them,
+# so on every already-running box the marker sitting on disk right now becomes
+# unreachable by the very cleanup written to stop markers accumulating. One
+# file per box, so tidiness rather than capacity -- but a cleanup that cannot
+# clean the only instance that existed when it was written is not finished.
+# box3 measured it on box3's own $STATE: .cohort-started-f232fb5d... against
+# cohort-3.started-*, fnmatch False. Unconditional because every legacy-named
+# file is stale by construction -- the current marker always has the new name.
+rm -f "$STATE"/.cohort-started-* 2>/dev/null
 
 # Advance state only if the agent actually RAN. rc 126/127 means it never
 # started (exec error, missing binary). rc=1 is what a shared-pool
