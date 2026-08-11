@@ -75,9 +75,19 @@ ANNOUNCE=""
 # --- seed mode: record current board state without reacting to it ----------
 # Used at install time so a box does not "wake up" to a year of backlog.
 if [ "$1" = "--seed" ]; then
-    pipe cohorts board "$COHORT_ID" -o json 2>/dev/null \
+    seed_board=$(pipe cohorts board "$COHORT_ID" -o json 2>/dev/null)
+    printf '%s' "$seed_board" \
         | jq -r '.threads[] | "\(.id) \(.reply_count)"' > "$SEEN" 2>/dev/null
-    log "seeded $(grep -c . "$SEEN" 2>/dev/null || echo 0) thread(s)"
+    # Seed the reply cursors too, or seeding is only half done: $SEEN would
+    # suppress the wake until a thread moved, and then the missing cursor would
+    # read as "first sighting" and deliver the whole backlog anyway — exactly
+    # what --seed exists to prevent, arriving one reply later.
+    for stid in $(printf '%s' "$seed_board" | jq -r '.threads[].id' 2>/dev/null); do
+        smax=$(pipe cohorts board "$COHORT_ID" thread "$stid" -o json 2>/dev/null \
+            | jq -r '((.replies // []) | map(.id) | max) // 0' 2>/dev/null)
+        printf '%s %s\n' "$stid" "${smax:-0}"
+    done > "$STATE/cohort-$COHORT_ID.cursors"
+    log "seeded $(grep -c . "$SEEN" 2>/dev/null || echo 0) thread(s) + reply cursors"
     exit 0
 fi
 
@@ -104,14 +114,108 @@ if [ -z "$changed" ] && [ -z "$ANNOUNCE" ]; then
     exit 0
 fi
 
-# Pull full text for each changed thread.
+# Pull each changed thread and feed ONLY THE REPLIES THIS BOX HAS NOT SEEN.
+#
+# pipeOS#61. Until now this dumped the WHOLE thread every time it changed, so
+# one new reply to a long thread re-fed the entire history — thread 74 reached
+# 190KB, about 47k tokens, PER BOX PER WAKE, for a couple of new lines. That is
+# what was capping sessions: the fleet's own conversation crowding out the work.
+#
+# $SEEN's (id, reply_count) pair is the right trigger and the wrong ration: it
+# says a thread MOVED, not what moved in it. Reply ids are stable and ascending
+# (pipe-relay-core bbs.rs), so a per-thread high-water mark says exactly that.
+# (Diagnosis and the file/line trace: box0, board #512.)
+CURSORS="$STATE/cohort-$COHORT_ID.cursors"
+touch "$CURSORS"
+next_cursors=$(cat "$CURSORS")
+
+# `incomplete` means this tick could not establish what is new — a fetch or a
+# filter failed. It is the ONE flag that keeps state from advancing, so every
+# such path sets it rather than quietly skipping. (box3 #516: the two fallbacks
+# below used to disagree — `body` failed open by delivering the whole thread
+# while `top` failed to 0, which reads as "nothing unseen" and SKIPS. Opposite
+# directions from the same failure, survivable then only because $SEEN never
+# advanced. Fixing the convergence bug alone would have turned a transient jq
+# failure into replies never delivered.)
+incomplete=0
 detail=""
 for tid in $(printf '%s\n' "$changed" | awk '{print $1}'); do
     t=$(pipe cohorts board "$COHORT_ID" thread "$tid" -o json 2>/dev/null)
-    [ -n "$t" ] && detail="$detail
+    if [ -z "$t" ]; then
+        log "thread $tid unreadable this tick — not advancing state"
+        incomplete=1
+        continue
+    fi
+
+    # No cursor => first sighting. Deliver the thread whole: we genuinely have
+    # not seen it, and silently truncating a thread's first delivery would be
+    # the failure this script exists to avoid, in a quieter form.
+    seen_id=$(awk -v t="$tid" '$1 == t { print $2 }' "$CURSORS" | head -1)
+    [ -n "$seen_id" ] || seen_id=0
+
+    top=$(printf '%s' "$t" | jq --argjson s "$seen_id" \
+        '(.replies // []) | map(select(.id > $s)) | (map(.id) | max) // 0' 2>/dev/null)
+    body=$(printf '%s' "$t" | jq -c --argjson s "$seen_id" \
+        '.replies = ((.replies // []) | map(select(.id > $s)))' 2>/dev/null)
+
+    if [ -z "$top" ] || [ -z "$body" ]; then
+        # jq could not tell us what is new. Deliver the thread WHOLE and do not
+        # advance anything: a duplicate is recoverable, a dropped reply is not.
+        log "thread $tid filter failed — delivering whole, not advancing state"
+        incomplete=1
+        detail="$detail
 --- thread #$tid ---
 $t"
+        continue
+    fi
+
+    if [ "$seen_id" != 0 ] && [ "$top" = 0 ]; then
+        # Thread moved but nothing in it is new to us — a reply we already
+        # delivered was edited or evicted. Nothing to say. The cursor stays
+        # where it is and $SEEN still advances below, which is what makes this
+        # converge instead of refetching the same thread every two minutes.
+        continue
+    fi
+
+    # Keep the thread head always: it carries the subject and the dispatch the
+    # replies are answering, and it is one object rather than a history.
+    detail="$detail
+--- thread #$tid ---
+$body"
+
+    [ "$top" -gt "$seen_id" ] 2>/dev/null || top=$seen_id
+    kept=$(printf '%s\n' "$next_cursors" | awk -v t="$tid" '$1 != t')
+    next_cursors=$(printf '%s\n%s %s\n' "$kept" "$tid" "$top")
 done
+
+# Write both pieces of state. Used by the no-news path below and by the
+# post-agent block at the bottom, so the two cannot drift apart.
+advance_state() {
+    printf '%s\n' "$current" > "$SEEN"
+    printf '%s\n' "$next_cursors" | grep . > "$CURSORS.new" 2>/dev/null
+    mv -f "$CURSORS.new" "$CURSORS" 2>/dev/null || rm -f "$CURSORS.new"
+}
+
+# Every thread's news was already delivered — say nothing rather than waking
+# the agent with a prompt whose only content is the standing mandate.
+#
+# BUT ADVANCE $SEEN BEFORE EXITING (box3 #516, confirmed by box0 #519). The
+# first cut returned here without writing it, so the (id, reply_count) pair
+# stayed stale and this thread counted as "changed" on every subsequent tick,
+# forever: a relay fetch every two minutes, ~720 per box per day on a quiet
+# board, for a thread with nothing to say. Reachable whenever reply_count drops
+# while the max id does not — the ring's eviction and delete paths both do that.
+# The agent was correctly not woken, so the headline saving was intact and the
+# leak was silent, which is why it needed a reviewer rather than a log line.
+if [ -z "$detail" ] && [ -z "$ANNOUNCE" ]; then
+    if [ "$incomplete" = 1 ]; then
+        log "board moved, nothing deliverable, and a fetch/filter failed — retrying next tick"
+        exit 0
+    fi
+    log "board moved but no unseen replies — not waking the agent, state advanced"
+    advance_state
+    exit 0
+fi
 
 # stable session per board, so the box keeps board context across ticks
 if [ -s "$SESSION" ]; then
@@ -184,5 +288,9 @@ elif [ "$rc" = 1 ]; then
 else
     [ "$rc" = 0 ] || log "claude exited nonzero (rc=$rc); advancing state to avoid a poison loop"
     rm -f "$STARTFAIL_FILE" "$BACKOFF_FILE"
-    printf '%s\n' "$current" > "$SEEN"
+    # $SEEN and the reply cursors advance TOGETHER and only here, under exactly
+    # the conditions $SEEN always did. Advancing cursors at fetch time would
+    # lose replies permanently on a session-limit rc=1 — $SEEN would retry the
+    # thread and the cursor would already have skipped the lines nobody read.
+    advance_state
 fi
