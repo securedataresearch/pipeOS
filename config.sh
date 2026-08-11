@@ -30,7 +30,25 @@ case "$VARIANT" in
     metal) ALPINE_FLAVOR=standard; KERNEL_FLAVOR=lts;  IMG_BASENAME=pipeos-metal.img; IMG_SIZE_MB=3200 ;;
     *) echo "unknown VARIANT '$VARIANT' (vm|usb|metal)" >&2; exit 1 ;;
 esac
-ALPINE_ISO="$HOME/Downloads/alpine-$ALPINE_FLAVOR-$ALPINE_PATCH-$ALPINE_ARCH.iso"
+# The ISO the boot tree comes from. Three tiers, the same shape PIPE_SRC and
+# HERMES_SRC use below: an explicit env override wins, then the cross-host
+# default, then the on-box fallback — because on pipeOS itself there is no
+# $HOME/Downloads and the ISO is staged on the ext4 workspace.
+#
+# box2 found this was the only $HOME-rooted path in this file with no on-box
+# fallback and asked BUILD whether a convention already existed. It does, and
+# it has one more tier than their patch: `${VAR:-...}` means an operator can
+# point at an ISO anywhere. Without it the assignment below overwrites
+# whatever they exported, so `ALPINE_ISO=... make image` silently did nothing.
+#
+# NOTE, inherited not introduced: an explicit override naming a file that does
+# not exist falls through to the on-box copy rather than failing. PIPE_SRC and
+# HERMES_SRC already behave that way, so this matches them deliberately — but
+# it means a typo'd override builds from a DIFFERENT ISO than the one asked
+# for. Worth fixing for all three together; out of scope for a path fallback.
+ALPINE_ISO="${ALPINE_ISO:-$HOME/Downloads/alpine-$ALPINE_FLAVOR-$ALPINE_PATCH-$ALPINE_ARCH.iso}"
+ALPINE_ISO_ONBOX="/work/isos/alpine-$ALPINE_FLAVOR-$ALPINE_PATCH-$ALPINE_ARCH.iso"
+[ -f "$ALPINE_ISO" ] || { [ -f "$ALPINE_ISO_ONBOX" ] && ALPINE_ISO="$ALPINE_ISO_ONBOX"; }
 
 CHROOT="$OUT/chroot"
 
