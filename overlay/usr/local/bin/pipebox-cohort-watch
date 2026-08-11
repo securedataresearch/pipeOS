@@ -130,13 +130,39 @@ touch "$CURSORS"
 next_cursors=$(cat "$CURSORS")
 
 # `incomplete` means this tick could not establish what is new — a fetch or a
-# filter failed. It is the ONE flag that keeps state from advancing, so every
-# such path sets it rather than quietly skipping. (box3 #516: the two fallbacks
-# below used to disagree — `body` failed open by delivering the whole thread
-# while `top` failed to 0, which reads as "nothing unseen" and SKIPS. Opposite
-# directions from the same failure, survivable then only because $SEEN never
-# advanced. Fixing the convergence bug alone would have turned a transient jq
-# failure into replies never delivered.)
+# filter failed. Every such path sets it rather than quietly skipping. (box3
+# #516: the two fallbacks below used to disagree — `body` failed open by
+# delivering the whole thread while `top` failed to 0, which reads as "nothing
+# unseen" and SKIPS. Opposite directions from the same failure, survivable then
+# only because $SEEN never advanced. Fixing the convergence bug alone would
+# have turned a transient jq failure into replies never delivered.)
+#
+# WHAT IT GUARDS, EXACTLY: the no-news exit below, and only that. The
+# post-agent block advances state on rc (126/127/1) and does not consult this
+# flag. An earlier version of this comment called it "the ONE flag that keeps
+# state from advancing", which overstated its reach — pipeOS#65, box3.
+#
+# That is deliberate, and the reason is structural rather than an oversight:
+# `incomplete` is a GLOBAL flag standing for a PER-THREAD condition. Gating the
+# global write on it couples one bad thread to every other thread's progress.
+# box3 measured the alternative — a permanently unreadable thread 74 alongside
+# a thread 75 with one real new reply:
+#
+#   as written   tick 1 wakes with t75, converges; ticks 2-3 nothing
+#   gated        tick 1 wakes with t75; ticks 2-3 WAKE AGAIN, same content
+#
+# advance_state writes both $SEEN and $CURSORS, so gating it freezes the
+# cursors too and the agent is re-woken every tick with identical content —
+# the CODE RED token blowup this whole change exists to remove, triggered by a
+# single unreadable thread, for every box on the board. #62's convergence bug
+# only leaked fetches and correctly woke nobody; this would be worse.
+#
+# So the unreadable-thread case does advance $SEEN for that thread while
+# nothing was delivered for it. Not a regression — the pre-cursor watcher did
+# the same — and the cursor is what rescues it: that thread's reply ids were
+# never recorded, so its next change delivers them. Cost is delay, not loss.
+# Anyone wanting the stronger guarantee must hold back only the offending
+# thread's $SEEN row, not gate the whole write.
 incomplete=0
 detail=""
 for tid in $(printf '%s\n' "$changed" | awk '{print $1}'); do

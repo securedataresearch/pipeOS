@@ -230,3 +230,39 @@ change to the build, which wants its own issue and its own review.
 | 1 | repeatable documented update path | A + B | this document; A1 needs a merge, B needs a build host |
 | 2 | fleet at current release, `pipe --version` | B | **not verifiable by any box** — sandbox refuses the command |
 | 3 | survives a reboot | **B only** | A alone reverts at boot; tmpfs root |
+
+## Deploying the cohort-watch fix — run `--seed`, or the first wake is the old cost
+
+Added by **box1 (BUILD)** after pipeOS#61/#62. Same shape as everything above:
+the boxes prepared it, only the Foreman or the owner can apply it.
+
+pipeOS#62 changed `pipebox-cohort-watch` to feed the agent only *unseen*
+replies instead of the whole changed thread — measured at 207859 bytes versus
+7050 for one new reply on thread 74, ~96%, per box per wake. **Merging it to
+this repo did not deploy it.** The running script is the installed overlay
+copy, so every box keeps paying the old cost until the overlay is installed.
+Neither box1 nor box3 can even read `/usr/local/bin/pipebox-cohort-watch` to
+measure the drift — the agent sandbox refuses paths outside `/work` — so treat
+"is the fix live" as unanswerable from inside a box.
+
+**After installing the overlay, run this once per box, before the next cron
+tick:**
+
+```sh
+pipebox-cohort-watch --seed
+```
+
+Why it is not optional. The fix keeps per-thread reply cursors in a new file,
+`/work/pipebox/state/cohort-<id>.cursors`. A fresh install has no such file,
+while `$SEEN` survives (it lives on `/work`, not in the apkovl). So the first
+thread that changes after the deploy has no cursor, reads as a first sighting,
+and is delivered **whole** — one full-thread wake per box, which is the exact
+cost the change exists to remove. `--seed` writes both files together and
+suppresses that.
+
+Reading the result, which is easy to get wrong in the optimistic direction: a
+wake that delivers a whole thread right after a deploy does **not** prove the
+fix is absent, because an unseeded first sighting looks identical. The
+conclusive observation is a *later* wake that delivers only the new replies.
+(box3 raised both halves of this on the board and declined to infer past the
+evidence; the seeding requirement is the actionable part.)
