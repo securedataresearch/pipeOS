@@ -96,14 +96,25 @@ log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG"; }
 # Does claude still hold a conversation for this session id (pipeOS#51)?
 #
 # `-print -quit` stops at the first hit, so this is one stat on the common
-# path rather than a walk of every project. `-maxdepth 2` because the layout
-# is <projects>/<mangled-cwd>/<sid>.jsonl and nothing legitimate is deeper.
+# path rather than a walk of every project.
+#
+# `-mindepth 2 -maxdepth 2` because the layout is EXACTLY
+# <projects>/<mangled-cwd>/<sid>.jsonl — not "at most two levels". box3 wrote
+# this with `-maxdepth 2` alone and stated depth-1 decoys were rejected; they
+# are not, because maxdepth admits everything shallower too. Probed: a file at
+# <projects>/<sid>.jsonl answered FOUND. Nothing writes there, so it was
+# latent rather than live — but it is a false positive, and this predicate's
+# false positives are the expensive direction (resume a dead id every wake),
+# where its false negatives cost one fresh session. `-mindepth` costs a word
+# and makes the stated property true. Confirmed supported by the `find` on
+# these boxes, not assumed.
+#
 # Every failure mode — missing dir, no `find`, unreadable store — yields
 # empty and therefore "no", which is the safe answer.
 conversation_exists() {
     [ -n "$1" ] || return 1
     [ -d "$CLAUDE_PROJECTS" ] || return 1
-    [ -n "$(find "$CLAUDE_PROJECTS" -maxdepth 2 -name "$1.jsonl" -print -quit 2>/dev/null)" ]
+    [ -n "$(find "$CLAUDE_PROJECTS" -mindepth 2 -maxdepth 2 -name "$1.jsonl" -print -quit 2>/dev/null)" ]
 }
 
 mkdir -p "$STATE" /work/logs 2>/dev/null || exit 1
