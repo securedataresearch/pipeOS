@@ -413,6 +413,21 @@ fi
 # sources above can reconstruct. Fail toward the cheap mistake, not toward the
 # uniform one.
 SESSION_META="$STATE/cohort-$COHORT_ID.session-meta"
+#
+# THE RESUME COUNTER BILLS ATTEMPTS, NOT SUCCESSES, AND THAT IS DELIBERATE.
+# It increments here at selection time, before claude is invoked, so a run that
+# fails to start (rc 126/127) still spends one of the 8. box0 flagged that as a
+# wasted budget on #71, and it is -- but billing only successful runs reopens
+# the bug this whole block exists to close. The case that grows a session MOST
+# is a long run killed by `timeout $CLAUDE_TIMEOUT` (rc=124): the prompt was
+# consumed and the context grew, and nothing here can tell that apart from a
+# clean run. Bill after, and the heaviest sessions are exactly the ones that
+# never pay, so the cap stops binding on the boxes that need it.
+#
+# The wasted-budget case is cheap by comparison: rc 126/127 is a missing or
+# non-executable binary -- a box doing no work at all, where 8 unused resumes
+# cost nothing. Refunding it would add a second writer of this counter, which
+# is the two-places-for-one-rule shape this same PR removed from resume_args.
 MAX_RESUMES=8
 MAX_SESSION_HOURS=6
 
