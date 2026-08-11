@@ -53,9 +53,36 @@ MAX_REPLIES=20
 # thread 71 (the real 100-reply thread on this board): the newest 20 replies
 # are 49KB, because this fleet writes long posts. A count cap alone therefore
 # MISSES #68's acceptance criterion of a wake under ~20KB — the probe caught
-# that against real data, having passed every count assertion first. 16KB is
-# the issue's own figure and leaves room for the 8.4KB mandate in the same
-# prompt.
+# that against real data, having passed every count assertion first.
+#
+# 16384 IS THE ISSUE'S FIGURE AND IT DOES NOT FIT INSIDE 20KB. An earlier
+# version of this comment said it "leaves room for the 8.4KB mandate in the
+# same prompt". That was false twice over (box3):
+#
+#   mandate that actually ships   11714 B   (overlay/etc/pipeos/mandate.md)
+#   the 8.4KB figure              from #68's issue text, never measured;
+#                                 the TEMPLATE is 7464 B and the template is
+#                                 not what rides the prompt — the card
+#                                 substitutes the role and Foreman charters in
+#   20000 - 11714                 8286 B for scaffolding AND detail combined
+#
+# So MAX_BYTES does not fit even one thread inside the 20KB figure, and the
+# sentence claiming headroom was reassuring about the thing that costs most.
+# I inherited 8.4KB from the issue and repeated it as though I had measured it.
+#
+# THE VALUE STAYS ANYWAY, and the reason is a trade rather than an oversight.
+# box3 measured the whole prompt three ways:
+#
+#   acceptance as written, 1 new reply on the capped thread    16826 B  UNDER
+#   first sighting of thread 71 alone                          30697 B  1.5x
+#   first wake after a deploy with no --seed, all 8 threads    133613 B 6.5x
+#
+# The criterion #68 actually sets is the first line, and it passes with room
+# to spare. Halving MAX_BYTES to fit a FIRST SIGHTING under 20KB would cut that
+# delivery to about five replies — and one signalled 30KB prompt is better than
+# silently rationing a thread's first delivery to five posts. The third line is
+# what --seed exists to prevent, which is the third independent reason that
+# step is mandatory.
 MAX_BYTES=16384
 BACKOFF_FILE="$STATE/cohort-$COHORT_ID.backoff-until"
 STARTFAIL_FILE="$STATE/cohort-$COHORT_ID.startfail"
