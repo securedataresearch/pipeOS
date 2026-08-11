@@ -435,12 +435,24 @@ MAX_SESSION_HOURS=6
 # same type assertion as pipeos-gc -- `pipe claims -o json` returns
 # {"claims":{"claims":[...]}}, and `pipe` prints a JSON error object on STDOUT
 # under -o json, which parses cleanly and would otherwise read as "no claims".
+#
+# NICK NEEDS A FALLBACK BECAUSE pipebox.conf SHIPS IT EMPTY (line 14), exactly
+# as COHORT_ID does -- and COHORT_ID has had a fallback since PR#67 while this
+# had none. On a box where the conf is not fully provisioned, an empty NICK
+# matches no claim holder, holds_claim stays "no", and the resume path is dead.
+# The daemon knows the nick regardless of the conf, and the prompt scaffolding
+# below already asks it that way. (box3, #71.)
 holds_claim=no
-if [ -n "${NICK:-}" ]; then
+nick_unknown=no
+_nick="${NICK:-}"
+[ -n "$_nick" ] || _nick=$(pipe id -o json 2>/dev/null | jq -r '.nick // empty' 2>/dev/null)
+if [ -z "$_nick" ]; then
+    nick_unknown=yes
+else
     _cj=$(pipe claims -o json 2>/dev/null)
     if [ -n "$_cj" ] && printf '%s' "$_cj" \
         | jq -e '.claims.claims | type == "array"' >/dev/null 2>&1; then
-        _held=$(printf '%s' "$_cj" | jq -r --arg n "$NICK" \
+        _held=$(printf '%s' "$_cj" | jq -r --arg n "$_nick" \
             '.claims.claims[]? | select(.holder == $n) | .key' 2>/dev/null)
         [ -n "$_held" ] && holds_claim=yes
     fi
@@ -450,6 +462,10 @@ now_s=$(date -u +%s)
 sid=""
 do_resume=no
 reason=fresh
+# A predicate that COULD NOT RUN must not log the same word as one that ran and
+# said no -- otherwise the feature failing and the feature working are the same
+# line in the log. (box3, #71.)
+[ "$nick_unknown" = yes ] && reason="fresh (CANNOT DETERMINE NICK — resume predicate did not run)"
 if [ "$holds_claim" = yes ] && [ -s "$SESSION" ] && [ -s "$SESSION_META" ]; then
     _sid=$(cat "$SESSION" 2>/dev/null)
     _started=$(awk '{print $1}' "$SESSION_META" 2>/dev/null)
@@ -459,8 +475,20 @@ if [ "$holds_claim" = yes ] && [ -s "$SESSION" ] && [ -s "$SESSION_META" ]; then
     _age_h=$(( (now_s - _started) / 3600 ))
     # A claim taken in THIS wake does not justify resuming: the session it
     # would resume predates the claim, so it is not "the context of this task".
-    # $SESSION_META only exists once a session has actually been handed a
-    # prompt, so its presence is the prior-wake evidence.
+    #
+    # THE PRIOR-WAKE EVIDENCE IS THE MARKER, NOT $SESSION_META. An earlier
+    # version of this comment credited $SESSION_META, and that was false:
+    # $SESSION_META is written at SELECTION time (below), before claude is
+    # invoked, so it exists for a session that was minted and never ran.
+    # .cohort-started-$sid is touched AFTER the invocation, so it is the only
+    # file here that means "this session id was actually handed a prompt".
+    #
+    # That distinction is load-bearing, not bookkeeping: if claude fails to
+    # start (rc 126/127) the session id was minted and written to $SESSION but
+    # no such session exists. Resuming it would pass --resume a dead id every
+    # wake. The marker is what turns that into a fresh start. So the marker
+    # cannot be dropped as "duplicated by $SESSION_META" (box3, #71) -- the two
+    # files answer different questions and only this one answers this one.
     if [ -n "$_sid" ] && [ -f "$STATE/.cohort-started-$_sid" ] \
        && [ "$_count" -lt "$MAX_RESUMES" ] && [ "$_age_h" -lt "$MAX_SESSION_HOURS" ]; then
         sid="$_sid"
@@ -538,7 +566,28 @@ rc=0
 (cd /work/pipebox && printf '%s' "$prompt" | timeout "$CLAUDE_TIMEOUT" claude -p \
         --settings "$SETTINGS" $resume_args \
         >> /work/logs/pipebox-cohort-claude.log 2>&1 9>&-) || rc=$?
-touch "$STATE/.cohort-started-$sid"
+# MARK ONLY IF THE SESSION ACTUALLY EXISTS NOW. rc 126/127 means claude never
+# started, so the id in $SESSION names a session that was minted and never
+# created. This touch was unconditional, which made the marker mean "an
+# invocation was attempted" while the resume gate reads it as "this id was
+# handed a prompt" -- so a box whose claude is missing would resume a dead id
+# every wake while holding a claim. Same rc split the state advance already
+# uses below, for the same reason.
+if [ "$rc" != 126 ] && [ "$rc" != 127 ]; then
+    touch "$STATE/.cohort-started-$sid"
+fi
+# ONE MARKER, NOT ONE PER WAKE. Under the old always-resume behaviour there was
+# a single session id per board forever, so this file was written once and the
+# leak did not exist. Fresh-per-wake mints a new uuid every tick, so without
+# this prune $STATE grows a file per wake, unbounded, on the boxes whose disk
+# pressure is why pipeos-gc exists. Only the CURRENT sid's marker is ever read
+# (the resume gate tests exactly one id), so the rest are dead the moment they
+# are superseded. Prune after the touch, never before: a failed run must leave
+# this wake's marker absent, which is the whole signal. (box3, #71.)
+for _m in "$STATE"/.cohort-started-*; do
+    [ -e "$_m" ] || continue
+    [ "$_m" = "$STATE/.cohort-started-$sid" ] || rm -f "$_m"
+done
 
 # Advance state only if the agent actually RAN. rc 126/127 means it never
 # started (exec error, missing binary). rc=1 is what a shared-pool
