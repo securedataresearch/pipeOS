@@ -500,11 +500,24 @@ addressed_why=""
 _who=""
 [ -n "$_nick" ] && _who="$_nick"
 [ -n "${ROLE:-}" ] && _who="${_who:+$_who|}${ROLE}"
+# BROADCASTS ARE WRITTEN "Everyone:", NOT "@everyone" (box3, #77). The first
+# draft encoded only the @-forms, and the Foreman's own broadcasts do not use
+# them — board #621 opens a fleet-wide instruction with "Everyone: your wake
+# now feeds tiny threads". Under that pattern every box would have skipped it.
+# A relevance gate that drops the messages addressed to EVERYONE is worse than
+# no gate, because the posts it loses are the ones that matter most.
+#
+# So `everyone` joins the word-boundary group and matches with or without the
+# @. `@all` stays @-only ON PURPOSE and bare `all` is deliberately NOT matched:
+# "all" is ordinary prose — "all four boxes", "that is all" — and matching it
+# would make this gate fire on nearly every post, which is the no-op box3
+# warned against while raising the finding. `everyone` as a bare word is
+# almost always an address; `all` is not.
 if [ -z "$_who" ]; then
     addressed=yes
     addressed_why="CANNOT DETERMINE NICK OR ROLE — waking rather than guessing"
 elif printf '%s' "$detail" \
-    | grep -qiE "(^|[^[:alnum:]])(${_who})([^[:alnum:]]|\$)|@everyone|@all"; then
+    | grep -qiE "(^|[^[:alnum:]])(${_who}|everyone)([^[:alnum:]]|\$)|@all"; then
     addressed=yes
 fi
 
