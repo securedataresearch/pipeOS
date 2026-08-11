@@ -48,3 +48,10 @@ REPOS=pipe,pipeOS
 # by the mandate and by pipebox-settings.json's own `pipe room`/`pipe lobby`
 # allow entries. Dropping them would have left the two fences disagreeing.
 PIPE_CAPS=read,send.dm,send.room,send.lobby,send.bbs,claim
+
+# pipeOS#41 (Foreman ruling 2026-08-10): TEST's 25G /work, measured with the
+# fastest accumulation in the fleet — 13G/25G (53%) with 12G in target/ alone,
+# the box the Foreman reclaimed by hand (52086 files, 12.2GiB, 53% -> 6%) as
+# the proof this predicate works. Same disk size as box3 but 4-5x the churn,
+# so the shortest interval in the fleet.
+GC_INTERVAL_HOURS=6

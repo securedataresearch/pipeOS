@@ -1,0 +1,313 @@
+#!/bin/sh
+# pipeos-gc — proactive reclamation of regenerable build cache under /work.
+#
+# For pipeOS#41's reclamation half (Foreman ruling, 2026-08-10, quoting Sam:
+# "we badly need some automatic garbage collection in pipeos" / "disk health
+# and performance deteriorates when it gets high usage"). Section 5 of
+# pipeos-selfcheck (DISK_WARN_PCT / DISK_CRIT_PCT) is DETECTION: it catches a
+# surprise consumer once a threshold is already crossed. This is the
+# different half the ruling asked for — RECLAMATION: a scheduled pass that
+# keeps usage low continuously, run whether or not any threshold is anywhere
+# near firing. Neither replaces the other; if this script is doing its job,
+# section 5 should mostly have nothing to say.
+#
+# Fleet measurement behind this (Foreman, 2026-08-10): box0 13G/25G with 12G
+# in target/, box1 23G/53G with 13G, box3 3.8G/25G with 2.5G, box2 26M with
+# none. "Every one of those bytes is regenerable from source." box0 held no
+# claim and had a clean tree, so the Foreman reclaimed it by hand right then
+# (`Removed 52086 files, 12.2GiB total`, 53% -> 6%) — proof the safety
+# predicate below is the right one, not a new one invented for this script.
+#
+# Cron-only, by design (pipeOS#57 / #482): this is a shell script deciding
+# something that does not need an agent session — no judgement call here that
+# a human or an agent would resolve differently, just a mechanical
+# claim-and-clean-tree check. Failure mode is "skipped a cycle", not
+# "silently wrong", so it costs no session.
+#
+# ---- scheduling: hourly cron tick, per-box interval on top
+#
+# Installed under /etc/periodic/hourly, which the existing
+# `0 * * * * run-parts /etc/periodic/hourly` line in /etc/crontabs/root
+# already invokes — no crontab change needed. A single global constant would
+# make a 25G TEST box and a 53G BUILD box share a schedule despite reclaiming
+# at very different rates, so the real interval is the card-declared
+# GC_INTERVAL_HOURS (fallback 24, once a day): every hourly tick checks
+# whether that many hours have passed since the last COMPLETED pass and
+# exits immediately if not. A tick skipped because the box was mid-claim or
+# mid-build does NOT advance that clock, so the very next hourly tick tries
+# again rather than waiting out a full interval for a window that may have
+# already passed — see the STATE handling below.
+
+set -u
+
+LOG=/work/logs/pipeos-gc.log
+STATE=/work/pipebox/state/gc-last-run
+# Repos whose last `cargo clean` failed. Named per repo, NOT a box-global
+# "something failed" flag — see the retry handling at the bottom for why that
+# distinction is the whole fix (pipeOS#66, box3).
+RETRY=/work/pipebox/state/gc-retry
+CONF=/etc/pipeos/pipebox.conf
+
+log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG" 2>/dev/null; }
+
+[ -r "$CONF" ] && . "$CONF" 2>/dev/null
+interval=${GC_INTERVAL_HOURS:-24}
+
+mkdir -p "$(dirname "$STATE")" 2>/dev/null
+
+now=$(date -u +%s)
+
+# RETRY MODE: some repo's reclaim failed last pass. Attempt ONLY those repos,
+# and do it on the next hourly tick rather than waiting out the interval.
+#
+# The healthy repos are deliberately left alone here. That is the correction
+# box3 found: a box-global "failed" flag pinning the clock made the WHOLE loop
+# re-run hourly, re-cleaning repos that had succeeded. `target/` is gitignored,
+# so a box that has just built has a clean git tree and a full cache — the
+# normal resting state of a box that compiles, not an edge case. Measured on
+# box1 while writing this: tree clean, /work/repos/pipe/target = 12.4G. Under
+# the global flag, one persistently failing repo meant rebuilding that hourly,
+# on the box already measured as the fleet's serial bottleneck. Before the fix
+# it was lost at most once per 24h, so the "fix" regressed the axis nobody was
+# watching while correcting the one they were.
+# TWO INDEPENDENT SCHEDULES, NOT TWO EXCLUSIVE ONES, and that is the second
+# correction on this block (box3, reviewing the per-repo retry). Making retry
+# and interval an if/elif meant a pending retry SUPPRESSED the full pass, and
+# because the clock only advanced on a clean pass, a persistently failing repo
+# stopped the full pass forever:
+#
+#   t+0h    pipe=cleaned  pipeOS=FAIL
+#   t+25h   pipeOS=FAIL          <- full pass was DUE at t+24h, did not run
+#   t+73h   pipeOS=FAIL
+#   healthy repo reclaimed in 73h: 1, where the schedule says 3
+#
+# So the GC would log hourly about the repo it cannot fix while quietly
+# ceasing to reclaim the ones it can — the exact inversion of the ruling this
+# file exists to serve. The mirror of the defect it was fixing: first a global
+# flag punished the healthy repos with too much work, then it punished them
+# with none.
+#
+# $STATE now means what its name says: WHEN THE FULL PASS LAST RAN. It advances
+# whenever a full pass has run, whether or not every repo succeeded; failures
+# are carried in $RETRY instead, which is the per-item state they belong in.
+# The two answer different questions and no longer gate each other.
+retry_repos=""
+if [ -s "$RETRY" ]; then
+    retry_repos=$(tr -s ' \n' ' ' < "$RETRY" 2>/dev/null)
+fi
+
+due=yes
+if [ -f "$STATE" ]; then
+    last=$(cat "$STATE" 2>/dev/null)
+    case "$last" in ''|*[!0-9]*) last=0 ;; esac
+    elapsed_h=$(( (now - last) / 3600 ))
+    [ "$elapsed_h" -lt "$interval" ] && due=no
+fi
+
+# A due full pass wins: it covers the failed repos too, so there is nothing a
+# retry would add on that tick.
+if [ "$due" = yes ]; then
+    mode=full
+elif [ -n "$retry_repos" ]; then
+    mode=retry
+    log "retry pass: only previously-failed repo(s) [$retry_repos]"
+else
+    exit 0                                        # not due, nothing pending;
+fi                                                # quiet, like a healthy tick
+
+# ---- safety gate 1: this box holds NO claim (pipeOS#41 / Foreman ruling).
+# "Never under live work — a cargo clean mid-build costs a session, which is
+# the constrained resource." This only ever reclaims when NICK (this box's own
+# identity, card-declared) holds none of the live claims. A daemon that will
+# not answer is treated the same as "holds a claim" — refusing to guess "no
+# claim" from silence, not the same failure shape as fail-open.
+#
+# THE ENVELOPE IS DOUBLE-NESTED, and getting that wrong silently voided this
+# gate. box2 authored the two commits below this one from a sandbox that could
+# not run `pipe claims`, read the shape off pipe-relay-core's ClaimRow, and
+# disclosed the guess plainly — "if the live JSON differs, the jq filter needs
+# a one-line fix". It differs. Measured on box1, holding gh:pipe#650 at the
+# time:
+#
+#   {"claims":{"claims":[{"expires_ts":...,"holder":"box1","key":"gh:pipe#650"}]}}
+#
+# `.claims[]?` iterates an OBJECT there, not an array, so it matched nothing
+# and `held` came back EMPTY while this box demonstrably held a claim — the
+# gate reported "clear" and would have run `cargo clean` mid-claim, the one
+# thing it exists to prevent. Struct-shape-derived is not the same as
+# observed, and the difference here was a fail-open.
+#
+# So the filter is corrected AND the exit status is now load-bearing. jq exits
+# 5 on that malformed-input case, which the original discarded along with
+# stderr. Checking it turns every future shape drift into a SKIP rather than
+# into a silent reclaim: the failure mode of a wrong guess about the envelope
+# should be "GC did not run", never "GC ran while the box was working".
+export HOME=/root
+export PIPE_AGENT=pipebox
+export PIPE_NO_SPAWN=1
+
+if [ -z "${NICK:-}" ]; then
+    log "skip: NICK unset in $CONF — cannot tell whether this box holds a claim"
+    exit 0
+fi
+
+claimsj=$(pipe claims -o json 2>/dev/null)
+if [ -z "$claimsj" ]; then
+    log "skip: 'pipe claims' did not answer (daemon down or unauthenticated?) — refusing to assume no claim is held"
+    exit 0
+fi
+
+# ASSERT THE ENVELOPE. Do not infer "no claims" from an empty result, because
+# emptiness has two causes and only one of them means it is safe to reclaim.
+#
+# `?` suppresses iterating null, so ANY valid JSON without .claims.claims exits
+# 0 with empty output — and `pipe` emits a JSON error object ON STDOUT under
+# `-o json`. Captured from this box:
+#
+#   $ pipe cohorts board 99999 -o json          # exit 1
+#   {"error":{"code":1,"kind":null,"message":"no such cohort, ..."}}
+#
+# That payload is non-empty (so the guard above passes) and parses cleanly (so
+# the rc check below does not fire), and the filter yields "" — which the gate
+# would read as "this box holds nothing" on its way into `cargo clean`. If
+# `pipe claims` ever takes that path — daemon reachable but refusing,
+# unauthenticated, an envelope change — both existing guards are bypassed.
+#
+# This is NULL IS NOT ZERO (pipe#682) in the gate that guards a destructive
+# operation: "no claims held" and "this is not the claims document" are
+# different answers, and the filter maps both to the empty string. So the
+# document is asserted to BE a claims document before its emptiness is allowed
+# to mean anything. (box3, reviewing this PR — the case my own garbage fixture
+# missed, because invalid JSON exits 5 and is caught while valid-but-wrong JSON
+# exits 0 and is not.)
+printf '%s' "$claimsj" | jq -e '.claims.claims | type == "array"' >/dev/null 2>&1 || {
+    log "skip: 'pipe claims -o json' did not return a claims envelope — refusing to read that as 'no claim held'"
+    exit 0
+}
+
+held=$(printf '%s' "$claimsj" | jq -r --arg n "$NICK" \
+    '.claims.claims[]? | select(.holder == $n) | .key' 2>/dev/null)
+jq_rc=$?
+if [ "$jq_rc" -ne 0 ]; then
+    log "skip: could not parse 'pipe claims -o json' (jq rc=$jq_rc) — treating as claim-held rather than reading a parse failure as 'no claim'"
+    exit 0
+fi
+if [ -n "$held" ]; then
+    log "skip: $NICK holds claim(s) [$(printf '%s' "$held" | tr '\n' ' ' | sed 's/ *$//')] — never reclaim under live work"
+    exit 0
+fi
+
+# ---- safety gate 2: every repo this box is expected to hold (card REPOS,
+# same list pipeos-selfcheck section 5h already verifies is on disk) has a
+# CLEAN working tree. Checked box-wide, not per-repo: one dirty repo reads as
+# "this box is mid-work" regardless of which checkout the work is in, so the
+# whole pass defers rather than reclaiming everything except the one repo in
+# use. Deferring (not advancing $STATE) means the very next hourly tick
+# checks again, so a session that finishes mid-window is caught promptly
+# rather than waiting out the rest of a 24h interval.
+dirty=""
+for _repo in $(printf '%s' "${REPOS:-}" | tr ',' ' '); do
+    [ -n "$_repo" ] || continue
+    rp="/work/repos/$_repo"
+    [ -d "$rp/.git" ] || continue
+    if [ -n "$(git -C "$rp" status --porcelain 2>/dev/null)" ]; then
+        dirty="$dirty $_repo"
+    fi
+done
+if [ -n "$dirty" ]; then
+    log "skip: working tree not clean:$dirty — never reclaim under live work"
+    exit 0
+fi
+
+# ---- reclaim: only regenerable build output, never source or git objects.
+# `cargo clean` is the tool that owns target/ and knows what is safe to
+# remove inside it; this does not reach into target/ with rm itself. Skipped
+# entirely (not an error) when a repo has no target/ (nothing to reclaim, the
+# box2 case per the Foreman's own measurement: "26M with none") or no cargo
+# on PATH (a SHIP box may hold REPOS without ever having built them).
+did_any=no
+still_failed=""
+# In a retry pass the work list is the failed repos only; otherwise it is the
+# card's REPOS. One list, chosen once, so the loop body stays the same.
+if [ "$mode" = retry ]; then
+    work_list="$retry_repos"
+else
+    work_list=$(printf '%s' "${REPOS:-}" | tr ',' ' ')
+fi
+for _repo in $work_list; do
+    [ -n "$_repo" ] || continue
+    rp="/work/repos/$_repo"
+    [ -d "$rp/target" ] || continue
+    if ! command -v cargo >/dev/null 2>&1; then
+        log "skip $rp/target: cargo not on PATH — not touching build output without the tool that owns it"
+        continue
+    fi
+    before_kb=$(du -xsk "$rp/target" 2>/dev/null | cut -f1)
+    out=$(cd "$rp" && cargo clean 2>&1)
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        # cargo clean's own summary line is already in shrek's manual-relief
+        # style ("Removed 52086 files, 12.2GiB total") — logged verbatim
+        # rather than re-derived, so this reads the same way his report did.
+        summary=$(printf '%s\n' "$out" | tail -1)
+        log "reclaimed $rp/target (was ${before_kb:-?}KB): $summary"
+        did_any=yes
+    else
+        log "cargo clean FAILED in $rp: $(printf '%s\n' "$out" | tail -3 | tr '\n' ' ')"
+        still_failed="$still_failed $_repo"
+    fi
+done
+
+[ "$did_any" = yes ] || log "pass complete: nothing to reclaim (no target/ dirs on this box, or cargo not on PATH)"
+
+# Only a completed pass (claim-clear, tree-clean, ran to the end, nothing
+# failed) advances the clock. A pass that exited early above already returned
+# before this.
+#
+# A FAILED RECLAIM IS A SKIP, NOT A PASS (box0, reviewing pipeOS#66). The clock
+# used to advance even when a `cargo clean` returned nonzero, so one failing
+# repo waited out the whole interval — up to 24h here — instead of retrying on
+# the next hourly tick. That is inconsistent with every other "could not do the
+# work" path in this script: each of those declines to advance precisely so the
+# next tick retries rather than waiting out a window.
+#
+# BUT THE RETRY IS PER REPO, NOT PER BOX, and that distinction is the whole
+# design (box3, reviewing the first cut of this fix). A box-global `failed`
+# flag pinning the clock re-ran the ENTIRE loop hourly, re-cleaning the repos
+# that had succeeded. My own comment claimed that was "close to free since they
+# are already clean". It is false the moment the box rebuilds: `target/` is
+# gitignored, so a box that has just built has a CLEAN git tree and a full
+# cache, which is the resting state of any box that compiles rather than an
+# edge case. Measured on box1 while writing this — tree clean,
+# /work/repos/pipe/target = 12.4G. One persistently failing repo would have
+# meant rebuilding that every hour, on the box already measured as the fleet's
+# serial bottleneck, where the pre-fix behaviour lost it at most once a day.
+#
+# Same shape as `incomplete` on #62/#65, one script over: a global flag
+# standing for a per-item condition, gating a global action, so one bad item
+# couples to every other item's progress. The resolution is the same one —
+# hold back only the offending item's state.
+#
+# So: failures are remembered BY NAME. The next hourly tick attempts exactly
+# those repos and leaves the healthy ones alone. Noisy about the repo that
+# cannot be reclaimed, free for the ones that can. box0's axis and box3's axis
+# at the same time.
+#
+# AND THE CLOCK IS NOT PART OF THAT DECISION. $STATE records when the FULL PASS
+# LAST RAN, so a full pass advances it whether or not every repo succeeded — the
+# failures are already carried per-name in $RETRY, and making the clock depend
+# on them as well is what stopped the full pass from ever running again.
+# Two pieces of state, two questions: "when did the whole thing last run" and
+# "which repos still owe a reclaim".
+still_failed=$(printf '%s' "$still_failed" | tr -s ' ' ' ' | sed 's/^ //;s/ $//')
+if [ -n "$still_failed" ]; then
+    printf '%s\n' "$still_failed" > "$RETRY" 2>/dev/null
+    log "reclaim failed for [$still_failed] — retrying ONLY those next hourly tick"
+else
+    rm -f "$RETRY" 2>/dev/null
+fi
+
+if [ "$mode" = retry ]; then
+    exit 0                                        # a retry is not a full pass;
+fi                                                # the schedule is untouched
+echo "$now" > "$STATE" 2>/dev/null

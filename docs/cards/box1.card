@@ -16,6 +16,12 @@ GH_OWNER=securedataresearch
 # the media path; identity rides the stick until netboot lands.
 MAC=e8:6a:64:fa:48:b3
 
+# pipeOS#41: BUILD's 53G /work. Measured 2026-08-10: 79% (40G/53G) was already
+# a single-directory cargo incremental cache (24G) with nobody warned; WARN 70
+# / CRIT 85 leaves real headroom (~16G / ~8G) to act before a repeat.
+DISK_WARN_PCT=70
+DISK_CRIT_PCT=85
+
 # pipe#650 items 7-8. TOOLCHAIN is what this box must be able to BUILD --
 # selfcheck compiles a real artifact per entry, not a version string.
 # REPOS is what it must have on disk, with the right origin.
@@ -48,3 +54,10 @@ REPOS=pipe,pipeOS
 # by the mandate and by pipebox-settings.json's own `pipe room`/`pipe lobby`
 # allow entries. Dropping them would have left the two fences disagreeing.
 PIPE_CAPS=read,send.dm,send.room,send.lobby,send.bbs,claim
+
+# pipeOS#41 (Foreman ruling 2026-08-10): BUILD's 53G /work, measured
+# 2026-08-10 at 23G/53G (45%) with 13G in target/ — the most absolute
+# headroom in the fleet relative to what accumulates, so the longest
+# interval: a daily pass is enough to keep this box near its floor without
+# fighting an active build session every cron tick.
+GC_INTERVAL_HOURS=24
