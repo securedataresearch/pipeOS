@@ -263,11 +263,48 @@ HB_STAMP="$STATE/.last-workcheck"
 # held work. That is byte-for-byte the defect found in #50's own spec — a
 # variable read above its assignment in this same file, with no `set -u` to
 # catch it — and the first draft of this function had it.
+# COUNTS ONLY PRs THIS BOX COULD ACT ON (pipe#705, box2's measurement).
+#
+# The first cut counted every open PR, so a box woke every interval for its
+# OWN open PRs — which it may never verdict (R16 conflicts the author out) and
+# may not merge under clause 1(b) either. box2 measured the cost on their box:
+# 20 of 22 heartbeat wakes found nothing to do, and each one is a full session.
+#
+# Authorship cannot be read from the PR author field — every box pushes as the
+# same GitHub account (pipeOS#73), so `author` is `SamReeves` for all of us.
+# What DOES distinguish them is the fleet convention the Foreman mandates:
+# every PR body states its role and box. So "not mine" is "body does not
+# mention my nick", which is a convention rather than a guarantee.
+#
+# FAILS TOWARD WAKING, deliberately. A box that forgets its tag makes its PR
+# look actionable to everyone and produces one spurious wake; the opposite
+# error would hide a PR that genuinely needs a verdict. Spurious wake costs a
+# session, missed verdict costs a merge nobody lands.
+prs_not_mine() {
+    # `$1` is the repo. The nick is interpolated into the jq filter rather
+    # than passed with --arg, which `gh -q` does not support; nicks are
+    # `[a-z0-9_-]` (relay-validated), so there is nothing here to quote-escape.
+    if [ -n "$_hb_me" ]; then
+        gh pr list -R "$1" --state open --json body \
+            -q "[.[] | select((.body // \"\") | contains(\"$_hb_me\") | not)] | length" \
+            2>/dev/null
+    else
+        # Unknown nick: fall back to the unfiltered count. `contains("")` is
+        # true of every string, so filtering here would answer "none of these
+        # are actionable" — the confident wrong answer, from the one state
+        # that knows least.
+        gh pr list -R "$1" --state open --json number -q "length" 2>/dev/null
+    fi
+}
+
 work_pending() {
-    _hb_pr=$(gh pr list -R securedataresearch/pipe --state open --json number -q "length" 2>/dev/null)
-    _hb_pr2=$(gh pr list -R securedataresearch/pipeOS --state open --json number -q "length" 2>/dev/null)
+    # Nick FIRST: `prs_not_mine` reads it. In the first cut this block sat
+    # below the PR probes, which is the same read-before-assignment shape that
+    # bit #50's spec — and this function's own comment warns about it.
     _hb_me="${NICK:-}"
     [ -n "$_hb_me" ] || _hb_me=$(pipe id -o json 2>/dev/null | jq -r '.nick // empty' 2>/dev/null)
+    _hb_pr=$(prs_not_mine securedataresearch/pipe)
+    _hb_pr2=$(prs_not_mine securedataresearch/pipeOS)
     if [ -n "$_hb_me" ]; then
         _hb_held=$(pipe claims -o json 2>/dev/null | grep -c "\"holder\":\"${_hb_me}\"")
     else
