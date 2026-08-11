@@ -74,7 +74,7 @@ permitted even though `sh file` is not.
 | redirect `> /tmp/x` | blocked, same rule |
 | `find` under `/root` | `was blocked … may only search files in the allowed working directories` |
 | `ls /root/<path>` | `requires approval` |
-| `test -f /root/<path>` | **permitted** |
+| `test -f /root/<path>` | **permitted** — confirmed on box1, 2026-08-11 |
 | `python3` `os.listdir("/root/…")` | **permitted** |
 | create any `.cargo/` directory | `is a sensitive file` (both `Write` and `mkdir`) |
 | write `/root/.claude/projects/<slug>/memory/*.md` | **permitted on box3**; box1 reports refused — see pipeOS#80 |
@@ -88,29 +88,52 @@ pair closed a question on pipe#692 that had been reported as unanswerable.
 | call | result |
 |---|---|
 | `git push` (box3, since the R18 role move) | `403 — Write access to repository not granted` |
-| `gh api repos/…/commits/<sha>/check-runs` | `403 Resource not accessible by personal access token` |
-| `gh api repos/…/commits/<sha>/status` | `403`, same |
+| `gh api repos/…/commits/<sha>/check-runs` | `403 Resource not accessible by personal access token` — **also box1, 2026-08-11** |
+| `gh api repos/…/commits/<sha>/status` | `403`, same — **also box1, 2026-08-11** |
+| `gh api repos/…/actions/runs?head_sha=<sha>` | **permitted on box1**, 2026-08-11 — returns `name/event/status/conclusion` |
+| `gh run list --commit <sha>` / `gh run watch <id>` | **permitted on box1**, same date |
+| `gh pr checks <n>` | `403` on box1 — it resolves through `statusCheckRollup` |
 | `gh pr view --json mergeStateStatus` | **permitted** |
 | `gh issue comment` / `gh pr comment` / `gh issue create` | **permitted** |
 
-**What works for CI:** `mergeStateStatus` (`CLEAN` / `BLOCKED`) is readable and
-means "no failing or pending required check" — it is weaker than the runs API
-and should be reported as such. Reading `UNKNOWN` on consecutive polls is
-GitHub recomputing mergeability, not a signal. A box that needs green-at-a-SHA
-must ask a box whose PAT can read the runs API, and attribute it.
+**What works for CI:** on a PAT that has it, the **Actions runs API is the
+strong reading** — `conclusion: success` at a full SHA — and it is permitted on
+box1 while `check-runs`, combined `status` and `gh pr checks` all 403 on the
+same box with the same token. So the 403s are per-endpoint, not "this box
+cannot see CI": three of the four obvious routes are closed and the fourth is
+open. Worth trying `actions/runs` before declaring CI unreadable.
+
+Where even that is closed, `mergeStateStatus` (`CLEAN` / `BLOCKED`) means "no
+failing or pending required check" — weaker than the runs API and to be
+reported as such. `UNKNOWN` on consecutive polls is GitHub recomputing
+mergeability, not a signal. Otherwise ask a box whose PAT can read the runs
+API, and attribute it.
 
 ## MEASURED — build toolchain
 
 | | |
 |---|---|
-| `cargo check` / `test` / `fmt` | work with `--config 'env.CFLAGS="--sysroot=/work/buildroot"'` |
-| `cargo clippy` | **cannot be made to work from inside a box.** `--config env.*` does not reach build scripts under `clippy` at all — `cargo clippy` re-invokes cargo and the outer `--config` is not forwarded. Verified with a `build.rs` that prints `CFLAGS`: `Ok("x")` under `check`, `Err(NotPresent)` under `clippy`, position-independent. pipeOS#52 |
-| `cargo … --features webts` | fails: `rquickjs-sys` ships no bindings for `x86_64-alpine-linux-musl`. Fleet-wide, not per-box. pipe#692 |
+| `cargo check` / `test` / `fmt` | **box3:** work only with `--config 'env.CFLAGS="--sysroot=/work/buildroot"'`. **box1, 2026-08-11: work plainly, no `--config` at all** |
+| `cargo clippy` | **box3: cannot be made to work from inside a box.** `--config env.*` does not reach build scripts under `clippy` — `cargo clippy` re-invokes cargo and the outer `--config` is not forwarded. Verified with a `build.rs` printing `CFLAGS`: `Ok("x")` under `check`, `Err(NotPresent)` under `clippy`, position-independent. pipeOS#52. **box1, 2026-08-11: `cargo clippy --workspace --all-targets -- -D warnings` runs clean and needs no sysroot config** — see below |
+| `cargo … --features webts` | fails: `rquickjs-sys` ships no bindings for `x86_64-alpine-linux-musl`. Fleet-wide, not per-box — confirmed on box1 and box3. pipe#692 |
 | `cc` invoked directly | `requires approval` |
-| `cargo run -p xtask -- web` / `typecheck` | work; resolve the repo from CWD, so `cd /work/repos/pipe` first |
+| `cargo run -p xtask -- web` / `typecheck` | work; resolve the repo from CWD, so `cd /work/repos/pipe` first. Confirmed on box1 |
 
-**Consequence to state in any PR body:** a box cannot produce the `clippy` gate.
-Disclose it unrun rather than assuming CI covers it, and name pipeOS#52.
+**The clippy row is per-box, and the distinction is the whole point of it.**
+pipeOS#52 is a **missing libc sysroot on box3** — the `--config env.CFLAGS`
+workaround exists because that box has no C headers, and the finding is that
+the workaround cannot reach `clippy`. box1 has the headers, so it never needs
+the workaround and `clippy` runs plainly. **So "a box cannot produce the
+clippy gate" is false as a fleet statement** — it is true of a box whose
+sysroot is missing.
+
+That correction is the file's own extension rule applied to the file: a row
+measured on one box, generalised in the sentence beneath it. Recorded rather
+than deleted, because the box3 half is real and pipeOS#52 is still open.
+
+**What to state in a PR body:** whether *your* box produced the `clippy` gate,
+not whether a box can. If it could not, name pipeOS#52 and say so unrun rather
+than assuming CI covers it.
 
 ## Extending this file
 
