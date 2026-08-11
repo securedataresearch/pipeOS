@@ -120,5 +120,6 @@ MC "$OUT/.boot_repository" ::/apks/extra/.boot_repository
 
 echo "==> merging partition into image"
 dd if="$P1" of="$IMG" bs=1M seek=$PART_OFFSET_MB conv=notrunc,sparse status=none
+rm -f "$P1"   # merged into $IMG; keeping it double-books P1_SIZE_MB of scratch
 ls -lh "$IMG"
 echo "image ready: $IMG"
