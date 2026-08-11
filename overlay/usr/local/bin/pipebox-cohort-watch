@@ -35,6 +35,10 @@ SEEN="$STATE/cohort-$COHORT_ID.seen"
 SESSION="$STATE/cohort-$COHORT_ID.session"
 MANDATE=/etc/pipeos/mandate.md
 SETTINGS=/etc/pipeos/pipebox-settings.json
+# Where claude keeps conversations: <projects>/<mangled-cwd>/<session-id>.jsonl.
+# Read only to ask "does this session still exist" (pipeOS#51); nothing here
+# writes to it.
+CLAUDE_PROJECTS="${CLAUDE_CONFIG_DIR:-/root/.claude}/projects"
 CLAUDE_TIMEOUT=900
 # rc=1 from `claude -p` is what a session-limit rejection looks like from
 # here (see pipeOS#44) — we can't tell it apart from a generic agent error
@@ -88,6 +92,30 @@ BACKOFF_FILE="$STATE/cohort-$COHORT_ID.backoff-until"
 STARTFAIL_FILE="$STATE/cohort-$COHORT_ID.startfail"
 
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG"; }
+
+# Does claude still hold a conversation for this session id (pipeOS#51)?
+#
+# `-print -quit` stops at the first hit, so this is one stat on the common
+# path rather than a walk of every project.
+#
+# `-mindepth 2 -maxdepth 2` because the layout is EXACTLY
+# <projects>/<mangled-cwd>/<sid>.jsonl — not "at most two levels". box3 wrote
+# this with `-maxdepth 2` alone and stated depth-1 decoys were rejected; they
+# are not, because maxdepth admits everything shallower too. Probed: a file at
+# <projects>/<sid>.jsonl answered FOUND. Nothing writes there, so it was
+# latent rather than live — but it is a false positive, and this predicate's
+# false positives are the expensive direction (resume a dead id every wake),
+# where its false negatives cost one fresh session. `-mindepth` costs a word
+# and makes the stated property true. Confirmed supported by the `find` on
+# these boxes, not assumed.
+#
+# Every failure mode — missing dir, no `find`, unreadable store — yields
+# empty and therefore "no", which is the safe answer.
+conversation_exists() {
+    [ -n "$1" ] || return 1
+    [ -d "$CLAUDE_PROJECTS" ] || return 1
+    [ -n "$(find "$CLAUDE_PROJECTS" -mindepth 2 -maxdepth 2 -name "$1.jsonl" -print -quit 2>/dev/null)" ]
+}
 
 mkdir -p "$STATE" /work/logs 2>/dev/null || exit 1
 
@@ -620,7 +648,34 @@ if [ "$holds_claim" = yes ] && [ -s "$SESSION" ] && [ -s "$SESSION_META" ]; then
     # wake. The marker is what turns that into a fresh start. So the marker
     # cannot be dropped as "duplicated by $SESSION_META" (box3, #71) -- the two
     # files answer different questions and only this one answers this one.
+    # AND THE MARKER STILL IS NOT ENOUGH (pipeOS#51). It says a prompt was
+    # handed to this id; it does not say the conversation still EXISTS. The
+    # marker, $SESSION and $SESSION_META all live under /work and survive a
+    # reboot. The conversation store does not — on box3 `/root/.claude/projects`
+    # is a real tmpfs directory, not the symlink to `/work/claude/projects` the
+    # machine notes describe, so every transcript dies with the boot. The
+    # surviving marker then names a session claude has never heard of:
+    #
+    #   No conversation found with session ID: f232fb5d-...
+    #
+    # rc=1, which #71's arm reads as a session limit and backs off — so the box
+    # sleeps 15 minutes and fails again, doing no work, until the resume or age
+    # cap finally forces a fresh id. Bounded now rather than permanent, but
+    # still up to 8 wasted wakes after every reboot.
+    #
+    # Asking claude directly is what the issue asked for and it is the check
+    # that survives conversation loss from ANY cause, not just reboots: a
+    # cleared store, a moved projects dir, a `--session-id` that never made it
+    # to disk. Deliberately a glob rather than the mangled cwd path, because
+    # that mangling is claude's private business and this file should not
+    # encode it.
+    #
+    # Fails CLOSED to fresh: no projects dir, no find, unreadable store — all
+    # answer "no". That is the cheap direction, and this file already says why
+    # one line up: a needless fresh session costs one wake of context, a dead
+    # resume costs every wake until a cap trips.
     if [ -n "$_sid" ] && [ -f "$MARKER_PREFIX$_sid" ] \
+       && conversation_exists "$_sid" \
        && [ "$_count" -lt "$MAX_RESUMES" ] && [ "$_age_h" -lt "$MAX_SESSION_HOURS" ]; then
         sid="$_sid"
         do_resume=yes
@@ -633,6 +688,13 @@ if [ "$holds_claim" = yes ] && [ -s "$SESSION" ] && [ -s "$SESSION_META" ]; then
         # into it -- claude failed to start, or the run was killed before the
         # marker. Resuming would pass --resume a session that does not exist.
         reason="fresh (claim held, but session $_sid was never handed a prompt)"
+    elif ! conversation_exists "$_sid"; then
+        # The reboot case, and the reason it is worth naming separately from
+        # the marker case: this box DID work that session, the transcript is
+        # simply gone. Distinguishing them in the log is what tells an operator
+        # "your conversation store is not persisting" rather than "claude keeps
+        # failing to start" — two different repairs.
+        reason="fresh (claim held, but session $_sid has no conversation on disk — store cleared or reboot, pipeOS#51)"
     elif [ "$_count" -ge "$MAX_RESUMES" ]; then
         reason="fresh (resume cap: $_count/$MAX_RESUMES resumes)"
     else
