@@ -52,6 +52,16 @@ ALPINE_ISO_ONBOX="/work/isos/alpine-$ALPINE_FLAVOR-$ALPINE_PATCH-$ALPINE_ARCH.is
 
 CHROOT="$OUT/chroot"
 
+# ── the abuild signing key ────────────────────────────────────────────────
+# Root of trust for the whole fleet: every flashed stick trusts this key in
+# /etc/apk/keys, so if it is lost no box can ever be handed another package —
+# only a full re-image. It used to live in exactly two places, out/keys and
+# the chroot, both inside the gitignored out/ tree that every disk sweep and
+# `rm -rf out` reaches for first. This is its durable home, outside the repo
+# on purpose so nothing repo-scoped can take it. Override to relocate; the
+# restore in 10-mk-chroot.sh follows it. (pipeOS#90)
+SIGNING_KEY_DIR="${SIGNING_KEY_DIR:-/work/keys/pipeos}"
+
 PIPE_SRC="${PIPE_SRC:-$HOME/Projects/pipe}"
 HERMES_SRC="${HERMES_SRC:-$HOME/.hermes/hermes-agent}"
 # on pipeOS itself the checkouts live on the ext4 workspace
