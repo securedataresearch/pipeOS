@@ -31,7 +31,11 @@ STAMP_REL=etc/pipeos/.card-stamp
 # others: the daemon reads it from $HOME, so its path is fixed by pipe rather
 # than by us. Listed here anyway so `verify` treats a hand-edit to it as the
 # same defect as a hand-edit to the mandate — which it is, and more dangerous.
-OUTPUTS="etc/pipeos/pipebox.conf etc/pipeos/pipebox-settings.json etc/pipeos/mandate.md root/.pipe/policy.json"
+# etc/profile.d/10-pipebox-env.sh is pipeOS#90 item 1. It is generated rather
+# than shipped in the overlay so `verify` covers it: a hand-edited
+# CARGO_TARGET_DIR is how one box quietly stops sharing the artifact cache and
+# fills its stick again, which is exactly the failure this fleet just had.
+OUTPUTS="etc/pipeos/pipebox.conf etc/pipeos/pipebox-settings.json etc/pipeos/mandate.md root/.pipe/policy.json etc/profile.d/10-pipebox-env.sh"
 
 die()  { printf 'pipebox-card: %s\n' "$*" >&2; exit 2; }
 ok()   { printf 'ok    %s\n' "$*"; }
@@ -400,6 +404,7 @@ tmpl_for() {
         etc/pipeos/pipebox-settings.json)  echo "$TMPL/pipebox-settings.json.tmpl" ;;
         etc/pipeos/mandate.md)             echo "$TMPL/mandate.md.tmpl" ;;
         root/.pipe/policy.json)            echo "$TMPL/policy.json.tmpl" ;;
+        etc/profile.d/10-pipebox-env.sh)   echo "$TMPL/pipebox-env.sh.tmpl" ;;
         *) die "no template for $1" ;;
     esac
 }
@@ -412,6 +417,14 @@ render_all() {
         mkdir -p "$1/${rel%/*}" || die "mkdir failed under $1"
         render "$(tmpl_for "$rel")" > "$1/$rel" || die "render failed: $rel"
     done
+    # The env file is the one output that /etc/profile SOURCES. A syntax error
+    # in it breaks every login shell on the box, including the agent's Bash
+    # tool and the operator's ssh — the same "box goes quiet" failure the
+    # write-then-rename in cmd_generate exists to prevent, arrived at from the
+    # other direction. Checked here, before anything is installed.
+    sh -n "$1/etc/profile.d/10-pipebox-env.sh" \
+        || die "generated shell env does not parse — refusing to install"
+
     # mandate.md is fed to the model verbatim as a prompt, so it carries no
     # generator header — its provenance is the stamp, not a line of chatter
     # in the agent's own instructions.
