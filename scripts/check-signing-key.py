@@ -41,9 +41,12 @@ root=$1; shift
 mkdir -p "$root/home/builder/.abuild"
 case "$*" in
   *abuild-keygen*)
+    # Real material, same as the real abuild-keygen -a: the section now
+    # verifies the pair derives, so a marker file here would fail that check
+    # for a reason the cold-start row is not about.
     k="$root/home/builder/.abuild/$PROBE_NEW_KEY"
-    echo "PRIVATE-$PROBE_NEW_KEY" > "$k"
-    echo "PUBLIC-$PROBE_NEW_KEY" > "$k.pub"
+    cp "$PROBE_NEW_PRIV" "$k"
+    cp "$PROBE_NEW_PRIV.pub" "$k.pub"
     ;;
 esac
 exit 0
@@ -63,10 +66,32 @@ def extract_section():
 SECTION = extract_section()
 
 
-def putkey(d, name):
+# Real RSA material, not marker text. Marker files were enough while every row
+# was about control flow, but the section now DERIVES the public half and
+# compares it (box2 on #92) — and against markers that check can only ever fail,
+# which would have made rows 1-3 and 8 fail for a reason none of them is about.
+# One genuine keypair per name, minted once and reused, so the cost is two
+# genrsa calls for the whole suite.
+_PAIRS = {}
+
+
+def pair(name):
+    if name not in _PAIRS:
+        priv = subprocess.run(["openssl", "genrsa", "2048"], check=True,
+                              capture_output=True).stdout
+        pub = subprocess.run(["openssl", "rsa", "-pubout"], input=priv,
+                             check=True, capture_output=True).stdout
+        _PAIRS[name] = (priv, pub)
+    return _PAIRS[name]
+
+
+def putkey(d, name, pub_from=None):
+    """Write key `name`. pub_from mints a MISMATCHED .pub from another key."""
     os.makedirs(d, exist_ok=True)
-    open(os.path.join(d, name), "w").write(f"PRIVATE-{name}")
-    open(os.path.join(d, name + ".pub"), "w").write(f"PUBLIC-{name}")
+    priv, pub = pair(name)
+    open(os.path.join(d, name), "wb").write(priv)
+    open(os.path.join(d, name + ".pub"), "wb").write(
+        pair(pub_from)[1] if pub_from else pub)
 
 
 class Sandbox:
@@ -87,6 +112,10 @@ class Sandbox:
         self.bindir = bindir
 
     def run(self, new_key=STRAY):
+        # Stage the material the keygen shim will "mint", outside the stores so
+        # the census never sees it before the section runs.
+        mint = os.path.join(self.root, "mint")
+        putkey(mint, new_key)
         env = dict(os.environ)
         env.update(
             PATH=self.bindir + os.pathsep + env["PATH"],
@@ -94,6 +123,7 @@ class Sandbox:
             SIGNING_KEY_DIR=self.durable,
             USER=env.get("USER") or "builder",
             PROBE_NEW_KEY=new_key,
+            PROBE_NEW_PRIV=os.path.join(mint, new_key),
         )
         r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + SECTION],
                            capture_output=True, text=True, env=env)
@@ -103,7 +133,7 @@ class Sandbox:
     def is_key(self, d, name):
         """The file is that key, not a same-named husk some copy left behind."""
         try:
-            return open(os.path.join(d, name)).read().strip() == f"PRIVATE-{name}"
+            return open(os.path.join(d, name), "rb").read() == pair(name)[0]
         except OSError:
             return False
 
@@ -243,6 +273,106 @@ s = case(lambda s: putkey(s.durable, FLEET))
 check("10 restored public key is trusted inside the chroot",
       os.path.exists(os.path.join(s.chroot, "etc/apk/keys", FLEET + ".pub")),
       str(s.names(os.path.join(s.chroot, "etc/apk/keys"))))
+
+# ── 11. the halves are from different keygens ────────────────────────────
+# box2 on #92. Every check above this one compares FILENAMES, and the restore
+# is a `*.rsa*` glob, so a store holding a .rsa and a .rsa.pub minted by
+# different runs — a half-finished copy, a restore stitched from two backups —
+# reaches the end of the section with the census silent. 30-build-apks.sh then
+# signs with one key and 40-build-apkovl.sh ships the OTHER into the apkovl's
+# /etc/apk/keys, so the first symptom is UNTRUSTED SIGNATURE on hardware that
+# has already left the building. Same severity as a fresh key, no resemblance
+# to one in the logs.
+s = case(lambda s: putkey(s.durable, FLEET, pub_from=STRAY))
+check("11 a private key and a .pub from another keygen stop the build",
+      s.rc != 0 and "NOT a pair" in s.log and not s.has(s.keys, FLEET),
+      f"rc={s.rc} out={s.names(s.keys)} log={s.log[-160:]!r}")
+
+# ── 12. the private half arrives without its public half ─────────────────
+# The same glob makes this reachable, and it is quieter still: nothing signs
+# wrongly, but 40-build-apkovl.sh copies `out/keys/*.rsa.pub` into the apkovl
+# and a missing file there means the sticks trust NOTHING — the build succeeds
+# and the failure is deferred to first boot on flashed hardware.
+def priv_only(s):
+    putkey(s.durable, FLEET)
+    os.remove(os.path.join(s.durable, FLEET + ".pub"))
+
+
+s = case(priv_only)
+check("12 a private key with no .pub half stops the build",
+      s.rc != 0 and "no .pub half" in s.log, f"rc={s.rc} log={s.log[-160:]!r}")
+
+# ── 13. the pair check passes for the right reason ───────────────────────
+# Rows 11 and 12 are satisfied by a section that rejects EVERY key, which would
+# also satisfy nothing else here — so this asserts the positive half explicitly
+# rather than leaving it implied by rows 2 and 8 passing.
+s = case(lambda s: putkey(s.durable, FLEET))
+check("13 a matching pair is verified and says so",
+      s.rc == 0 and "pair verified" in s.log, f"rc={s.rc} log={s.log[-160:]!r}")
+
+# ── 14-17. where config.sh puts the durable store by default ─────────────
+# Every row above exports SIGNING_KEY_DIR, so none of them can see the default
+# — and the default was the blocker box2 raised on #92: `/work` exists only on
+# a box, and a box cannot run 10-mk-chroot.sh at all (sudo chroot and apk are
+# hard-banned there), so an unconditional /work default was a hard stop under
+# set -e on the one machine that builds the fleet.
+#
+# The block is extracted from config.sh and run with /work redirected into the
+# sandbox, which is what makes "the host has no /work" expressible here: this
+# suite runs ON a box, where /work does exist, so a test that read the real
+# path could only ever exercise one of the three tiers.
+#
+# Extracted by SECTION boundaries — banner to the next assignment — not by the
+# shape of the current if-block. Matching the block would make this probe read
+# "could not extract" as its answer the moment someone rewrites the tiers, and
+# an extraction failure is exactly when the rows most need to run: control G
+# replaces the block with a one-line default, and a probe that cannot parse
+# that is a probe that cannot fail it.
+CFG = open(os.path.join(REPO, "config.sh")).read()
+m = re.search(r"^# ── the abuild signing key.*?(?=^PIPE_SRC=)", CFG, re.S | re.M)
+if not m or "SIGNING_KEY_DIR" not in m.group(0):
+    sys.exit("FAIL could not extract the SIGNING_KEY_DIR section from config.sh")
+
+
+def resolve(home, work=None, export=None, mkdirs=()):
+    """Run the tier logic with /work redirected; returns the chosen path."""
+    root = tempfile.mkdtemp(prefix="signkey-cfg-")
+    SANDBOXES.append(root)
+    h = os.path.join(root, home)
+    os.makedirs(h, exist_ok=True)
+    w = os.path.join(root, work) if work else os.path.join(root, "absent")
+    for d in mkdirs:
+        os.makedirs(os.path.join(root, d), exist_ok=True)
+    block = m.group(0).replace("/work", w)
+    env = dict(os.environ, HOME=h)
+    env.pop("SIGNING_KEY_DIR", None)
+    if export:
+        env["SIGNING_KEY_DIR"] = os.path.join(root, export)
+    r = subprocess.run(["bash", "-c", "set -eu\n" + block +
+                        '\nprintf "%s" "$SIGNING_KEY_DIR"'],
+                       capture_output=True, text=True, env=env)
+    return r.stdout, r.returncode, root
+
+
+got, rc, root = resolve("home", work="work", mkdirs=("work", "work/keys/pipeos"),
+                        export="elsewhere/keys")
+check("14 an explicit SIGNING_KEY_DIR wins over both fallbacks",
+      rc == 0 and got == os.path.join(root, "elsewhere/keys"), f"{rc} {got!r}")
+
+got, rc, root = resolve("home")
+check("15 no /work (the build host): the durable store is under $HOME",
+      rc == 0 and got == os.path.join(root, "home/.pipeos/keys"), f"{rc} {got!r}")
+
+got, rc, root = resolve("home", work="work", mkdirs=("work",))
+check("16 /work present and writable (on a box): the ext4 workspace wins",
+      rc == 0 and got == os.path.join(root, "work/keys/pipeos"), f"{rc} {got!r}")
+
+# The one that matters for a builder mid-migration: a store that already holds
+# the fleet key is not abandoned because a $HOME directory happens to exist.
+got, rc, root = resolve("home", work="work",
+                        mkdirs=("work", "work/keys/pipeos", "home/.pipeos/keys"))
+check("17 an existing on-box store wins over an existing $HOME one",
+      rc == 0 and got == os.path.join(root, "work/keys/pipeos"), f"{rc} {got!r}")
 
 cleanup()
 sys.exit(0 if all(RESULTS) else 1)

@@ -60,7 +60,34 @@ CHROOT="$OUT/chroot"
 # `rm -rf out` reaches for first. This is its durable home, outside the repo
 # on purpose so nothing repo-scoped can take it. Override to relocate; the
 # restore in 10-mk-chroot.sh follows it. (pipeOS#90)
-SIGNING_KEY_DIR="${SIGNING_KEY_DIR:-/work/keys/pipeos}"
+#
+# Same three tiers as ALPINE_ISO above — override, then the cross-host default,
+# then the on-box fallback — and it points that way round for the reason box2
+# gave on #92: this file's only unconditional /work path was this one, and the
+# machine that actually runs 10-mk-chroot.sh is a workstation, not a box (the
+# script needs sudo chroot and apk, both hard-banned on a box). /work does not
+# exist there and an unprivileged user cannot create it, so under `set -e` the
+# old default was a hard build stop at the key step on the only machine that
+# builds the fleet.
+#
+# The on-box tier is still worth having, and it is not the -d /work test alone:
+# on a box $HOME is /root on tmpfs, which is the one place a key must NOT live.
+# So the fallback wants a durable /work — and an existing store there wins
+# outright, because a builder that already has the fleet key on the ext4
+# workspace must not silently start looking somewhere else.
+#
+# The fallbacks apply ONLY when nothing was exported. ALPINE_ISO's inherited
+# behaviour — a typo'd override silently falling through to another path — is
+# flagged above as worth fixing; it is not worth reproducing on the key, where
+# "silently used a different one" is the entire defect class.
+if [ -z "${SIGNING_KEY_DIR:-}" ]; then
+    SIGNING_KEY_DIR="$HOME/.pipeos/keys"
+    if [ -d /work/keys/pipeos ]; then
+        SIGNING_KEY_DIR=/work/keys/pipeos
+    elif [ ! -d "$SIGNING_KEY_DIR" ] && [ -d /work ] && [ -w /work ]; then
+        SIGNING_KEY_DIR=/work/keys/pipeos
+    fi
+fi
 
 PIPE_SRC="${PIPE_SRC:-$HOME/Projects/pipe}"
 HERMES_SRC="${HERMES_SRC:-$HOME/.hermes/hermes-agent}"

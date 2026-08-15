@@ -116,6 +116,46 @@ if ! ls "$ABUILD_DIR"/*.rsa >/dev/null 2>&1; then
         sudo chroot "$CHROOT" /bin/sh -lc 'su - builder -c "abuild-keygen -a -n"'
     fi
 fi
+# Whatever is in the chroot now — restored or freshly generated — is about to
+# become the fleet's key twice over: 30-build-apks.sh signs the repo index with
+# the private half, and 40-build-apkovl.sh copies the PUBLIC half straight into
+# the apkovl's /etc/apk/keys, so every stick flashed after this trusts it.
+#
+# A pair that does not derive is exactly as fatal as a fresh key and looks like
+# neither: the index is signed by one key, the sticks trust another, and the
+# first symptom is an UNTRUSTED SIGNATURE at boot on hardware that is already
+# in someone's hand. Nothing above catches it — the census compares FILENAMES,
+# and `cp '$key_src'/*.rsa*` is a glob, so a store holding a .rsa and a .rsa.pub
+# from different keygens (a half-finished copy, a restore from two backups)
+# passes every check so far. One line closes it. (box2 on #92)
+priv_file=$(ls "$ABUILD_DIR"/*.rsa 2>/dev/null | head -1 || true)
+if [ -z "$priv_file" ]; then
+    echo "no private key in $ABUILD_DIR after restore/keygen — cannot sign" >&2
+    exit 1
+elif [ ! -f "$priv_file.pub" ]; then
+    echo "$priv_file has no .pub half — 40-build-apkovl.sh would ship nothing" >&2
+    echo "for the sticks to trust; restore both halves or remove the private" >&2
+    exit 1
+elif command -v openssl >/dev/null 2>&1; then
+    if sudo sh -c "openssl rsa -in '$priv_file' -pubout 2>/dev/null" \
+        | cmp -s - "$priv_file.pub"; then
+        echo "==> signing key pair verified: $(basename "$priv_file") derives its .pub"
+    else
+        echo "the private key and the .pub beside it are NOT a pair:" >&2
+        ls -l "$priv_file" "$priv_file.pub" >&2
+        echo "the repo index would be signed by one key and the sticks would" >&2
+        echo "trust another. Restore both halves from one backup, or delete" >&2
+        echo "the .pub and re-derive it: openssl rsa -in KEY -pubout > KEY.pub" >&2
+        exit 1
+    fi
+else
+    # Not fatal: openssl is not a build dependency today and refusing to build
+    # over a missing checker would be a new failure mode on hosts that are fine.
+    # Loud, because an unverified pair is the one thing this section cannot see.
+    echo "==> WARNING: no openssl on this host — the key pair is UNVERIFIED" >&2
+    echo "    (install openssl, or check by hand before flashing)" >&2
+fi
+
 # Back up in both directions, so a fresh keygen lands in the durable home too.
 # The census at the top of this section is what makes the backup safe: it has
 # already established that no store disagrees about which key that is.
