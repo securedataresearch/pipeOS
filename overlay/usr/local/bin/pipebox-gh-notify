@@ -26,6 +26,15 @@
 # And the DM says which of those it is, because a windowed read that looks
 # complete is the whole defect (the #658 class, on the one channel the owner
 # reads GitHub through — there is no second surface to catch a miss here).
+#
+# The one qualification on that property, because an unqualified absolute here
+# would be false (box2 on #95): the search itself has a cut, at SEARCH_LIMIT.
+# When a full page ENDS inside a tie group, the issues that fell off the page
+# were never enumerated, so no cursor value can be proven safe. The cursor then
+# stops before that second — or, if the whole page is one second, does not move
+# at all. Those issues are not passed, but they are not reachable either until
+# SEARCH_LIMIT exceeds the number of issues touched in that second, and the DM
+# says so in as many words. Lossless, not always progressing.
 
 . /etc/pipeos/pipebox.conf 2>/dev/null || true
 [ -n "$OWNER_NICK" ] || exit 0
@@ -69,6 +78,12 @@ if [ "$found" -gt 0 ] 2>/dev/null; then
     # The oldest MAX_ITEMS, then extended forward over anything with the same
     # updatedAt as the last of them. On a sorted array `select(<= $t)` is that
     # prefix, so the batch is >= MAX_ITEMS and ends on a timestamp boundary.
+    #
+    # The extension is UNBOUNDED, so MAX_ITEMS is a floor on the batch, not a
+    # cap on the DM: a bulk relabel that touches 20 issues in one second sends
+    # all 20 in one message. That is the correct trade — ending mid-second is
+    # the bug this file exists to fix — but it is a consequence worth stating
+    # rather than discovering. (box0 on #95)
     batch=$(printf '%s' "$sorted" | jq -c --argjson n "$MAX_ITEMS" '
         if length <= $n then .
         else (.[$n - 1].updatedAt) as $t | [ .[] | select(.updatedAt <= $t) ]
@@ -86,6 +101,39 @@ if [ "$found" -gt 0 ] 2>/dev/null; then
     [ "$sent" -lt "$found" ] && held=1
     [ "$found" -ge "$SEARCH_LIMIT" ] && at_cap=1
 
+    # The tie extension guards the cut at MAX_ITEMS. Nothing guarded the cut at
+    # SEARCH_LIMIT, and that one drops issues by the very mechanism #88 is
+    # about: when the search returns its full limit, its LAST timestamp may
+    # itself be a truncated tie group — more issues share that second than the
+    # page had room for — and advancing the cursor onto it makes `>` skip every
+    # one of them, permanently. (box0 on #95)
+    #
+    # Only the BATCH's own last second is at risk, and only when it is also the
+    # search's last. If the batch ends earlier, the page contains a strictly
+    # later item, so every issue sharing the batch's last second is present and
+    # that second is proven exhausted.
+    search_last_ts=$(printf '%s' "$sorted" | jq -r '.[-1].updatedAt' 2>/dev/null) || exit 0
+    unverified=0
+    cursor_ts="$last_ts"
+    if [ "$at_cap" = 1 ] && [ "$last_ts" = "$search_last_ts" ]; then
+        unverified=1
+        # Everything strictly before the unverified second IS verified: the
+        # page proved those seconds complete by containing a later one.
+        verified=$(printf '%s' "$batch" | jq -c --arg t "$last_ts" \
+            '[ .[] | select(.updatedAt < $t) ]' 2>/dev/null) || exit 0
+        if [ "$(printf '%s' "$verified" | jq 'length' 2>/dev/null)" -gt 0 ] 2>/dev/null; then
+            cursor_ts=$(printf '%s' "$verified" | jq -r '.[-1].updatedAt' 2>/dev/null) || exit 0
+        else
+            # The whole page is one second. There is NO safe cursor: any value
+            # either repeats this page or skips part of a second we never saw.
+            # Empty means "do not move it" below.
+            cursor_ts=
+        fi
+    fi
+    # Note the batch itself is still sent in full — nothing is withheld. Only
+    # the cursor stops short, so the unverified second is re-queried next tick.
+    # That repeats some issues; repeating is noise, and skipping is data loss.
+
     if [ "$held" = 1 ]; then
         header="[gh] $sent of $found changed issues, oldest first — the rest follow next tick"
     else
@@ -93,6 +141,19 @@ if [ "$found" -gt 0 ] 2>/dev/null; then
     fi
     [ "$at_cap" = 1 ] && header="$header
 [gh] the search returned its full limit of $SEARCH_LIMIT — the true total is unknown"
+    if [ "$unverified" = 1 ] && [ -n "$cursor_ts" ]; then
+        header="$header
+[gh] $last_ts may be cut off mid-second, so the cursor stops before it — expect some of these again next tick"
+    elif [ "$unverified" = 1 ]; then
+        # Every issue on a full page shares one second. This is the one case
+        # cursor arithmetic cannot rescue: a strict `>` cursor at second
+        # granularity has no value between "repeat this page" and "skip part of
+        # a second nothing ever enumerated". Holding still is the lossless half
+        # of an unfixable choice, and the tick CANNOT make progress — so say
+        # that, rather than let a stuck channel read as a quiet one.
+        header="$header
+[gh] all $sent of these share $last_ts and the page came back full — a '>' cursor cannot page inside a single second, so this tick cannot advance and any further issues in that second are unreachable. Raise SEARCH_LIMIT above the number of issues touched in that second, or query it directly."
+    fi
 
     body=$(printf '%s' "$batch" | jq -r \
         '.[] | "[gh] \(.repository.nameWithOwner)#\(.number) \(.title) \(.url)"' \
@@ -100,7 +161,7 @@ if [ "$found" -gt 0 ] 2>/dev/null; then
 
     if pipe dm "$OWNER_NICK" "$header
 $body" >>"$LOG" 2>&1; then
-        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) sent $sent of $found found (held=$held at_cap=$at_cap) cursor=$last_ts" >> "$LOG"
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) sent $sent of $found found (held=$held at_cap=$at_cap unverified=$unverified) cursor=${cursor_ts:-<held back>}" >> "$LOG"
     else
         # DM failed (offline, rate-limited): leave cursor alone, retry next run
         exit 0
@@ -110,7 +171,9 @@ $body" >>"$LOG" 2>&1; then
     # tick was short of the full picture — `>` next time re-finds the rest,
     # and nothing that was not sent is behind the cursor.
     if [ "$held" = 1 ] || [ "$at_cap" = 1 ]; then
-        printf '%s\n' "$last_ts" > "$CURSOR"
+        # Empty cursor_ts means no verified second exists in this page. Leaving
+        # the cursor exactly where it was is the only lossless option.
+        [ -n "$cursor_ts" ] && printf '%s\n' "$cursor_ts" > "$CURSOR"
         exit 0
     fi
 fi
