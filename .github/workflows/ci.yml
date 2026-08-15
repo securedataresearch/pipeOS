@@ -45,6 +45,13 @@ jobs:
       - name: card generation is stable and matches the committed overlay
         run: ./scripts/check-cards.sh
 
+      # pipeOS#100. The resume predicate had been permanently false fleet-wide
+      # and nothing said so, because the only test of it staged the one layout
+      # #80 says is wrong. This runs the SHIPPED predicate against both layouts
+      # and against the pre-fix control.
+      - name: the resume predicate sees a transcript behind the projects symlink
+        run: python3 scripts/check-cohort-watch.py
+
       - name: derived files are not hand-editable without detection
         run: |
           set -eu
