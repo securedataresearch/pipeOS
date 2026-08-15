@@ -44,6 +44,14 @@ if _start not in orig or _end not in orig:
     sys.exit("FAIL cannot locate the pair-verification block in 10-mk-chroot.sh")
 PAIR_BLOCK = orig[orig.index(_start):orig.index(_end) + len(_end)]
 
+# Same treatment for the material census — boundaries, not a pasted copy.
+_mstart = "_keysum=\nfor _c in sha256sum md5sum; do"
+_mend = "        exit 1\n    fi\nfi"
+if _mstart not in orig or _mend not in orig:
+    sys.exit("FAIL cannot locate the material census in 10-mk-chroot.sh")
+MATERIAL_BLOCK = orig[orig.index(_mstart):
+                      orig.index(_mend, orig.index(_mstart)) + len(_mend)]
+
 controls = [
     # The reviewed-but-wrong version: census only reaches the stores we might
     # RESTORE from, never the chroot we back up FROM.
@@ -71,6 +79,13 @@ controls = [
     ("F: no pair verification (the state pipeOS#92 shipped for review)",
      lambda s: s.replace(PAIR_BLOCK, 'priv_file=$(ls "$ABUILD_DIR"/*.rsa '
                          "2>/dev/null | head -1 || true)")),
+
+    # The state pipeOS#92 shipped at 28935c5: the census collapses to
+    # `basename | sort -u`, so an impostor under the fleet key's own filename
+    # is one key as far as every guard is concerned. Matched by boundary for
+    # the same reason as the pair block.
+    ("H: census by name only (the state pipeOS#92 shipped for review)",
+     lambda s: s.replace(MATERIAL_BLOCK, "_keysum=")),
 ]
 
 # One control lives in the other file: the tier logic that decides WHERE the
