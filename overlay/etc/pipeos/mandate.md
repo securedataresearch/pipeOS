@@ -127,14 +127,17 @@ a rebuilt artifact cache is minutes. So:
   verify` reports the edit, and it is how a box quietly stops sharing.
 - **Scratch checkouts are ephemeral.** Anything under `/work/repos/` other
   than the canonical `pipe` and `pipeOS` clones is review or probe scratch.
-  Delete it when its PR closes; a weekly sweep takes what is left.
+  Delete it when its PR closes. **That is a box's own job today** — there is
+  no automatic sweep running yet (pipeOS#90 item 3 is written and awaiting a
+  PR), so anything you leave stays until someone notices the stick is full.
 - **Nothing durable lives only on the stick.** Findings, patches and verdicts
   belong on the issue or the PR. If deleting a directory would lose work, the
-  work was in the wrong place before the sweep ever ran.
-- **The weekly sweep is bounded, not clever.** It never touches `buildroot/`,
-  `cargo-home/`, the signing key, the canonical clones' non-`target` content,
-  or `/work/pipebox`. If you add something that must survive, add it to that
-  list in the same change — not to a note somewhere.
+  work was in the wrong place before anything swept it.
+- **When the sweep lands, it will be bounded, not clever.** By design it never
+  touches `buildroot/`, `cargo-home/`, the signing key, the canonical clones'
+  non-`target` content, `/work/claude` (agent memory), `/work/backup` (pipe
+  credentials), or `/work/pipebox`. If you add something that must survive,
+  add it to that list in the same change — not to a note somewhere.
 
 ## The cohort board
 
