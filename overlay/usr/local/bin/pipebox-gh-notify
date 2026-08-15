@@ -3,6 +3,29 @@
 # no autonomous work from issues). Polls issues across $GH_OWNER repos and
 # DMs the owner a one-line summary per new/updated issue. Cursor keeps it
 # incremental; silent no-op when offline or not signed in.
+#
+# pipeOS#88: this used to drop issues. `head -10` cut the DM, the log printed
+# the MATCHED count beside the cut list ("sent 20 issue(s)" when ten went),
+# and the cursor then advanced past all twenty — so the ten that were cut were
+# never retried. A second cut sat above it: --limit bounded the search, and
+# with the default best-match order the twenty that came back were not the
+# twenty oldest, so anything the search left behind was also skipped.
+#
+# The fix is one property: THE CURSOR NEVER PASSES AN ISSUE THAT WAS NOT SENT.
+# Everything else follows from it —
+#
+#   * --sort updated --order asc, so what the search returns is a prefix in
+#     time. Without this the returned set has holes and no cursor value is
+#     safe; with it, "everything up to T" is a claim the data supports.
+#   * the batch is the OLDEST MAX_ITEMS, extended to cover every issue sharing
+#     the last one's timestamp. The extension is what lets the cursor use `>`
+#     without dropping the issues that share that second.
+#   * the cursor becomes that timestamp, not `now`, whenever anything was held
+#     back. The remainder is re-found next tick because it is still `>` it.
+#
+# And the DM says which of those it is, because a windowed read that looks
+# complete is the whole defect (the #658 class, on the one channel the owner
+# reads GitHub through — there is no second surface to catch a miss here).
 
 . /etc/pipeos/pipebox.conf 2>/dev/null || true
 [ -n "$OWNER_NICK" ] || exit 0
@@ -17,6 +40,13 @@ CURSOR="$STATE/gh-cursor"
 LOG=/work/logs/pipebox-gh-notify.log
 mkdir -p "$STATE" /work/logs || exit 0
 
+# How many the search may return, and how many one DM may carry. They are
+# different numbers on purpose: LIMIT bounds the query, MAX_ITEMS bounds the
+# message, and the gap between them is the backlog that rides to the next
+# tick instead of being discarded.
+SEARCH_LIMIT=20
+MAX_ITEMS=10
+
 exec 9> /run/pipebox-gh-notify.lock
 flock -n 9 || exit 0
 
@@ -25,17 +55,62 @@ since=$(cat "$CURSOR" 2>/dev/null)
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 issues=$(gh search issues --owner "$GH_OWNER" --updated ">${since}" \
-    --json repository,number,title,url,updatedAt --limit 20 2>>"$LOG") || exit 0
+    --sort updated --order asc \
+    --json repository,number,title,url,updatedAt --limit "$SEARCH_LIMIT" \
+    2>>"$LOG") || exit 0
 
-count=$(printf '%s' "$issues" | jq 'length' 2>/dev/null) || exit 0
-if [ "$count" -gt 0 ] 2>/dev/null; then
-    summary=$(printf '%s' "$issues" | jq -r \
+# Sorted here as well as asked for above. The flag is what makes the set a
+# prefix in time; this makes the ORDER WITHIN IT something the batch maths can
+# rely on rather than something a future flag change can quietly take away.
+sorted=$(printf '%s' "$issues" | jq -c 'sort_by(.updatedAt)' 2>/dev/null) || exit 0
+found=$(printf '%s' "$sorted" | jq 'length' 2>/dev/null) || exit 0
+
+if [ "$found" -gt 0 ] 2>/dev/null; then
+    # The oldest MAX_ITEMS, then extended forward over anything with the same
+    # updatedAt as the last of them. On a sorted array `select(<= $t)` is that
+    # prefix, so the batch is >= MAX_ITEMS and ends on a timestamp boundary.
+    batch=$(printf '%s' "$sorted" | jq -c --argjson n "$MAX_ITEMS" '
+        if length <= $n then .
+        else (.[$n - 1].updatedAt) as $t | [ .[] | select(.updatedAt <= $t) ]
+        end' 2>/dev/null) || exit 0
+    sent=$(printf '%s' "$batch" | jq 'length' 2>/dev/null) || exit 0
+    last_ts=$(printf '%s' "$batch" | jq -r '.[-1].updatedAt' 2>/dev/null) || exit 0
+
+    # Two independent facts, and neither substitutes for the other (#658):
+    #   held    — found more than one DM carries; the rest are queued, not lost
+    #   at_cap  — the search returned exactly its limit, so the TRUE total is
+    #             unknown. Not "large": unknown. A tick can be at_cap with
+    #             nothing held, and that still means numbers are missing.
+    held=0
+    at_cap=0
+    [ "$sent" -lt "$found" ] && held=1
+    [ "$found" -ge "$SEARCH_LIMIT" ] && at_cap=1
+
+    if [ "$held" = 1 ]; then
+        header="[gh] $sent of $found changed issues, oldest first — the rest follow next tick"
+    else
+        header="[gh] $sent changed issue(s)"
+    fi
+    [ "$at_cap" = 1 ] && header="$header
+[gh] the search returned its full limit of $SEARCH_LIMIT — the true total is unknown"
+
+    body=$(printf '%s' "$batch" | jq -r \
         '.[] | "[gh] \(.repository.nameWithOwner)#\(.number) \(.title) \(.url)"' \
-        | head -10)
-    if pipe dm "$OWNER_NICK" "$summary" >>"$LOG" 2>&1; then
-        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) sent $count issue(s)" >> "$LOG"
+        2>/dev/null) || exit 0
+
+    if pipe dm "$OWNER_NICK" "$header
+$body" >>"$LOG" 2>&1; then
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) sent $sent of $found found (held=$held at_cap=$at_cap) cursor=$last_ts" >> "$LOG"
     else
         # DM failed (offline, rate-limited): leave cursor alone, retry next run
+        exit 0
+    fi
+
+    # The whole point. Advance only to what actually went out whenever the
+    # tick was short of the full picture — `>` next time re-finds the rest,
+    # and nothing that was not sent is behind the cursor.
+    if [ "$held" = 1 ] || [ "$at_cap" = 1 ]; then
+        printf '%s\n' "$last_ts" > "$CURSOR"
         exit 0
     fi
 fi
