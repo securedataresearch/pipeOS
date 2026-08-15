@@ -134,6 +134,37 @@ else
     done
 fi
 
+# 6. the two exports the fleet's disk budget depends on, and their SCOPE
+#
+# Checks 3 and 5 cover "the file is what the card generates" and "something
+# sources it". Neither reads what it says, so dropping an export in the
+# template — or moving one — is invisible to both: the committed copy still
+# matches the generator, and the launchers still source it.
+#
+# Scope is the part worth asserting rather than eyeballing. CARGO_TARGET_DIR
+# must stay INSIDE the mountpoint guard: with /work unmounted it would point
+# cargo at a tmpfs path on a diskless box and put gigabytes in RAM.
+# CARGO_INCREMENTAL must stay OUTSIDE it, because it is a size policy rather
+# than a location, and the run where /work did NOT mount is the one where
+# space is scarcest — silently reverting to incremental there is backwards.
+envf="overlay/$ENVFILE"
+guard_ln=$(grep -n '^if mountpoint -q /work' "$envf" | head -1 | cut -d: -f1 || true)
+inc_ln=$(grep -n '^export CARGO_INCREMENTAL$' "$envf" | head -1 | cut -d: -f1 || true)
+tgt_ln=$(grep -n '^    export CARGO_TARGET_DIR$' "$envf" | head -1 | cut -d: -f1 || true)
+if [ -z "$guard_ln" ] || [ -z "$inc_ln" ] || [ -z "$tgt_ln" ]; then
+    bad "$ENVFILE is missing an export or the /work guard"
+    say "      guard=${guard_ln:-none} CARGO_INCREMENTAL=${inc_ln:-none} CARGO_TARGET_DIR=${tgt_ln:-none}"
+elif [ "$inc_ln" -gt "$guard_ln" ]; then
+    bad "CARGO_INCREMENTAL is exported inside the /work mountpoint guard"
+    say "      a box that failed to mount /work would build incrementally"
+    say "      into tmpfs — the run with the least room to spare"
+elif [ "$tgt_ln" -lt "$guard_ln" ]; then
+    bad "CARGO_TARGET_DIR is exported outside the /work mountpoint guard"
+    say "      with /work unmounted that path is tmpfs: gigabytes into RAM"
+else
+    ok "both exports present, each on the correct side of the /work guard"
+fi
+
 if [ "$fails" = 0 ]; then
     say "check-cards: PASS"
 else

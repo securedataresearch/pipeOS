@@ -10,7 +10,7 @@
 # Edit the card and re-run `pipebox-card generate`; a hand edit here is
 # detected by `pipebox-card verify` and lost at the next generation.
 #
-# card sha256:f74d4579b6c3d0ae9b4dcf47c601c5c1b3f6758a8d0f7e56f7404f1cf4a9f8d9
+# card sha256:af9d8aa25eeab85c1b9dbd506bc6f1195585799575aace329d77afd41a2c5eef
 
 # One artifact cache per box (pipeOS#90 item 1). Every checkout shares it:
 # the canonical clones, PR-review scratch, probe trees. Measured on box1 the
@@ -30,6 +30,22 @@
 # under the filesystem the next time /work mounts correctly. Unset, cargo
 # falls back to a per-repo target/ — the old behaviour, which is the right
 # direction to fail in.
+#
+# CARGO_INCREMENTAL=0 rides with it (Foreman, on #93). Incremental state is
+# the largest and least useful thing in a target dir here: it is per-crate
+# per-profile scratch that only pays off when the same box rebuilds the same
+# working tree repeatedly with small edits. A box does short-lived
+# clone-build-verdict-discard cycles across several checkouts, so the
+# incremental caches are written, never read, and then counted against a
+# shared /work — which is what filled it. cargo's own CI guidance is the same
+# call for the same reason.
+#
+# Set OUTSIDE the mountpoint guard on purpose: it is a size policy, not a
+# location one, and it is the correct setting whether or not /work mounted.
+# Nothing about it can strand data in RAM.
+CARGO_INCREMENTAL=0
+export CARGO_INCREMENTAL
+
 if mountpoint -q /work 2>/dev/null; then
     CARGO_TARGET_DIR=/work/cargo-target
     export CARGO_TARGET_DIR
