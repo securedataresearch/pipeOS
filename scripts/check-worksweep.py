@@ -216,10 +216,20 @@ ck("no tier runs", p.stdout.strip() == "", repr(p.stdout[:120]))
 ck("shared cache survives", os.path.exists(os.path.join(w, "cargo-target/debug/shared")))
 
 # ── 5. symlinks are never followed out of the workspace ──────────────
-# Two different paths reach a candidate, and only one of them can see a
-# symlink: tier 1 finds target/ dirs with `find -type d`, which excludes
-# symlinks outright, while tier 4 names /work/cargo-target directly and would
-# happily rm -rf a link if the -L guard were not there. Both are checked.
+# THREE layouts, because the first two do not answer for the third.
+#
+# The comment that used to sit here said tier 1 was safe because `find -type d`
+# excludes symlinks outright. That is true of the layout staged below — where
+# the `target/` LEAF is the link — and false of the layout where the CHECKOUT
+# is the link, because a start path is not subject to `-type`. Two different
+# objects; the old reasoning generalised from the tested one to the untested
+# one, and the untested one is the one that deletes. #100 was the same shape: a
+# guard that answered only for the layout the probe staged.
+#
+# So: the leaf-symlink layout (tier 1's find never nominates it), the
+# named-path layout (tier 4's `[ -L ]` guard fires and says so), and the
+# symlinked-CHECKOUT layout below, which is the one that reached `rm -rf`
+# outside the workspace at f6a34b2.
 t = tempfile.mkdtemp(); TMPS.append(t)
 w = fixture(os.path.join(t, "work"))
 outside = os.path.join(t, "precious")
@@ -238,6 +248,61 @@ ck("a symlinked cargo-target is skipped by name, and said so",
    "skip (symlink)" in p.stdout, p.stdout[-300:])
 ck("and the link itself still exists (not silently unlinked)",
    os.path.islink(os.path.join(w, "cargo-target")))
+
+# The symlinked CHECKOUT. `for d in /work/repos/*/` yields the path WITH the
+# glob's trailing slash, and a trailing slash is resolved by the kernel during
+# path lookup — so an unstripped `find "$d"` descends through the link into a
+# tree that is not the workspace. The row that matters is the first one: a real
+# directory outside `/work` surviving the sweep. The last row is what keeps this
+# honest — the fix must not work by making tier 1 stop sweeping altogether.
+t = tempfile.mkdtemp(); TMPS.append(t)
+w = fixture(os.path.join(t, "work"))
+outside = os.path.join(t, "outside-checkout")
+os.makedirs(os.path.join(outside, "target", "debug"))
+open(os.path.join(outside, "target", "debug", "blob"), "w").write("x" * 4096)
+open(os.path.join(outside, "IRREPLACEABLE.txt"), "w").write("uncommitted")
+os.symlink(outside, os.path.join(w, "repos", "linked"))
+p = run(w, 91, "--force")
+print("\na symlinked checkout is not descended into")
+ck("a target/ OUTSIDE the workspace survives",
+   os.path.isdir(os.path.join(outside, "target")), p.stdout[-400:])
+ck("the uncommitted file beside it survives",
+   os.path.exists(os.path.join(outside, "IRREPLACEABLE.txt")))
+ck("nothing under the symlinked checkout is even named in the log",
+   "repos/linked" not in p.stdout, p.stdout[:400])
+ck("the link itself still exists", os.path.islink(os.path.join(w, "repos", "linked")))
+ck("STILL SWEEPS: a real scratch target/ in the same run is still reclaimed",
+   not os.path.exists(os.path.join(w, "repos", "pr677-review", "target")),
+   p.stdout[-400:])
+
+# ── 5b. a non-numeric threshold must not fail OPEN ───────────────────────
+# `:-` covers empty and nothing else. A garbage value makes `[ "$use" -lt
+# "$sweep_pct" ]` exit 2, which the `&&` chain reads as "not under threshold",
+# so the early exit is skipped; `done_enough` then errors identically forever,
+# so the stop-when-recovered logic goes too and every tier runs on a box that
+# is nowhere near the threshold. No `set -e` catches it. (box0 on #103.)
+#
+# `080` is a row on purpose and is NOT expected to fall back: `test` parses
+# decimal, so it always meant 80. It is here to pin that this arm rejects
+# garbage without quietly changing the meaning of a value that already worked.
+print("\na garbage threshold falls back instead of sweeping everything")
+for pct, should_sweep, why in [("sixty", False, "non-numeric"),
+                               ("-5", False, "negative: 'never under threshold'"),
+                               ("080", False, "leading zero, but test() reads decimal")]:
+    t = tempfile.mkdtemp(); TMPS.append(t)
+    w = fixture(os.path.join(t, "work"))
+    open(conf_path(w), "w").write("WORKSWEEP_PCT=%s\n" % pct)
+    p = run(w, 12)               # 12% used: far under any sane threshold
+    swept = not os.path.exists(os.path.join(w, "cargo-target/debug/shared"))
+    ck("WORKSWEEP_PCT=%s does not sweep a 12%%-full box (%s)" % (pct, why),
+       swept == should_sweep, "swept=%s out=%r" % (swept, p.stdout[:200]))
+for pct in ("sixty", "-5"):
+    t = tempfile.mkdtemp(); TMPS.append(t)
+    w = fixture(os.path.join(t, "work"))
+    open(conf_path(w), "w").write("WORKSWEEP_PCT=%s\n" % pct)
+    p = run(w, 91, "--force")
+    ck("WORKSWEEP_PCT=%s says out loud that it fell back" % pct,
+       "not a plain integer" in p.stdout and "60%" in p.stdout, p.stdout[:300])
 
 # ── 6. unknown argument is an error, not a silent full sweep ─────────────
 t = tempfile.mkdtemp(); TMPS.append(t)
