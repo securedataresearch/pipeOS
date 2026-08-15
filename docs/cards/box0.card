@@ -55,3 +55,9 @@ PIPE_CAPS=read,send.dm,send.room,send.lobby,send.bbs,claim
 # the proof this predicate works. Same disk size as box3 but 4-5x the churn,
 # so the shortest interval in the fleet.
 GC_INTERVAL_HOURS=6
+
+# pipeOS#101. One agent run's clock, minutes. 15 is the fleet default and the
+# issue's figure for TEST/SHIP: a verdict wake reads a diff and posts, and the
+# one run this box lost at 15 min on 2026-08-15 was one, not a pattern. Raise
+# it if this box starts losing verdict runs the way BUILD was losing builds.
+AGENT_TIMEOUT_MIN=15

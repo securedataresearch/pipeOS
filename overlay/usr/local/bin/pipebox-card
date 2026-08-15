@@ -46,6 +46,7 @@ NICK= ROLE= OWNER_NICK= FOREMAN_NICK= COHORT_ID= GH_OWNER= MAC=
 TOOLCHAIN= REPOS= PIPE_CAPS=
 DISK_WARN_PCT= DISK_CRIT_PCT=
 GC_INTERVAL_HOURS=
+AGENT_TIMEOUT_MIN=
 
 # pipe#650 item 9. The capabilities a card is ALLOWED to grant the agent —
 # every other spelling in pipe's vocabulary is refused here, by this script,
@@ -90,6 +91,7 @@ read_card() {
             TOOLCHAIN|REPOS|PIPE_CAPS) ;;
             DISK_WARN_PCT|DISK_CRIT_PCT) ;;
             GC_INTERVAL_HOURS) ;;
+            AGENT_TIMEOUT_MIN) ;;
             *) die "unknown card key: $key" ;;
         esac
         # Values land in sed expressions and in a shell-sourced conf file.
@@ -120,6 +122,16 @@ read_card() {
             # pipeOS#41 (Foreman ruling 2026-08-10): same digits-only rule as
             # the thresholds above — an interval is a number or it is nothing.
             GC_INTERVAL_HOURS)
+                case "$val" in
+                    ''|*[!0-9]*) [ -z "$val" ] || die "card value for $key must be a plain integer: $val" ;;
+                esac
+                ;;
+            # pipeOS#101: the agent run budget, in minutes. Same digits-only
+            # rule as the two above, and for a sharper reason than tidiness —
+            # this value is multiplied by 60 in pipebox-cohort-watch's
+            # arithmetic expansion, so a non-numeric one is a shell error in
+            # the middle of the wake path rather than a bad setting.
+            AGENT_TIMEOUT_MIN)
                 case "$val" in
                     ''|*[!0-9]*) [ -z "$val" ] || die "card value for $key must be a plain integer: $val" ;;
                 esac
@@ -169,6 +181,20 @@ read_card() {
     if [ -n "$GC_INTERVAL_HOURS" ]; then
         [ "$GC_INTERVAL_HOURS" -ge 1 ] 2>/dev/null && [ "$GC_INTERVAL_HOURS" -le 168 ] 2>/dev/null || \
             die "GC_INTERVAL_HOURS must be 1-168: $GC_INTERVAL_HOURS"
+    fi
+
+    # pipeOS#101: one agent run's clock, in minutes. 5-120.
+    #
+    # The floor is not decoration: the cron tick is 2 minutes and the wake does
+    # a board fetch and several `gh` calls before the agent even starts, so
+    # anything under about 5 guarantees kills and would present as "the agent
+    # is broken". The ceiling is the flock — one watcher at a time, so a run
+    # longer than 2 hours holds the lock through 60 ticks and the box stops
+    # responding to the board for the duration. A card wanting more than that
+    # wants a different mechanism, not a bigger number.
+    if [ -n "$AGENT_TIMEOUT_MIN" ]; then
+        [ "$AGENT_TIMEOUT_MIN" -ge 5 ] 2>/dev/null && [ "$AGENT_TIMEOUT_MIN" -le 120 ] 2>/dev/null || \
+            die "AGENT_TIMEOUT_MIN must be 5-120 (minutes): $AGENT_TIMEOUT_MIN"
     fi
 
     if [ "$STRICT" = 1 ]; then
@@ -356,6 +382,7 @@ s|@@REPOS@@|$REPOS|g
 s|@@DISK_WARN_PCT@@|$DISK_WARN_PCT|g
 s|@@DISK_CRIT_PCT@@|$DISK_CRIT_PCT|g
 s|@@GC_INTERVAL_HOURS@@|$GC_INTERVAL_HOURS|g
+s|@@AGENT_TIMEOUT_MIN@@|$AGENT_TIMEOUT_MIN|g
 s|@@CARD_SHA@@|$CARD_SHA|g"
     # Block markers occupy a line of their own and expand to generated text.
     # There are three now (#35 added the role charter, #39 the Foreman's), so
@@ -534,7 +561,8 @@ cmd_show() {
     read_card "$CARD"
     echo "card:        $CARD (sha256:$CARD_SHA)"
     for k in NICK ROLE OWNER_NICK FOREMAN_NICK COHORT_ID GH_OWNER MAC \
-             DISK_WARN_PCT DISK_CRIT_PCT GC_INTERVAL_HOURS; do
+             DISK_WARN_PCT DISK_CRIT_PCT GC_INTERVAL_HOURS \
+             AGENT_TIMEOUT_MIN; do
         eval "v=\$$k"
         printf '%-12s %s\n' "$k:" "${v:-<unset>}"
     done

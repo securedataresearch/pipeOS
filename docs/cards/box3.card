@@ -62,3 +62,9 @@ PIPE_CAPS=read,send.dm,send.room,send.lobby,send.bbs,claim
 # Same disk, slower accumulation, so an interval between box0's 6h and
 # box1's 24h rather than sharing either.
 GC_INTERVAL_HOURS=12
+
+# pipeOS#101. One agent run's clock, minutes. 30 for BUILD, per the issue.
+# This box lost TWO runs to the hardcoded 15-minute cutoff on 2026-08-15 —
+# the most in the fleet — each a real review/build run whose context was then
+# thrown away, because #100 meant the next wake could not resume it either.
+AGENT_TIMEOUT_MIN=30

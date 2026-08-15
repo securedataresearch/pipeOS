@@ -48,3 +48,8 @@ REPOS=pipe,pipeOS
 # by the mandate and by pipebox-settings.json's own `pipe room`/`pipe lobby`
 # allow entries. Dropping them would have left the two fences disagreeing.
 PIPE_CAPS=read,send.dm,send.room,send.lobby,send.bbs,claim
+
+# pipeOS#101. One agent run's clock, minutes. 15 is the fleet default and the
+# issue's figure for TEST/SHIP. SHIP lost no runs to the 15-minute cutoff on
+# 2026-08-15, so this is the default declared rather than a measured need.
+AGENT_TIMEOUT_MIN=15
