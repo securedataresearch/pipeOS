@@ -90,7 +90,14 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ "$(id -u)" = 0 ] || die "run as root"
+# Root is required to write /etc and to save — and ONLY for that. A relocated
+# run (PIPEOS_DEPLOY_ROOT, fenced below to no-persist) writes nothing outside
+# the tree it was handed, so demanding root there would mean the probe could
+# run only as root, i.e. only on a box, i.e. nowhere the fence allows. That is
+# how this file's first CI run failed: every row red on `run as root`.
+if [ -z "$ROOT" ]; then
+    [ "$(id -u)" = 0 ] || die "run as root"
+fi
 [ -d "$REPO/.git" ] || die "no pipeOS checkout at $REPO (set PIPEOS_REPO)"
 
 if [ -n "$ROOT" ] && [ "$NO_PERSIST" != 1 ]; then
@@ -102,13 +109,18 @@ fi
 if [ -n "$ROOT" ]; then
     STAMP="$ROOT$STAMP"
     CARD="$ROOT$CARD"
+    # The log and the lock follow the relocation too. /work/logs and /run are
+    # box paths: a relocated run has no business writing either, and on a CI
+    # runner it cannot. Same reasoning as the root check above.
+    LOG="$ROOT/deploy-overlay.log"
+    LOCK="$ROOT/deploy-overlay.lock"
 fi
 
 # A dry run reads nothing but the repo and the live files, so it takes no lock
-# and needs no /work/logs. It is the reviewable half: an operator can see
+# and needs no log directory. It is the reviewable half: an operator can see
 # exactly what a real run would do before letting it do anything.
 if [ "$DRY" = no ]; then
-    mkdir -p /work/logs 2>/dev/null
+    mkdir -p "$(dirname "$LOG")" 2>/dev/null
     exec 9> "$LOCK"
     flock -n 9 || die "another deploy is running"
 fi
