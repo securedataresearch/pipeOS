@@ -17,15 +17,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: shellcheck the card tooling
+      - name: shellcheck the shell surface
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # Globs, not a file list. The three files named here before were the
+          # card tooling; config.sh and the numbered build scripts — the ones
+          # that decide whether a stick boots — were never linted, so a green
+          # tick on a PR touching them said nothing about the diff. (#98)
+          #
+          # No -s flag: every file's own shebang picks its dialect. scripts/ is
+          # a mix (nine `#!/usr/bin/env bash`, three `#!/bin/sh`) and forcing
+          # `-s sh` on the bash half would invent SC3xxx noise about POSIX
+          # features those files are entitled to use. The three files linted
+          # before are all `#!/bin/sh`, so dropping `-s sh` changes nothing for
+          # them. config.sh has no shebang — it is sourced, never executed —
+          # and carries a `# shellcheck shell=bash` directive instead.
+          #
+          # A non-shell file dropped into overlay/usr/local/bin/ will red this
+          # step with SC1008 rather than silently falling out of coverage. That
+          # is the intended behaviour: exclude it here on purpose, in writing.
+          #
           # -S error: fail on things that are wrong, print things that are
           # merely unidiomatic. A style-red CI gets disabled within a week.
-          shellcheck -s sh -S error \
-            overlay/usr/local/bin/pipebox-card scripts/check-cards.sh \
-            overlay/usr/local/bin/pipeos-selfupdate
-          shellcheck -s sh overlay/usr/local/bin/pipebox-card scripts/check-cards.sh || true
+          shellcheck -S error config.sh scripts/*.sh overlay/usr/local/bin/*
+          shellcheck config.sh scripts/*.sh overlay/usr/local/bin/* || true
 
       - name: card generation is stable and matches the committed overlay
         run: ./scripts/check-cards.sh
