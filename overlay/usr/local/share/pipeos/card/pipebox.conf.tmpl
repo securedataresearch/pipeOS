@@ -56,3 +56,10 @@ DISK_CRIT_PCT="@@DISK_CRIT_PCT@@"
 # (once a day). Declared per box because accumulation rate, not just disk
 # size, drives how often a proactive cargo-clean pass is worth running.
 GC_INTERVAL_HOURS="@@GC_INTERVAL_HOURS@@"
+
+# How stale this box's deployed overlay may get before selfcheck calls it
+# CRITICAL, in days (pipeOS#97). Empty = the selfcheck fallback of 3. Any
+# undeployed commit warns immediately; this is only where warn becomes crit.
+# Card-declared because a box that runs the listener for the whole fleet is
+# not as tolerant of a four-day-old fix as a spare on a shelf.
+OVERLAY_CRIT_DAYS="@@OVERLAY_CRIT_DAYS@@"

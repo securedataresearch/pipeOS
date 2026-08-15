@@ -24,8 +24,20 @@ jobs:
           # merely unidiomatic. A style-red CI gets disabled within a week.
           shellcheck -s sh -S error \
             overlay/usr/local/bin/pipebox-card scripts/check-cards.sh \
-            overlay/usr/local/bin/pipeos-selfupdate
+            overlay/usr/local/bin/pipeos-selfupdate \
+            overlay/usr/local/bin/pipeos-deploy-overlay
           shellcheck -s sh overlay/usr/local/bin/pipebox-card scripts/check-cards.sh || true
+
+      # pipeOS#97. The deploy tool writes /etc and then persists — no box can
+      # run it from inside its sandbox, and the operator who can is exactly
+      # the person who should not be finding its bugs by hand on a live box.
+      # So the probe deploys real commits into a throwaway root, and the
+      # control run mutates the shipped script eight ways and asserts WHICH
+      # rows go red: a probe that cannot fail is not evidence.
+      - name: deploy-overlay behaves, and its probe can see it misbehave
+        run: |
+          python3 scripts/check-deploy-overlay.py
+          python3 scripts/check-deploy-overlay-controls.py
 
       - name: card generation is stable and matches the committed overlay
         run: ./scripts/check-cards.sh

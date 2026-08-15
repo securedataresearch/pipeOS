@@ -46,6 +46,7 @@ NICK= ROLE= OWNER_NICK= FOREMAN_NICK= COHORT_ID= GH_OWNER= MAC=
 TOOLCHAIN= REPOS= PIPE_CAPS=
 DISK_WARN_PCT= DISK_CRIT_PCT=
 GC_INTERVAL_HOURS=
+OVERLAY_CRIT_DAYS=
 
 # pipe#650 item 9. The capabilities a card is ALLOWED to grant the agent —
 # every other spelling in pipe's vocabulary is refused here, by this script,
@@ -89,7 +90,7 @@ read_card() {
             NICK|ROLE|OWNER_NICK|FOREMAN_NICK|COHORT_ID|GH_OWNER|MAC) ;;
             TOOLCHAIN|REPOS|PIPE_CAPS) ;;
             DISK_WARN_PCT|DISK_CRIT_PCT) ;;
-            GC_INTERVAL_HOURS) ;;
+            GC_INTERVAL_HOURS|OVERLAY_CRIT_DAYS) ;;
             *) die "unknown card key: $key" ;;
         esac
         # Values land in sed expressions and in a shell-sourced conf file.
@@ -119,7 +120,7 @@ read_card() {
                 ;;
             # pipeOS#41 (Foreman ruling 2026-08-10): same digits-only rule as
             # the thresholds above — an interval is a number or it is nothing.
-            GC_INTERVAL_HOURS)
+            GC_INTERVAL_HOURS|OVERLAY_CRIT_DAYS)
                 case "$val" in
                     ''|*[!0-9]*) [ -z "$val" ] || die "card value for $key must be a plain integer: $val" ;;
                 esac
@@ -169,6 +170,16 @@ read_card() {
     if [ -n "$GC_INTERVAL_HOURS" ]; then
         [ "$GC_INTERVAL_HOURS" -ge 1 ] 2>/dev/null && [ "$GC_INTERVAL_HOURS" -le 168 ] 2>/dev/null || \
             die "GC_INTERVAL_HOURS must be 1-168: $GC_INTERVAL_HOURS"
+    fi
+
+    # pipeOS#97: how many days an undeployed overlay commit may sit before
+    # selfcheck calls it CRITICAL rather than a warning. 1-90. Zero would mean
+    # "crit the instant main moves", which would fire on every box between a
+    # merge and the deploy that follows it and teach the fleet to ignore the
+    # signal; past 90 days the box is not behind, it is abandoned.
+    if [ -n "$OVERLAY_CRIT_DAYS" ]; then
+        [ "$OVERLAY_CRIT_DAYS" -ge 1 ] 2>/dev/null && [ "$OVERLAY_CRIT_DAYS" -le 90 ] 2>/dev/null || \
+            die "OVERLAY_CRIT_DAYS must be 1-90: $OVERLAY_CRIT_DAYS"
     fi
 
     if [ "$STRICT" = 1 ]; then
@@ -356,6 +367,7 @@ s|@@REPOS@@|$REPOS|g
 s|@@DISK_WARN_PCT@@|$DISK_WARN_PCT|g
 s|@@DISK_CRIT_PCT@@|$DISK_CRIT_PCT|g
 s|@@GC_INTERVAL_HOURS@@|$GC_INTERVAL_HOURS|g
+s|@@OVERLAY_CRIT_DAYS@@|$OVERLAY_CRIT_DAYS|g
 s|@@CARD_SHA@@|$CARD_SHA|g"
     # Block markers occupy a line of their own and expand to generated text.
     # There are three now (#35 added the role charter, #39 the Foreman's), so
@@ -534,7 +546,7 @@ cmd_show() {
     read_card "$CARD"
     echo "card:        $CARD (sha256:$CARD_SHA)"
     for k in NICK ROLE OWNER_NICK FOREMAN_NICK COHORT_ID GH_OWNER MAC \
-             DISK_WARN_PCT DISK_CRIT_PCT GC_INTERVAL_HOURS; do
+             DISK_WARN_PCT DISK_CRIT_PCT GC_INTERVAL_HOURS OVERLAY_CRIT_DAYS; do
         eval "v=\$$k"
         printf '%-12s %s\n' "$k:" "${v:-<unset>}"
     done

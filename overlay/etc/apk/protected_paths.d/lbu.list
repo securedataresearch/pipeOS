@@ -16,6 +16,14 @@
 # apk signing key (extra repo index) and gh auth — lose these and you re-key/re-auth
 +root/.abuild
 +root/.config/gh
+# root's git config, which `gh auth setup-git` writes the HTTPS credential
+# helper into. It is tmpfs like everything else here, so without this line it
+# dies at every reboot and the next `git fetch` on box0/2/3 fails with "could
+# not read Username" on a non-interactive tty — a message that never mentions
+# credentials. That is what stopped the 2026-08-15 hand deploy on three boxes
+# (pipeOS#97 item 4a). The token itself is NOT here: it lives in
+# root/.config/gh above, which this list already carries.
++root/.gitconfig
 # self-update: the applied-digest stamp lives on /work (ext4), but the config
 # and the cron wrapper are custom files under /etc that apk audit would drop
 +etc/pipeos/selfupdate.conf

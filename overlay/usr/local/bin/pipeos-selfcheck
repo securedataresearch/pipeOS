@@ -252,6 +252,61 @@ if command -v pipebox-card >/dev/null 2>&1; then
     esac
 fi
 
+# ---- 5cc. is this box running the overlay that was merged? (pipeOS#97)
+#
+# THE NUMBER THIS EXISTS FOR IS FOUR. #51/#62/#63/#71 were merged 2026-08-10
+# and 08-11 and ran on zero boxes until 2026-08-15 — three of the four boxes
+# were dead that entire time on a bug that was already fixed in main. Nothing
+# on any box said so. `pipeos status` did carry an overlay-drift WARN, but it
+# counted files against whatever branch the local checkout was on, so on a box
+# mid-review it was noise, and warnings that are usually noise are not read.
+#
+# So this asks a different question, against a different reference: what
+# commit did `pipeos deploy-overlay` last install here, and how far is main
+# ahead of it? Any undeployed commit warns at once; OVERLAY_CRIT_DAYS (card,
+# default 3) is where an old one becomes CRITICAL, because an undeployed fix
+# is how this fleet dies quietly and a warning alone was not enough to stop it.
+#
+# Read-only, and never fetches: this runs at boot, before the network is up,
+# so it reads the local checkout only. That means it UNDERSTATES how far
+# behind a box is when the checkout is stale — an understatement that gets
+# corrected at the next fetch, rather than a fabricated reassurance.
+_ov_stamp=/etc/pipeos/.overlay-stamp
+_ov_repo=${PIPEOS_REPO:-/work/repos/pipeOS}
+_ov_ref=${PIPEOS_BASE_REF:-origin/main}
+_ov_crit=${OVERLAY_CRIT_DAYS:-3}          # $_dp_conf was sourced in section 5
+if [ ! -r "$_ov_stamp" ]; then
+    # Absence is a finding, not a pass: every box provisioned before this
+    # existed is in exactly the state #97 was filed about — an overlay of
+    # unknown age, hand-copied, with no record of what it came from.
+    [ -d "$_ov_repo/.git" ] && \
+        warnn "no overlay deploy record ($_ov_stamp) — this box's overlay was hand-copied and its age is unknown (run 'pipeos deploy-overlay', operator)"
+elif [ ! -d "$_ov_repo/.git" ]; then
+    warnn "cannot check overlay freshness: no pipeOS checkout at $_ov_repo"
+else
+    _ov_c=$(sed -n 's/^commit //p' "$_ov_stamp" | head -1)
+    if ! git -C "$_ov_repo" rev-parse --verify -q "$_ov_c^{commit}" >/dev/null 2>&1; then
+        warnn "deployed overlay commit ${_ov_c:-<none>} is not in the local checkout — cannot tell how old this overlay is"
+    elif _ov_tip=$(git -C "$_ov_repo" rev-parse --verify -q "$_ov_ref^{commit}" 2>/dev/null); then
+        _ov_n=$(git -C "$_ov_repo" rev-list --count "$_ov_c..$_ov_tip" 2>/dev/null || echo 0)
+        if [ "${_ov_n:-0}" -gt 0 ]; then
+            # Age of the OLDEST undeployed commit — how long the fleet has
+            # been missing the fix, not how recently someone merged.
+            _ov_old=$(git -C "$_ov_repo" log --format=%ct "$_ov_c..$_ov_tip" 2>/dev/null | tail -1)
+            _ov_days=0
+            [ -n "$_ov_old" ] && _ov_days=$(( ($(date +%s) - _ov_old) / 86400 ))
+            _ov_what="$_ov_n commit(s) behind $_ov_ref, oldest undeployed merged ${_ov_days}d ago"
+            if [ "$_ov_days" -ge "$_ov_crit" ]; then
+                crit "overlay is stale: $_ov_what (>= ${_ov_crit}d) — deploy it (operator: pipeos deploy-overlay)"
+            else
+                warnn "overlay is behind: $_ov_what"
+            fi
+        fi
+    else
+        warnn "no $_ov_ref in $_ov_repo — cannot tell how old this overlay is"
+    fi
+fi
+
 # ---- 5d. cohort-watch could-not-start vs nothing-to-do (pipeOS#44)
 #
 # `pipebox-cohort-watch` (cron, every 2 min) drops a timestamp in
