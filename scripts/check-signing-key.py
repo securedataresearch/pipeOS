@@ -107,6 +107,10 @@ class Sandbox:
         self.chroot = os.path.join(self.out, "chroot")
         self.abuild = os.path.join(self.chroot, "home/builder/.abuild")
         self.durable = os.path.join(root, "keys/pipeos")
+        # The candidate config.sh did not pick. Always exported, because
+        # config.sh always sets it — a row that only staged it when it mattered
+        # would leave every other row testing a variable the real build has.
+        self.alt = os.path.join(root, "alt/.pipeos/keys")
         self.keys = os.path.join(self.out, "keys")
         os.makedirs(os.path.join(self.chroot, "etc/apk/keys"), exist_ok=True)
         bindir = os.path.join(root, "bin")
@@ -117,16 +121,40 @@ class Sandbox:
             os.chmod(p, 0o755)
         self.bindir = bindir
 
-    def run(self, new_key=STRAY):
+    def slim_path(self):
+        """A PATH with every tool the section uses EXCEPT openssl.
+
+        Symlink-per-name rather than a stub called `openssl`, because the
+        section asks `command -v openssl` — a stub that exits nonzero would
+        still be found, and the row is about the branch taken when the checker
+        is genuinely absent. (box3 on #92)
+        """
+        slim = os.path.join(self.root, "slimbin")
+        os.makedirs(slim, exist_ok=True)
+        for d in os.environ.get("PATH", "").split(os.pathsep):
+            if not os.path.isdir(d):
+                continue
+            for name in os.listdir(d):
+                if name == "openssl" or os.path.exists(os.path.join(slim, name)):
+                    continue
+                try:
+                    os.symlink(os.path.join(d, name), os.path.join(slim, name))
+                except OSError:
+                    pass
+        return slim
+
+    def run(self, new_key=STRAY, no_openssl=False):
         # Stage the material the keygen shim will "mint", outside the stores so
         # the census never sees it before the section runs.
         mint = os.path.join(self.root, "mint")
         putkey(mint, new_key)
         env = dict(os.environ)
+        base = self.slim_path() if no_openssl else env["PATH"]
         env.update(
-            PATH=self.bindir + os.pathsep + env["PATH"],
+            PATH=self.bindir + os.pathsep + base,
             CHROOT=self.chroot, OUT=self.out,
             SIGNING_KEY_DIR=self.durable,
+            SIGNING_KEY_DIR_ALT=self.alt,
             USER=env.get("USER") or "builder",
             PROBE_NEW_KEY=new_key,
             PROBE_NEW_PRIV=os.path.join(mint, new_key),
@@ -171,14 +199,14 @@ def check(desc, ok, detail=""):
 SANDBOXES = []
 
 
-def case(setup, new_key=STRAY):
+def case(setup, new_key=STRAY, no_openssl=False):
     # The tree outlives the call on purpose: the assertions are what read it.
     # Cleaned up at exit, all at once.
     root = tempfile.mkdtemp(prefix="signkey-")
     SANDBOXES.append(root)
     s = Sandbox(root)
     setup(s)
-    return s.run(new_key)
+    return s.run(new_key, no_openssl=no_openssl)
 
 
 def cleanup():
@@ -347,8 +375,16 @@ if not m or "SIGNING_KEY_DIR" not in m.group(0):
     sys.exit("FAIL could not extract the SIGNING_KEY_DIR section from config.sh")
 
 
-def resolve(home, work=None, export=None, mkdirs=()):
-    """Run the tier logic with /work redirected; returns the chosen path."""
+def resolve(home, work=None, export=None, mkdirs=(), keys=()):
+    """Run the tier logic with /work redirected.
+
+    Returns (chosen, alt, rc, root). `keys` puts a REAL key in the named
+    sandbox-relative stores, which is the thing `mkdirs` cannot express: the
+    tiers select on `-d`, so a row built only out of empty directories cannot
+    tell "this store holds the fleet key" from "this directory exists" — and
+    that gap is precisely what let the winner be a store with nothing in it.
+    (box3 on #92)
+    """
     root = tempfile.mkdtemp(prefix="signkey-cfg-")
     SANDBOXES.append(root)
     h = os.path.join(root, home)
@@ -356,36 +392,74 @@ def resolve(home, work=None, export=None, mkdirs=()):
     w = os.path.join(root, work) if work else os.path.join(root, "absent")
     for d in mkdirs:
         os.makedirs(os.path.join(root, d), exist_ok=True)
+    for d in keys:
+        putkey(os.path.join(root, d), FLEET)
     block = m.group(0).replace("/work", w)
     env = dict(os.environ, HOME=h)
     env.pop("SIGNING_KEY_DIR", None)
+    env.pop("SIGNING_KEY_DIR_ALT", None)
     if export:
         env["SIGNING_KEY_DIR"] = os.path.join(root, export)
     r = subprocess.run(["bash", "-c", "set -eu\n" + block +
-                        '\nprintf "%s" "$SIGNING_KEY_DIR"'],
+                        '\nprintf "%s\\n%s" "$SIGNING_KEY_DIR" '
+                        '"${SIGNING_KEY_DIR_ALT:-}"'],
                        capture_output=True, text=True, env=env)
-    return r.stdout, r.returncode, root
+    chosen, _, alt = r.stdout.partition("\n")
+    return chosen, alt, r.returncode, root
 
 
-got, rc, root = resolve("home", work="work", mkdirs=("work", "work/keys/pipeos"),
-                        export="elsewhere/keys")
+got, alt, rc, root = resolve("home", work="work",
+                            mkdirs=("work", "work/keys/pipeos"),
+                            export="elsewhere/keys")
 check("14 an explicit SIGNING_KEY_DIR wins over both fallbacks",
       rc == 0 and got == os.path.join(root, "elsewhere/keys"), f"{rc} {got!r}")
+# An override picks the store; it does not make the other two stop existing,
+# and a key left in one of them is the disagreement the census exists to catch.
+check("14b an override still names both defaults as alternates",
+      rc == 0 and alt.split() == [os.path.join(root, "home/.pipeos/keys"),
+                                  os.path.join(root, "work/keys/pipeos")],
+      f"{rc} alt={alt!r}")
 
-got, rc, root = resolve("home")
+got, alt, rc, root = resolve("home")
 check("15 no /work (the build host): the durable store is under $HOME",
       rc == 0 and got == os.path.join(root, "home/.pipeos/keys"), f"{rc} {got!r}")
 
-got, rc, root = resolve("home", work="work", mkdirs=("work",))
+got, alt, rc, root = resolve("home", work="work", mkdirs=("work",))
 check("16 /work present and writable (on a box): the ext4 workspace wins",
       rc == 0 and got == os.path.join(root, "work/keys/pipeos"), f"{rc} {got!r}")
+check("16b the $HOME store it passed over is named as the alternate",
+      rc == 0 and alt.split() == [os.path.join(root, "home/.pipeos/keys")],
+      f"{rc} alt={alt!r}")
 
 # The one that matters for a builder mid-migration: a store that already holds
 # the fleet key is not abandoned because a $HOME directory happens to exist.
-got, rc, root = resolve("home", work="work",
-                        mkdirs=("work", "work/keys/pipeos", "home/.pipeos/keys"))
-check("17 an existing on-box store wins over an existing $HOME one",
-      rc == 0 and got == os.path.join(root, "work/keys/pipeos"), f"{rc} {got!r}")
+#
+# The key is REAL here, and that is the point. This row used to stage two empty
+# directories, so it passed identically whether the winner held the fleet key or
+# nothing at all — it was written to catch exactly the case it structurally
+# could not distinguish. (box3 on #92)
+got, alt, rc, root = resolve("home", work="work",
+                            mkdirs=("work", "work/keys/pipeos",
+                                    "home/.pipeos/keys"),
+                            keys=("work/keys/pipeos",))
+check("17 an on-box store HOLDING THE KEY wins over an existing $HOME one",
+      rc == 0 and got == os.path.join(root, "work/keys/pipeos")
+      and os.path.exists(os.path.join(root, "work/keys/pipeos", FLEET)),
+      f"{rc} {got!r}")
+
+# The inverse, which is the reachable half: the winner is an empty directory and
+# the LOSER holds the fleet key. The tiers still pick the empty one — selection
+# is on `-d` and that is deliberate — so the whole guarantee rests on the loser
+# being named, censused, and restorable. Rows 20-22 below are what that buys.
+got, alt, rc, root = resolve("home", work="work",
+                            mkdirs=("work", "work/keys/pipeos",
+                                    "home/.pipeos/keys"),
+                            keys=("home/.pipeos/keys",))
+check("17b an EMPTY on-box store still wins, and the populated $HOME store "
+      "is named, not lost",
+      rc == 0 and got == os.path.join(root, "work/keys/pipeos")
+      and alt.split() == [os.path.join(root, "home/.pipeos/keys")],
+      f"{rc} chosen={got!r} alt={alt!r}")
 
 # ── 18-19. the stores agree on the NAME and disagree on the KEY ──────────
 # box0 on #92, and the last shape of the original bug left standing: the census
@@ -430,6 +504,80 @@ s = case(same_name_restore_path)
 check("19 same name, different material picks no store and restores nothing",
       s.rc != 0 and not s.has(s.abuild, FLEET),
       f"rc={s.rc} chroot={s.names(s.abuild)}")
+
+# ── 20-22. the store the tier logic did NOT pick ─────────────────────────
+# box3 on #92. Rows 1-19 all run with $SIGNING_KEY_DIR naming the store that
+# holds the key, because the sandbox exports it — so every one of them passes
+# while the OTHER candidate is invisible. config.sh selects on `-d`, directory
+# existence, which is not key presence, so the store it passes over can be the
+# store holding the fleet key. Row 17b stages exactly that state; these three
+# are what the section does when it arrives.
+#
+# 20 is the mint-instead-of-restore path: unguarded this is rc=0, a brand new
+# key, and every flashed stick rejecting the next build's packages — #90's
+# headline defect, reached through the code #92 added to prevent it.
+s = case(lambda s: putkey(s.alt, FLEET))
+check("20 a key only in the passed-over store is restored, not re-minted",
+      s.rc == 0 and "restoring abuild signing key" in s.log
+      and "generating a new one" not in s.log
+      and s.is_key(s.abuild, FLEET),
+      f"rc={s.rc} chroot={s.names(s.abuild)}")
+
+# ...and it migrates to the winner, so the next run finds it without the
+# fallback. `cp -n` at the bottom of the section is what does this; a store that
+# lost the tier test is not left orphaned holding the only copy.
+check("20b and it migrates into the chosen store, so the next run needs no "
+      "fallback",
+      s.is_key(s.durable, FLEET),
+      f"durable={s.names(s.durable)}")
+
+
+# 21 is row 7's promise — "stores that disagree stop the build" — applied to the
+# pair of stores the tier logic chooses BETWEEN. Before the alt store was
+# censused these two disagreed and the build never found out: it restored from
+# the winner and the loser's key sat unread.
+def winner_vs_alt(s):
+    putkey(s.durable, FLEET)
+    putkey(s.alt, STRAY)
+
+
+s = case(winner_vs_alt)
+check("21 the chosen and passed-over stores disagreeing stops the build",
+      s.rc != 0 and not s.is_key(s.abuild, FLEET)
+      and not s.is_key(s.abuild, STRAY),
+      f"rc={s.rc} chroot={s.names(s.abuild)}")
+
+
+# 22 is the same disagreement one layer down — same filename, different
+# material — so it is the MATERIAL census that has to reach the alt store, not
+# just the name census. Two guards, two rows: 21 fails if the store is missing
+# from KEY_STORES at all, 22 additionally fails if only the name census sees it.
+def winner_vs_alt_same_name(s):
+    putkey(s.durable, FLEET)
+    putkey(s.alt, FLEET, material=IMPOSTOR)
+
+
+s = case(winner_vs_alt_same_name)
+check("22 same name, different material in the passed-over store stops the "
+      "build",
+      s.rc != 0 and not s.has(s.abuild, FLEET)
+      and s.is_material(s.durable, FLEET, FLEET),
+      f"rc={s.rc} chroot={s.names(s.abuild)} "
+      f"durable-is-fleet={s.is_material(s.durable, FLEET, FLEET)}")
+
+# ── 23. the one path where an unverified pair reaches the apkovl ─────────
+# The pair check fails OPEN when openssl is missing: it warns and builds on,
+# which is the right call — refusing to build over a missing checker is a new
+# failure mode on hosts that are otherwise fine. But it is also the only branch
+# where a pair nothing verified can reach 40-build-apkovl.sh and every stick's
+# /etc/apk/keys, so the warning is the entire mitigation and nothing asserted it
+# still prints. A silently-dropped warning here looks exactly like a verified
+# key. (box3 on #92, non-blocking)
+s = case(lambda s: putkey(s.durable, FLEET), no_openssl=True)
+check("23 no openssl: the build continues and says the pair is UNVERIFIED",
+      s.rc == 0 and "UNVERIFIED" in s.log
+      and "pair verified" not in s.log and s.is_key(s.abuild, FLEET),
+      f"rc={s.rc} log={s.log[-300:]!r}")
 
 cleanup()
 sys.exit(0 if all(RESULTS) else 1)

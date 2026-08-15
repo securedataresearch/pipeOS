@@ -22,7 +22,12 @@ PROBE = os.path.join(HERE, "check-signing-key.py")
 orig = open(P).read()
 cfg_orig = open(CFG).read()
 
-CENSUS_SCOPE = 'KEY_STORES="$ABUILD_DIR $SIGNING_KEY_DIR $OUT/keys"'
+CENSUS_SCOPE = ('KEY_STORES="$ABUILD_DIR $SIGNING_KEY_DIR $OUT/keys '
+                '${SIGNING_KEY_DIR_ALT:-}"')
+RESTORE_LOOP = ('    for d in "$SIGNING_KEY_DIR" "$OUT/keys" '
+                '${SIGNING_KEY_DIR_ALT:-}; do')
+PAIR_OPEN = """else
+    # Not fatal: openssl is not a build dependency today and refusing to build"""
 CONF_LINE = """        sudo sh -c "printf 'PACKAGER_PRIVKEY=\\"/home/builder/.abuild/%s\\"\\n' '$priv' > '$ABUILD_DIR/abuild.conf'\""""
 MKDIR_BLOCK = """if [ ! -d "$SIGNING_KEY_DIR" ]; then
     mkdir -p "$SIGNING_KEY_DIR" 2>/dev/null \\
@@ -86,6 +91,26 @@ controls = [
     # the same reason as the pair block.
     ("H: census by name only (the state pipeOS#92 shipped for review)",
      lambda s: s.replace(MATERIAL_BLOCK, "_keysum=")),
+
+    # The census stops at the store the tier logic CHOSE — the state #92
+    # shipped at 5944497, and box3's blocker verbatim. The restore still finds
+    # the passed-over store, so this is not "the key is lost": it is the
+    # narrower and quieter failure, two stores disagreeing and nothing looking.
+    ("I: census skips the passed-over store (box3's blocker on pipeOS#92)",
+     lambda s: s.replace(CENSUS_SCOPE,
+                         'KEY_STORES="$ABUILD_DIR $SIGNING_KEY_DIR $OUT/keys"')),
+
+    # The other half, and the loud one: the census sees the store, so a
+    # disagreement is still caught, but a key that lives ONLY there is never
+    # restored and the section mints a fresh one over the top of the fleet.
+    ("J: restore never looks in the passed-over store",
+     lambda s: s.replace(RESTORE_LOOP,
+                         '    for d in "$SIGNING_KEY_DIR" "$OUT/keys"; do')),
+
+    # The fail-open branch loses its warning: an unverified pair reaches the
+    # apkovl and the log reads like a host where the check ran.
+    ("K: the missing-openssl warning is dropped",
+     lambda s: s.replace(PAIR_OPEN, "else\n    :\nfi\nif false; then")),
 ]
 
 # One control lives in the other file: the tier logic that decides WHERE the
@@ -97,6 +122,13 @@ cfg_controls = [
      lambda s: re.sub(r'^if \[ -z "\$\{SIGNING_KEY_DIR:-\}" \]; then\n.*?^fi$',
                       'SIGNING_KEY_DIR="${SIGNING_KEY_DIR:-/work/keys/pipeos}"',
                       s, flags=re.S | re.M)),
+
+    # config.sh knows which candidate it rejected and says nothing. This is the
+    # upstream of I and J together: 10-mk-chroot.sh can census and restore over
+    # a store all it likes, but it cannot name one nobody told it about.
+    ("L: config.sh does not export the passed-over candidate",
+     lambda s: re.sub(r'^SIGNING_KEY_DIR_ALT=\nfor _cand in .*?^unset _cand$',
+                      "SIGNING_KEY_DIR_ALT=", s, flags=re.S | re.M)),
 ]
 
 rc = 0

@@ -58,7 +58,12 @@ sudo cp /etc/resolv.conf "$CHROOT/etc/resolv.conf"
 # already flashed trust the old key and nothing else. So restore first,
 # generate only when there is no key anywhere. (pipeOS#90)
 ABUILD_DIR="$CHROOT/home/builder/.abuild"
-KEY_STORES="$ABUILD_DIR $SIGNING_KEY_DIR $OUT/keys"
+# $SIGNING_KEY_DIR_ALT is the candidate config.sh did NOT pick — see the comment
+# there. It is in the census for the same reason $ABUILD_DIR is: the store this
+# run does not read from is exactly where a wrong-key surprise waits. Word
+# splitting is deliberate; it can name more than one path, and every consumer
+# below already iterates the list.
+KEY_STORES="$ABUILD_DIR $SIGNING_KEY_DIR $OUT/keys ${SIGNING_KEY_DIR_ALT:-}"
 
 # Census first, over EVERY store, before we either read a key or write one.
 # Guarding only the store we happen to restore from is not enough: a builder
@@ -136,7 +141,17 @@ if ! ls "$ABUILD_DIR"/*.rsa >/dev/null 2>&1; then
         install -d -o builder -g builder /home/builder/.abuild
     '
     key_src=
-    for d in "$SIGNING_KEY_DIR" "$OUT/keys"; do
+    # The alt store is LAST, so it changes nothing about which store wins when
+    # more than one holds a key — the census has already established they hold
+    # the same key, or the build stopped. It changes the one case that matters:
+    # the key is ONLY in the candidate config.sh rejected, and without it here
+    # the census passes (one key, one material) and this loop still finds
+    # nothing, so the else branch mints a new key and re-images the fleet. The
+    # backup at the bottom then copies it into $SIGNING_KEY_DIR with `cp -n`,
+    # which is how a store that lost the tier test migrates to the winner
+    # instead of being orphaned. (box3 on #92)
+    # shellcheck disable=SC2086  # deliberate split: ALT may name several paths
+    for d in "$SIGNING_KEY_DIR" "$OUT/keys" ${SIGNING_KEY_DIR_ALT:-}; do
         if [ -z "$key_src" ] && ls "$d"/*.rsa >/dev/null 2>&1; then
             key_src="$d"
         fi
@@ -153,7 +168,8 @@ if ! ls "$ABUILD_DIR"/*.rsa >/dev/null 2>&1; then
         sudo sh -c "printf 'PACKAGER_PRIVKEY=\"/home/builder/.abuild/%s\"\n' '$priv' > '$ABUILD_DIR/abuild.conf'"
         sudo chroot "$CHROOT" chown -R builder:builder /home/builder/.abuild
     else
-        echo "==> no signing key in $SIGNING_KEY_DIR or $OUT/keys — generating a new one"
+        echo "==> no signing key in any store — generating a new one"
+        echo "    (searched: $SIGNING_KEY_DIR $OUT/keys ${SIGNING_KEY_DIR_ALT:-})"
         echo "    (every previously flashed stick will reject packages signed by it)"
         sudo chroot "$CHROOT" /bin/sh -lc 'su - builder -c "abuild-keygen -a -n"'
     fi
