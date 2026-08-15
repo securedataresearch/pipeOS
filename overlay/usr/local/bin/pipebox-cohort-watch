@@ -109,12 +109,36 @@ log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG"; }
 # and makes the stated property true. Confirmed supported by the `find` on
 # these boxes, not assumed.
 #
-# Every failure mode — missing dir, no `find`, unreadable store — yields
-# empty and therefore "no", which is the safe answer.
+# THE TRAILING SLASH IS THE WHOLE FIX FOR pipeOS#100, AND IT IS NOT COSMETIC.
+# `find` does not follow a symlink given as its start path, and on every box
+# with the DOCUMENTED layout (#80) `/root/.claude/projects` IS a symlink to
+# `/work/claude/projects`. So `find <link> …` treats the link as a plain file,
+# descends nowhere, matches nothing — while the `[ -d ]` guard one line up
+# passes, because test DOES follow links. The predicate was reachable and
+# always answered no, so `--resume` never fired anywhere in the fleet and the
+# log blamed pipeOS#51 on boxes where #51 is fixed. Measured on box3, one
+# second apart, transcript on disk:
+#
+#   find /root/.claude/projects  -mindepth 2 …  -> (nothing)
+#   find /root/.claude/projects/ -mindepth 2 …  -> …/-work-pipebox/<sid>.jsonl
+#
+# A trailing slash, not `-H`: the slash is resolved by the KERNEL during path
+# lookup, so it works identically under GNU find and busybox find, whereas `-H`
+# is a flag whose presence in busybox I would be assuming. `//` when
+# CLAUDE_CONFIG_DIR already ends in a slash is inert, and the depth counting is
+# unaffected — depth is counted from the start path either way, so `-mindepth 2`
+# still means exactly <projects>/<mangled-cwd>/<sid>.jsonl.
+#
+# The #51 probe passed throughout because it staged a REAL directory — i.e. the
+# one layout #80 says is wrong. The probe beside this (scripts/check-cohort-watch.py)
+# now stages both, and its control is this same predicate without the slash.
+#
+# Every failure mode — missing dir, no `find`, unreadable store, dangling
+# symlink — yields empty and therefore "no", which is the safe answer.
 conversation_exists() {
     [ -n "$1" ] || return 1
     [ -d "$CLAUDE_PROJECTS" ] || return 1
-    [ -n "$(find "$CLAUDE_PROJECTS" -mindepth 2 -maxdepth 2 -name "$1.jsonl" -print -quit 2>/dev/null)" ]
+    [ -n "$(find "$CLAUDE_PROJECTS/" -mindepth 2 -maxdepth 2 -name "$1.jsonl" -print -quit 2>/dev/null)" ]
 }
 
 mkdir -p "$STATE" /work/logs 2>/dev/null || exit 1
@@ -797,10 +821,15 @@ if [ "$holds_claim" = yes ] && [ -s "$SESSION" ] && [ -s "$SESSION_META" ]; then
     # AND THE MARKER STILL IS NOT ENOUGH (pipeOS#51). It says a prompt was
     # handed to this id; it does not say the conversation still EXISTS. The
     # marker, $SESSION and $SESSION_META all live under /work and survive a
-    # reboot. The conversation store does not — on box3 `/root/.claude/projects`
-    # is a real tmpfs directory, not the symlink to `/work/claude/projects` the
-    # machine notes describe, so every transcript dies with the boot. The
-    # surviving marker then names a session claude has never heard of:
+    # reboot. The conversation store did not, when this was written: on box3
+    # `/root/.claude/projects` was then a real tmpfs directory rather than the
+    # symlink to `/work/claude/projects` the machine notes describe, so every
+    # transcript died with the boot. #80 has since made all four boxes match the
+    # documented symlink layout, which is what exposed pipeOS#100 above — but
+    # the predicate is kept, because it is the check that survives conversation
+    # loss from ANY cause and a re-imaged or hand-repaired box can still arrive
+    # without it. The surviving marker then names a session claude has never
+    # heard of:
     #
     #   No conversation found with session ID: f232fb5d-...
     #
