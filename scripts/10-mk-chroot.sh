@@ -58,6 +58,33 @@ sudo cp /etc/resolv.conf "$CHROOT/etc/resolv.conf"
 # already flashed trust the old key and nothing else. So restore first,
 # generate only when there is no key anywhere. (pipeOS#90)
 ABUILD_DIR="$CHROOT/home/builder/.abuild"
+KEY_STORES="$ABUILD_DIR $SIGNING_KEY_DIR $OUT/keys"
+
+# Census first, over EVERY store, before we either read a key or write one.
+# Guarding only the store we happen to restore from is not enough: a builder
+# that already hit the bug above has a stray key in the chroot and the fleet
+# key in out/keys, and the restore is skipped entirely because the chroot has
+# a key. The backup at the bottom would then seed the STRAY key into the empty
+# durable home, and every later run would restore it from there — one store,
+# one key, guard silent, wrong key signing the fleet. So: if the stores
+# disagree at all, stop and make a human choose. (pipeOS#90)
+#
+# `set -e` is on: every test here has to sit in a condition, or a store that
+# simply does not exist yet takes the whole build down.
+key_names=$(for d in $KEY_STORES; do
+    ls "$d"/*.rsa 2>/dev/null || true
+done | while read -r f; do basename "$f"; done | sort -u)
+n_keys=$(printf '%s\n' "$key_names" | grep -c . || true)
+if [ "$n_keys" -gt 1 ]; then
+    echo "$n_keys different abuild private keys across the key stores —" >&2
+    echo "refusing to guess which one signs the fleet:" >&2
+    for d in $KEY_STORES; do
+        ls -l "$d"/*.rsa 2>/dev/null >&2 || true
+    done
+    echo "keep exactly one, put it in $SIGNING_KEY_DIR, and remove the others" >&2
+    exit 1
+fi
+
 if ! ls "$ABUILD_DIR"/*.rsa >/dev/null 2>&1; then
     echo "==> creating builder user"
     sudo chroot "$CHROOT" /bin/sh -lc '
@@ -67,8 +94,6 @@ if ! ls "$ABUILD_DIR"/*.rsa >/dev/null 2>&1; then
         echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
         install -d -o builder -g builder /home/builder/.abuild
     '
-    # `set -e` is on: every test here has to sit in a condition, or a store
-    # that simply does not exist yet takes the whole build down.
     key_src=
     for d in "$SIGNING_KEY_DIR" "$OUT/keys"; do
         if [ -z "$key_src" ] && ls "$d"/*.rsa >/dev/null 2>&1; then
@@ -76,16 +101,9 @@ if ! ls "$ABUILD_DIR"/*.rsa >/dev/null 2>&1; then
         fi
     done
     if [ -n "$key_src" ]; then
-        # More than one private key in the store means someone already hit the
-        # bug above. Picking one silently is how you sign with the wrong key
-        # and only find out on a box that will not install the package.
-        n_keys=$(ls "$key_src"/*.rsa | wc -l)
-        [ "$n_keys" = 1 ] || {
-            echo "$key_src holds $n_keys private keys — refusing to guess which signs the fleet" >&2
-            ls -l "$key_src"/*.rsa >&2
-            exit 1
-        }
-        priv=$(basename "$(ls "$key_src"/*.rsa)")
+        # The census above already established there is only one key name in
+        # play, so this precedence picks a store, never a key.
+        priv="$key_names"
         echo "==> restoring abuild signing key $priv from $key_src"
         sudo sh -c "cp '$key_src'/*.rsa* '$ABUILD_DIR/'"
         # abuild-keygen -a writes this too; without it abuild-sign has a key
@@ -99,10 +117,24 @@ if ! ls "$ABUILD_DIR"/*.rsa >/dev/null 2>&1; then
     fi
 fi
 # Back up in both directions, so a fresh keygen lands in the durable home too.
-mkdir -p "$OUT/keys" "$SIGNING_KEY_DIR"
+# The census at the top of this section is what makes the backup safe: it has
+# already established that no store disagrees about which key that is.
+mkdir -p "$OUT/keys"
+# SIGNING_KEY_DIR defaults outside the repo, so unlike out/ it can land
+# somewhere the build user cannot create — /work on a host that is not this
+# appliance. Falling back to skipping it would quietly reinstate the bug this
+# whole section exists to fix, so escalate once, then say what to set.
+if [ ! -d "$SIGNING_KEY_DIR" ]; then
+    mkdir -p "$SIGNING_KEY_DIR" 2>/dev/null \
+        || sudo install -d -o "$USER" -m 700 "$SIGNING_KEY_DIR" \
+        || { echo "cannot create the durable key store $SIGNING_KEY_DIR" >&2
+             echo "set SIGNING_KEY_DIR to a path this build user can write" >&2
+             exit 1; }
+fi
 sudo sh -c "cp $ABUILD_DIR/*.rsa* '$OUT/keys/'"
 sudo sh -c "cp -n $ABUILD_DIR/*.rsa* '$SIGNING_KEY_DIR/'"
-sudo chown "$USER" "$OUT/keys/"*
+sudo chown "$USER" "$OUT/keys/"* "$SIGNING_KEY_DIR/"*
+chmod 700 "$SIGNING_KEY_DIR"
 # apk inside the chroot must also trust the key when installing test builds
 sudo cp "$OUT/keys/"*.rsa.pub "$CHROOT/etc/apk/keys/"
 
