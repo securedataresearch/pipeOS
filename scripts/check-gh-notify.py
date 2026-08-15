@@ -118,6 +118,73 @@ def ts(i):
     return "2026-08-10T00:%02d:00Z" % i
 
 
+# --- multi-tick harness -----------------------------------------------------
+# The single-tick stub above returns its whole fixture regardless of `since`,
+# which is fine for the rows that inspect one batch. It cannot see a cursor
+# that lands somewhere unrecoverable, because that only shows up on the NEXT
+# query. So: a gh stub that is a real search — filter `> since`, sort ascending,
+# truncate at --limit — driven to quiescence. (box0 on #95)
+SEARCH_GH = '''#!/usr/bin/env python3
+import json, os, re, sys
+argv = " ".join(sys.argv[1:])
+open(os.environ["PROBE_ARGV"], "w").write(argv)
+m = re.search(r"--updated\\s+>(\\S+)", argv)
+since = m.group(1) if m else ""
+lim = int(re.search(r"--limit\\s+(\\d+)", argv).group(1))
+items = json.load(open(os.environ["PROBE_ISSUES"]))
+sel = sorted((i for i in items if i["updatedAt"] > since),
+             key=lambda i: i["updatedAt"])
+print(json.dumps(sel[:lim]))
+'''
+
+SEARCH_PIPE = '''#!/bin/sh
+printf '%s\\n' "$3" >> "$PROBE_DMS"
+exit 0
+'''
+
+
+def run_ticks(issues, cursor="2026-08-01T00:00:00Z", max_ticks=25):
+    """Tick until the cursor stops moving. Returns (sent_numbers, cursors)."""
+    tmp = tempfile.mkdtemp(prefix="ghnotify-ticks-")
+    try:
+        script, _ = stage(tmp)
+        state = os.path.join(tmp, "state")
+        os.makedirs(state)
+        cf = os.path.join(state, "gh-cursor")
+        open(cf, "w").write(cursor + "\n")
+        bindir = os.path.join(tmp, "bin")
+        os.makedirs(bindir)
+        open(os.path.join(tmp, "issues.json"), "w").write(json.dumps(issues))
+        for name, body in (("gh", SEARCH_GH), ("pipe", SEARCH_PIPE)):
+            p = os.path.join(bindir, name)
+            open(p, "w").write(body)
+            os.chmod(p, 0o755)
+        env = dict(os.environ)
+        env.update(
+            PATH=bindir + ":" + env["PATH"],
+            PROBE_STATE=state, PROBE_LOG=os.path.join(tmp, "log"),
+            PROBE_ISSUES=os.path.join(tmp, "issues.json"),
+            PROBE_ARGV=os.path.join(tmp, "gh-argv"),
+            PROBE_DMS=os.path.join(tmp, "dms"),
+            OWNER_NICK="sam", GH_OWNER="o",
+        )
+        cursors = []
+        for _ in range(max_ticks):
+            subprocess.run(["/bin/sh", script], env=env, check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            c = open(cf).read().strip()
+            if cursors and cursors[-1] == c:
+                break
+            cursors.append(c)
+        dmf = os.path.join(tmp, "dms")
+        text = open(dmf).read() if os.path.exists(dmf) else ""
+        sent = {int(l.split("#")[1].split()[0])
+                for l in text.splitlines() if "http" in l and "#" in l}
+        return sent, cursors
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 rows = []
 
 
@@ -219,6 +286,74 @@ for label, data in (("15 distinct", many), ("tie at the boundary", tied), ("at l
 check("across every windowed case, no unsent issue is behind the cursor",
       "any future rewrite of the batch maths that re-opens the drop",
       not bad, "; ".join(bad))
+
+# --- 9. the SEARCH_LIMIT boundary, driven to quiescence ---------------------
+# box0's finding on #95. The tie extension guards the cut at MAX_ITEMS; nothing
+# guarded the cut at SEARCH_LIMIT. When the search returns its full limit, its
+# last timestamp may itself be a truncated tie group, and advancing onto it
+# makes `>` skip every issue that fell off the page — permanently, which is
+# #88's own mechanism reappearing one boundary over.
+#
+# Reachable, not theoretical: a bulk relabel or a batch of card moves updates
+# many issues within one second.
+LIMIT = 20
+# The degenerate shape first, because it bounds what the other rows may claim.
+# 25 issues in one second against a 20-item page is NOT fixable by cursor
+# arithmetic: a strict `>` cursor at second granularity has no value between
+# "repeat this page" and "skip part of a second nothing enumerated". Five of
+# these are unreachable whatever the cursor does.
+#
+# So the property is not losslessness — it is that the script neither claims
+# those five were sent nor silently steps over them. It holds still and says
+# it cannot advance. A stuck channel that announces it is stuck is a bug
+# report; a stuck channel that looks quiet is the #88 failure again.
+one_second = [issue(i, ts(10)) for i in range(1, 26)]
+sent, cursors = run_ticks(one_second)
+missed = sorted({i["number"] for i in one_second} - sent)
+r = run(one_second[:LIMIT])
+check("25 issues in ONE second: the cursor never steps over the unreachable",
+      "advancing onto a second the search proved nothing about — the #88 "
+      "mechanism one boundary over, where the skip is silent and permanent",
+      set(cursors) == {"2026-08-01T00:00:00Z"} and missed == [21, 22, 23, 24, 25]
+      and "cannot page inside a single second" in (r["dm"] or ""),
+      f"unreachable: {missed} cursors={cursors}")
+
+# The likelier shape: 9 distinct seconds, then a tie that fills the page. The
+# extension swallows the whole page, so held=0 and only the at_cap guard is
+# left to notice the last second is unverified.
+mixed = [issue(i, ts(i)) for i in range(1, 10)] + \
+        [issue(i, ts(10)) for i in range(10, 26)]
+sent, cursors = run_ticks(mixed)
+missed = sorted({i["number"] for i in mixed} - sent)
+check("9 distinct + 16 sharing the boundary second: none are lost",
+      "the milder shape of the same defect, where the tie extension makes "
+      "held=0 and hides that the page was truncated",
+      not missed, f"never sent: {missed} cursors={cursors}")
+
+# The control for both rows above. Same count, same limit, distinct seconds —
+# no tie can be truncated, so this must drain and quiesce even with the guard
+# removed. Without it, rows 9 and 10 could be passing because the script simply
+# never advances its cursor at all.
+distinct = [issue(i, ts(i)) for i in range(1, 26)]
+sent, cursors = run_ticks(distinct)
+missed = sorted({i["number"] for i in distinct} - sent)
+check("control: 25 distinct seconds drains and the cursor still advances",
+      "a 'fix' that never moves the cursor — lossless and useless, and it "
+      "would pass both rows above",
+      not missed and len(cursors) > 1 and cursors[-1] >= ts(25),
+      f"never sent: {missed} cursors={cursors}")
+
+# --- 11. the degenerate case, stated rather than left implicit --------------
+# When the entire page is one second there is NO safe cursor: any value either
+# repeats the page or skips part of a second that was never fully seen. The
+# script holds the cursor still and says so. Noisy is a choice; lossy is a bug.
+r = run([issue(i, ts(10)) for i in range(1, 21)])
+check("a page that is entirely one second holds the cursor and says so",
+      "silently advancing past an unverified second, or advancing while the "
+      "DM claims the total is unknown",
+      r["cursor"] == "2026-08-01T00:00:00Z"
+      and "cannot page inside a single second" in (r["dm"] or ""),
+      f"cursor={r['cursor']}")
 
 width = max(len(n) for n, _, _, _ in rows)
 fails = 0

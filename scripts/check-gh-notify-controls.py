@@ -21,7 +21,9 @@ SLICE_OLD = (
     "        else (.[$n - 1].updatedAt) as $t | [ .[] | select(.updatedAt <= $t) ]\n"
     "        end"
 )
-CURSOR_OLD = "        printf '%s\\n' \"$last_ts\" > \"$CURSOR\""
+CURSOR_OLD = (
+    "        [ -n \"$cursor_ts\" ] && printf '%s\\n' \"$cursor_ts\" > \"$CURSOR\""
+)
 CURSOR_NEW = "        printf '%s\\n' \"$now\" > \"$CURSOR\""
 
 controls = [
@@ -31,6 +33,12 @@ controls = [
      lambda s: s.replace(SLICE_OLD, "        .[0:$n]")),
     ("C: cursor always advances to now",
      lambda s: s.replace(CURSOR_OLD, CURSOR_NEW)),
+    # The state pipeOS#95 shipped for review: the MAX_ITEMS cut is guarded,
+    # the SEARCH_LIMIT cut is not. box0's finding, as a control.
+    ("D: no SEARCH_LIMIT tie guard — cursor advances onto a truncated second",
+     lambda s: s.replace(
+         '    if [ "$at_cap" = 1 ] && [ "$last_ts" = "$search_last_ts" ]; then',
+         "    if false; then")),
 ]
 
 rc = 0
