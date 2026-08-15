@@ -27,6 +27,12 @@ export PIPE_NO_SPAWN=1
 # cargo/rustc/cc from /work/buildroot when present.
 [ -r /etc/pipeos/claude-auth.env ] && . /etc/pipeos/claude-auth.env
 [ -d /work/buildroot/usr/bin ] && export PATH="/work/buildroot/usr/bin:$PATH"
+# The generated shell environment. Its header says /etc/profile sources it,
+# and for an ssh session that is true — but nothing on this path is a login
+# shell: crond -> sh -c pipebox-cohort-watch -> claude -p -> sh -c. The agent
+# would inherit none of it, so source it here, exactly like PATH above.
+# (box0 on pipeOS#93)
+[ -r /etc/profile.d/10-pipebox-env.sh ] && . /etc/profile.d/10-pipebox-env.sh
 
 COHORT_ID="${COHORT_ID:-3}"
 LOG=/work/logs/pipebox-cohort-watch.log
@@ -109,12 +115,36 @@ log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG"; }
 # and makes the stated property true. Confirmed supported by the `find` on
 # these boxes, not assumed.
 #
-# Every failure mode — missing dir, no `find`, unreadable store — yields
-# empty and therefore "no", which is the safe answer.
+# THE TRAILING SLASH IS THE WHOLE FIX FOR pipeOS#100, AND IT IS NOT COSMETIC.
+# `find` does not follow a symlink given as its start path, and on every box
+# with the DOCUMENTED layout (#80) `/root/.claude/projects` IS a symlink to
+# `/work/claude/projects`. So `find <link> …` treats the link as a plain file,
+# descends nowhere, matches nothing — while the `[ -d ]` guard one line up
+# passes, because test DOES follow links. The predicate was reachable and
+# always answered no, so `--resume` never fired anywhere in the fleet and the
+# log blamed pipeOS#51 on boxes where #51 is fixed. Measured on box3, one
+# second apart, transcript on disk:
+#
+#   find /root/.claude/projects  -mindepth 2 …  -> (nothing)
+#   find /root/.claude/projects/ -mindepth 2 …  -> …/-work-pipebox/<sid>.jsonl
+#
+# A trailing slash, not `-H`: the slash is resolved by the KERNEL during path
+# lookup, so it works identically under GNU find and busybox find, whereas `-H`
+# is a flag whose presence in busybox I would be assuming. `//` when
+# CLAUDE_CONFIG_DIR already ends in a slash is inert, and the depth counting is
+# unaffected — depth is counted from the start path either way, so `-mindepth 2`
+# still means exactly <projects>/<mangled-cwd>/<sid>.jsonl.
+#
+# The #51 probe passed throughout because it staged a REAL directory — i.e. the
+# one layout #80 says is wrong. The probe beside this (scripts/check-cohort-watch.py)
+# now stages both, and its control is this same predicate without the slash.
+#
+# Every failure mode — missing dir, no `find`, unreadable store, dangling
+# symlink — yields empty and therefore "no", which is the safe answer.
 conversation_exists() {
     [ -n "$1" ] || return 1
     [ -d "$CLAUDE_PROJECTS" ] || return 1
-    [ -n "$(find "$CLAUDE_PROJECTS" -mindepth 2 -maxdepth 2 -name "$1.jsonl" -print -quit 2>/dev/null)" ]
+    [ -n "$(find "$CLAUDE_PROJECTS/" -mindepth 2 -maxdepth 2 -name "$1.jsonl" -print -quit 2>/dev/null)" ]
 }
 
 mkdir -p "$STATE" /work/logs 2>/dev/null || exit 1
@@ -263,11 +293,59 @@ HB_STAMP="$STATE/.last-workcheck"
 # held work. That is byte-for-byte the defect found in #50's own spec — a
 # variable read above its assignment in this same file, with no `set -u` to
 # catch it — and the first draft of this function had it.
+# COUNTS ONLY PRs THIS BOX COULD ACT ON (pipe#705, box2's measurement).
+#
+# The first cut counted every open PR, so a box woke every interval for its
+# OWN open PRs — which it may never verdict (R16 conflicts the author out) and
+# may not merge under clause 1(b) either. box2 measured the cost on their box:
+# 20 of 22 heartbeat wakes found nothing to do, and each one is a full session.
+#
+# Authorship cannot be read from the PR author field — every box pushes as the
+# same GitHub account (pipeOS#73), so `author` is `SamReeves` for all of us.
+# What DOES distinguish them is the fleet convention the Foreman mandates:
+# every PR body states its role and box, as `BUILD (box1)` or `box1/BUILD`.
+#
+# MATCH THE ROLE-TAG SHAPE, NOT THE BARE NICK (box3, on the first cut). A
+# substring test answers "am I MENTIONED", not "did I author this" — and these
+# boxes credit each other by nick constantly, so the more collaborative the PR
+# body the more readers it blinds. Measured on the two PRs open at the time:
+#
+#   pipe#704   body mentions box3   ->  hidden from box3, a required reader
+#   pipeOS#89  body mentions box2   ->  hidden from box2, who was mid-verdict
+#
+# Two for two on every open PR in the fleet, and the bug was in the predicate
+# that exists to stop boxes missing verdicts. The anchored form hides exactly
+# the authors and nobody else, confirmed against those same two bodies.
+#
+# FAILS TOWARD WAKING, deliberately. A box that forgets its tag makes its PR
+# look actionable to everyone and produces one spurious wake; the opposite
+# error would hide a PR that genuinely needs a verdict. Spurious wake costs a
+# session, missed verdict costs a merge nobody lands.
+prs_not_mine() {
+    # `$1` is the repo. The nick is interpolated into the jq filter rather
+    # than passed with --arg, which `gh -q` does not support; nicks are
+    # `[a-z0-9_-]` (relay-validated), so there is nothing here to quote-escape.
+    if [ -n "$_hb_me" ]; then
+        gh pr list -R "$1" --state open --json body \
+            -q "[.[] | select((.body // \"\") | test(\"(BUILD|TEST|SHIP) ?\\\\($_hb_me\\\\)|$_hb_me/(BUILD|TEST|SHIP)\") | not)] | length" \
+            2>/dev/null
+    else
+        # Unknown nick: fall back to the unfiltered count. `contains("")` is
+        # true of every string, so filtering here would answer "none of these
+        # are actionable" — the confident wrong answer, from the one state
+        # that knows least.
+        gh pr list -R "$1" --state open --json number -q "length" 2>/dev/null
+    fi
+}
+
 work_pending() {
-    _hb_pr=$(gh pr list -R securedataresearch/pipe --state open --json number -q "length" 2>/dev/null)
-    _hb_pr2=$(gh pr list -R securedataresearch/pipeOS --state open --json number -q "length" 2>/dev/null)
+    # Nick FIRST: `prs_not_mine` reads it. In the first cut this block sat
+    # below the PR probes, which is the same read-before-assignment shape that
+    # bit #50's spec — and this function's own comment warns about it.
     _hb_me="${NICK:-}"
     [ -n "$_hb_me" ] || _hb_me=$(pipe id -o json 2>/dev/null | jq -r '.nick // empty' 2>/dev/null)
+    _hb_pr=$(prs_not_mine securedataresearch/pipe)
+    _hb_pr2=$(prs_not_mine securedataresearch/pipeOS)
     if [ -n "$_hb_me" ]; then
         _hb_held=$(pipe claims -o json 2>/dev/null | grep -c "\"holder\":\"${_hb_me}\"")
     else
@@ -749,10 +827,15 @@ if [ "$holds_claim" = yes ] && [ -s "$SESSION" ] && [ -s "$SESSION_META" ]; then
     # AND THE MARKER STILL IS NOT ENOUGH (pipeOS#51). It says a prompt was
     # handed to this id; it does not say the conversation still EXISTS. The
     # marker, $SESSION and $SESSION_META all live under /work and survive a
-    # reboot. The conversation store does not — on box3 `/root/.claude/projects`
-    # is a real tmpfs directory, not the symlink to `/work/claude/projects` the
-    # machine notes describe, so every transcript dies with the boot. The
-    # surviving marker then names a session claude has never heard of:
+    # reboot. The conversation store did not, when this was written: on box3
+    # `/root/.claude/projects` was then a real tmpfs directory rather than the
+    # symlink to `/work/claude/projects` the machine notes describe, so every
+    # transcript died with the boot. #80 has since made all four boxes match the
+    # documented symlink layout, which is what exposed pipeOS#100 above — but
+    # the predicate is kept, because it is the check that survives conversation
+    # loss from ANY cause and a re-imaged or hand-repaired box can still arrive
+    # without it. The surviving marker then names a session claude has never
+    # heard of:
     #
     #   No conversation found with session ID: f232fb5d-...
     #

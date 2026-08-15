@@ -1,5 +1,9 @@
-# pipeOS shared build configuration. Sourced by every script in scripts/.
+# pipeOS shared build configuration. Sourced by the build scripts in scripts/.
 # All paths are absolute so scripts can run from anywhere.
+#
+# No shebang: this file is sourced, never executed. shellcheck cannot infer a
+# dialect without one, so name it — bash, not sh, and BASH_SOURCE below is why.
+# shellcheck shell=bash
 
 PIPEOS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 OUT="$PIPEOS_ROOT/out"

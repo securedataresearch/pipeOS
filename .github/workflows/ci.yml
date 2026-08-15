@@ -17,22 +17,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: shellcheck the card tooling
+      - name: shellcheck the shell surface
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # Globs, not a file list. The three files named here before were the
+          # card tooling; config.sh and the numbered build scripts — the ones
+          # that decide whether a stick boots — were never linted, so a green
+          # tick on a PR touching them said nothing about the diff. (#98)
+          #
+          # No -s flag: every file's own shebang picks its dialect. scripts/ is
+          # a mix (nine `#!/usr/bin/env bash`, three `#!/bin/sh`) and forcing
+          # `-s sh` on the bash half would invent SC3xxx noise about POSIX
+          # features those files are entitled to use. The three files linted
+          # before are all `#!/bin/sh`, so dropping `-s sh` changes nothing for
+          # them. config.sh has no shebang — it is sourced, never executed —
+          # and carries a `# shellcheck shell=bash` directive instead.
+          #
+          # A non-shell file dropped into overlay/usr/local/bin/ will red this
+          # step with SC1008 rather than silently falling out of coverage. That
+          # is the intended behaviour: exclude it here on purpose, in writing.
+          #
           # -S error: fail on things that are wrong, print things that are
           # merely unidiomatic. A style-red CI gets disabled within a week.
-          shellcheck -s sh -S error \
-            overlay/usr/local/bin/pipebox-card scripts/check-cards.sh \
-            overlay/usr/local/bin/pipeos-selfupdate \
+          # The periodic/ file is named explicitly rather than by glob: #104's
+          # residual is that overlay/etc/periodic and overlay/etc/local.d are
+          # still unlinted as directories, and this PR adds a file to one of
+          # them. Naming it keeps this diff from being the reason that
+          # residual gets bigger; widening to the whole tree is #104's
+          # follow-up, not a one-liner smuggled in here.
+          shellcheck -S error config.sh scripts/*.sh overlay/usr/local/bin/* \
             overlay/etc/periodic/weekly/pipeos-worksweep
-          shellcheck -s sh overlay/usr/local/bin/pipebox-card scripts/check-cards.sh || true
+          shellcheck config.sh scripts/*.sh overlay/usr/local/bin/* \
+            overlay/etc/periodic/weekly/pipeos-worksweep || true
 
       # pipeOS#90 item 3. A sweep is a deletion tool: the only interesting
       # question is what it does NOT delete, and that cannot be answered by
       # reading it. The probe builds a fake /work, runs the shipped script over
       # it, and asserts the survivors — the signing key, agent memory, the
-      # canonical clones' sources. The control run mutates the script three
+      # canonical clones' sources. The control run mutates the script four
       # ways and asserts which of those survivors stop surviving.
       - name: the sweep reclaims what it should and spares what it must
         run: |
@@ -41,6 +63,13 @@ jobs:
 
       - name: card generation is stable and matches the committed overlay
         run: ./scripts/check-cards.sh
+
+      # pipeOS#100. The resume predicate had been permanently false fleet-wide
+      # and nothing said so, because the only test of it staged the one layout
+      # #80 says is wrong. This runs the SHIPPED predicate against both layouts
+      # and against the pre-fix control.
+      - name: the resume predicate sees a transcript behind the projects symlink
+        run: python3 scripts/check-cohort-watch.py
 
       - name: derived files are not hand-editable without detection
         run: |
