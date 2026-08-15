@@ -18,7 +18,11 @@ cd "$(dirname "$0")/.."
 CARDTOOL=overlay/usr/local/bin/pipebox-card
 TMPLDIR=overlay/usr/local/share/pipeos/card
 SHIPPED=overlay/etc/pipeos/card.conf
-OUTPUTS="etc/pipeos/pipebox.conf etc/pipeos/pipebox-settings.json etc/pipeos/mandate.md"
+# Must track the generator's own OUTPUTS in pipebox-card. It does NOT yet:
+# root/.pipe/policy.json is generated but absent here, and the committed copy
+# has drifted from the shipped card since #58 — filed separately rather than
+# folded in, because closing it changes the shipped agent's capability set.
+OUTPUTS="etc/pipeos/pipebox.conf etc/pipeos/pipebox-settings.json etc/pipeos/mandate.md etc/profile.d/10-pipebox-env.sh"
 
 fails=0
 say()  { printf '%s\n' "$*"; }
@@ -93,6 +97,72 @@ else
     bad "$TMPLDIR/foreman.md differs from docs/foreman.md"
     say "      the mandate would teach a Foreman charter Sam did not bless"
     say "      run: cp docs/foreman.md $TMPLDIR/foreman.md"
+fi
+
+# 5. the generated environment must actually REACH the agent (#90, box0 on #93)
+#
+# Check 3 proves the env file is generated correctly and ships in the overlay.
+# It says nothing about whether anything reads it, and for a while nothing did.
+# /etc/profile sources /etc/profile.d/* for LOGIN shells only, and no agent
+# launch is a login shell — crond/init -> launcher -> claude -p -> sh -c. box0
+# measured it: a profile.d export was simply absent from the agent's own
+# environment while checks 1-3 were green.
+#
+# The launcher list is DISCOVERED, not written down here. A hardcoded pair is
+# exactly what goes stale the day someone adds a third way to start the agent,
+# which is the same failure this check exists to catch.
+ENVFILE=etc/profile.d/10-pipebox-env.sh
+# A launcher is a script that actually RUNS the agent. Plain `claude -p` also
+# appears in comments and in selfcheck's log messages, so match the invocation
+# — piped into a timeout — on a line that is not a comment.
+launchers=
+for f in overlay/usr/local/bin/*; do
+    if sed 's/#.*//' "$f" | grep -qE 'timeout [^|]* claude -p'; then
+        launchers="$launchers $f"
+    fi
+done
+if [ -z "$launchers" ]; then
+    bad "found no agent launcher in overlay/usr/local/bin — this check went blind"
+else
+    for launcher in $launchers; do
+        if grep -q "^\[ -r /$ENVFILE \] && \. /$ENVFILE" "$launcher"; then
+            ok "$(basename "$launcher") sources /$ENVFILE"
+        else
+            bad "$(basename "$launcher") launches the agent without sourcing /$ENVFILE"
+            say "      the agent it starts gets none of the generated environment"
+        fi
+    done
+fi
+
+# 6. the two exports the fleet's disk budget depends on, and their SCOPE
+#
+# Checks 3 and 5 cover "the file is what the card generates" and "something
+# sources it". Neither reads what it says, so dropping an export in the
+# template — or moving one — is invisible to both: the committed copy still
+# matches the generator, and the launchers still source it.
+#
+# Scope is the part worth asserting rather than eyeballing. CARGO_TARGET_DIR
+# must stay INSIDE the mountpoint guard: with /work unmounted it would point
+# cargo at a tmpfs path on a diskless box and put gigabytes in RAM.
+# CARGO_INCREMENTAL must stay OUTSIDE it, because it is a size policy rather
+# than a location, and the run where /work did NOT mount is the one where
+# space is scarcest — silently reverting to incremental there is backwards.
+envf="overlay/$ENVFILE"
+guard_ln=$(grep -n '^if mountpoint -q /work' "$envf" | head -1 | cut -d: -f1 || true)
+inc_ln=$(grep -n '^export CARGO_INCREMENTAL$' "$envf" | head -1 | cut -d: -f1 || true)
+tgt_ln=$(grep -n '^    export CARGO_TARGET_DIR$' "$envf" | head -1 | cut -d: -f1 || true)
+if [ -z "$guard_ln" ] || [ -z "$inc_ln" ] || [ -z "$tgt_ln" ]; then
+    bad "$ENVFILE is missing an export or the /work guard"
+    say "      guard=${guard_ln:-none} CARGO_INCREMENTAL=${inc_ln:-none} CARGO_TARGET_DIR=${tgt_ln:-none}"
+elif [ "$inc_ln" -gt "$guard_ln" ]; then
+    bad "CARGO_INCREMENTAL is exported inside the /work mountpoint guard"
+    say "      a box that failed to mount /work would build incrementally"
+    say "      into tmpfs — the run with the least room to spare"
+elif [ "$tgt_ln" -lt "$guard_ln" ]; then
+    bad "CARGO_TARGET_DIR is exported outside the /work mountpoint guard"
+    say "      with /work unmounted that path is tmpfs: gigabytes into RAM"
+else
+    ok "both exports present, each on the correct side of the /work guard"
 fi
 
 if [ "$fails" = 0 ]; then

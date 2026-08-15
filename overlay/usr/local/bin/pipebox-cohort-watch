@@ -27,6 +27,12 @@ export PIPE_NO_SPAWN=1
 # cargo/rustc/cc from /work/buildroot when present.
 [ -r /etc/pipeos/claude-auth.env ] && . /etc/pipeos/claude-auth.env
 [ -d /work/buildroot/usr/bin ] && export PATH="/work/buildroot/usr/bin:$PATH"
+# The generated shell environment. Its header says /etc/profile sources it,
+# and for an ssh session that is true — but nothing on this path is a login
+# shell: crond -> sh -c pipebox-cohort-watch -> claude -p -> sh -c. The agent
+# would inherit none of it, so source it here, exactly like PATH above.
+# (box0 on pipeOS#93)
+[ -r /etc/profile.d/10-pipebox-env.sh ] && . /etc/profile.d/10-pipebox-env.sh
 
 COHORT_ID="${COHORT_ID:-3}"
 LOG=/work/logs/pipebox-cohort-watch.log
