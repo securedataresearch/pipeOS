@@ -68,6 +68,35 @@ done
 _ws_conf=/etc/pipeos/pipebox.conf
 [ -r "$_ws_conf" ] && . "$_ws_conf" 2>/dev/null
 sweep_pct=${WORKSWEEP_PCT:-60}
+# A NON-NUMERIC THRESHOLD FAILS **OPEN**, AND THAT IS WHY THIS ARM EXISTS.
+# `:-` covers empty and nothing else. Found by box0 on #103, measured: with
+# WORKSWEEP_PCT=sixty, `[ "${use:-0}" -lt "$sweep_pct" ]` exits 2, the `&&`
+# chain reads that as "not under threshold", the early exit is skipped, and
+# `done_enough` then errors identically on every call so the stop-when-recovered
+# logic is gone too — all four tiers run on a 12%-full box. `-5` is the same
+# outcome by a different road: numerically valid, semantically "never under".
+# There is no `set -e` here, so nothing else catches it.
+#
+# This is #106's class arriving through the other door — there a bad card value
+# hit an arithmetic error, here it hits a `test` error. Note it is NOT the octal
+# hole: `test` parses decimal, so `080` was always read as 80 and behaves. The
+# rule is the same anyway, because the two scripts should not disagree about
+# what a number is; that disagreement was the whole of #106.
+#
+# It falls back rather than dying — this is an unattended weekly cron and a bad
+# threshold must not become a job that never runs — but it SAYS SO, because a
+# silent fallback is how the conf ends up reading one thing while the box does
+# another, which is the defect #101 was filed over.
+#
+# Validated HERE, at the assignment, and not after log() is defined further
+# down: this must be true before any code path can read sweep_pct, and a guard
+# that sits after its first reader is the ordering defect #101 was filed over.
+# It uses the raw value in the message because that is the thing the operator
+# typed and the thing they need to see.
+_ws_bad_pct=
+case "$sweep_pct" in
+    ''|*[!0-9]*) _ws_bad_pct=$sweep_pct; sweep_pct=60 ;;
+esac
 
 # The canonical clones. They are named only so their `target/` is swept LAST
 # among the target/ dirs (tier 2, not tier 1) — a scratch checkout's build
@@ -129,6 +158,12 @@ reclaim() { # reclaim PATH REASON
     return 0
 }
 
+# A rejected threshold is said out loud even on a run that then exits quietly
+# under the fallback — the whole point is that the conf and the box must not
+# disagree in silence.
+[ -n "$_ws_bad_pct" ] && \
+    log "pipeos-worksweep: WORKSWEEP_PCT is not a plain integer ('$_ws_bad_pct') — using the 60% default"
+
 # Under threshold and not forced? Say nothing and cost nothing. `du` on a
 # multi-gigabyte workspace is not free, so a healthy box never pays for it.
 use=$(usage)
@@ -166,7 +201,32 @@ for d in /work/repos/*/; do
     [ -d "$d" ] || continue
     name=$(basename "$d")
     is_canonical "$name" && continue
-    find "$d" -maxdepth 3 -type d -name target -prune 2>/dev/null | sort > "$_ws_tmp"
+    # `${d%/}` — STRIP THE GLOB'S TRAILING SLASH BEFORE `find` SEES IT.
+    #
+    # This is the only place in the script where a path comes from a glob and
+    # goes into `find`, and the slash is load-bearing in the worst direction: a
+    # trailing slash is resolved by the KERNEL during path lookup, so `find`
+    # descends THROUGH a symlinked checkout. Same mechanism as #100/#105,
+    # pointing the other way — there a missing slash made find refuse to follow
+    # and the predicate was permanently false.
+    #
+    # Both guards miss it without this. `[ -d "$d" ]` above is true of a
+    # symlink-to-directory, and `reclaim`'s `[ -L "$p" ]` never fires because
+    # the candidate find yields is `<link>/target`, a REAL directory behind the
+    # link; `protected()` is textual and that path starts with /work/, so it
+    # answers "not protected". box2 raised it, box0 reproduced it independently
+    # under both GNU and busybox find: a tree outside the workspace deleted, and
+    # the log line naming it by the in-workspace path it was reached through, so
+    # the audit trail did not reveal it.
+    #
+    # With the slash stripped, `find` treats the link as a plain file and
+    # descends nowhere, so a symlinked checkout is silently skipped. That is the
+    # safe answer under this script's own stated policy: forgetting something
+    # costs disk and no work. The tier that got this right (`reclaim "${d%/}"`)
+    # was the old tier 2, deleted in the previous push — so this now has no
+    # sibling in the file to inherit from, which is exactly why it is spelled
+    # out here.
+    find "${d%/}" -maxdepth 3 -type d -name target -prune 2>/dev/null | sort > "$_ws_tmp"
     while read -r t; do
         [ -n "$t" ] || continue
         done_enough && break
