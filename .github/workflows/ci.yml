@@ -39,6 +39,14 @@ jobs:
           python3 scripts/check-deploy-overlay.py
           python3 scripts/check-deploy-overlay-controls.py
 
+      # The deploy verb is run by hand; these two run on every box at every
+      # boot, and until box1's review they had no rows at all — which is where
+      # both of the defects that review found were living. (#102 review)
+      - name: the two overlay-age readers, and controls that put the bugs back
+        run: |
+          python3 scripts/check-overlay-freshness.py
+          python3 scripts/check-overlay-freshness-controls.py
+
       - name: card generation is stable and matches the committed overlay
         run: ./scripts/check-cards.sh
 

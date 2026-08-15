@@ -243,20 +243,39 @@ while read -r mode type blob path; do
     printf '%s  /%s\n' "$newsha" "$rel" >> "$stamp_body"
 done < "$listing"
 
-# Live files under a deployed directory that the ref does not have. Reported
-# so a stale script cannot keep running unnoticed; not removed.
-for p in $DEPLOY_PATHS; do
-    d="$ROOT/$p"
-    [ -d "$d" ] || continue
-    find "$d" -type f 2>/dev/null | while read -r f; do
-        rel=${f#"$ROOT"/}
-        rel=${rel#/}
+# Files a PREVIOUS deploy installed that this ref no longer has. Reported so a
+# stale script cannot keep running unnoticed; not removed.
+#
+# This used to walk $ROOT/$p whole, and box1 found what that does on a real
+# box: etc/init.d and usr/local/bin are shared with apk, so every
+# package-owned OpenRC script and every binary nobody deployed prints as
+# "stale". Nothing is deleted either way — but a report where dozens of lines
+# are not findings buries the one line the operator is reading for, and an
+# alarm that is usually wrong stops being read at all. That is the same
+# failure this PR's selfcheck section is written against.
+#
+# The stamp already records "every file this deploy is responsible for", and
+# that IS the predicate: a file is stale iff a previous deploy put it here and
+# this ref dropped it. Exact in both directions, and it needs no denylist of
+# things apk owns.
+ref_paths=$(mktemp)
+cut -f2- "$listing" | sed 's|^overlay/||' | sort -u > "$ref_paths"
+if [ -f "$STAMP" ]; then
+    # Stamp body lines are `<sha256>  /<rel>`; the header lines are not.
+    sed -n 's|^[0-9a-f]\{64\}  /||p' "$STAMP" | while read -r rel; do
+        [ -n "$rel" ] || continue
         excluded "$rel" && continue
-        # The listing is `mode type blob<TAB>path`; match the path field whole.
-        cut -f2- "$listing" | grep -qxF "overlay/$rel" && continue
-        printf 'stale %s (live, absent at %s — NOT removed)\n' "$rel" "$REF"
-    done
-done >> "$changes"
+        [ -e "$ROOT/$rel" ] || continue      # already gone: not a live stale file
+        grep -qxF "$rel" "$ref_paths" && continue
+        printf 'stale %s (deployed here, absent at %s — NOT removed)\n' "$rel" "$REF"
+    done >> "$changes"
+else
+    # Said out loud rather than left as a silent pass: on a box with no stamp
+    # there is no record of what a previous deploy owned, so "no stale files"
+    # would be an answer this tool cannot actually give yet.
+    printf 'note  no previous deploy stamp — stale-file detection starts from this deploy\n' >> "$changes"
+fi
+rm -f "$ref_paths"
 
 echo
 say "$REF = ${commit} ($cdate)"

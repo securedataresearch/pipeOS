@@ -170,13 +170,51 @@ check("5 a drifted live file is restored to the ref's content",
       c3.rc == 0 and c3.live("usr/local/bin/pipeos-thing") == "#!/bin/sh\necho v1\n"
       and "1 changed" in c3.log, "rc=%d" % c3.rc)
 
-# ── 6. a live file the ref does not have is reported, not removed ───────
-write(os.path.join(c.root, "usr/local/bin/pipeos-oldthing"), "old\n", 0o755)
-c4 = c.run()
-check("6 a stale live file is reported and NOT deleted",
-      "stale usr/local/bin/pipeos-oldthing" in c4.log
-      and c4.live("usr/local/bin/pipeos-oldthing") == "old\n",
-      "log=%r" % c4.log[-200:])
+# ── 6. a file a PREVIOUS deploy installed, dropped by the new ref ───────
+# Rewritten after box1's review. The old row hand-planted a file in the root
+# and asserted it was called stale — which passed, and which was the defect:
+# the scan walked $ROOT/etc/init.d and $ROOT/usr/local/bin whole, so on a real
+# box every package-owned OpenRC script apk put there printed as stale too.
+# The predicate is now the stamp, so the row has to build the state it claims
+# to test: deploy a file, then deploy a ref that no longer has it.
+c13 = Case()
+CASES.append(c13)
+write(os.path.join(c13.repo, "overlay/usr/local/bin/pipeos-oldthing"),
+      "#!/bin/sh\nold\n", 0o755)
+git(c13.repo, "add", "-A")
+git(c13.repo, "commit", "-qm", "ship pipeos-oldthing")
+c13.run()
+assert c13.live("usr/local/bin/pipeos-oldthing") is not None, "row 6 setup"
+os.remove(os.path.join(c13.repo, "overlay/usr/local/bin/pipeos-oldthing"))
+git(c13.repo, "add", "-A")
+git(c13.repo, "commit", "-qm", "drop pipeos-oldthing")
+c13.run()
+check("6 a file this tool deployed and the ref dropped is reported, NOT deleted",
+      "stale usr/local/bin/pipeos-oldthing" in c13.log
+      and c13.live("usr/local/bin/pipeos-oldthing") == "#!/bin/sh\nold\n",
+      "log=%r" % c13.log[-300:])
+
+# ── 6b. and a file this tool never deployed is NOT reported ─────────────
+# box1's finding, as a row. usr/local/bin and etc/init.d are shared with apk:
+# on a real box the old scan printed every package-owned file as stale, and
+# nothing was ever deleted, but the one line the operator was reading for was
+# buried under dozens that were not findings. Two files, one in each of the
+# directories that made it worst.
+write(os.path.join(c13.root, "usr/local/bin/apk-owned-binary"), "not ours\n", 0o755)
+write(os.path.join(c13.root, "etc/init.d/some-package"), "#!/sbin/openrc-run\n", 0o755)
+c14 = c13.run()
+check("6b a live file no deploy installed is not called stale",
+      "apk-owned-binary" not in c14.log and "some-package" not in c14.log
+      and c14.live("usr/local/bin/apk-owned-binary") == "not ours\n",
+      "log=%r" % c14.log[-300:])
+
+# ── 6c. a box with no stamp says it cannot answer yet ───────────────────
+# The cost of the fix above: before the first deploy there is no record of
+# what this tool owns, so "no stale files" would be a claim it cannot make.
+# Said out loud rather than left as a silent pass.
+c15 = case().run("--dry-run")
+check("6c with no previous stamp, the tool says stale detection starts here",
+      "no previous deploy stamp" in c15.log, "log=%r" % c15.log[-300:])
 
 # ── 7. the card gate refuses ─────────────────────────────────────────────
 c5 = case(card="NICK=box9\nROLE=TEST\n").run()

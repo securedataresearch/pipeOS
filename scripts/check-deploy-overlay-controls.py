@@ -74,9 +74,24 @@ controls = [
     ("H: any git mode is installed as a regular file",
      lambda s: s.replace(MODEGUARD, "    case \"$mode\" in\n        100644|100755|120000) : ;;")),
 
-    ("I: stale live files are deleted instead of reported",
-     lambda s: s.replace("printf 'stale %s (live, absent at %s — NOT removed)\\n' \"$rel\" \"$REF\"",
-                         "rm -f \"$f\"")),
+    ("I: stale files are deleted instead of reported",
+     lambda s: s.replace(
+         "printf 'stale %s (deployed here, absent at %s — NOT removed)\\n' \"$rel\" \"$REF\"",
+         "rm -f \"$ROOT/$rel\"")),
+
+    # J is the review defect itself, put back. Before box1's CHANGES the scan
+    # walked $ROOT/$p whole, so on a real box every apk-owned file under
+    # etc/init.d and usr/local/bin printed as stale. Row 6b is the row that
+    # says so, and this is what proves 6b can fail — without it, 6b passes for
+    # any implementation, including the broken one.
+    ("J: the stale scan walks the live tree again instead of the stamp",
+     lambda s: s.replace(
+         'if [ -f "$STAMP" ]; then\n'
+         '    # Stamp body lines are `<sha256>  /<rel>`; the header lines are not.\n'
+         '    sed -n \'s|^[0-9a-f]\\{64\\}  /||p\' "$STAMP" | while read -r rel; do',
+         'if true; then\n'
+         '    for p in $DEPLOY_PATHS; do [ -d "$ROOT/$p" ] && '
+         'find "$ROOT/$p" -type f; done | sed "s|^$ROOT/||" | while read -r rel; do')),
 ]
 
 rc = 0

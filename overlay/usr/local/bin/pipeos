@@ -62,6 +62,19 @@ overlay_behind() {
     _tip=$(git -C "$REPO" rev-parse --verify -q "$BASE_REF^{commit}" 2>/dev/null) || {
         echo "no $BASE_REF locally, cannot age it"; return 0; }
     [ "$_tip" = "$_c" ] && return 0
+    # Is the deployed commit even ON $BASE_REF? box1 found this on review by
+    # running the function in a throwaway repo: a box deployed from an
+    # UNMERGED feature commit cut off the tip of main reports "current",
+    # because `rev-list --count c..tip` is 0 whenever tip is an ancestor of c.
+    # Once main moves it starts saying "1 commit behind" and STILL never says
+    # the thing that matters — that what this box is running never landed.
+    # This PR is what makes deploying from a branch easy, so it is also what
+    # makes that state common. Reported before the count, because it is the
+    # graver finding and the count is not wrong so much as beside the point.
+    if ! git -C "$REPO" merge-base --is-ancestor "$_c" "$_tip" 2>/dev/null; then
+        echo "deployed commit $(echo "$_c" | cut -c1-12) is NOT on $BASE_REF — this box is running an overlay that was never merged"
+        return 0
+    fi
     _n=$(git -C "$REPO" rev-list --count "$_c..$_tip" 2>/dev/null || echo 0)
     [ "${_n:-0}" -gt 0 ] || return 0
     # Age from the OLDEST undeployed commit: it is how long the fleet has been
