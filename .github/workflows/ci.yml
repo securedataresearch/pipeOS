@@ -24,8 +24,20 @@ jobs:
           # merely unidiomatic. A style-red CI gets disabled within a week.
           shellcheck -s sh -S error \
             overlay/usr/local/bin/pipebox-card scripts/check-cards.sh \
-            overlay/usr/local/bin/pipeos-selfupdate
+            overlay/usr/local/bin/pipeos-selfupdate \
+            overlay/etc/periodic/weekly/pipeos-worksweep
           shellcheck -s sh overlay/usr/local/bin/pipebox-card scripts/check-cards.sh || true
+
+      # pipeOS#90 item 3. A sweep is a deletion tool: the only interesting
+      # question is what it does NOT delete, and that cannot be answered by
+      # reading it. The probe builds a fake /work, runs the shipped script over
+      # it, and asserts the survivors — the signing key, agent memory, the
+      # canonical clones' sources. The control run mutates the script three
+      # ways and asserts which of those survivors stop surviving.
+      - name: the sweep reclaims what it should and spares what it must
+        run: |
+          python3 scripts/check-worksweep.py
+          python3 scripts/check-worksweep-controls.py
 
       - name: card generation is stable and matches the committed overlay
         run: ./scripts/check-cards.sh
