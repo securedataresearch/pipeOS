@@ -2,8 +2,8 @@
 # pipeos-worksweep — bounded weekly reclaim of /work (pipeOS#90 item 3).
 #
 # Sam's rule, and the whole design in one line: a full stick is a human visit,
-# a rebuilt artifact cache is minutes. So this deletes build output and stale
-# review scratch, and nothing else, ever.
+# a rebuilt artifact cache is minutes. So this deletes build output, and
+# nothing else, ever.
 #
 # BOUNDED, NOT CLEVER. This script works from an ALLOWLIST of shapes it is
 # allowed to consider, not a denylist of things to avoid. That inversion is
@@ -14,6 +14,15 @@
 # first — if a candidate ever matches it, that is a bug in the allowlist and
 # this script refuses to delete rather than resolving the disagreement itself.
 #
+# NO TIER DELETES SOURCE. Every candidate shape below is build output or a
+# cache: a `target/` dir, the media `out/` tree, the shared artifact cache. An
+# earlier draft had a tier that deleted whole scratch checkouts under
+# /work/repos aged by directory mtime; box1 measured it on a live box and it
+# selected two real clones and six git worktrees, so it is gone rather than
+# fenced (pipeOS#103 review). If reclaiming build output is ever not enough,
+# the replacement is an opt-in list of declared scratch SHAPES, not "any
+# directory name I do not recognise".
+#
 # Not swept, by construction (none of these are candidate shapes):
 #   /work/claude       agent transcripts and file memory — /root/.claude/
 #                      projects is a symlink onto it. Losing it is not a
@@ -23,11 +32,16 @@
 #   /work/backup       weekly apkovl copies AND the pipe identity/credentials
 #                      written by pipeos-backup. Irreplaceable.
 #   /work/buildroot    toolchain
-#   /work/cargo-home   the registry cache; regenerable only over the network,
-#                      which an appliance built to have none should not need
+#   /work/cargo-home   where pipeOS#90 item 1 puts the shared registry cache.
+#                      box2 is right that nothing creates it today — no box
+#                      sets CARGO_HOME, so the cache is still at ~/.cargo,
+#                      outside /work and therefore outside the allowlist
+#                      entirely. This line is pre-emptive, not load-bearing:
+#                      it costs nothing now and is already correct on the day
+#                      item 1 lands.
 #   /work/keys         the fleet signing key's durable home (pipeOS#90/#92)
 #   /work/pipebox      this box's own working state
-#   the canonical pipe/ and pipeOS/ clones, apart from their build output
+#   every checkout's SOURCE, canonical or scratch, apart from build output
 #
 # Usage: pipeos-worksweep [--dry-run] [--force]
 #   --dry-run  print what would be reclaimed, delete nothing, exit 0
@@ -54,10 +68,12 @@ done
 _ws_conf=/etc/pipeos/pipebox.conf
 [ -r "$_ws_conf" ] && . "$_ws_conf" 2>/dev/null
 sweep_pct=${WORKSWEEP_PCT:-60}
-scratch_days=${WORKSWEEP_SCRATCH_DAYS:-7}
 
-# The canonical clones. Everything else under /work/repos is review or probe
-# scratch — see the mandate's "/work stays lean".
+# The canonical clones. They are named only so their `target/` is swept LAST
+# among the target/ dirs (tier 2, not tier 1) — a scratch checkout's build
+# output is cheaper to lose than the clone everyone works in. This list is not
+# used to classify anything as deletable; "not one of these two names" is not
+# the predicate "scratch", and nothing here relies on it being one.
 CANONICAL="pipe pipeOS"
 
 usage() { df -P /work 2>/dev/null | awk 'NR==2{print $5+0}'; }
@@ -128,9 +144,8 @@ is_canonical() {
 
 # Stop as soon as we are back under the threshold. Tiers are ordered by what
 # the deletion costs the fleet, cheapest first: scratch build output nobody
-# will rebuild, then scratch trees old enough that their PR is closed, then
-# the canonical clones' build output, then the media build tree, and only
-# last the shared cache every checkout uses.
+# will rebuild, then the canonical clones' build output, then the media build
+# tree, and only last the shared cache every checkout uses.
 done_enough() {
     [ "$force" = 1 ] && return 1        # --force sweeps every tier, for the probe
     [ "$dry" = 1 ] && return 1          # dry-run reports the full plan
@@ -159,24 +174,13 @@ for d in /work/repos/*/; do
     done < "$_ws_tmp"
 done
 
-# ---- tier 2: whole scratch checkouts untouched for $scratch_days days
-for d in /work/repos/*/; do
-    done_enough && break
-    [ -d "$d" ] || continue
-    name=$(basename "$d")
-    is_canonical "$name" && continue
-    stale=$(find "/work/repos" -maxdepth 1 -name "$name" -mtime "+$scratch_days" 2>/dev/null)
-    [ -n "$stale" ] || continue
-    reclaim "${d%/}" "scratch checkout idle >${scratch_days}d"
-done
-
-# ---- tier 3: build output in the canonical clones
+# ---- tier 2: build output in the canonical clones
 for c in $CANONICAL; do
     done_enough && break
     reclaim "/work/repos/$c/target" "canonical clone build output"
 done
 
-# ---- tier 4: the pipeOS media build tree. box1 classified this on 2026-08-14:
+# ---- tier 3: the pipeOS media build tree. box1 classified this on 2026-08-14:
 # 7.6G, every byte a build product — images, chroot, ovl, payloads — EXCEPT
 # out/keys, which holds the fleet signing key and is protected above. Swept
 # entry by entry rather than as a whole so out/keys survives by construction
@@ -192,7 +196,7 @@ if ! done_enough && [ -d /work/repos/pipeOS/out ]; then
     done
 fi
 
-# ---- tier 5: the shared artifact cache (pipeOS#90 item 1). Last, because
+# ---- tier 4: the shared artifact cache (pipeOS#90 item 1). Last, because
 # every checkout on the box shares it — reclaiming it costs one full rebuild
 # for all of them rather than one.
 done_enough || reclaim /work/cargo-target "shared artifact cache"
