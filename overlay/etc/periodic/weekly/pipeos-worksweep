@@ -1,0 +1,207 @@
+#!/bin/sh
+# pipeos-worksweep — bounded weekly reclaim of /work (pipeOS#90 item 3).
+#
+# Sam's rule, and the whole design in one line: a full stick is a human visit,
+# a rebuilt artifact cache is minutes. So this deletes build output and stale
+# review scratch, and nothing else, ever.
+#
+# BOUNDED, NOT CLEVER. This script works from an ALLOWLIST of shapes it is
+# allowed to consider, not a denylist of things to avoid. That inversion is
+# deliberate: with a denylist, every path nobody thought of is a candidate for
+# deletion, and the failure mode of "forgot to exclude it" is unbounded. Here
+# the failure mode of forgetting something is that it simply never gets swept,
+# which costs disk and no work. `protected` below is a SECOND gate, not the
+# first — if a candidate ever matches it, that is a bug in the allowlist and
+# this script refuses to delete rather than resolving the disagreement itself.
+#
+# Not swept, by construction (none of these are candidate shapes):
+#   /work/claude       agent transcripts and file memory — /root/.claude/
+#                      projects is a symlink onto it. Losing it is not a
+#                      stalled build, it is the box losing its ability to
+#                      report the problem. Not in the issue's list; added
+#                      here on purpose and disclosed in the PR.
+#   /work/backup       weekly apkovl copies AND the pipe identity/credentials
+#                      written by pipeos-backup. Irreplaceable.
+#   /work/buildroot    toolchain
+#   /work/cargo-home   the registry cache; regenerable only over the network,
+#                      which an appliance built to have none should not need
+#   /work/keys         the fleet signing key's durable home (pipeOS#90/#92)
+#   /work/pipebox      this box's own working state
+#   the canonical pipe/ and pipeOS/ clones, apart from their build output
+#
+# Usage: pipeos-worksweep [--dry-run] [--force]
+#   --dry-run  print what would be reclaimed, delete nothing, exit 0
+#   --force    sweep even if /work is under the threshold (for the probe)
+set -u
+
+mountpoint -q /work || exit 0
+
+dry=0
+force=0
+for a in "$@"; do
+    case "$a" in
+        --dry-run) dry=1 ;;
+        --force)   force=1 ;;
+        *) echo "pipeos-worksweep: unknown argument: $a" >&2; exit 2 ;;
+    esac
+done
+
+# Threshold is conf-declared for the same reason the selfcheck's is (pipeOS#41):
+# a 53G box and a 25G box at the same percentage have very different headroom.
+# 60 is below the selfcheck's 70% WARN on purpose — the sweep should be what
+# keeps the box off the warning, not a thing that runs after someone is already
+# being paged.
+_ws_conf=/etc/pipeos/pipebox.conf
+[ -r "$_ws_conf" ] && . "$_ws_conf" 2>/dev/null
+sweep_pct=${WORKSWEEP_PCT:-60}
+scratch_days=${WORKSWEEP_SCRATCH_DAYS:-7}
+
+# The canonical clones. Everything else under /work/repos is review or probe
+# scratch — see the mandate's "/work stays lean".
+CANONICAL="pipe pipeOS"
+
+usage() { df -P /work 2>/dev/null | awk 'NR==2{print $5+0}'; }
+
+log() {
+    echo "$*"
+    [ -d /work/logs ] && echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> /work/logs/worksweep.log
+}
+
+# Second gate. Anything here must never be deleted, whatever the allowlist
+# below decided. A hit means the two disagree, which is a bug, so it refuses.
+protected() {
+    case "$1" in
+        /work|/work/|/|"") return 0 ;;
+        /work/claude|/work/claude/*)         return 0 ;;
+        /work/backup|/work/backup/*)         return 0 ;;
+        /work/buildroot|/work/buildroot/*)   return 0 ;;
+        /work/cargo-home|/work/cargo-home/*) return 0 ;;
+        /work/keys|/work/keys/*)             return 0 ;;
+        /work/pipebox|/work/pipebox/*)       return 0 ;;
+        /work/repos/pipeOS/out/keys|/work/repos/pipeOS/out/keys/*) return 0 ;;
+        /work/*) return 1 ;;
+        *) return 0 ;;   # anything outside /work is not ours to touch
+    esac
+}
+
+kb() { du -xsk "$1" 2>/dev/null | awk '{print $1+0}'; }
+
+reclaimed=0
+refused=0
+
+reclaim() { # reclaim PATH REASON
+    p=$1; why=$2
+    [ -e "$p" ] || return 0
+    # Never follow a symlink out of the workspace: remove the link, not a tree.
+    if [ -L "$p" ]; then
+        log "  skip (symlink) $p"
+        return 0
+    fi
+    if protected "$p"; then
+        log "  REFUSED $p — allowlist and protected list disagree, not deleting"
+        refused=$((refused + 1))
+        return 0
+    fi
+    size=$(kb "$p")
+    if [ "$dry" = 1 ]; then
+        log "  would reclaim ${size}K  $p  ($why)"
+    else
+        rm -rf -- "$p" || { log "  FAILED to remove $p"; return 0; }
+        log "  reclaimed ${size}K  $p  ($why)"
+    fi
+    reclaimed=$((reclaimed + size))
+    return 0
+}
+
+# Under threshold and not forced? Say nothing and cost nothing. `du` on a
+# multi-gigabyte workspace is not free, so a healthy box never pays for it.
+use=$(usage)
+if [ "$force" = 0 ] && [ "${use:-0}" -lt "$sweep_pct" ]; then
+    exit 0
+fi
+log "pipeos-worksweep: /work ${use:-?}% used (threshold ${sweep_pct}%)$([ "$dry" = 1 ] && echo ' [dry-run]')"
+
+is_canonical() {
+    for c in $CANONICAL; do [ "$1" = "$c" ] && return 0; done
+    return 1
+}
+
+# Stop as soon as we are back under the threshold. Tiers are ordered by what
+# the deletion costs the fleet, cheapest first: scratch build output nobody
+# will rebuild, then scratch trees old enough that their PR is closed, then
+# the canonical clones' build output, then the media build tree, and only
+# last the shared cache every checkout uses.
+done_enough() {
+    [ "$force" = 1 ] && return 1        # --force sweeps every tier, for the probe
+    [ "$dry" = 1 ] && return 1          # dry-run reports the full plan
+    u=$(usage)
+    [ "${u:-100}" -lt "$sweep_pct" ]
+}
+
+# ---- tier 1: target/ dirs inside scratch checkouts
+#
+# Read from a temp file, not from a pipe: `find | while read` puts the loop in
+# a SUBSHELL, so every `reclaimed` increment inside it is discarded and the
+# final total silently reports 0K after deleting gigabytes.
+_ws_tmp=$(mktemp) || exit 0
+trap 'rm -f "$_ws_tmp"' EXIT INT TERM
+
+for d in /work/repos/*/; do
+    done_enough && break
+    [ -d "$d" ] || continue
+    name=$(basename "$d")
+    is_canonical "$name" && continue
+    find "$d" -maxdepth 3 -type d -name target -prune 2>/dev/null | sort > "$_ws_tmp"
+    while read -r t; do
+        [ -n "$t" ] || continue
+        done_enough && break
+        reclaim "$t" "scratch build output"
+    done < "$_ws_tmp"
+done
+
+# ---- tier 2: whole scratch checkouts untouched for $scratch_days days
+for d in /work/repos/*/; do
+    done_enough && break
+    [ -d "$d" ] || continue
+    name=$(basename "$d")
+    is_canonical "$name" && continue
+    stale=$(find "/work/repos" -maxdepth 1 -name "$name" -mtime "+$scratch_days" 2>/dev/null)
+    [ -n "$stale" ] || continue
+    reclaim "${d%/}" "scratch checkout idle >${scratch_days}d"
+done
+
+# ---- tier 3: build output in the canonical clones
+for c in $CANONICAL; do
+    done_enough && break
+    reclaim "/work/repos/$c/target" "canonical clone build output"
+done
+
+# ---- tier 4: the pipeOS media build tree. box1 classified this on 2026-08-14:
+# 7.6G, every byte a build product — images, chroot, ovl, payloads — EXCEPT
+# out/keys, which holds the fleet signing key and is protected above. Swept
+# entry by entry rather than as a whole so out/keys survives by construction
+# and not merely by the guard.
+if ! done_enough && [ -d /work/repos/pipeOS/out ]; then
+    for e in /work/repos/pipeOS/out/*; do
+        done_enough && break
+        [ -e "$e" ] || continue
+        case "$(basename "$e")" in
+            keys) continue ;;
+        esac
+        reclaim "$e" "media build product"
+    done
+fi
+
+# ---- tier 5: the shared artifact cache (pipeOS#90 item 1). Last, because
+# every checkout on the box shares it — reclaiming it costs one full rebuild
+# for all of them rather than one.
+done_enough || reclaim /work/cargo-target "shared artifact cache"
+
+use=$(usage)
+if [ "$dry" = 1 ]; then
+    log "pipeos-worksweep: would reclaim ${reclaimed}K; /work still ${use:-?}%"
+else
+    log "pipeos-worksweep: reclaimed ${reclaimed}K; /work now ${use:-?}%"
+fi
+[ "$refused" -gt 0 ] && log "pipeos-worksweep: $refused candidate(s) REFUSED — see pipeOS#90"
+exit 0
