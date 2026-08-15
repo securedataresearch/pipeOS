@@ -89,6 +89,37 @@ if [ -z "${SIGNING_KEY_DIR:-}" ]; then
     fi
 fi
 
+# Every candidate store this file knows about, minus the winner. (box3 on #92)
+#
+# SELECTION IS NOT DETECTION, AND THE TIERS ABOVE SELECT ON `-d`. A directory
+# existing is not a key being in it, so the loser of that test can be the store
+# that actually holds the fleet key — and it was then invisible: 10-mk-chroot.sh
+# censused `$SIGNING_KEY_DIR` and nothing knew the other candidate's name. An
+# EMPTY /work/keys/pipeos beside a populated $HOME/.pipeos/keys is not exotic;
+# the backup does `mkdir -p` then copies, so any failure between the two leaves
+# exactly that, and an operator told "the durable home is /work/keys/pipeos"
+# makes the directory first, because that is what people do. The build then
+# reported "no signing key — generating a new one", which is #90's headline
+# defect reached through the code #92 added to fix it.
+#
+# So keep the selection dumb and make the census wide: name the paths, let
+# 10-mk-chroot.sh look in all of them. Census-before-any-read is the property
+# this section is credited with, and it cannot hold over a store it cannot name.
+#
+# This is NOT conditional on the fallbacks having run. An explicit override says
+# where the key SHOULD live; it says nothing about where a key IS, and "the
+# operator pointed somewhere else and the old store still holds a key" is the
+# same silent-wrong-key class as the rest of this section. The census's answer
+# to two populated stores is to stop and make a human choose, which is the right
+# answer to a half-finished rotation too.
+SIGNING_KEY_DIR_ALT=
+for _cand in "$HOME/.pipeos/keys" /work/keys/pipeos; do
+    if [ "$_cand" != "$SIGNING_KEY_DIR" ]; then
+        SIGNING_KEY_DIR_ALT="${SIGNING_KEY_DIR_ALT:+$SIGNING_KEY_DIR_ALT }$_cand"
+    fi
+done
+unset _cand
+
 PIPE_SRC="${PIPE_SRC:-$HOME/Projects/pipe}"
 HERMES_SRC="${HERMES_SRC:-$HOME/.hermes/hermes-agent}"
 # on pipeOS itself the checkouts live on the ext4 workspace
