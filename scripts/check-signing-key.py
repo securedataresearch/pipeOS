@@ -85,10 +85,16 @@ def pair(name):
     return _PAIRS[name]
 
 
-def putkey(d, name, pub_from=None):
-    """Write key `name`. pub_from mints a MISMATCHED .pub from another key."""
+def putkey(d, name, pub_from=None, material=None):
+    """Write key `name`.
+
+    pub_from mints a MISMATCHED .pub from another key. material writes ANOTHER
+    key's pair under this name — the same-name/different-material store that a
+    name census cannot see (box0 on #92); the pair still derives, so only the
+    census can catch it.
+    """
     os.makedirs(d, exist_ok=True)
-    priv, pub = pair(name)
+    priv, pub = pair(material or name)
     open(os.path.join(d, name), "wb").write(priv)
     open(os.path.join(d, name + ".pub"), "wb").write(
         pair(pub_from)[1] if pub_from else pub)
@@ -134,6 +140,13 @@ class Sandbox:
         """The file is that key, not a same-named husk some copy left behind."""
         try:
             return open(os.path.join(d, name), "rb").read() == pair(name)[0]
+        except OSError:
+            return False
+
+    def is_material(self, d, name, material):
+        """The file at `name` is `material`'s key — which key won, by content."""
+        try:
+            return open(os.path.join(d, name), "rb").read() == pair(material)[0]
         except OSError:
             return False
 
@@ -373,6 +386,50 @@ got, rc, root = resolve("home", work="work",
                         mkdirs=("work", "work/keys/pipeos", "home/.pipeos/keys"))
 check("17 an existing on-box store wins over an existing $HOME one",
       rc == 0 and got == os.path.join(root, "work/keys/pipeos"), f"{rc} {got!r}")
+
+# ── 18-19. the stores agree on the NAME and disagree on the KEY ──────────
+# box0 on #92, and the last shape of the original bug left standing: the census
+# collapsed to `basename | sort -u`, so an impostor sitting under the fleet
+# key's own filename made n_keys=1 and every guard went quiet. The pair check
+# added for row 11 does not see it either — the impostor is a perfectly good
+# pair, just not the fleet's.
+#
+# Appended rather than renumbered so the control map (which names row numbers)
+# keeps pointing at the same rows.
+IMPOSTOR = "impostor@pipeos-3000000000.rsa"
+
+
+# 18 is box0's repro A: the chroot already holds *a* key, so the restore is
+# skipped entirely and only a write-path guard can catch it. Unguarded this is
+# rc=0 and silent — out/keys clobbered with the impostor, which 40-build-
+# apkovl.sh:22 then copies into every stick's /etc/apk/keys, while the real
+# fleet key sits in the durable store that nothing will read again.
+def same_name_different_key(s):
+    putkey(s.abuild, FLEET, material=IMPOSTOR)
+    putkey(s.durable, FLEET)
+
+
+s = case(same_name_different_key)
+check("18 same name, different material across stores stops the build",
+      s.rc != 0 and not s.has(s.keys, FLEET)
+      and s.is_material(s.durable, FLEET, FLEET),
+      f"rc={s.rc} out={s.names(s.keys)} "
+      f"durable-is-fleet={s.is_material(s.durable, FLEET, FLEET)}")
+
+
+# 19 is the same disagreement on the RESTORE path — no key in the chroot, so
+# the section would pick a store by precedence and copy a key it never
+# compared. Precedence answers "which store", and the census is the only thing
+# that establishes there was nothing to choose between.
+def same_name_restore_path(s):
+    putkey(s.durable, FLEET)
+    putkey(s.keys, FLEET, material=IMPOSTOR)
+
+
+s = case(same_name_restore_path)
+check("19 same name, different material picks no store and restores nothing",
+      s.rc != 0 and not s.has(s.abuild, FLEET),
+      f"rc={s.rc} chroot={s.names(s.abuild)}")
 
 cleanup()
 sys.exit(0 if all(RESULTS) else 1)

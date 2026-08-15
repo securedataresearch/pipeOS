@@ -71,9 +71,11 @@ KEY_STORES="$ABUILD_DIR $SIGNING_KEY_DIR $OUT/keys"
 #
 # `set -e` is on: every test here has to sit in a condition, or a store that
 # simply does not exist yet takes the whole build down.
-key_names=$(for d in $KEY_STORES; do
+key_files=$(for d in $KEY_STORES; do
     ls "$d"/*.rsa 2>/dev/null || true
-done | while read -r f; do basename "$f"; done | sort -u)
+done)
+key_names=$(printf '%s\n' "$key_files" \
+    | while read -r f; do if [ -n "$f" ]; then basename "$f"; fi; done | sort -u)
 n_keys=$(printf '%s\n' "$key_names" | grep -c . || true)
 if [ "$n_keys" -gt 1 ]; then
     echo "$n_keys different abuild private keys across the key stores —" >&2
@@ -83,6 +85,45 @@ if [ "$n_keys" -gt 1 ]; then
     done
     echo "keep exactly one, put it in $SIGNING_KEY_DIR, and remove the others" >&2
     exit 1
+fi
+
+# The census above compares NAMES, and a name is not a key. Two stores holding
+# `fleet@pipeos-1000000000.rsa` with different material disagree completely and
+# count as one — which is the same shape as the bug this section exists to fix,
+# one layer down. It is reachable the ordinary way: $SIGNING_KEY_DIR is
+# hand-populated (the message above literally tells an operator to put a key
+# there), and a truncated copy or a key pulled from the wrong backup lands
+# under the name it always had. The restore is then skipped whenever the chroot
+# holds *a* key, `cp $ABUILD_DIR/*.rsa* $OUT/keys/` overwrites the good copy,
+# `cp -n` leaves the real key in the durable store where nothing will read it
+# again, and 40-build-apkovl.sh:22 ships the impostor's public half into every
+# stick's /etc/apk/keys. Silent, rc=0. So census the MATERIAL too, and make the
+# comment above true as written: if the stores disagree at all, a human chooses.
+# (box0 on #92)
+_keysum=
+for _c in sha256sum md5sum; do
+    if [ -z "$_keysum" ] && command -v "$_c" >/dev/null 2>&1; then _keysum="$_c"; fi
+done
+if [ -z "$_keysum" ]; then
+    # Same call as the openssl check below: a missing checker is not a reason
+    # to refuse to build, but it IS a reason to say the guard is not running.
+    echo "==> WARNING: no sha256sum or md5sum — the key stores are compared by" >&2
+    echo "    NAME only; two stores could hold different keys under one name" >&2
+elif [ "$n_keys" -eq 1 ]; then
+    n_material=$(printf '%s\n' "$key_files" \
+        | while read -r f; do if [ -n "$f" ]; then "$_keysum" "$f"; fi; done \
+        | cut -d' ' -f1 | sort -u | grep -c . || true)
+    if [ "$n_material" -gt 1 ]; then
+        echo "the key stores hold $n_material DIFFERENT keys under one name" >&2
+        echo "($key_names) — refusing to guess which one signs the fleet:" >&2
+        for d in $KEY_STORES; do
+            ls "$d"/*.rsa >/dev/null 2>&1 && "$_keysum" "$d"/*.rsa >&2 || true
+        done
+        echo "one of these is the key the flashed sticks already trust and the" >&2
+        echo "others are not. Keep that one in $SIGNING_KEY_DIR with its .pub," >&2
+        echo "remove the rest from the other stores, and re-run" >&2
+        exit 1
+    fi
 fi
 
 if ! ls "$ABUILD_DIR"/*.rsa >/dev/null 2>&1; then
@@ -101,8 +142,9 @@ if ! ls "$ABUILD_DIR"/*.rsa >/dev/null 2>&1; then
         fi
     done
     if [ -n "$key_src" ]; then
-        # The census above already established there is only one key name in
-        # play, so this precedence picks a store, never a key.
+        # The census above already established there is one key name AND one
+        # key's material in play, so this precedence picks a store, never a
+        # key — which is the only reason a precedence order is safe here.
         priv="$key_names"
         echo "==> restoring abuild signing key $priv from $key_src"
         sudo sh -c "cp '$key_src'/*.rsa* '$ABUILD_DIR/'"
