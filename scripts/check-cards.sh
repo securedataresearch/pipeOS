@@ -99,6 +99,41 @@ else
     say "      run: cp docs/foreman.md $TMPLDIR/foreman.md"
 fi
 
+# 5. the generated environment must actually REACH the agent (#90, box0 on #93)
+#
+# Check 3 proves the env file is generated correctly and ships in the overlay.
+# It says nothing about whether anything reads it, and for a while nothing did.
+# /etc/profile sources /etc/profile.d/* for LOGIN shells only, and no agent
+# launch is a login shell — crond/init -> launcher -> claude -p -> sh -c. box0
+# measured it: a profile.d export was simply absent from the agent's own
+# environment while checks 1-3 were green.
+#
+# The launcher list is DISCOVERED, not written down here. A hardcoded pair is
+# exactly what goes stale the day someone adds a third way to start the agent,
+# which is the same failure this check exists to catch.
+ENVFILE=etc/profile.d/10-pipebox-env.sh
+# A launcher is a script that actually RUNS the agent. Plain `claude -p` also
+# appears in comments and in selfcheck's log messages, so match the invocation
+# — piped into a timeout — on a line that is not a comment.
+launchers=
+for f in overlay/usr/local/bin/*; do
+    if sed 's/#.*//' "$f" | grep -qE 'timeout [^|]* claude -p'; then
+        launchers="$launchers $f"
+    fi
+done
+if [ -z "$launchers" ]; then
+    bad "found no agent launcher in overlay/usr/local/bin — this check went blind"
+else
+    for launcher in $launchers; do
+        if grep -q "^\[ -r /$ENVFILE \] && \. /$ENVFILE" "$launcher"; then
+            ok "$(basename "$launcher") sources /$ENVFILE"
+        else
+            bad "$(basename "$launcher") launches the agent without sourcing /$ENVFILE"
+            say "      the agent it starts gets none of the generated environment"
+        fi
+    done
+fi
+
 if [ "$fails" = 0 ]; then
     say "check-cards: PASS"
 else
