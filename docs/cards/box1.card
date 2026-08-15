@@ -26,7 +26,7 @@ DISK_CRIT_PCT=85
 # selfcheck compiles a real artifact per entry, not a version string.
 # REPOS is what it must have on disk, with the right origin.
 TOOLCHAIN=cargo,rustc
-REPOS=pipe,pipeOS
+REPOS=pipe
 
 # pipe#650 item 9. What this box may do over pipe WITHOUT asking, as an agent
 # labelled `pipebox` -- the label pipebox-listener:12 and
