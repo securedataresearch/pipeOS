@@ -28,7 +28,43 @@ LOG=/work/logs/pipebox-listener.log
 STATE=/work/pipebox
 MANDATE=/etc/pipeos/mandate.md
 SETTINGS=/etc/pipeos/pipebox-settings.json
-CLAUDE_TIMEOUT=1800
+# How long one agent run may take before `timeout` kills it (pipeOS#101).
+#
+# THIS WAS A BARE `CLAUDE_TIMEOUT=1800` AND THE ASSIGNMENT SITS BELOW THE
+# `. /etc/pipeos/pipebox.conf` on line 9 — the identical defect #101 was filed
+# over on the watch path, in the DM path, unreported because nobody had read
+# this file for it. Measured by box1 on #106: with AGENT_TIMEOUT_MIN=120
+# sourced, cohort-watch resolved 7200 and this file resolved 1800. An operator
+# who raised a card got the new budget on the board path and the hardcode here.
+#
+# ONE KEY, not two. The conf's own comment says "How long ONE agent run may
+# take", the fleet reads that sentence as covering the agent, and a second key
+# is a key nobody remembers to set. The 5-120 ceiling was argued from the
+# watcher's flock (one watcher per tick, 60 ticks held) and that argument does
+# NOT transfer here — this is a serial `pipe wait` loop with no flock, so a long
+# run costs latency on the next DM and nothing else. It is re-argued rather than
+# widened: 120 minutes is already longer than any real agent run measured on
+# this fleet, and a DM path that can stall two hours is indistinguishable from a
+# dead box to whoever sent the DM. Same ceiling, different reason, same key.
+#
+# The `0*)` arm and the runtime range check are the same two guards as the
+# watcher's, for the same reasons — see the long comment in pipebox-cohort-watch
+# for the octal derivation. Kept as a duplicated block rather than a shared
+# sourced file on purpose: both scripts run from the overlay before anything
+# guarantees a shared library is present. The fallbacks differ (1800 here, 900
+# there) because an unprovisioned box's DM path and board path always had
+# different defaults; check-agent-timeout.py probes BOTH files, so neither can
+# drift back to a hardcode unnoticed.
+case "${AGENT_TIMEOUT_MIN:-}" in
+    ''|*[!0-9]*) _agent_timeout_s=1800 ;;
+    0*)          _agent_timeout_s=1800 ;;
+    *)           if [ "$AGENT_TIMEOUT_MIN" -ge 5 ] && [ "$AGENT_TIMEOUT_MIN" -le 120 ]; then
+                     _agent_timeout_s=$(( AGENT_TIMEOUT_MIN * 60 ))
+                 else
+                     _agent_timeout_s=1800
+                 fi ;;
+esac
+CLAUDE_TIMEOUT="${CLAUDE_TIMEOUT:-$_agent_timeout_s}"
 
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG"; }
 
@@ -116,7 +152,17 @@ your text output here goes only to a log file nobody reads in real time."
         log "claude failed to start for $peer (rc=$rc) — not marking processed, will retry"
         return 0
     fi
-    [ "$rc" = 0 ] || log "claude exited nonzero for $peer (rc=$rc; batch acked to avoid poison-loop)"
+    # A cut-off run is not a failure and must not be logged as one — the batch
+    # IS still acked (the run did work; replaying it would redo it), but an
+    # operator reading this log needs to know the clock ran out rather than go
+    # looking for a broken box. 143 as well as 124: busybox timeout SIGTERMs
+    # without --signal bookkeeping, so the shell reports 128+15. (box1 on #106 —
+    # the watch path got this arm in this PR and the DM path did not.)
+    case "$rc" in
+        0) ;;
+        124|143) log "claude was CUT OFF after ${CLAUDE_TIMEOUT}s (rc=$rc) for $peer — not a failure: the run was working when the clock ran out. Raise AGENT_TIMEOUT_MIN on this box's card if this repeats. Batch acked." ;;
+        *) log "claude exited nonzero for $peer (rc=$rc; batch acked to avoid poison-loop)" ;;
+    esac
 
     # record processed ids (keep the tail bounded)
     printf '%s\n' "$fresh" | jq -r '.Dm.msg_id // .PeerMessage.msg_id // empty' >> "$seen"

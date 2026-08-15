@@ -66,10 +66,33 @@ CLAUDE_PROJECTS="${CLAUDE_CONFIG_DIR:-/root/.claude}/projects"
 # as in the generator: this file is sourced from a conf that a box can be
 # hand-repaired into, and `timeout 0` would look exactly like an agent that
 # cannot start.
+#
+# THE `0*)` ARM IS NOT REDUNDANT WITH THE DIGITS-ONLY ARM. The digits-only test
+# is LEXICAL and `$(( ))` is OCTAL, so they disagree about what a number is, and
+# `pipebox-card`'s `[ -ge 5 ]` is a third opinion (`test` parses decimal). Found
+# by box2 and re-derived by box0 on #106: `AGENT_TIMEOUT_MIN=030` passed all
+# three fences and ran 24 minutes while the conf said 030 and nothing anywhere
+# said the number had been reinterpreted; `08`/`09` are not valid octal at all,
+# so `$(( ))` errored, and with no `set -e` (see :296) `_agent_timeout_s` stayed
+# unset, CLAUDE_TIMEOUT resolved EMPTY, and `timeout "" claude` returned 125
+# (coreutils) or 1 (busybox) — outside the 124|143 arm below, so every tick
+# consumed a board batch, advanced the cursor, and never ran the agent. The
+# generator now refuses a leading zero outright; this arm is the runtime half,
+# because the conf is a file a box can be hand-repaired into.
+#
+# The range is enforced HERE TOO and not only in the generator, for the same
+# reason: `AGENT_TIMEOUT_MIN=100000` in a hand-repaired conf is one wake holding
+# the flock for ten weeks, which is the "box went silent on the board" state the
+# 120 ceiling exists to prevent. Out of range falls back to the default rather
+# than dying — a bad number must not be able to stop the pump.
 case "${AGENT_TIMEOUT_MIN:-}" in
     ''|*[!0-9]*) _agent_timeout_s=900 ;;
-    0)           _agent_timeout_s=900 ;;
-    *)           _agent_timeout_s=$(( AGENT_TIMEOUT_MIN * 60 )) ;;
+    0*)          _agent_timeout_s=900 ;;
+    *)           if [ "$AGENT_TIMEOUT_MIN" -ge 5 ] && [ "$AGENT_TIMEOUT_MIN" -le 120 ]; then
+                     _agent_timeout_s=$(( AGENT_TIMEOUT_MIN * 60 ))
+                 else
+                     _agent_timeout_s=900
+                 fi ;;
 esac
 CLAUDE_TIMEOUT="${CLAUDE_TIMEOUT:-$_agent_timeout_s}"
 # rc=1 from `claude -p` is what a session-limit rejection looks like from

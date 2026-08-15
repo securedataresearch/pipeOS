@@ -21,16 +21,30 @@ Exit 0 if every check passes.
 """
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WATCHER = os.path.join(HERE, "..", "overlay", "usr", "local", "bin",
-                       "pipebox-cohort-watch")
+BIN = os.path.join(HERE, "..", "overlay", "usr", "local", "bin")
 TMPL = os.path.join(HERE, "..", "overlay", "usr", "local", "share", "pipeos",
                     "card", "pipebox.conf.tmpl")
 CARDS = os.path.join(HERE, "..", "docs", "cards")
+
+# BOTH agent paths, not just the one anyone had been reading. The board path
+# (pipebox-cohort-watch) is where #101 was filed; box1 found the identical
+# defect unfixed in the DM path (pipebox-listener) while reviewing #106 —
+# same bare assignment, same position below the conf source, and with
+# AGENT_TIMEOUT_MIN=120 sourced the two resolved 7200 and 1800. One key spans
+# both, so the probe must too: "anywhere" was one file wide.
+#
+# The fallbacks differ on purpose (the DM path's default was always 1800), so
+# each path carries its own expected default rather than sharing a constant.
+PATHS = [
+    ("pipebox-cohort-watch", "900"),
+    ("pipebox-listener", "1800"),
+]
 
 results = []
 
@@ -41,22 +55,38 @@ def ck(desc, ok, detail=""):
                            ("  [%s]" % detail) if detail and not ok else ""))
 
 
-SRC = open(WATCHER).read()
+SRCS = {name: open(os.path.join(BIN, name)).read() for name, _ in PATHS}
 
 
-def extract():
-    """Slice the case block + CLAUDE_TIMEOUT assignment out of the watcher."""
+def extract(name):
+    """Slice the case block + CLAUDE_TIMEOUT assignment out of a shipped file."""
     m = re.findall(r'^case "\$\{AGENT_TIMEOUT_MIN:-\}" in\n.*?^esac\n'
                    r'CLAUDE_TIMEOUT="\$\{CLAUDE_TIMEOUT:-\$_agent_timeout_s\}"\n',
-                   SRC, flags=re.M | re.S)
+                   SRCS[name], flags=re.M | re.S)
     if len(m) != 1:
         sys.exit("probe: expected exactly 1 AGENT_TIMEOUT_MIN resolution block "
                  "in %s, found %d — it changed shape, fix the probe before "
-                 "trusting it" % (WATCHER, len(m)))
+                 "trusting it" % (name, len(m)))
     return m[0]
 
 
-def resolve(block, conf_value=None, env_value=None):
+def shells():
+    """Every shell present that could run these scripts.
+
+    CI is ubuntu, so `sh` there is dash and busybox is absent; the appliance
+    boots busybox. The octal rule is POSIX and both agreed when box0 and box2
+    measured it by hand, so this is not expected to diverge — it is here because
+    "the gate only ever exercised the CI shell" is exactly the shape of hole
+    #100 was filed over, and the cost of closing it is one subprocess.
+    """
+    found = [("sh", ["sh"])]
+    bb = shutil.which("busybox")
+    if bb:
+        found.append(("busybox sh", [bb, "sh"]))
+    return found
+
+
+def resolve(block, conf_value=None, env_value=None, argv=("sh",)):
     """Run the block the way the watcher does: conf sourced first, then this."""
     conf = ""
     if conf_value is not None:
@@ -70,70 +100,100 @@ def resolve(block, conf_value=None, env_value=None):
         env.pop("CLAUDE_TIMEOUT", None)
         if env_value is not None:
             env["CLAUDE_TIMEOUT"] = env_value
-        p = subprocess.run(["sh", path], capture_output=True, text=True,
+        p = subprocess.run(list(argv) + [path], capture_output=True, text=True,
                            env=env)
         return p.stdout.strip(), p.stderr.strip(), p.returncode
     finally:
         os.unlink(path)
 
 
-# conf value, env CLAUDE_TIMEOUT, expected seconds, description
+# conf value, env CLAUDE_TIMEOUT, expected seconds, description.
+# DEF means "this path's own fallback" — 900 on the board path, 1800 on the DM
+# path — so the same row table runs against both files.
+DEF = object()
 ROWS = [
-    ("30",   None, "1800", "BUILD's 30 minutes -> 1800s"),
-    ("15",   None, "900",  "TEST/SHIP's 15 minutes -> 900s"),
+    ("30",   None, "1800", "30 minutes -> 1800s"),
+    ("15",   None, "900",  "15 minutes -> 900s"),
     ("5",    None, "300",  "the generator floor -> 300s"),
     ("120",  None, "7200", "the generator ceiling -> 7200s"),
-    ("",     None, "900",  "EMPTY (unprovisioned or older card) -> 900s default"),
-    (None,   None, "900",  "key absent entirely -> 900s default"),
-    ("0",    None, "900",  "0 -> 900s, NOT `timeout 0` killing every run"),
-    ("abc",  None, "900",  "non-numeric -> 900s, no arithmetic error"),
-    ("-5",   None, "900",  "negative -> 900s (the `-` fails the digits test)"),
-    ("1 800", None, "900", "embedded space -> 900s, not a split word"),
+    ("",     None, DEF,    "EMPTY (unprovisioned or older card) -> default"),
+    (None,   None, DEF,    "key absent entirely -> default"),
+    ("0",    None, DEF,    "0 -> default, NOT `timeout 0` killing every run"),
+    ("abc",  None, DEF,    "non-numeric -> default, no arithmetic error"),
+    ("-5",   None, DEF,    "negative -> default (the `-` fails the digits test)"),
+    ("1 800", None, DEF,   "embedded space -> default, not a split word"),
+    # THE OCTAL ROWS (#106). Every one of these is digits-only, so the lexical
+    # arm passes it straight to `$(( ))`, which reads a leading zero as octal.
+    # `030` is the quiet one and the row that matters most: before the fix it
+    # resolved to 1440 — 24 minutes — while the conf on disk said 030 and no log
+    # line anywhere said the operator's number had been reinterpreted.
+    ("030",  None, DEF,    "030 -> default, NOT 1440s (octal 030 is 24, not 30)"),
+    ("007",  None, DEF,    "007 -> default, NOT 420s"),
+    ("05",   None, DEF,    "05 -> default (right answer, wrong road: never $(( ))"),
+    # `08`/`09` are not valid octal AT ALL. Pre-fix these were an arithmetic
+    # syntax error, and with no `set -e` the variable stayed unset, CLAUDE_TIMEOUT
+    # resolved EMPTY, and `timeout "" claude` returned 125/1 — outside the
+    # 124|143 arm, so the generic branch advanced the cursor and the agent never
+    # ran, every tick, forever. rc and stderr are asserted clean for exactly that
+    # reason: an empty result with a nonzero rc is the failure, not a near-miss.
+    ("08",   None, DEF,    "08 -> default, not an arithmetic syntax error"),
+    ("09",   None, DEF,    "09 -> default, not an arithmetic syntax error"),
+    # The runtime half of the range. The generator refuses these, but a conf is
+    # a file a box can be hand-repaired into, and 100000 minutes is one wake
+    # holding the flock for ten weeks.
+    ("100000", None, DEF,  "far above the ceiling -> default, not a 10-week run"),
+    ("1",    None, DEF,    "below the 5-minute floor -> default, not 60s"),
     ("30",  "60",  "60",   "explicit CLAUDE_TIMEOUT in env beats the card"),
     ("",    "60",  "60",   "env wins over the fallback too"),
 ]
 
 
 def main():
-    block = extract()
+    for name, default in PATHS:
+        block = extract(name)
+        src = SRCS[name]
 
-    print("AGENT_TIMEOUT_MIN resolution")
-    for conf, env, want, desc in ROWS:
-        got, err, rc = resolve(block, conf, env)
-        ck(desc, got == want and rc == 0 and err == "",
-           "got %r rc=%s stderr=%r" % (got, rc, err))
+        for shname, argv in shells():
+            print("AGENT_TIMEOUT_MIN resolution — %s under %s" % (name, shname))
+            for conf, env, want, desc in ROWS:
+                want = default if want is DEF else want
+                got, err, rc = resolve(block, conf, env, argv)
+                ck(desc, got == want and rc == 0 and err == "",
+                   "got %r rc=%s stderr=%r" % (got, rc, err))
 
-    # THE ORDERING PROPERTY — the actual bug. Both the conf source line and the
-    # resolution must exist, and the resolution must come SECOND. A correct
-    # value assigned above the source line is silently overwritten, which is
-    # what shipped, and no amount of arithmetic testing sees it.
-    print("\nordering: the conf is sourced BEFORE the timeout is resolved")
-    src_line = SRC.find(". /etc/pipeos/pipebox.conf")
-    resolve_at = SRC.find('case "${AGENT_TIMEOUT_MIN:-}" in')
-    use_at = SRC.find('timeout "$CLAUDE_TIMEOUT"')
-    ck("pipebox.conf is sourced", src_line >= 0)
-    ck("the timeout is resolved after the conf is sourced",
-       resolve_at > src_line >= 0, "source@%d resolve@%d" % (src_line, resolve_at))
-    ck("the timeout is used after it is resolved",
-       use_at > resolve_at >= 0, "resolve@%d use@%d" % (resolve_at, use_at))
-    ck("no bare `CLAUDE_TIMEOUT=` assignment survives anywhere",
-       re.search(r'^CLAUDE_TIMEOUT=(?!"\$\{CLAUDE_TIMEOUT:-)', SRC,
-                 flags=re.M) is None,
-       "an unconditional assignment would overwrite the conf again")
+        # THE ORDERING PROPERTY — the actual bug. Both the conf source line and
+        # the resolution must exist, and the resolution must come SECOND. A
+        # correct value assigned above the source line is silently overwritten,
+        # which is what shipped, and no amount of arithmetic testing sees it.
+        print("\nordering: the conf is sourced BEFORE the timeout is resolved"
+              " — %s" % name)
+        src_line = src.find(". /etc/pipeos/pipebox.conf")
+        resolve_at = src.find('case "${AGENT_TIMEOUT_MIN:-}" in')
+        use_at = src.find('timeout "$CLAUDE_TIMEOUT"')
+        ck("pipebox.conf is sourced", src_line >= 0)
+        ck("the timeout is resolved after the conf is sourced",
+           resolve_at > src_line >= 0,
+           "source@%d resolve@%d" % (src_line, resolve_at))
+        ck("the timeout is used after it is resolved",
+           use_at > resolve_at >= 0, "resolve@%d use@%d" % (resolve_at, use_at))
+        ck("no bare `CLAUDE_TIMEOUT=` assignment survives",
+           re.search(r'^CLAUDE_TIMEOUT=(?!"\$\{CLAUDE_TIMEOUT:-)', src,
+                     flags=re.M) is None,
+           "an unconditional assignment would overwrite the conf again")
 
-    # A cut-off run must not be logged as a failure. Both spellings, because
-    # both were observed: 124 is timeout killing the child, 143 is the child's
-    # own SIGTERM status propagated -- and 143 is the one netgaze displayed as
-    # FAILED on three boxes.
-    print("\na cut-off run is reported as cut off, not failed")
-    for rc in ("124", "143"):
-        ck("rc=%s is handled distinctly" % rc,
-           re.search(r'^\s*124\|143\)', SRC, flags=re.M) is not None)
-    m = re.search(r'124\|143\)\n\s*log "([^"]*)"', SRC)
-    ck("the cut-off log line says CUT OFF and names the budget",
-       m is not None and "CUT OFF" in m.group(1)
-       and re.search(r"\$\{?CLAUDE_TIMEOUT\}?", m.group(1)) is not None,
-       "log line: %s" % (m.group(1) if m else None))
+        # A cut-off run must not be logged as a failure. Both spellings, because
+        # both were observed: 124 is timeout killing the child, 143 is the
+        # child's own SIGTERM status propagated -- and 143 is the one netgaze
+        # displayed as FAILED on three boxes.
+        print("\na cut-off run is reported as cut off, not failed — %s" % name)
+        ck("rc=124|143 is handled distinctly",
+           re.search(r'^\s*124\|143\)', src, flags=re.M) is not None)
+        m = re.search(r'124\|143\)\s*\n?\s*log "([^"]*)"', src)
+        ck("the cut-off log line says CUT OFF and names the budget",
+           m is not None and "CUT OFF" in m.group(1)
+           and re.search(r"\$\{?CLAUDE_TIMEOUT\}?", m.group(1)) is not None,
+           "log line: %s" % (m.group(1) if m else None))
+        print("")
 
     # The card is the declared home for the value, so the template must carry
     # the placeholder and every fleet card must declare it -- a card that does
@@ -167,7 +227,17 @@ def main():
                        ("121", "above the 120-minute ceiling"),
                        ("0", "zero"),
                        ("abc", "not a number"),
-                       ("-5", "negative")]:
+                       ("-5", "negative"),
+                       # The generator is the fence that MUST refuse these
+                       # rather than fall back, because a card is data that
+                       # arrives with a machine. Pre-#106 all three rendered:
+                       # `[ -ge 5 ]` is `test`, which parses decimal, so `030`
+                       # passed the 5-120 range check as thirty and wrote
+                       # AGENT_TIMEOUT_MIN=030 into the conf through the
+                       # sanctioned path.
+                       ("030", "a leading zero — octal to $(( ))"),
+                       ("05", "a leading zero, even where the value is in range"),
+                       ("08", "a leading zero that is not even valid octal")]:
         with tempfile.TemporaryDirectory() as d:
             card = os.path.join(d, "t.card")
             open(card, "w").write(
@@ -198,6 +268,27 @@ def main():
         ck("AGENT_TIMEOUT_MIN=%s generates and renders into the conf" % value,
            p.returncode == 0
            and ('AGENT_TIMEOUT_MIN="%s"' % value) in rendered,
+           "rc=%s stderr=%r" % (p.returncode, p.stderr.strip()))
+
+    # The leading-zero rule lives in the SHARED numeric arm, not in
+    # AGENT_TIMEOUT_MIN's branch, so the sibling card numbers get it from the
+    # same line. None of them reaches a `$(( ))` today — box0 checked, they all
+    # land in `test` comparisons — and "today" is precisely the qualifier that
+    # let this bug exist, so the fence is placed once rather than per-key.
+    print("\nthe same rule covers every numeric card key")
+    for key, cur in [("DISK_WARN_PCT", "65"), ("DISK_CRIT_PCT", "80"),
+                     ("GC_INTERVAL_HOURS", "12")]:
+        with tempfile.TemporaryDirectory() as d:
+            card = os.path.join(d, "t.card")
+            open(card, "w").write(
+                re.sub(r"^%s=%s$" % (key, cur), "%s=0%s" % (key, cur),
+                       base, flags=re.M))
+            p = subprocess.run(
+                ["sh", cardtool, "generate", "--card", card,
+                 "--root", os.path.join(d, "root"), "--templates", tmpldir],
+                capture_output=True, text=True)
+        ck("%s=0%s is refused for the leading zero" % (key, cur),
+           p.returncode == 2 and key in p.stderr,
            "rc=%s stderr=%r" % (p.returncode, p.stderr.strip()))
 
     n_fail = results.count(False)
