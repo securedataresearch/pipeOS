@@ -344,8 +344,21 @@ work_pending() {
     # bit #50's spec — and this function's own comment warns about it.
     _hb_me="${NICK:-}"
     [ -n "$_hb_me" ] || _hb_me=$(pipe id -o json 2>/dev/null | jq -r '.nick // empty' 2>/dev/null)
-    _hb_pr=$(prs_not_mine securedataresearch/pipe)
-    _hb_pr2=$(prs_not_mine securedataresearch/pipeOS)
+    # R21 (2026-08-15): a box watches ONLY the repos its card declares —
+    # REPOS, rendered into pipebox.conf by pipebox-card. pipeOS left every
+    # card the same day: the boxes work the product, and waking four agents
+    # for an OS PR none of them may touch was cost with no consumer. The
+    # repo pair used to be hardcoded here, which is exactly the
+    # narrated-state drift the card exists to end. Empty-vs-zero semantics
+    # preserved per probe: "" means the probe could not run, 0 means it ran
+    # and found nothing (box0, #77).
+    _hb_pr=""
+    for _hb_repo in $(printf '%s' "${REPOS:-pipe}" | tr ',' ' '); do
+        _hb_n=$(prs_not_mine "${GH_OWNER:-securedataresearch}/${_hb_repo}")
+        if [ -n "$_hb_n" ]; then
+            _hb_pr=$(( ${_hb_pr:-0} + _hb_n ))
+        fi
+    done
     if [ -n "$_hb_me" ]; then
         _hb_held=$(pipe claims -o json 2>/dev/null | grep -c "\"holder\":\"${_hb_me}\"")
     else
@@ -363,13 +376,13 @@ work_pending() {
     # Empty is not zero. `gh` prints `0` for "no open PRs" and nothing at all
     # when it could not run, so a wake caused by both repos failing to answer
     # says so rather than presenting itself as an ordinary idle-box wake.
-    if [ -z "$_hb_pr" ] && [ -z "$_hb_pr2" ]; then
-        log "work-heartbeat: BOTH PR PROBES RETURNED NOTHING (not '0') — gh may be failing on this box; waking so it gets looked at"
+    if [ -z "$_hb_pr" ]; then
+        log "work-heartbeat: NO PR PROBE RETURNED ANYTHING (not '0') — gh may be failing on this box; waking so it gets looked at"
     fi
     # Wake if a PR might want a verdict, or this box is idle while Ready work
     # exists. Holding a claim with no open PRs and no Ready cards is the one
     # quiet state that needs nothing.
-    [ "${_hb_pr:-0}" != "0" ] || [ "${_hb_pr2:-0}" != "0" ] \
+    [ "${_hb_pr:-0}" != "0" ] \
         || [ "${_hb_held:-0}" = "0" ] || [ "${_hb_ready:-0}" != "0" ]
 }
 
@@ -385,7 +398,7 @@ if [ -z "$changed" ] && [ -z "$ANNOUNCE" ]; then
     echo "$_hb_now" > "$HB_STAMP"
     work_pending || exit 0
     HEARTBEAT=1
-    log "work-heartbeat: PRs=${_hb_pr:-?}/${_hb_pr2:-?} held=${_hb_held:-?} ready=${_hb_ready:-?} — waking to drain"
+    log "work-heartbeat: PRs=${_hb_pr:-?} (${REPOS:-pipe}) held=${_hb_held:-?} ready=${_hb_ready:-?} — waking to drain"
 fi
 
 # Pull each changed thread and feed ONLY THE REPLIES THIS BOX HAS NOT SEEN.
@@ -918,7 +931,7 @@ elif [ -n "$HEARTBEAT" ]; then
     # happen. Same defect this file has been corrected for three times, one
     # arm over.
     task="NO NEW BOARD ACTIVITY THIS WAKE, and nothing was posted. The work
-heartbeat woke you: open PRs ${_hb_pr:-?}/${_hb_pr2:-?}, claims held by you
+heartbeat woke you: open PRs ${_hb_pr:-?} in ${REPOS:-pipe}, claims held by you
 ${_hb_held:-?}, Ready cards ${_hb_ready:-?}. Act on whichever of those is
 non-trivial — a green PR you did not author and have not verdicted, or an
 unclaimed card in your lane if you hold nothing. Work it in this session, to
