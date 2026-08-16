@@ -61,3 +61,7 @@ GC_INTERVAL_HOURS=6
 # one run this box lost at 15 min on 2026-08-15 was one, not a pattern. Raise
 # it if this box starts losing verdict runs the way BUILD was losing builds.
 AGENT_TIMEOUT_MIN=15
+
+# Clear the artifact cache after every run (Sam 2026-08-16); rebuilds are CPU
+# we have, disk is what runs out.
+CLEAN_AFTER_RUN=1

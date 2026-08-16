@@ -67,3 +67,7 @@ GC_INTERVAL_HOURS=24
 # the hardcoded 15-minute cutoff on 2026-08-15 (rc=143, 500-760 KB transcript
 # already written). Well under the 120 ceiling the flock imposes.
 AGENT_TIMEOUT_MIN=30
+
+# Clear the artifact cache after every run (Sam 2026-08-16); rebuilds are CPU
+# we have, disk is what runs out.
+CLEAN_AFTER_RUN=1

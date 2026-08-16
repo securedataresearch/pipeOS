@@ -72,3 +72,8 @@ OVERLAY_CRIT_DAYS="@@OVERLAY_CRIT_DAYS@@"
 # value here was read and then discarded — four real runs died at exactly 15
 # minutes on 2026-08-15 and were logged as failures rather than as cut off.
 AGENT_TIMEOUT_MIN="@@AGENT_TIMEOUT_MIN@@"
+
+# Clear /work/cargo-target after every completed agent run (Sam, 2026-08-16:
+# the builder must clear itself every time). 1 on boxes that build; the cost
+# is a cold rebuild next wake, paid in CPU the fleet has to spare (#59).
+CLEAN_AFTER_RUN="@@CLEAN_AFTER_RUN@@"

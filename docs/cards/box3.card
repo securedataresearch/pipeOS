@@ -68,3 +68,7 @@ GC_INTERVAL_HOURS=12
 # the most in the fleet — each a real review/build run whose context was then
 # thrown away, because #100 meant the next wake could not resume it either.
 AGENT_TIMEOUT_MIN=30
+
+# Clear the artifact cache after every run (Sam 2026-08-16); rebuilds are CPU
+# we have, disk is what runs out.
+CLEAN_AFTER_RUN=1
