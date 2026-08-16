@@ -46,7 +46,10 @@
 CARGO_INCREMENTAL=0
 export CARGO_INCREMENTAL
 
-if mountpoint -q /work 2>/dev/null; then
-    CARGO_TARGET_DIR=/work/cargo-target
-    export CARGO_TARGET_DIR
-fi
+# CARGO_TARGET_DIR is NOT exported here any more. A single shared dir let
+# cargo hand one checkout a test binary built from another (pipeOS#115,
+# pipe#791) — same crate and profile, different source, green run, wrong
+# code. The per-checkout keying now lives in the cargo PATH shim
+# (/usr/local/bin/cargo), which resolves at invocation time — the only
+# moment the current checkout is knowable. Bypassing the shim falls back to
+# cargo's per-repo target/: wasteful, never wrong.

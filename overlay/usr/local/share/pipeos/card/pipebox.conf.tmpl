@@ -63,3 +63,12 @@ GC_INTERVAL_HOURS="@@GC_INTERVAL_HOURS@@"
 # Card-declared because a box that runs the listener for the whole fleet is
 # not as tolerant of a four-day-old fix as a spare on a shelf.
 OVERLAY_CRIT_DAYS="@@OVERLAY_CRIT_DAYS@@"
+# How long ONE agent run may take before it is killed, in minutes (pipeOS#101).
+# Empty = pipebox-cohort-watch falls back to 15. Generator range is 5-120.
+#
+# Declared per box because the roles do not do the same shape of work: a BUILD
+# wake compiles and pushes, a TEST or SHIP wake reads and verdicts. This was a
+# hardcoded 900 seconds assigned BELOW the line that sources this file, so the
+# value here was read and then discarded — four real runs died at exactly 15
+# minutes on 2026-08-15 and were logged as failures rather than as cut off.
+AGENT_TIMEOUT_MIN="@@AGENT_TIMEOUT_MIN@@"

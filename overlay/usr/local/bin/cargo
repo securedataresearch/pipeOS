@@ -1,0 +1,39 @@
+#!/bin/sh
+# cargo shim: the buildroot bridge (pipe#641) + per-checkout target dir
+# (pipeOS#115 / pipe#791) — ONE file, because they must compose.
+#
+# History: this path originally held a hand-installed Foreman wrapper that
+# put the buildroot toolchain on PATH and exec'd its cargo. The first cut
+# of the #115 shim REPLACED it and broke cargo resolution fleet-wide for
+# non-login shells (the buildroot is only on PATH via this file). Both
+# behaviours live here now, and the buildroot exec is the primary path.
+#
+# Per-checkout keying: a shared CARGO_TARGET_DIR let cargo serve a test
+# binary compiled from a different worktree. The dir is keyed on the
+# checkout's toplevel at invocation time — the only moment it is knowable.
+# Bypassing this shim falls back to per-repo target/: wasteful, never wrong.
+root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+if mountpoint -q /work 2>/dev/null; then
+    h=$(printf '%s' "$root" | sha256sum | cut -c1-12)
+    CARGO_TARGET_DIR="/work/cargo-target/$h"
+    export CARGO_TARGET_DIR
+fi
+if [ -x /work/buildroot/usr/bin/cargo ]; then
+    export PATH=/work/buildroot/usr/bin:$PATH
+    export LD_LIBRARY_PATH=/work/buildroot/usr/lib:/work/buildroot/lib
+    exec /work/buildroot/usr/bin/cargo "$@"
+fi
+# No buildroot (SHIP box, or a dev machine running the overlay): first real
+# cargo on PATH that is not this file.
+self=$(readlink -f "$0" 2>/dev/null || echo "$0")
+oldifs=$IFS; IFS=:
+for d in $PATH; do
+    c="$d/cargo"
+    [ -x "$c" ] || continue
+    [ "$(readlink -f "$c" 2>/dev/null || echo "$c")" = "$self" ] && continue
+    IFS=$oldifs
+    exec "$c" "$@"
+done
+IFS=$oldifs
+echo "cargo shim: no cargo in /work/buildroot or on PATH" >&2
+exit 127

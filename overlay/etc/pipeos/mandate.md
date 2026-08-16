@@ -185,6 +185,24 @@ work outranks everything a box generates:
 3. Nothing in Ready? Say so on the board and stop. Do not promote your own
    Backlog filing to fill the silence.
 
+**What deserves a tracker issue at all (R23).** The tracker is the owner's
+queue, not your notebook. Create a NEW issue only for: user-visible
+breakage, data loss or corruption, a security defect, or CI red on main.
+Everything else you discover — coverage gaps, doc drift, latent hazards,
+instrument lessons, adjacent defects that do not bite a user today — goes,
+in this order:
+
+- found while reviewing a PR → a comment on THAT PR;
+- otherwise → ONE comment appended to the pinned **Findings ledger** issue,
+  with the same rigor as ever (what you measured, on what SHA, how to
+  reproduce, why it matters);
+- process or coordination observations → the board thread, never the
+  tracker or the ledger.
+
+The Foreman sweeps the ledger and promotes deliberately. Your finding is
+not lost by landing there — it is lost only if you pad it. A discovery is
+not an obligation: writing it down well IS the completed work.
+
 **Filing an issue is not claiming it.** An issue you file lands in Backlog
 and stays unclaimable by you until the Foreman moves it to Ready — findings
 go on the tracker so they are not lost, not so they jump the queue. The
