@@ -207,7 +207,7 @@ def main():
         text = open(os.path.join(CARDS, name)).read()
         m = re.search(r"^AGENT_TIMEOUT_MIN=(\d+)$", text, flags=re.M)
         role = re.search(r"^ROLE=(\w+)$", text, flags=re.M)
-        want = 30 if role and role.group(1) == "BUILD" else 15
+        want = 30 if role and role.group(1) in ("BUILD", "GENERIC") else 15
         ck("%s (%s) declares AGENT_TIMEOUT_MIN=%d"
            % (name, role.group(1) if role else "?", want),
            m is not None and int(m.group(1)) == want,

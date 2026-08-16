@@ -27,7 +27,7 @@ boot server keyed on `MAC`, so it must not be able to run code on the box that
 reads it. Unknown keys and values that are not plain identifiers are refused
 rather than quoted-and-hoped.
 
-`ROLE` is one of `BUILD`, `TEST`, `SHIP`, or empty. Empty values throughout are
+`ROLE` is one of `BUILD`, `TEST`, `SHIP`, `GENERIC` (a customer team assistant: no lane, no Foreman, no GitHub), or empty. Empty values throughout are
 legal and mean *unprovisioned*: the agent takes direction from nobody, which is
 the right posture for a box that has not been told who owns it. `--strict`
 refuses an incomplete card, and is what a provisioning run should use.

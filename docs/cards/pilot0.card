@@ -1,0 +1,27 @@
+# pipeOS model card — pilot0 (customer pilot: the pilot business)
+#
+# The first GENERIC card: a team-assistant box for an external business.
+# No Foreman, no GitHub, no repo lane — the owner directs it, the team
+# reaches it by DM and (once the owner wires a cohort) the board.
+#
+# OWNER_NICK and COHORT_ID are filled at first boot by pipebox-setup, on
+# the customer's premises, with the customer's own pipe identity. Nothing
+# fleet-specific may ever appear in this file.
+
+NICK=pilot0
+ROLE=GENERIC
+OWNER_NICK=
+FOREMAN_NICK=
+COHORT_ID=
+GH_OWNER=
+
+TOOLCHAIN=
+REPOS=
+PIPE_CAPS=read,send.dm,send.room,send.lobby,send.bbs
+
+DISK_WARN_PCT=70
+DISK_CRIT_PCT=85
+GC_INTERVAL_HOURS=
+OVERLAY_CRIT_DAYS=
+AGENT_TIMEOUT_MIN=30
+CLEAN_AFTER_RUN=
