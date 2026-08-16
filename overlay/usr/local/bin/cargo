@@ -1,28 +1,30 @@
 #!/bin/sh
-# cargo shim — one target dir PER CHECKOUT under the shared cache root.
+# cargo shim: the buildroot bridge (pipe#641) + per-checkout target dir
+# (pipeOS#115 / pipe#791) — ONE file, because they must compose.
 #
-# pipeOS#115 / pipe#791: a single shared CARGO_TARGET_DIR let cargo serve a
-# test binary compiled from a DIFFERENT worktree — same crate, same profile,
-# other source. The share saved disk by conflating the one thing that must
-# not be conflated: which tree an artifact came from. Keying the dir on the
-# checkout's toplevel keeps the disk win (no per-scratch duplicate deps)
-# across runs of the SAME tree while making cross-tree reuse impossible.
+# History: this path originally held a hand-installed Foreman wrapper that
+# put the buildroot toolchain on PATH and exec'd its cargo. The first cut
+# of the #115 shim REPLACED it and broke cargo resolution fleet-wide for
+# non-login shells (the buildroot is only on PATH via this file). Both
+# behaviours live here now, and the buildroot exec is the primary path.
 #
-# Why a PATH shim and not the env file: CARGO_TARGET_DIR is resolved by
-# cargo per invocation, but an exported variable is set once per session —
-# it cannot follow the agent as it cd's between checkouts. A shim computes
-# at the moment of use, which is the only time the answer is knowable.
-#
-# The env file (10-pipebox-env.sh) deliberately no longer exports
-# CARGO_TARGET_DIR; if this shim is bypassed (absolute path to the real
-# cargo), the fallback is cargo's default per-repo target/ — the safe
-# direction, wasteful rather than wrong.
+# Per-checkout keying: a shared CARGO_TARGET_DIR let cargo serve a test
+# binary compiled from a different worktree. The dir is keyed on the
+# checkout's toplevel at invocation time — the only moment it is knowable.
+# Bypassing this shim falls back to per-repo target/: wasteful, never wrong.
 root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 if mountpoint -q /work 2>/dev/null; then
     h=$(printf '%s' "$root" | sha256sum | cut -c1-12)
     CARGO_TARGET_DIR="/work/cargo-target/$h"
     export CARGO_TARGET_DIR
 fi
+if [ -x /work/buildroot/usr/bin/cargo ]; then
+    export PATH=/work/buildroot/usr/bin:$PATH
+    export LD_LIBRARY_PATH=/work/buildroot/usr/lib:/work/buildroot/lib
+    exec /work/buildroot/usr/bin/cargo "$@"
+fi
+# No buildroot (SHIP box, or a dev machine running the overlay): first real
+# cargo on PATH that is not this file.
 self=$(readlink -f "$0" 2>/dev/null || echo "$0")
 oldifs=$IFS; IFS=:
 for d in $PATH; do
@@ -33,5 +35,5 @@ for d in $PATH; do
     exec "$c" "$@"
 done
 IFS=$oldifs
-echo "cargo shim: no real cargo found on PATH" >&2
+echo "cargo shim: no cargo in /work/buildroot or on PATH" >&2
 exit 127
