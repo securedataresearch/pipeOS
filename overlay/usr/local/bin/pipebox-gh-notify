@@ -63,7 +63,13 @@ since=$(cat "$CURSOR" 2>/dev/null)
 [ -n "$since" ] || since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-issues=$(gh search issues --owner "$GH_OWNER" --updated ">${since}" \
+# R21: scope the poll to the card's repos (REPOS via pipebox.conf), not the
+# whole owner — a box that only works pipe must not be woken for pipeOS.
+repo_args=""
+for _r in $(printf '%s' "${REPOS:-pipe}" | tr ',' ' '); do
+    repo_args="$repo_args --repo $GH_OWNER/$_r"
+done
+issues=$(gh search issues $repo_args --updated ">${since}" \
     --sort updated --order asc \
     --json repository,number,title,url,updatedAt --limit "$SEARCH_LIMIT" \
     2>>"$LOG") || exit 0

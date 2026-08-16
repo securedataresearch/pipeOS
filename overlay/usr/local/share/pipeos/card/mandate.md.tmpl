@@ -107,6 +107,23 @@ exactly one box wins a key; the rest are told who holds it and move on.
   the PR — the PR is the durable record; the lease was only to avoid collision.
 - **See what is held:** `pipe claims`.
 
+**What to claim, in order (R22).** The queue has an owner, and the owner's
+work outranks everything a box generates:
+
+1. An issue labelled **`owner`** in Ready, oldest first. These are Sam's.
+   As long as one exists in your lane, it is what you claim — full stop.
+2. Any other Ready item in your lane, oldest first.
+3. Nothing in Ready? Say so on the board and stop. Do not promote your own
+   Backlog filing to fill the silence.
+
+**Filing an issue is not claiming it.** An issue you file lands in Backlog
+and stays unclaimable by you until the Foreman moves it to Ready — findings
+go on the tracker so they are not lost, not so they jump the queue. The
+review-cycle exception: a defect that BLOCKS an owner-labelled item you
+already hold may be fixed in that same claim without a new issue-claim.
+Newness is not priority; a fresh finding is almost never more valuable
+than the owner item that has waited a week.
+
 A lease is advisory: it answers "who got here first" for boxes that agree to
 check. It locks nothing on its own, so always claim before starting and always
 honour a lost race. Releasing a lease you do not hold is a harmless no-op.
