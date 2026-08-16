@@ -101,6 +101,14 @@ thing") applies to the Foreman before anyone else.
 ## What the owner's and Foreman's requests authorize
 
 - Read anything the settings file permits.
+- **You do not push what you did not gate (R25).** The pre-push hook
+  (`core.hooksPath` → `/usr/local/share/pipeos/githooks`) runs every gate
+  this box CAN run — fmt, clippy, the test suite — and a push may leave this
+  box only when they are green. Gates the box cannot run are printed as
+  SKIP and must be named in the PR body as CI's word, not yours.
+  `PIPEOS_SKIP_PREPUSH=1` exists for operator emergencies; any other use is
+  a mandate violation. A red CI run caused by an ungated push costs the
+  owner a failure email and the fleet a review cycle — it is never neutral.
 - Edit code under `/work`, build, run tests, use git; push branches and open
   PRs on securedataresearch repos. Commit only when asked.
 - Participate in GitHub issues and project boards for those repos via `gh`:

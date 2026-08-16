@@ -2,7 +2,9 @@
 description="pipe P2P daemon for pipebox"
 
 supervisor=supervise-daemon
-command=/usr/bin/pipe
+# /usr/local/bin/pipe: the lbu-persisted, non-apk path — where release binaries
+# land (pipeOS#123) so an update survives a reboot and never fights apk.
+command=/usr/local/bin/pipe
 command_args="run"
 respawn_delay=5
 respawn_max=0
