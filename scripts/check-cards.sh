@@ -148,21 +148,26 @@ fi
 # than a location, and the run where /work did NOT mount is the one where
 # space is scarcest — silently reverting to incremental there is backwards.
 envf="overlay/$ENVFILE"
-guard_ln=$(grep -n '^if mountpoint -q /work' "$envf" | head -1 | cut -d: -f1 || true)
-inc_ln=$(grep -n '^export CARGO_INCREMENTAL$' "$envf" | head -1 | cut -d: -f1 || true)
-tgt_ln=$(grep -n '^    export CARGO_TARGET_DIR$' "$envf" | head -1 | cut -d: -f1 || true)
-if [ -z "$guard_ln" ] || [ -z "$inc_ln" ] || [ -z "$tgt_ln" ]; then
-    bad "$ENVFILE is missing an export or the /work guard"
-    say "      guard=${guard_ln:-none} CARGO_INCREMENTAL=${inc_ln:-none} CARGO_TARGET_DIR=${tgt_ln:-none}"
-elif [ "$inc_ln" -gt "$guard_ln" ]; then
-    bad "CARGO_INCREMENTAL is exported inside the /work mountpoint guard"
-    say "      a box that failed to mount /work would build incrementally"
-    say "      into tmpfs — the run with the least room to spare"
-elif [ "$tgt_ln" -lt "$guard_ln" ]; then
-    bad "CARGO_TARGET_DIR is exported outside the /work mountpoint guard"
-    say "      with /work unmounted that path is tmpfs: gigabytes into RAM"
+# The env file owns CARGO_INCREMENTAL (size policy, unconditional). The
+# TARGET DIR moved to the cargo PATH shim (pipeOS#115 / pipe#791): a static
+# export is precisely the cross-checkout share that let one worktree run
+# another's test binary, so the gate now asserts its ABSENCE here and the
+# shim's presence + keying there.
+inc_ln=$(grep -c '^export CARGO_INCREMENTAL$' "$envf" || true)
+if [ "${inc_ln:-0}" -eq 0 ]; then
+    bad "$ENVFILE no longer exports CARGO_INCREMENTAL"
+elif grep -q 'export CARGO_TARGET_DIR' "$envf"; then
+    bad "CARGO_TARGET_DIR is exported by the env file — the cargo shim owns it (pipeOS#115)"
 else
-    ok "both exports present, each on the correct side of the /work guard"
+    ok "env file: CARGO_INCREMENTAL exported, no static CARGO_TARGET_DIR"
+fi
+SHIM=overlay/usr/local/bin/cargo
+if [ ! -f "$SHIM" ]; then
+    bad "cargo shim missing at $SHIM"
+elif ! grep -q 'git rev-parse --show-toplevel' "$SHIM"     || ! grep -q 'mountpoint -q /work' "$SHIM"     || ! grep -q '/work/cargo-target/\$h' "$SHIM"; then
+    bad "cargo shim does not key the target dir on the checkout under the /work guard"
+else
+    ok "cargo shim keys CARGO_TARGET_DIR per checkout, guarded on /work"
 fi
 
 if [ "$fails" = 0 ]; then
