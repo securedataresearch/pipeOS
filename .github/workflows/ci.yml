@@ -30,6 +30,16 @@ jobs:
       - name: card generation is stable and matches the committed overlay
         run: ./scripts/check-cards.sh
 
+      # 5i is a detector, and #91's review found both halves failing OPEN on a
+      # live box. It cannot be verified on a box: `pipeos-selfcheck` is on every
+      # box's hard ban list and the sandboxes refuse an extracted-snippet run,
+      # which is how the fail-open shipped in the first place. CI is the only
+      # instrument in this fleet that can execute the section, so it asks the
+      # question the boxes cannot: does 5i go LOUD when its own condition is
+      # violated, and quiet only when the box is genuinely clean.
+      - name: the unshipped-code detector fails closed
+        run: ./scripts/check-selfcheck-5i.sh
+
       - name: derived files are not hand-editable without detection
         run: |
           set -eu

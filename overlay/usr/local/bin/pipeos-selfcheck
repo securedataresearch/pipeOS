@@ -459,15 +459,59 @@ fi
 # is worth reporting is the GAP, and how big it is, so nobody re-derives it
 # from a rejected CLI flag an hour into a card.
 #
-# Both halves compare against the local checkout only. `origin/main` is
-# whatever the last fetch left, so this can be stale — it cannot be WRONG in
-# the dangerous direction, because a stale ref understates the gap.
-_pipe_repo=/work/repos/pipe
-if [ -d "$_pipe_repo/.git" ] && command -v pipe >/dev/null 2>&1; then
+# THE BASELINE IS `origin/main`, BOTH HALVES. The comment here used to say
+# "both halves compare against the local checkout only", and it was wrong
+# about both: the pipe half already read a ref, and the overlay half globbed
+# the WORKTREE. A worktree baseline answers "do my current edits match what is
+# installed" — loud while a box does its job, and SILENT for merged-and-never-
+# deployed, which is the condition this section is named for. A box only holds
+# a fresh copy of a script it is currently working on; every other file sits at
+# whatever commit the checkout was left on, so `cmp` matched and the merge was
+# invisible. #79's own three examples are all files the finding box was not
+# working on. box0 and box2 each reproduced this independently (#91 review).
+#
+# `origin/main` is whatever the last fetch left, so this can be stale — a stale
+# ref understates the gap rather than inventing one.
+#
+# WHAT IT MUST NEVER DO IS GO QUIET. An unrun check has to be distinguishable
+# from a passing one, or this section reproduces the failure class it exists to
+# report: on box0 the whole overlay half was skipped by one `-d` test and
+# `pipeos-selfcheck` printed nothing — clean, on the exact question it was
+# added to answer. So every path that cannot reach its baseline says which
+# baseline it could not reach, and why.
+#
+# Still WARN and not CRIT, including the cannot-check paths. 5h above already
+# CRITs a repo the card declares and the box does not have, and restating the
+# same fact at a higher severity buys nothing; what is new here is only that
+# the DETECTOR is blind, which is a warning about an instrument.
+
+# Repo paths come from the card's `REPOS`, the same source 5h uses. This
+# section used to hardcode `/work/repos/pipe` and `/work/repos/pipeOS`, which
+# is how the entire overlay half silently did not run on a box whose clones
+# live elsewhere. One file, two conventions, and the hardcoding one is the one
+# that went quiet.
+_repo_dir() {
+    for _r in $(echo "${REPOS:-}" | tr ',' ' '); do
+        if [ "$_r" = "$1" ]; then echo "/work/repos/$_r"; return; fi
+    done
+}
+
+_pipe_repo=$(_repo_dir pipe)
+if [ -z "$_pipe_repo" ]; then
+    warnn "cannot compare the installed pipe against main — the card's REPOS (${REPOS:-<unset>}) does not name 'pipe', so the version gap is unmeasured rather than zero (pipeOS#79)"
+elif [ ! -d "$_pipe_repo/.git" ]; then
+    warnn "cannot compare the installed pipe against main — $_pipe_repo is not a git repo, so the version gap is unmeasured rather than zero (pipeOS#79)"
+elif ! command -v pipe >/dev/null 2>&1; then
+    warnn "cannot compare the installed pipe against main — no 'pipe' on PATH (pipeOS#79)"
+else
     _v_run=$(pipe --version 2>/dev/null | awk '{print $NF}')
     _v_repo=$(git -C "$_pipe_repo" show origin/main:Cargo.toml 2>/dev/null \
         | awk -F'"' '/^version = "/ {print $2; exit}')
-    if [ -n "$_v_run" ] && [ -n "$_v_repo" ] && [ "$_v_run" != "$_v_repo" ]; then
+    if [ -z "$_v_run" ]; then
+        warnn "cannot compare the installed pipe against main — 'pipe --version' produced nothing (pipeOS#79)"
+    elif [ -z "$_v_repo" ]; then
+        warnn "cannot compare the installed pipe against main — 'git show origin/main:Cargo.toml' in $_pipe_repo produced nothing; origin/main is missing or was never fetched, so the version gap is unmeasured rather than zero (pipeOS#79)"
+    elif [ "$_v_run" != "$_v_repo" ]; then
         warnn "installed pipe is $_v_run but origin/main declares $_v_repo — this box is not running the code it is developing, so a feature merged in between exists in the repo and not on the box (pipeOS#79)"
     fi
 fi
@@ -476,24 +520,67 @@ fi
 # features `main` did not, so a routine deploy would have REVERTED them.
 # Compared by content rather than by mtime, because a deploy rewrites both.
 #
-# Only files present in both are compared — a script that exists in the repo
-# and not on the box is a different condition (never deployed), and one on the
-# box and not in the repo is a local edit; both are worth knowing but neither
-# is what this line is for, so they are named separately rather than folded in.
-_ov=/work/repos/pipeOS/overlay/usr/local/bin
-if [ -d "$_ov" ]; then
-    _drift=""
-    for _f in "$_ov"/*; do
-        [ -f "$_f" ] || continue
-        _n=${_f##*/}
-        if [ ! -e "/usr/local/bin/$_n" ]; then
-            _drift="$_drift $_n(absent)"
-        elif ! cmp -s "$_f" "/usr/local/bin/$_n"; then
-            _drift="$_drift $_n"
+# THREE BUCKETS, THREE MESSAGES, because the repairs differ and a single
+# "differs" line sends the reader to the wrong one:
+#
+#   absent    — in origin/main, not on the box       -> deploy
+#   unshipped — origin/main differs from installed   -> deploy
+#   local     — worktree differs from origin/main    -> commit or revert
+#
+# The worktree comparison is kept rather than dropped: it is a real deploy-
+# safety check and it is how #79's watcher features were nearly reverted. It
+# just is not the detector, and it must not stand in for it.
+#
+# The file list comes from `ls-tree origin/main`, not from a worktree glob, so
+# a script merged to main and not yet in this checkout is VISIBLE rather than
+# skipped — which is the same class of miss one level down.
+_ov_repo=$(_repo_dir pipeOS)
+_ov_sub=overlay/usr/local/bin
+if [ -z "$_ov_repo" ] || [ ! -d "$_ov_repo/.git" ]; then
+    warnn "cannot compare the installed overlay scripts against main — no pipeOS checkout (REPOS=${REPOS:-<unset>}); a merged-but-undeployed script is unchecked here, not absent (pipeOS#79)"
+else
+    _base=origin/main
+    _names=$(git -C "$_ov_repo" ls-tree --name-only "origin/main:$_ov_sub" 2>/dev/null)
+    if [ -z "$_names" ]; then
+        # Named fallback rather than a skip: something is still better than
+        # silence, but the reader has to know it cannot see a merge.
+        _base=worktree
+        _names=$(ls "$_ov_repo/$_ov_sub" 2>/dev/null)
+        [ -z "$_names" ] || \
+            warnn "cannot resolve origin/main:$_ov_sub in $_ov_repo — comparing against the WORKTREE instead, which cannot see a script that merged and was never deployed (pipeOS#79)"
+    fi
+    _absent=""; _unshipped=""; _local=""; _unreadable=""
+    _ref=$(mktemp)
+    for _n in $_names; do
+        _inst=/usr/local/bin/$_n
+        _wt=$_ov_repo/$_ov_sub/$_n
+        if [ "$_base" = origin/main ]; then
+            git -C "$_ov_repo" show "origin/main:$_ov_sub/$_n" > "$_ref" 2>/dev/null
+            # An empty read is unreadable, not empty-and-equal: comparing it
+            # would report every such file as drifted.
+            if [ ! -s "$_ref" ]; then _unreadable="$_unreadable $_n"; continue; fi
+        else
+            [ -f "$_wt" ] || continue
+            cp "$_wt" "$_ref" 2>/dev/null || continue
+        fi
+        if [ ! -e "$_inst" ]; then
+            _absent="$_absent $_n"
+        elif ! cmp -s "$_ref" "$_inst"; then
+            _unshipped="$_unshipped $_n"
+        fi
+        if [ "$_base" = origin/main ] && [ -f "$_wt" ] && ! cmp -s "$_ref" "$_wt"; then
+            _local="$_local $_n"
         fi
     done
-    [ -z "$_drift" ] || \
-        warnn "installed overlay scripts differ from the repo copy:$_drift — a deploy would replace the running version with the repo's, which is how #79's watcher features were nearly reverted"
+    rm -f "$_ref"
+    [ -z "$_absent" ] || \
+        warnn "overlay scripts in $_base but NOT INSTALLED on this box:$_absent — merged and never deployed; the repair is a deploy (pipeOS#79)"
+    [ -z "$_unshipped" ] || \
+        warnn "installed overlay scripts differ from $_base:$_unshipped — merged and never deployed; the repair is a deploy, not an edit (pipeOS#79)"
+    [ -z "$_local" ] || \
+        warnn "local overlay edits not in origin/main:$_local — the repair is to commit or revert them, and until then a deploy would replace the running version, which is how #79's watcher features were nearly reverted"
+    [ -z "$_unreadable" ] || \
+        warnn "cannot read origin/main:$_ov_sub/… for:$_unreadable — those scripts are unchecked, not clean (pipeOS#79)"
 fi
 
 # ---- 6. known-good promotion: this apkovl booted and nothing is critical.
