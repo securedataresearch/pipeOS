@@ -43,7 +43,10 @@ set -u
 REPO=${PIPEOS_REPO:-/work/repos/pipeOS}
 STAMP=/etc/pipeos/.overlay-stamp
 CARD=/etc/pipeos/card.conf
-LOG=/work/logs/deploy-overlay.log
+# LOG relocates with the test seam: box2 measured 100KB of probe noise in the
+# production log on a box that had never really deployed — the seam moved the
+# install target and left the audit trail behind.
+LOG=${PIPEOS_DEPLOY_ROOT:-}/work/logs/deploy-overlay.log
 LOCK=/run/pipeos-deploy-overlay.lock
 # Test seam. PIPEOS_DEPLOY_ROOT relocates every install target, so the probe
 # can deploy a real commit into a throwaway tree. It is fenced: a relocated
@@ -310,6 +313,7 @@ fi
 
 # ---- 4. install ------------------------------------------------------------
 watcher_changed=no
+installed_rels=$(mktemp)
 [ "${write_stamp:-no}" = yes ] || log "deploying $REF=$commit ($n_new new, $n_mod changed)"
 
 while read -r mode type blob path; do
@@ -331,6 +335,7 @@ while read -r mode type blob path; do
     # a half-written file is never reachable under the real name.
     mv -f "$tmpf" "$dst" || die "cannot install $rel"
     [ "$rel" = usr/local/bin/pipebox-cohort-watch ] && watcher_changed=yes
+    printf '%s\n' "$rel" >> "$installed_rels"
 done < "$listing"
 
 if [ "$card_action" = install ]; then
@@ -366,6 +371,37 @@ if [ "$watcher_changed" = yes ] && [ -x "$ROOT/usr/local/bin/pipebox-cohort-watc
         die "cohort-watch --seed failed after deploying a new watcher"
     fi
 fi
+
+# ---- 5b. a deploy reaches files, not running services (box0, #102 review) --
+# The rename-install keeps an executing script on its old inode ON PURPOSE —
+# which means a supervised service keeps RUNNING the old code after a deploy
+# reports success, and the stamp's freshness cannot tell the difference.
+# For each repo-owned supervised service whose own files changed this deploy:
+# restart it if it is running (this tool is operator-run and already gated),
+# and say so either way. Cron-run scripts (the watcher, periodic jobs) start
+# fresh every tick and need nothing here.
+svc_files() {
+    case "$1" in
+        pipe-daemon)      echo "etc/init.d/pipe-daemon" ;;
+        pipebox-listener) echo "etc/init.d/pipebox-listener usr/local/bin/pipebox-listener" ;;
+    esac
+}
+for svc in pipe-daemon pipebox-listener; do
+    hit=no
+    for f in $(svc_files "$svc"); do
+        grep -qxF "$f" "$installed_rels" 2>/dev/null && hit=yes
+    done
+    [ "$hit" = yes ] || continue
+    if rc-service "$svc" status >/dev/null 2>&1; then
+        say "restarting $svc (its code changed in this deploy; the running copy was the old inode)"
+        rc-service "$svc" restart >/dev/null 2>&1 \
+            && log "restarted $svc after deploy" \
+            || { log "RESTART FAILED: $svc after deploy"; die "$svc restart failed after deploy — the box is running old code under a new stamp"; }
+    else
+        say "note: $svc changed but is not running — nothing restarted"
+    fi
+done
+rm -f "$installed_rels"
 
 # ---- 6. persist, then prove a reboot reproduces it -------------------------
 # In that order: an unsaved deploy is a deploy that dies at the next reboot,
