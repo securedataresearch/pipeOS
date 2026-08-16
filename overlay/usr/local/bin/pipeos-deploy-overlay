@@ -365,7 +365,7 @@ if [ "$NO_PERSIST" = 1 ]; then
     exit 0
 fi
 if [ "$watcher_changed" = yes ] && [ -x "$ROOT/usr/local/bin/pipebox-cohort-watch" ]; then
-    if "$ROOT/usr/local/bin/pipebox-cohort-watch" --seed; then
+    if "$ROOT/usr/local/bin/pipebox-cohort-watch" --seed 9>&-; then
         say "re-seeded the cohort watcher"
     else
         die "cohort-watch --seed failed after deploying a new watcher"
@@ -394,7 +394,12 @@ for svc in pipe-daemon pipebox-listener; do
     [ "$hit" = yes ] || continue
     if rc-service "$svc" status >/dev/null 2>&1; then
         say "restarting $svc (its code changed in this deploy; the running copy was the old inode)"
-        rc-service "$svc" restart >/dev/null 2>&1 \
+        # 9>&- : the lock fd must NOT leak into the daemon we start here, or
+        # the running service holds the deploy lock until its next restart —
+        # every later deploy then dies "another deploy is running" with no
+        # deploy running (field bug, all four boxes, 2026-08-16; same fix the
+        # watcher uses when launching claude).
+        rc-service "$svc" restart >/dev/null 2>&1 9>&- \
             && log "restarted $svc after deploy" \
             || { log "RESTART FAILED: $svc after deploy"; die "$svc restart failed after deploy — the box is running old code under a new stamp"; }
     else
