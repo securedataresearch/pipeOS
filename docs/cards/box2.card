@@ -53,3 +53,5 @@ PIPE_CAPS=read,send.dm,send.room,send.lobby,send.bbs,claim
 # issue's figure for TEST/SHIP. SHIP lost no runs to the 15-minute cutoff on
 # 2026-08-15, so this is the default declared rather than a measured need.
 AGENT_TIMEOUT_MIN=15
+
+CLEAN_AFTER_RUN=

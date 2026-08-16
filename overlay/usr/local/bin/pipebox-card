@@ -52,6 +52,7 @@ DISK_WARN_PCT= DISK_CRIT_PCT=
 GC_INTERVAL_HOURS=
 OVERLAY_CRIT_DAYS=
 AGENT_TIMEOUT_MIN=
+CLEAN_AFTER_RUN=
 
 # pipe#650 item 9. The capabilities a card is ALLOWED to grant the agent —
 # every other spelling in pipe's vocabulary is refused here, by this script,
@@ -97,6 +98,7 @@ read_card() {
             DISK_WARN_PCT|DISK_CRIT_PCT) ;;
             GC_INTERVAL_HOURS|OVERLAY_CRIT_DAYS) ;;
             AGENT_TIMEOUT_MIN) ;;
+            CLEAN_AFTER_RUN) ;;
             *) die "unknown card key: $key" ;;
         esac
         # Values land in sed expressions and in a shell-sourced conf file.
@@ -142,7 +144,7 @@ read_card() {
             # pipeOS#41 / #101 / #97: digits-only, octal-aware, one arm for
             # every numeric key — a split here is how the octal guard got
             # shadowed once already during a merge.
-            DISK_WARN_PCT|DISK_CRIT_PCT|GC_INTERVAL_HOURS|OVERLAY_CRIT_DAYS|AGENT_TIMEOUT_MIN)
+            DISK_WARN_PCT|DISK_CRIT_PCT|GC_INTERVAL_HOURS|OVERLAY_CRIT_DAYS|AGENT_TIMEOUT_MIN|CLEAN_AFTER_RUN)
                 case "$val" in
                     '') ;;
                     *[!0-9]*) die "card value for $key must be a plain integer: $val" ;;
@@ -219,6 +221,7 @@ read_card() {
     # longer than 2 hours holds the lock through 60 ticks and the box stops
     # responding to the board for the duration. A card wanting more than that
     # wants a different mechanism, not a bigger number.
+    case "${CLEAN_AFTER_RUN:-}" in ''|0|1) ;; *) die "CLEAN_AFTER_RUN must be 0 or 1: $CLEAN_AFTER_RUN" ;; esac
     if [ -n "$AGENT_TIMEOUT_MIN" ]; then
         [ "$AGENT_TIMEOUT_MIN" -ge 5 ] 2>/dev/null && [ "$AGENT_TIMEOUT_MIN" -le 120 ] 2>/dev/null || \
             die "AGENT_TIMEOUT_MIN must be 5-120 (minutes): $AGENT_TIMEOUT_MIN"
@@ -599,7 +602,7 @@ cmd_show() {
     echo "card:        $CARD (sha256:$CARD_SHA)"
     for k in NICK ROLE OWNER_NICK FOREMAN_NICK COHORT_ID GH_OWNER MAC \
              DISK_WARN_PCT DISK_CRIT_PCT GC_INTERVAL_HOURS OVERLAY_CRIT_DAYS \
-             AGENT_TIMEOUT_MIN; do
+             AGENT_TIMEOUT_MIN CLEAN_AFTER_RUN; do
         eval "v=\$$k"
         printf '%-12s %s\n' "$k:" "${v:-<unset>}"
     done
