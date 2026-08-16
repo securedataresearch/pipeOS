@@ -1173,6 +1173,20 @@ else
             log "claude exited nonzero (rc=$rc); advancing state to avoid a poison loop" ;;
     esac
     rm -f "$STARTFAIL_FILE" "$BACKOFF_FILE"
+    # CLEAN_AFTER_RUN (card, Sam 2026-08-16): "the builder is always filling
+    # up with build artifacts, so it needs to clear itself every time." After
+    # EVERY completed run, drop the shared artifact cache — the shim keys all
+    # builds into /work/cargo-target, so one rm clears every checkout's
+    # artifacts and nothing else. The next build is cold; that trades idle
+    # CPU (pipeOS#59: we have plenty) for the disk that kept running out.
+    # After the run, never before or during: a cut-off run (rc=143) resumes,
+    # but its artifacts do not need to survive to the next wake — resume is
+    # conversation state, not build state.
+    if [ "${CLEAN_AFTER_RUN:-0}" = 1 ] && [ -d /work/cargo-target ]; then
+        _freed=$(du -sk /work/cargo-target 2>/dev/null | cut -f1)
+        rm -rf /work/cargo-target/* 2>/dev/null
+        log "clean-after-run: cleared /work/cargo-target (${_freed:-?}K)"
+    fi
     # $SEEN and the reply cursors advance TOGETHER and only here, under exactly
     # the conditions $SEEN always did. Advancing cursors at fetch time would
     # lose replies permanently on a session-limit rc=1 — $SEEN would retry the
