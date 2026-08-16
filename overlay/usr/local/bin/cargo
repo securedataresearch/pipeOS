@@ -1,0 +1,37 @@
+#!/bin/sh
+# cargo shim — one target dir PER CHECKOUT under the shared cache root.
+#
+# pipeOS#115 / pipe#791: a single shared CARGO_TARGET_DIR let cargo serve a
+# test binary compiled from a DIFFERENT worktree — same crate, same profile,
+# other source. The share saved disk by conflating the one thing that must
+# not be conflated: which tree an artifact came from. Keying the dir on the
+# checkout's toplevel keeps the disk win (no per-scratch duplicate deps)
+# across runs of the SAME tree while making cross-tree reuse impossible.
+#
+# Why a PATH shim and not the env file: CARGO_TARGET_DIR is resolved by
+# cargo per invocation, but an exported variable is set once per session —
+# it cannot follow the agent as it cd's between checkouts. A shim computes
+# at the moment of use, which is the only time the answer is knowable.
+#
+# The env file (10-pipebox-env.sh) deliberately no longer exports
+# CARGO_TARGET_DIR; if this shim is bypassed (absolute path to the real
+# cargo), the fallback is cargo's default per-repo target/ — the safe
+# direction, wasteful rather than wrong.
+root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+if mountpoint -q /work 2>/dev/null; then
+    h=$(printf '%s' "$root" | sha256sum | cut -c1-12)
+    CARGO_TARGET_DIR="/work/cargo-target/$h"
+    export CARGO_TARGET_DIR
+fi
+self=$(readlink -f "$0" 2>/dev/null || echo "$0")
+oldifs=$IFS; IFS=:
+for d in $PATH; do
+    c="$d/cargo"
+    [ -x "$c" ] || continue
+    [ "$(readlink -f "$c" 2>/dev/null || echo "$c")" = "$self" ] && continue
+    IFS=$oldifs
+    exec "$c" "$@"
+done
+IFS=$oldifs
+echo "cargo shim: no real cargo found on PATH" >&2
+exit 127
