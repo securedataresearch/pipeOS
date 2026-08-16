@@ -165,7 +165,7 @@ read_card() {
         eval "$key=\$val"
     done < "$1"
 
-    case "$ROLE" in ''|BUILD|TEST|SHIP) ;; *) die "unknown ROLE: $ROLE" ;; esac
+    case "$ROLE" in ''|BUILD|TEST|SHIP|GENERIC) ;; *) die "unknown ROLE: $ROLE" ;; esac
 
     # Every declared capability must be inside the ceiling. Checked HERE, at
     # parse time, so a card naming `admin` never reaches a rendered file at
@@ -228,7 +228,15 @@ read_card() {
     fi
 
     if [ "$STRICT" = 1 ]; then
-        for k in NICK ROLE OWNER_NICK FOREMAN_NICK COHORT_ID GH_OWNER; do
+        # GENERIC boxes have no Foreman, no GitHub, and may start life
+        # DM-only (cohort joined later at the owner's pace) — requiring the
+        # fleet fields would make the one card type built for outsiders
+        # unshippable. Fleet roles keep the full list.
+        case "$ROLE" in
+            GENERIC) _req="NICK ROLE OWNER_NICK" ;;
+            *)       _req="NICK ROLE OWNER_NICK FOREMAN_NICK COHORT_ID GH_OWNER" ;;
+        esac
+        for k in $_req; do
             eval "v=\$$k"
             [ -n "$v" ] || die "--strict: card is missing $k"
         done
@@ -340,6 +348,22 @@ Your ROLE is **SHIP** — release, pipeline health, and specification.
   Foreman calls the update.
 EOF
             ;;
+        GENERIC) cat <<'EOF'
+Your ROLE is **GENERIC** — a team assistant, not a fleet lane.
+
+- You serve the people in your owner's cohort: answer questions, draft and
+  summarize, investigate, and do the legwork a capable colleague would take
+  on. DMs and the cohort board are your whole surface.
+- Be direct and concise. Deliver the thing asked for; say plainly what you
+  could not do and why. Never pad an answerable question into a project.
+- You have no repository lane, no verdict machinery, and no build duties.
+  If someone asks for those, say this box is not provisioned for them.
+- The owner outranks everyone. When members conflict, do the owner's
+  standing instruction first and say that is what you are doing.
+- What you write on the board is visible to the whole team; keep private
+  matters in the DM that raised them.
+EOF
+            ;;
         *) cat <<'EOF'
 Your ROLE is **unset**. This box is unprovisioned: its card names no role, so
 nothing below has assigned you a lane.
@@ -380,6 +404,17 @@ EOF
 # second document title mid-file and lift the charter's sections above the
 # mandate's own. Mechanical, and it keeps the source single.
 foreman_block() {
+    # A box with no Foreman gets no Foreman charter. Before this guard the
+    # 200-line fleet charter — naming the fleet's own Foreman nick — shipped
+    # verbatim in every mandate, including a customer's GENERIC box that will
+    # never meet that person or that process.
+    if [ -z "${FOREMAN_NICK:-}" ]; then
+        printf '%s\n' '## Coordination'
+        printf '%s\n' ''
+        printf '%s\n' 'This box has no Foreman: the owner (nick in Principals) directs it'
+        printf '%s\n' 'directly. There is no fleet process to follow beyond this mandate.'
+        return 0
+    fi
     _fsrc="$TMPL/foreman.md"
     [ -r "$_fsrc" ] || die "foreman charter not readable: $_fsrc"
     printf '%s\n' '## The Foreman charter'
@@ -395,7 +430,7 @@ foreman_block() {
 # unprovisioned posture — a box told it has no lane when the card says BUILD is
 # worse than a hard failure at generation time.
 has_charter() {
-    case "$1" in BUILD|TEST|SHIP) return 0 ;; *) return 1 ;; esac
+    case "$1" in BUILD|TEST|SHIP|GENERIC) return 0 ;; *) return 1 ;; esac
 }
 
 render() {
