@@ -52,6 +52,13 @@ jobs:
       - name: the resume predicate sees a transcript behind the projects symlink
         run: python3 scripts/check-cohort-watch.py
 
+      # pipeOS#101. The defect was a correct value assigned in the wrong place,
+      # so this checks the ORDERING against the shipped file as well as the
+      # arithmetic — a probe that only tested the numbers would have passed
+      # against the bug.
+      - name: the agent run budget comes from the card, not from a hardcode
+        run: python3 scripts/check-agent-timeout.py
+
       - name: derived files are not hand-editable without detection
         run: |
           set -eu

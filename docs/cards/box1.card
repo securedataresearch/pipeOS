@@ -61,3 +61,9 @@ PIPE_CAPS=read,send.dm,send.room,send.lobby,send.bbs,claim
 # interval: a daily pass is enough to keep this box near its floor without
 # fighting an active build session every cron tick.
 GC_INTERVAL_HOURS=24
+
+# pipeOS#101. One agent run's clock, minutes. 30 for BUILD, per the issue: a
+# BUILD wake compiles, runs probes and pushes, and this box lost a real run to
+# the hardcoded 15-minute cutoff on 2026-08-15 (rc=143, 500-760 KB transcript
+# already written). Well under the 120 ceiling the flock imposes.
+AGENT_TIMEOUT_MIN=30
