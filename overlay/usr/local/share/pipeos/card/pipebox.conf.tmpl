@@ -56,3 +56,13 @@ DISK_CRIT_PCT="@@DISK_CRIT_PCT@@"
 # (once a day). Declared per box because accumulation rate, not just disk
 # size, drives how often a proactive cargo-clean pass is worth running.
 GC_INTERVAL_HOURS="@@GC_INTERVAL_HOURS@@"
+
+# How long ONE agent run may take before it is killed, in minutes (pipeOS#101).
+# Empty = pipebox-cohort-watch falls back to 15. Generator range is 5-120.
+#
+# Declared per box because the roles do not do the same shape of work: a BUILD
+# wake compiles and pushes, a TEST or SHIP wake reads and verdicts. This was a
+# hardcoded 900 seconds assigned BELOW the line that sources this file, so the
+# value here was read and then discarded — four real runs died at exactly 15
+# minutes on 2026-08-15 and were logged as failures rather than as cut off.
+AGENT_TIMEOUT_MIN="@@AGENT_TIMEOUT_MIN@@"
