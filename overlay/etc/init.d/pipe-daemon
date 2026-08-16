@@ -2,9 +2,16 @@
 description="pipe P2P daemon for pipebox"
 
 supervisor=supervise-daemon
-# /usr/local/bin/pipe: the lbu-persisted, non-apk path — where release binaries
-# land (pipeOS#123) so an update survives a reboot and never fights apk.
-command=/usr/local/bin/pipe
+# Prefer /usr/local/bin/pipe — the lbu-persisted, non-apk path where release
+# updates land (pipeOS#123) — and FALL BACK to apk's /usr/bin/pipe. A factory
+# image has only the apk binary; hardcoding the update path bricked the
+# daemon on the first customer first-boot (the pilot business, 2026-08-16): fleet-ism
+# in the factory path, the exact drift class the card work exists to end.
+if [ -x /usr/local/bin/pipe ]; then
+    command=/usr/local/bin/pipe
+else
+    command=/usr/bin/pipe
+fi
 command_args="run"
 respawn_delay=5
 respawn_max=0
