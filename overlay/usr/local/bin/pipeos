@@ -15,6 +15,7 @@
 #   pipeos save                commit state now (guarded, atomic)
 #   pipeos rollback [TS|known-good]  stage an older apkovl for next boot
 #   pipeos sync-media          push freshly built pipeos repo -> media
+#   pipeos deploy-overlay      install a repo commit's overlay onto this box
 #
 # Read-only verbs (status/verify/diff/snapshot) are open to the resident
 # agent; mutating verbs are root/human territory (pipebox-settings.json).
@@ -24,6 +25,9 @@ REPO_DIR=$MEDIA/apks/pipeos/x86_64
 OVL=$MEDIA/pipeos.apkovl.tar.gz
 KNOWN_GOOD=$MEDIA/pipeos.known-good.tar.gz
 OVERLAY=/work/repos/pipeOS/overlay
+REPO=${PIPEOS_REPO:-/work/repos/pipeOS}
+STAMP=/etc/pipeos/.overlay-stamp
+BASE_REF=${PIPEOS_BASE_REF:-origin/main}
 
 ok()   { printf 'ok    %s\n' "$*"; }
 warn() { printf 'WARN  %s\n' "$*"; }
@@ -43,6 +47,44 @@ take_save_lock() {
 }
 
 # ---------------------------------------------------------------- status
+# How far behind $BASE_REF is the deployed commit? Prints a human phrase when
+# the box is behind, and NOTHING when it is current or the question cannot be
+# answered here (no checkout, unknown commit, no local origin/main). Silence
+# means "no finding" — an unanswerable question must not read as up to date,
+# so callers say so themselves rather than getting an empty string that looks
+# reassuring. Never fetches: status runs at boot, before the network is up.
+overlay_behind() {
+    _c=$1
+    [ -n "$_c" ] || return 0
+    [ -d "$REPO/.git" ] || { echo "local checkout missing, cannot age it"; return 0; }
+    git -C "$REPO" rev-parse --verify -q "$_c^{commit}" >/dev/null 2>&1 || {
+        echo "deployed commit $(echo "$_c" | cut -c1-12) is not in the local checkout"; return 0; }
+    _tip=$(git -C "$REPO" rev-parse --verify -q "$BASE_REF^{commit}" 2>/dev/null) || {
+        echo "no $BASE_REF locally, cannot age it"; return 0; }
+    [ "$_tip" = "$_c" ] && return 0
+    # Is the deployed commit even ON $BASE_REF? box1 found this on review by
+    # running the function in a throwaway repo: a box deployed from an
+    # UNMERGED feature commit cut off the tip of main reports "current",
+    # because `rev-list --count c..tip` is 0 whenever tip is an ancestor of c.
+    # Once main moves it starts saying "1 commit behind" and STILL never says
+    # the thing that matters — that what this box is running never landed.
+    # This PR is what makes deploying from a branch easy, so it is also what
+    # makes that state common. Reported before the count, because it is the
+    # graver finding and the count is not wrong so much as beside the point.
+    if ! git -C "$REPO" merge-base --is-ancestor "$_c" "$_tip" 2>/dev/null; then
+        echo "deployed commit $(echo "$_c" | cut -c1-12) is NOT on $BASE_REF — this box is running an overlay that was never merged"
+        return 0
+    fi
+    _n=$(git -C "$REPO" rev-list --count "$_c..$_tip" 2>/dev/null || echo 0)
+    [ "${_n:-0}" -gt 0 ] || return 0
+    # Age from the OLDEST undeployed commit: it is how long the fleet has been
+    # missing a fix, which is the number #97 was filed over (four days).
+    _old=$(git -C "$REPO" log --format=%ct "$_c..$_tip" 2>/dev/null | tail -1)
+    _days=""
+    [ -n "$_old" ] && _days=$(( ($(date +%s) - _old) / 86400 ))
+    echo "$_n commit(s) behind $BASE_REF${_days:+, oldest undeployed is ${_days}d old}"
+}
+
 drift_count() {
     [ -d "$OVERLAY" ] || { echo 0; return; }
     n=0
@@ -105,11 +147,29 @@ cmd_status() {
     else
         warn "no known-good apkovl yet (first healthy boot promotes one)"
     fi
+    # What overlay is this box actually RUNNING, and how far behind is it?
+    # The file-drift count below answers neither: it compares against whatever
+    # branch the local checkout happens to be on, which on a box mid-review is
+    # a feature branch. The stamp written by `pipeos deploy-overlay` is the
+    # box's own record of what it deployed, so age is measured against main
+    # rather than against a working tree. (pipeOS#97 item 2.)
+    if [ -r "$STAMP" ]; then
+        dc=$(sed -n 's/^commit //p' "$STAMP" | head -1)
+        dat=$(sed -n 's/^deployed_at //p' "$STAMP" | head -1)
+        behind=$(overlay_behind "$dc")
+        if [ -n "$behind" ]; then
+            warn "overlay at $(echo "$dc" | cut -c1-12) — $behind (pipeos deploy-overlay)"
+        else
+            ok "overlay at $(echo "$dc" | cut -c1-12), deployed $dat"
+        fi
+    else
+        warn "no overlay deploy record ($STAMP) — this box's overlay was hand-copied; age unknown"
+    fi
     drift=$(drift_count)
     if [ "$drift" -gt 0 ]; then
-        warn "overlay drift: $drift file(s) differ from repo overlay (info; backport or deploy)"
+        warn "overlay drift: $drift file(s) differ from the local checkout's overlay (info; backport or deploy)"
     else
-        ok "repo overlay matches live system"
+        ok "local checkout's overlay matches live system"
     fi
     [ -f /etc/pipeos/rollback-pending ] && warn "ROLLBACK STAGED — reboot to apply; saves are fenced"
     return 0
@@ -266,6 +326,7 @@ case "$1" in
     save)        exec /usr/local/bin/pipeos-save ;;
     rollback)    shift; cmd_rollback "$@" ;;
     sync-media)  shift; exec /usr/local/bin/pipeos-sync-media "$@" ;;
+    deploy-overlay) shift; exec /usr/local/bin/pipeos-deploy-overlay "$@" ;;
     selfupdate)  shift; exec /usr/local/bin/pipeos-selfupdate "$@" ;;
     *)
         sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'

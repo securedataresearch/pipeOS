@@ -50,6 +50,7 @@ NICK= ROLE= OWNER_NICK= FOREMAN_NICK= COHORT_ID= GH_OWNER= MAC=
 TOOLCHAIN= REPOS= PIPE_CAPS=
 DISK_WARN_PCT= DISK_CRIT_PCT=
 GC_INTERVAL_HOURS=
+OVERLAY_CRIT_DAYS=
 AGENT_TIMEOUT_MIN=
 
 # pipe#650 item 9. The capabilities a card is ALLOWED to grant the agent —
@@ -94,7 +95,7 @@ read_card() {
             NICK|ROLE|OWNER_NICK|FOREMAN_NICK|COHORT_ID|GH_OWNER|MAC) ;;
             TOOLCHAIN|REPOS|PIPE_CAPS) ;;
             DISK_WARN_PCT|DISK_CRIT_PCT) ;;
-            GC_INTERVAL_HOURS) ;;
+            GC_INTERVAL_HOURS|OVERLAY_CRIT_DAYS) ;;
             AGENT_TIMEOUT_MIN) ;;
             *) die "unknown card key: $key" ;;
         esac
@@ -138,7 +139,10 @@ read_card() {
             # back. All four keys get the rule from this one arm: only
             # AGENT_TIMEOUT_MIN reaches a `$(( ))` today, and "today" is exactly
             # the qualifier that made this bug possible.
-            DISK_WARN_PCT|DISK_CRIT_PCT|GC_INTERVAL_HOURS|AGENT_TIMEOUT_MIN)
+            # pipeOS#41 / #101 / #97: digits-only, octal-aware, one arm for
+            # every numeric key — a split here is how the octal guard got
+            # shadowed once already during a merge.
+            DISK_WARN_PCT|DISK_CRIT_PCT|GC_INTERVAL_HOURS|OVERLAY_CRIT_DAYS|AGENT_TIMEOUT_MIN)
                 case "$val" in
                     '') ;;
                     *[!0-9]*) die "card value for $key must be a plain integer: $val" ;;
@@ -197,6 +201,15 @@ read_card() {
             die "GC_INTERVAL_HOURS must be 1-168: $GC_INTERVAL_HOURS"
     fi
 
+    # pipeOS#97: how many days an undeployed overlay commit may sit before
+    # selfcheck calls it CRITICAL rather than a warning. 1-90. Zero would mean
+    # "crit the instant main moves", which would fire on every box between a
+    # merge and the deploy that follows it and teach the fleet to ignore the
+    # signal; past 90 days the box is not behind, it is abandoned.
+    if [ -n "$OVERLAY_CRIT_DAYS" ]; then
+        [ "$OVERLAY_CRIT_DAYS" -ge 1 ] 2>/dev/null && [ "$OVERLAY_CRIT_DAYS" -le 90 ] 2>/dev/null || \
+            die "OVERLAY_CRIT_DAYS must be 1-90: $OVERLAY_CRIT_DAYS"
+    fi
     # pipeOS#101: one agent run's clock, in minutes. 5-120.
     #
     # The floor is not decoration: the cron tick is 2 minutes and the wake does
@@ -396,6 +409,7 @@ s|@@REPOS@@|$REPOS|g
 s|@@DISK_WARN_PCT@@|$DISK_WARN_PCT|g
 s|@@DISK_CRIT_PCT@@|$DISK_CRIT_PCT|g
 s|@@GC_INTERVAL_HOURS@@|$GC_INTERVAL_HOURS|g
+s|@@OVERLAY_CRIT_DAYS@@|$OVERLAY_CRIT_DAYS|g
 s|@@AGENT_TIMEOUT_MIN@@|$AGENT_TIMEOUT_MIN|g
 s|@@CARD_SHA@@|$CARD_SHA|g"
     # Block markers occupy a line of their own and expand to generated text.
@@ -584,7 +598,7 @@ cmd_show() {
     read_card "$CARD"
     echo "card:        $CARD (sha256:$CARD_SHA)"
     for k in NICK ROLE OWNER_NICK FOREMAN_NICK COHORT_ID GH_OWNER MAC \
-             DISK_WARN_PCT DISK_CRIT_PCT GC_INTERVAL_HOURS \
+             DISK_WARN_PCT DISK_CRIT_PCT GC_INTERVAL_HOURS OVERLAY_CRIT_DAYS \
              AGENT_TIMEOUT_MIN; do
         eval "v=\$$k"
         printf '%-12s %s\n' "$k:" "${v:-<unset>}"

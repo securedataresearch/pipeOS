@@ -42,6 +42,25 @@ jobs:
           shellcheck -S error config.sh scripts/*.sh overlay/usr/local/bin/*
           shellcheck config.sh scripts/*.sh overlay/usr/local/bin/* || true
 
+      # pipeOS#97. The deploy tool writes /etc and then persists — no box can
+      # run it from inside its sandbox, and the operator who can is exactly
+      # the person who should not be finding its bugs by hand on a live box.
+      # So the probe deploys real commits into a throwaway root, and the
+      # control run mutates the shipped script eleven ways and asserts WHICH
+      # rows go red: a probe that cannot fail is not evidence.
+      - name: deploy-overlay behaves, and its probe can see it misbehave
+        run: |
+          python3 scripts/check-deploy-overlay.py
+          python3 scripts/check-deploy-overlay-controls.py
+
+      # The deploy verb is run by hand; these two run on every box at every
+      # boot, and until box1's review they had no rows at all — which is where
+      # both of the defects that review found were living. (#102 review)
+      - name: the two overlay-age readers, and controls that put the bugs back
+        run: |
+          python3 scripts/check-overlay-freshness.py
+          python3 scripts/check-overlay-freshness-controls.py
+
       - name: card generation is stable and matches the committed overlay
         run: ./scripts/check-cards.sh
 
