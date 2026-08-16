@@ -36,8 +36,11 @@ start_pre() {
 	_i=0
 	while ! mountpoint -q /work; do
 		_i=$((_i+1))
-		if [ "$_i" -ge 30 ]; then
-			eerror "/work not mounted after 30s (LABEL=PIPEWORK missing?)"
+		# 120s, not 30: a FIRST boot is still mkfs-ing PIPEWORK across the
+		# whole stick (54G took ~1min on pilot0) when this service starts;
+		# 30s lost that race and the daemon stayed down for the whole boot.
+		if [ "$_i" -ge 120 ]; then
+			eerror "/work not mounted after 120s (LABEL=PIPEWORK missing, or first-boot mkfs still running?)"
 			return 1
 		fi
 		sleep 1
