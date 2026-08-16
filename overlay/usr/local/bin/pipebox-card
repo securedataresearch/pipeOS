@@ -414,6 +414,7 @@ s|@@DISK_CRIT_PCT@@|$DISK_CRIT_PCT|g
 s|@@GC_INTERVAL_HOURS@@|$GC_INTERVAL_HOURS|g
 s|@@OVERLAY_CRIT_DAYS@@|$OVERLAY_CRIT_DAYS|g
 s|@@AGENT_TIMEOUT_MIN@@|$AGENT_TIMEOUT_MIN|g
+s|@@CLEAN_AFTER_RUN@@|$CLEAN_AFTER_RUN|g
 s|@@CARD_SHA@@|$CARD_SHA|g"
     # Block markers occupy a line of their own and expand to generated text.
     # There are three now (#35 added the role charter, #39 the Foreman's), so
@@ -470,6 +471,15 @@ render_all() {
     for rel in $OUTPUTS; do
         mkdir -p "$1/${rel%/*}" || die "mkdir failed under $1"
         render "$(tmpl_for "$rel")" > "$1/$rel" || die "render failed: $rel"
+        # Render COMPLETENESS: an @@MARKER@@ that survives means a template
+        # gained a key the sed list never learned — the output then SHIPS the
+        # placeholder as the live value (box3 ran with DISK_WARN_PCT literally
+        # "@@DISK_WARN_PCT@@" for a day; CLEAN_AFTER_RUN repeated it on three
+        # boxes within the hour). Byte-stability cannot catch it: both renders
+        # agree on the wrong bytes. Refuse instead.
+        if grep -q '@@[A-Z_][A-Z_]*@@' "$1/$rel"; then
+            die "unexpanded marker in $rel: $(grep -o '@@[A-Z_]*@@' "$1/$rel" | head -1) — the render list in render() is missing it"
+        fi
     done
     # The env file is the one output that /etc/profile SOURCES. A syntax error
     # in it breaks every login shell on the box, including the agent's Bash
