@@ -1,0 +1,39 @@
+#!/bin/sh
+# pre-push — the runnable gate set runs HERE, before CI ever sees the push.
+#
+# Sam, 2026-08-16: "we keep having gh actions failures, and it is always the
+# result of checks not being run locally. this needs to stop." Measured that
+# day: the recent red runs were cargo test and the metrics gate — both
+# runnable on the box that pushed. This hook is installed fleet-wide via
+# `git config core.hooksPath /usr/local/share/pipeos/githooks` (R25).
+#
+# Contract:
+#   - gates that CAN run here MUST pass before a push leaves the box;
+#   - gates that CANNOT run here are printed as SKIP so the pusher knows to
+#     name them in the PR body (they are CI's word, not yours);
+#   - PIPEOS_SKIP_PREPUSH=1 bypasses with a loud line. Using it for anything
+#     but an operator emergency is a mandate violation (R25).
+set -u
+[ "${PIPEOS_SKIP_PREPUSH:-0}" = 1 ] && {
+    echo "pre-push: BYPASSED (PIPEOS_SKIP_PREPUSH=1) — say why in the PR" >&2
+    exit 0
+}
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+say() { printf 'pre-push: %s\n' "$*" >&2; }
+fail() { say "GATE FAILED: $* — fix it or you are shipping a red run"; exit 1; }
+
+if [ -f "$root/Cargo.toml" ] && grep -q 'pipe' "$root/Cargo.toml" 2>/dev/null; then
+    say "gate 1/3 cargo fmt --check"
+    (cd "$root" && cargo fmt --check >/dev/null 2>&1) || fail "cargo fmt --check"
+    say "gate 2/3 cargo clippy (blocking in CI, so blocking here)"
+    (cd "$root" && cargo clippy --workspace --quiet -- -D warnings) || fail "cargo clippy"
+    say "gate 3/3 cargo test --workspace (the gate the red runs skipped)"
+    (cd "$root" && cargo test --workspace --quiet) || fail "cargo test"
+    say "SKIP (cannot run on this box): web bundles / TS suite — CI's word; name it in the PR body"
+elif [ -d "$root/overlay" ]; then
+    say "pipeOS tree: sh -n every shell script + check-cards"
+    find "$root/overlay" "$root/scripts" -type f -exec sh -c 'head -1 "$1" | grep -q "^#!/bin/sh" && sh -n "$1"' _ {} \; || fail "sh -n"
+    (cd "$root" && sh scripts/check-cards.sh >/dev/null 2>&1) || fail "check-cards"
+fi
+say "all runnable gates green — pushing"
+exit 0
