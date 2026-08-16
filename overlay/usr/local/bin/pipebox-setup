@@ -78,6 +78,29 @@ if [ -n "$_nick" ]; then
     fi
 fi
 
+# 3b. the team board (optional, GENERIC-era). A cohort wires the box to a
+#     shared board the whole team reads; without one the agent is DM-only,
+#     which is a fine way to start. Digits only — the id comes from
+#     `pipe cohorts` after the owner creates the cohort on the web/CLI.
+_curc=$(sed -n 's/^COHORT_ID=["]*\([^"]*\)["]*$/\1/p' "$CARD" 2>/dev/null)
+say ''
+say 'Step 3: team board (optional). If you have created a cohort for your'
+say 'team, enter its id; Enter to skip — the agent still answers DMs.'
+printf 'cohort id%s> ' "${_curc:+ [$_curc]}"
+read -r _cid
+[ -n "$_cid" ] || _cid="$_curc"
+if [ -n "$_cid" ] && [ -f "$CARD" ]; then
+    case "$_cid" in
+        *[!0-9]*) die "'$_cid' is not a numeric cohort id — refusing to write it to the card" ;;
+    esac
+    sed -i "s/^COHORT_ID=.*/COHORT_ID=$_cid/" "$CARD"
+    if pipebox-card generate --card "$CARD"; then
+        say "  cohort set to: $_cid (card regenerated; board watcher active)"
+    else
+        die "card regeneration failed — /etc/pipeos is now inconsistent with $CARD"
+    fi
+fi
+
 # 4. the listener's workdir must be pre-trusted or headless claude -p stalls
 #    on the trust dialog nobody is there to answer
 if [ -f /root/.claude.json ] && command -v jq >/dev/null 2>&1; then

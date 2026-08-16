@@ -34,7 +34,12 @@ export PIPE_NO_SPAWN=1
 # (box0 on pipeOS#93)
 [ -r /etc/profile.d/10-pipebox-env.sh ] && . /etc/profile.d/10-pipebox-env.sh
 
-COHORT_ID="${COHORT_ID:-3}"
+# NO DEFAULT. This used to fall back to cohort 3 — the fleet's own board —
+# so any unprovisioned or foreign box silently pointed its watcher (and its
+# agent prompts) at OUR coordination channel. A box with no cohort has no
+# board work; exit and let the listener handle DMs.
+COHORT_ID="${COHORT_ID:-}"
+[ -n "$COHORT_ID" ] || exit 0
 LOG=/work/logs/pipebox-cohort-watch.log
 STATE=/work/pipebox/state
 SEEN="$STATE/cohort-$COHORT_ID.seen"
@@ -376,7 +381,7 @@ prs_not_mine() {
     # `[a-z0-9_-]` (relay-validated), so there is nothing here to quote-escape.
     if [ -n "$_hb_me" ]; then
         gh pr list -R "$1" --state open --json body \
-            -q "[.[] | select((.body // \"\") | test(\"(BUILD|TEST|SHIP) ?\\\\($_hb_me\\\\)|$_hb_me/(BUILD|TEST|SHIP)\") | not)] | length" \
+            -q "[.[] | select((.body // \"\") | test(\"(BUILD|TEST|SHIP|GENERIC) ?\\\\($_hb_me\\\\)|$_hb_me/(BUILD|TEST|SHIP|GENERIC)\") | not)] | length" \
             2>/dev/null
     else
         # Unknown nick: fall back to the unfiltered count. `contains("")` is
@@ -402,7 +407,10 @@ work_pending() {
     # preserved per probe: "" means the probe could not run, 0 means it ran
     # and found nothing (box0, #77).
     _hb_pr=""
-    for _hb_repo in $(printf '%s' "${REPOS:-pipe}" | tr ',' ' '); do
+    # Empty REPOS means this box watches no repositories at all (GENERIC) —
+    # skip the probes entirely instead of defaulting to the fleet's repo and
+    # logging gh-failure noise every interval on a box that has no gh.
+    for _hb_repo in $(printf '%s' "${REPOS:-}" | tr ',' ' '); do
         _hb_n=$(prs_not_mine "${GH_OWNER:-securedataresearch}/${_hb_repo}")
         if [ -n "$_hb_n" ]; then
             _hb_pr=$(( ${_hb_pr:-0} + _hb_n ))
@@ -425,7 +433,7 @@ work_pending() {
     # Empty is not zero. `gh` prints `0` for "no open PRs" and nothing at all
     # when it could not run, so a wake caused by both repos failing to answer
     # says so rather than presenting itself as an ordinary idle-box wake.
-    if [ -z "$_hb_pr" ]; then
+    if [ -z "$_hb_pr" ] && [ -n "${REPOS:-}" ]; then
         log "work-heartbeat: NO PR PROBE RETURNED ANYTHING (not '0') — gh may be failing on this box; waking so it gets looked at"
     fi
     # Wake if a PR might want a verdict, or this box is idle while Ready work
