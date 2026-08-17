@@ -1,0 +1,52 @@
+# Maintainer: Sam Reeves <samtreeves@gmail.com>
+# A PRIVATE glibc sysroot for the handful of upstream binaries that publish no
+# musl build. Deliberately not a system-wide compatibility layer: nothing on the
+# image links against it, it does not install the /lib64 loader, and it does not
+# touch ld.so.cache. A consumer runs its binary under it explicitly — see the
+# /usr/bin/agy wrapper in antigravity-cli.
+#
+# Payload is sgerrand/alpine-pkg-glibc 2.35-r1, downloaded and sha256-pinned by
+# scripts/30-build-apks.sh, then re-emitted here under OUR abuild key. That is
+# the point of repackaging rather than `apk add`-ing the upstream .apk: every
+# flashed stick trusts exactly one key, and importing sgerrand.rsa.pub into
+# /etc/apk/keys would make it two — a second root of trust on a customer image
+# for a dormant third-party project.
+#
+# Provenance is pinned, not maintained: 2.35-r1 is the last upstream release and
+# gets no security updates. Acceptable only because nothing on the image links
+# against it — the blast radius is the one vendor binary that runs under it.
+# glibc 2.35 clears the ceiling that matters: the Antigravity binary's highest
+# required symbol version is GLIBC_2.25 (objdump -T).
+pkgname=pipeos-glibc
+pkgver=2.35
+pkgrel=0
+pkgdesc="Private glibc sysroot for vendor binaries with no musl build"
+url="https://github.com/sgerrand/alpine-pkg-glibc"
+arch="x86_64"
+license="LGPL-2.1-or-later"
+# !tracedeps: the payload's sonames are glibc's, and resolving them against a
+# musl system is both impossible and pointless — nothing here is linked by apk's
+# rules, only by the loader the wrapper names.
+options="!check !strip !tracedeps"
+source=""
+
+package() {
+	mkdir -p "$pkgdir"/usr/glibc-compat
+	cp -a /pipeOS/out/glibc-stage/usr/glibc-compat/. "$pkgdir"/usr/glibc-compat/
+
+	# The upstream apk ALSO ships /lib/ld-linux-x86-64.so.2 and an ld.so.cache
+	# that between them make glibc the system loader. On a musl image that is
+	# exactly the change we do not want, so the copy above takes only the
+	# glibc-compat prefix and the cache is dropped below. The wrapper passes the
+	# loader by absolute path instead of relying on either.
+	rm -f "$pkgdir"/usr/glibc-compat/etc/ld.so.cache
+
+	# DELIBERATELY NOT SHIPPING /etc/nsswitch.conf, and this is the one place to
+	# record why so it does not get "helpfully" re-added. glibc reads that file
+	# by absolute path for getaddrinfo, so a bundled-glibc package wants to own
+	# it — but Alpine already does: it belongs to alpine-baselayout-data and
+	# already reads `hosts: files dns`, which is exactly what the NSS modules
+	# here need. Shipping our own turned into a hard install conflict
+	# ("trying to overwrite etc/nsswitch.conf owned by alpine-baselayout-data"),
+	# which on a real image is a package that fails to install at boot.
+}

@@ -75,3 +75,36 @@
 -root/.claude/session-env
 -root/.claude/sessions
 -root/.claude/tasks
+# Antigravity CLI (antigravity-cli, optional payload — WITH_ANTIGRAVITY). Only
+# present when that package is installed; a + line for an absent path is inert,
+# so these cost nothing on an image built without it.
+#
+# Layout is MEASURED from v1.1.13, not read off a doc: a first run creates
+# ~/.gemini/config/config.json and a large ~/.gemini/antigravity-cli/ state
+# tree. Third-party write-ups place the settings under ~/.antigravity instead;
+# that path is included below rather than argued about, because being wrong
+# about it costs a re-auth at every reboot on a box nobody can log into.
+#
+# ORDER: same rule as the .claude block above — apk audit honours + and - in
+# file order, last match wins, so every exclusion follows its include.
++root/.gemini/config
++root/.antigravity
++root/.gemini/antigravity-cli/installation_id
+# The rest of that tree is conversation history, model caches, logs and a
+# sqlite summary db that all regenerate. On vfat with BACKUP_LIMIT=3 every byte
+# here would be stored 4x, and the brain/ and knowledge/ dirs are the ones that
+# grow without a ceiling.
+-root/.gemini/antigravity-cli/brain
+-root/.gemini/antigravity-cli/knowledge
+-root/.gemini/antigravity-cli/conversations
+-root/.gemini/antigravity-cli/conversation_summaries.db
+-root/.gemini/antigravity-cli/conversation_summaries.db-wal
+-root/.gemini/antigravity-cli/conversation_summaries.db-shm
+-root/.gemini/antigravity-cli/cache
+-root/.gemini/antigravity-cli/log
+-root/.gemini/antigravity-cli/crashes
+-root/.gemini/antigravity-cli/updater
+# The CLI created this on a bare --help run. If it ever fetches a browser it is
+# a ~100MB download; keeping it out of the apkovl means a reboot cannot make
+# that permanent on the boot media.
+-root/.cache/ms-playwright-go
