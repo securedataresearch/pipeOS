@@ -13,6 +13,18 @@ cp -a "$PIPEOS_ROOT/overlay/usr" "$STAGE/usr"
 cp -a "$PIPEOS_ROOT/overlay/root" "$STAGE/root"
 chmod 700 "$STAGE/root"
 
+# Optional payloads (config.sh). overlay/etc/apk/world stays the base image's
+# world in the tree — this appends, so a `git diff` of the overlay never has to
+# be read as "did someone leave the 200MB CLI switched on?". The answer lives in
+# one place, WITH_ANTIGRAVITY, and shows up in the build log below.
+if [ -n "$EXTRA_WORLD" ]; then
+    for _pkg in $EXTRA_WORLD; do
+        grep -qxF "$_pkg" "$STAGE/etc/apk/world" || echo "$_pkg" >> "$STAGE/etc/apk/world"
+    done
+    sort -o "$STAGE/etc/apk/world" "$STAGE/etc/apk/world"
+    echo "==> optional payloads in world: $EXTRA_WORLD"
+fi
+
 # apk must trust our repo signing key at initramfs install time.
 # overlay/etc/apk/keys is an empty dir in the tree, and git does not track
 # empty dirs — so on a clean checkout it is absent and the cp below fails with

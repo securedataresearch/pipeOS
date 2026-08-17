@@ -22,6 +22,86 @@ file "$OUT/claude-stage/.local/share/claude/versions/$CLAUDE_VERSION" | grep -q 
     || { echo "staged claude is not a musl build" >&2; exit 1; }
 echo "==> staged claude $CLAUDE_VERSION"
 
+# ------------------------------------------------------- antigravity stage
+# Optional payload (WITH_ANTIGRAVITY=1, see config.sh). Two things are staged:
+# a pinned glibc sysroot and the vendor's glibc-only CLI binary.
+#
+# NOTE the asymmetry with the claude stage above, which is the whole reason
+# this block exists rather than another install.sh call: claude's installer is
+# asked for a musl build and asserted to have produced one. Antigravity's
+# installer WOULD detect musl correctly and then fail, because upstream
+# publishes no musl artifact — so the manifest is fetched directly and the
+# binary is asserted to be glibc. Two opposite assertions, both present, so a
+# silent upstream swap in either direction fails the build instead of shipping.
+if [ "$WITH_ANTIGRAVITY" = 1 ]; then
+    # -- glibc sysroot ------------------------------------------------------
+    # Pinned by content, not by URL: a release asset can be re-uploaded.
+    GLIBC_VERSION=2.35
+    GLIBC_APK_URL="https://github.com/sgerrand/alpine-pkg-glibc/releases/download/2.35-r1/glibc-2.35-r1.apk"
+    GLIBC_APK_SHA256=276f43ce9b2d5878422bca94ca94e882a7eb263abe171d233ac037201ffcaf06
+    if [ ! -d "$OUT/glibc-stage/usr/glibc-compat" ]; then
+        echo "==> staging glibc sysroot $GLIBC_VERSION (alpine-pkg-glibc)"
+        mkdir -p "$OUT/glibc-stage"
+        curl -fsSL "$GLIBC_APK_URL" -o "$OUT/glibc-stage/glibc.apk"
+        echo "$GLIBC_APK_SHA256  $OUT/glibc-stage/glibc.apk" | sha256sum -c - \
+            || { echo "glibc apk sha256 mismatch — refusing to package" >&2; exit 1; }
+        # Only the glibc-compat prefix. The archive also carries a root-level
+        # /lib/ld-linux-x86-64.so.2 that would make glibc the system loader.
+        #
+        # stderr to a file rather than the console: an apk is a tar with
+        # APK-TOOLS.checksum.SHA1 extended headers, and GNU tar warns about
+        # every one of them — 39 lines of noise that would train a reader to
+        # skip the place real extraction errors appear. Shown in full on failure.
+        tar -xzf "$OUT/glibc-stage/glibc.apk" -C "$OUT/glibc-stage" usr/glibc-compat \
+            2>"$OUT/glibc-stage/tar.log" \
+            || { cat "$OUT/glibc-stage/tar.log" >&2; echo "glibc extract failed" >&2; exit 1; }
+    fi
+    [ -x "$OUT/glibc-stage/usr/glibc-compat/lib/ld-linux-x86-64.so.2" ] \
+        || { echo "glibc staging produced no loader" >&2; exit 1; }
+    # The NSS modules are what make getaddrinfo work inside a glibc binary;
+    # their absence is the classic bundled-glibc "DNS silently broken" failure.
+    for _nss in libnss_dns.so.2 libnss_files.so.2; do
+        [ -e "$OUT/glibc-stage/usr/glibc-compat/lib/$_nss" ] \
+            || { echo "glibc staging is missing $_nss" >&2; exit 1; }
+    done
+    echo "==> staged glibc sysroot $GLIBC_VERSION"
+
+    # -- antigravity binary -------------------------------------------------
+    AGY_MANIFEST_URL="https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json"
+    # Deliberately NOT jq: it is absent from scripts/00-host-setup.sh, so using
+    # it here would add a silent host dependency that only shows up on whichever
+    # machine happens not to have it. Three string reads out of a flat document
+    # do not justify that; upstream's own install.sh parses this same manifest
+    # with sed for the same reason. Every read is asserted non-empty below,
+    # because the failure mode of a bad pattern is an empty string, and an empty
+    # URL would otherwise sail into curl.
+    _agy_key() {
+        sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" \
+            "$OUT/antigravity-stage/manifest.json" | head -n1
+    }
+    if [ ! -f "$OUT/antigravity-stage/antigravity" ]; then
+        echo "==> staging Antigravity CLI from vendor manifest"
+        mkdir -p "$OUT/antigravity-stage"
+        curl -fsSL "$AGY_MANIFEST_URL" -o "$OUT/antigravity-stage/manifest.json"
+        AGY_URL=$(_agy_key url)
+        AGY_SHA512=$(_agy_key sha512)
+        [ -n "$AGY_URL" ] && [ -n "$AGY_SHA512" ] \
+            || { echo "could not read url/sha512 from the antigravity manifest" >&2; exit 1; }
+        curl -fsSL "$AGY_URL" -o "$OUT/antigravity-stage/agy.tar.gz"
+        echo "$AGY_SHA512  $OUT/antigravity-stage/agy.tar.gz" | sha512sum -c - \
+            || { echo "antigravity payload sha512 mismatch — refusing to package" >&2; exit 1; }
+        tar -xzf "$OUT/antigravity-stage/agy.tar.gz" -C "$OUT/antigravity-stage" antigravity
+    fi
+    AGY_VERSION=$(_agy_key version)
+    [ -n "$AGY_VERSION" ] || { echo "antigravity staging failed" >&2; exit 1; }
+    # The mirror of the claude assertion 30 lines up. If upstream ever starts
+    # serving musl here, this fails loudly and the right fix is to delete this
+    # whole block and pipeos-glibc with it — not to relax the check.
+    file "$OUT/antigravity-stage/antigravity" | grep -q 'ld-linux-x86-64' \
+        || { echo "staged antigravity is not the glibc build this packaging assumes" >&2; exit 1; }
+    echo "==> staged antigravity $AGY_VERSION"
+fi
+
 # ---------------------------------------------------------------- hermes vendor
 echo "==> vendoring hermes-agent source"
 mkdir -p "$PIPEOS_ROOT/vendor"
@@ -43,8 +123,12 @@ PIPE_VERSION=$(cat "$OUT/payloads/pipe.version")
 # ---------------------------------------------------------------- abuild all
 # Work copies live under out/pipeos/<pkg> so REPODEST repo name is "pipeos".
 declare -A VERS=( [pipe]="$PIPE_VERSION" [claude-code]="$CLAUDE_VERSION" [hermes-agent]="$HERMES_VERSION" )
+if [ "$WITH_ANTIGRAVITY" = 1 ]; then
+    VERS[pipeos-glibc]="$GLIBC_VERSION"
+    VERS[antigravity-cli]="$AGY_VERSION"
+fi
 mkdir -p "$OUT/pipeos" "$OUT/repo"
-for pkg in pipe claude-code hermes-agent; do
+for pkg in $PIPEOS_PKGS; do
     mkdir -p "$OUT/pipeos/$pkg"
     sed "s/^pkgver=.*/pkgver=${VERS[$pkg]}/" "$PIPEOS_ROOT/aports/$pkg/APKBUILD" > "$OUT/pipeos/$pkg/APKBUILD"
 done
@@ -53,8 +137,10 @@ done
 # and into the vendored hermes tree (setuptools writes egg-info into the source
 # dir while resolving build requirements)
 chmod -R a+rwX "$OUT/pipeos" "$OUT/repo" "$PIPEOS_ROOT/vendor" 2>/dev/null || true
+# the staged payloads are read by abuild's package() as the builder uid
+[ "$WITH_ANTIGRAVITY" = 1 ] && chmod -R a+rX "$OUT/glibc-stage" "$OUT/antigravity-stage" 2>/dev/null || true
 
-for pkg in pipe claude-code hermes-agent; do
+for pkg in $PIPEOS_PKGS; do
     echo "==> abuild $pkg-${VERS[$pkg]}"
     "$CR" -u builder "cd /pipeOS/out/pipeos/$pkg && REPODEST=/pipeOS/out/repo abuild -r"
 done
@@ -66,10 +152,15 @@ ls -lh "$OUT/repo/pipeos/$ALPINE_ARCH/"
 # runtime dep into a second signed repo (apks/extra) on the boot partition.
 # The fetch list IS overlay/etc/apk/world (single source of truth — a world
 # entry with no fetched .apk is exactly how the image shipped a dangling
-# chronyd service). The three pipeos-built packages come from apks/pipeos.
+# chronyd service). Our own packages come from apks/pipeos, so they are
+# subtracted here rather than looked for on the CDN.
 # github-cli lives in community, hence the second --repository.
+#
+# The exclusion list is $PIPEOS_PKGS, not a literal — CLAUDE.md asks for world
+# and this list to be kept "in lockstep", and a hardcoded alternation is a
+# second place to forget. Adding a package to config.sh now updates both.
 echo "==> building extra repo with runtime deps (from overlay/etc/apk/world)"
-UTILS=$(grep -vE '^(pipe|claude-code|hermes-agent)$' "$PIPEOS_ROOT/overlay/etc/apk/world")
+UTILS=$(grep -vxF -f <(printf '%s\n' $PIPEOS_PKGS) "$PIPEOS_ROOT/overlay/etc/apk/world")
 mkdir -p "$OUT/repo/extra/$ALPINE_ARCH"; chmod -R a+rwX "$OUT/repo/extra" 2>/dev/null || true
 "$CR" "apk fetch --recursive -o /pipeOS/out/repo/extra/$ALPINE_ARCH \
     --repository https://dl-cdn.alpinelinux.org/alpine/v3.24/community \
