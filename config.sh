@@ -124,6 +124,45 @@ for _cand in "$HOME/.pipeos/keys" /work/keys/pipeos; do
 done
 unset _cand
 
+# ── packages built into apks/pipeos ───────────────────────────────────────
+# The base three ship on every image. Optional payloads are OFF by default and
+# named here rather than in the build scripts, so one list drives all three
+# places that must agree: what abuild builds, what the extra-repo fetch must
+# NOT look for on the CDN, and what gets added to the image's apk world.
+#
+# Off by default because the root filesystem is tmpfs (see README): an
+# installed package is not disk, it is RAM, permanently, on every boot. The
+# Antigravity CLI binary alone is ~197MB unpacked — worth it on a box someone
+# asked for it on, not worth it on all four fleet boxes by default.
+#
+#   WITH_ANTIGRAVITY=1 make apks && WITH_ANTIGRAVITY=1 make usb
+WITH_ANTIGRAVITY="${WITH_ANTIGRAVITY:-0}"
+# OVERRIDABLE, and that is not decoration: the customer build
+# (pilot-build/run-root-build.sh) exports PIPEOS_PKGS="pipe claude-code"
+# because a customer box ships no hermes. An unconditional assignment here
+# would be re-sourced by 30-build-apks.sh and silently put hermes back on a
+# stick that is meant not to have it — a fleet-ism reappearing in the factory
+# path, which is the exact drift the card work exists to end.
+PIPEOS_PKGS="${PIPEOS_PKGS:-pipe claude-code hermes-agent}"
+# appended to the staged /etc/apk/world in 40-build-apkovl.sh
+EXTRA_WORLD=""
+if [ "$WITH_ANTIGRAVITY" = 1 ]; then
+    # Idempotent on purpose. This file is sourced once per process today, so a
+    # plain append happens to be correct — but "happens to be" is how a list
+    # ends up as `... antigravity-cli pipeos-glibc antigravity-cli` the first
+    # time something sources it twice in one shell, and the symptom would be a
+    # package built twice rather than an error.
+    case " $PIPEOS_PKGS " in
+        *" antigravity-cli "*) ;;
+        # order matters for a from-scratch build: the sysroot before its consumer
+        *) PIPEOS_PKGS="$PIPEOS_PKGS pipeos-glibc antigravity-cli" ;;
+    esac
+    case " $EXTRA_WORLD " in
+        *" antigravity-cli "*) ;;
+        *) EXTRA_WORLD="${EXTRA_WORLD:+$EXTRA_WORLD }antigravity-cli" ;;
+    esac
+fi
+
 PIPE_SRC="${PIPE_SRC:-$HOME/Projects/pipe}"
 HERMES_SRC="${HERMES_SRC:-$HOME/.hermes/hermes-agent}"
 # on pipeOS itself the checkouts live on the ext4 workspace
