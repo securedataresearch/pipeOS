@@ -61,6 +61,17 @@ jobs:
           python3 scripts/check-overlay-freshness.py
           python3 scripts/check-overlay-freshness-controls.py
 
+      # pipeOS#134. The product image is one artifact for every business, so
+      # the two things that used to be baked or fleet-scoped now have gates:
+      # the box derives its own NICK at setup, and fleet machinery (the work
+      # heartbeat, the standing orders naming this org's repos) stays off a
+      # customer box. Both defects were invisible from the box and paid for by
+      # someone else, which is why they are gates and not comments.
+      - name: the box derives its own nick, and fleet work stays off customer boxes
+        run: |
+          python3 scripts/check-setup-nick.py
+          python3 scripts/check-heartbeat-scope.py
+
       - name: card generation is stable and matches the committed overlay
         run: ./scripts/check-cards.sh
 

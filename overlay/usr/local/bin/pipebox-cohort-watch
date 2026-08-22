@@ -411,7 +411,7 @@ work_pending() {
     # skip the probes entirely instead of defaulting to the fleet's repo and
     # logging gh-failure noise every interval on a box that has no gh.
     for _hb_repo in $(printf '%s' "${REPOS:-}" | tr ',' ' '); do
-        _hb_n=$(prs_not_mine "${GH_OWNER:-securedataresearch}/${_hb_repo}")
+        _hb_n=$(prs_not_mine "${GH_OWNER}/${_hb_repo}")
         if [ -n "$_hb_n" ]; then
             _hb_pr=$(( ${_hb_pr:-0} + _hb_n ))
         fi
@@ -428,8 +428,17 @@ work_pending() {
         _hb_held=0
         log "work-heartbeat: CANNOT DETERMINE NICK — held-claim count is unknown, not zero; waking so it gets looked at"
     fi
-    _hb_ready=$(gh project item-list 1 --owner securedataresearch --format json -L 100 2>/dev/null \
-        | grep -c '"name": "Ready"')
+    # The kanban is the FLEET's, so it is read with the card's GH_OWNER and
+    # skipped when there is not one. This was hardcoded to the vendor's org,
+    # which on a customer box meant every heartbeat reached out to a stranger's
+    # project board — harmless only because their `gh` is unauthenticated, and
+    # "harmless because a credential is missing" is not a fence (#134).
+    if [ -n "${GH_OWNER:-}" ]; then
+        _hb_ready=$(gh project item-list 1 --owner "$GH_OWNER" --format json -L 100 2>/dev/null \
+            | grep -c '"name": "Ready"')
+    else
+        _hb_ready=0
+    fi
     # Empty is not zero. `gh` prints `0` for "no open PRs" and nothing at all
     # when it could not run, so a wake caused by both repos failing to answer
     # says so rather than presenting itself as an ordinary idle-box wake.
@@ -443,8 +452,29 @@ work_pending() {
         || [ "${_hb_held:-0}" = "0" ] || [ "${_hb_ready:-0}" != "0" ]
 }
 
+# THE WORK HEARTBEAT IS FLEET MACHINERY, AND IT MUST NOT RUN ON A CUSTOMER BOX.
+#
+# work_pending wakes an idle box so it goes and drains the queue: open PRs in
+# REPOS, or Ready cards on the kanban. On a GENERIC box every one of those
+# inputs is empty — no repos, no kanban, no claims — and the `held = 0` arm
+# reads that emptiness as "idle, therefore go find work". Measured: it returns
+# true on every heartbeat, so a customer box that set up a team board wakes a
+# full agent session every WORK_HEARTBEAT seconds (1800 by default = ~48 a day)
+# to drain a queue it has no part in, billed to that customer's Claude plan.
+#
+# Gated two ways on purpose, because they fail differently: ROLE is the card's
+# declared intent (#134's product image ships GENERIC), and the REPOS/GH_OWNER
+# pair is the observable fact that there is no fleet work to find. A box that
+# is mislabelled still gets caught by the second, and a fleet box that has not
+# finished provisioning still gets caught by the first.
+_hb_applies=yes
+case "${ROLE:-}" in
+    GENERIC) _hb_applies=no ;;
+esac
+[ -n "${REPOS:-}" ] || [ -n "${GH_OWNER:-}" ] || _hb_applies=no
+
 HEARTBEAT=""
-if [ -z "$changed" ] && [ -z "$ANNOUNCE" ]; then
+if [ "$_hb_applies" = yes ] && [ -z "$changed" ] && [ -z "$ANNOUNCE" ]; then
     _hb_now=$(date -u +%s)
     _hb_last=$(cat "$HB_STAMP" 2>/dev/null || echo 0)
     [ $(( _hb_now - _hb_last )) -ge "$WORK_HEARTBEAT" ] || exit 0
@@ -1003,6 +1033,22 @@ elif [ -z "$detail" ]; then
 [$_held_1line] and the queue is yours to work — not because anything was
 posted. Continue that work now, to completion or to a real blocker. Do not
 post to the board to say you are working; the claim already says so."
+elif [ "${ROLE:-}" = GENERIC ]; then
+    # A GENERIC box is a team assistant in someone else's business, not a lane
+    # in this fleet, and the standing orders below are fleet duties: review the
+    # vendor's PRs, merge on quorum, claim lane:build issues. Handing those to a
+    # customer's agent told it to go work repositories it has no credential for
+    # and no business in — the commands fail, the session is spent failing them,
+    # and the vendor's repo names ride along in the prompt (#134).
+    #
+    # Its own board is the whole job, so the task says exactly that and stops.
+    # The fleet text below is deliberately NOT edited to accommodate this: that
+    # block is transcribed from the deployed watcher and forbids paraphrase, so
+    # this branches around it rather than reaching into it.
+    task="Handle the new board activity above per the mandate. Reply on the
+board only if you are addressed, assigned work, or asked a question. Do not
+reply merely to acknowledge. If you were asked for something you can do in this
+session, do it now rather than replying that you will."
 else
     # STANDING ORDERS — VERBATIM from the deployed watcher (#79). This is the
     # text that actually drives a box to pick up work between dispatches, and
@@ -1071,11 +1117,16 @@ $detail
 "
 fi
 
+# The lane legend is fleet vocabulary. A GENERIC box has no lanes, and telling
+# it that BUILD authors code invites it to imagine a fleet it is not part of.
+_role_legend=" (BUILD authors code; TEST verifies; SHIP ships/CI)"
+[ "${ROLE:-}" = GENERIC ] && _role_legend=" (a team assistant for this board)"
+
 prompt="$(cat "$MANDATE")
 
 OWNER_NICK is: ${OWNER_NICK:-<unset>}
 FOREMAN_NICK is: ${FOREMAN_NICK:-<unset>}
-Your ROLE is: ${ROLE:-<unset>} (BUILD authors code; TEST verifies; SHIP ships/CI)
+Your ROLE is: ${ROLE:-<unset>}${_role_legend}
 You are the box whose pipe nick is: $(pipe id -o json 2>/dev/null | jq -r '.nick // "unknown"')
 ${_held_1line:+You hold these claims: $_held_1line}
 $activity
