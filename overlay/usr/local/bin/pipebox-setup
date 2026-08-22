@@ -32,6 +32,41 @@ else
     say "already signed in: $(pipe status 2>/dev/null | head -1)"
 fi
 
+
+# 1b. the box's OWN nick (#134)
+#
+# This is what lets ONE image serve every business instead of a bespoke build
+# per customer: NICK used to be baked into the shipped card at build time, so
+# the downloadable artifact was pilot0's or nobody's.
+#
+# DERIVED, NOT PROMPTED, and the difference matters. The issue proposed a
+# prompt on the OWNER_NICK pattern, but the box's nick is not a free choice —
+# it is whatever the sign-in key in step 1 actually signed in as. Asking a
+# human to retype it invents a way for the card to disagree with the daemon,
+# and the symptom of that disagreement is an agent that cannot tell a message
+# about itself from a message about a sibling. So: read it back from the thing
+# that knows. The prompt survives only as the fallback for a box that skipped
+# sign-in, where there is genuinely nothing to read.
+_boxnick=$(pipe status 2>/dev/null | sed -n 's/^nick: \([^ ]*\).*/\1/p')
+[ "$_boxnick" = anon ] && _boxnick=''
+_curn=$(sed -n 's/^NICK=["]*\([^"]*\)["]*$/\1/p' "$CARD" 2>/dev/null)
+if [ -z "$_boxnick" ] && [ -z "$_curn" ]; then
+    say ''
+    say 'This box is not signed in, so it has no nick of its own yet. Leaving it'
+    say 'unset — re-run pipebox-setup after signing in and it fills itself in.'
+elif [ -n "$_boxnick" ] && [ "$_boxnick" != "$_curn" ]; then
+    case "$_boxnick" in
+        *[!A-Za-z0-9_.-]*) die "pipe reports a nick that is not a plain nick ('$_boxnick') — refusing to write it to the card" ;;
+    esac
+    if [ -f "$CARD" ]; then
+        sed -i "s/^NICK=.*/NICK=$_boxnick/" "$CARD"
+        if pipebox-card generate --card "$CARD"; then
+            say "  this box is: $_boxnick (card regenerated)"
+        else
+            die "card regeneration failed — /etc/pipeos is now inconsistent with $CARD"
+        fi
+    fi
+fi
 # 2. owner-approved settings (no-ops if already set; harmless when signed out)
 pipe set remember_login on >/dev/null 2>&1 || true
 pipe set agent_events on  >/dev/null 2>&1 || true
