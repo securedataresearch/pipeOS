@@ -79,10 +79,35 @@ if [ "$WITH_ANTIGRAVITY" = 1 ]; then
         sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" \
             "$OUT/antigravity-stage/manifest.json" | head -n1
     }
-    if [ ! -f "$OUT/antigravity-stage/antigravity" ]; then
-        echo "==> staging Antigravity CLI from vendor manifest"
-        mkdir -p "$OUT/antigravity-stage"
-        curl -fsSL "$AGY_MANIFEST_URL" -o "$OUT/antigravity-stage/manifest.json"
+    # THE STAMP IS WHY THIS IS NOT A SIMPLE "download if absent".
+    #
+    # The version was read from the manifest while the binary was reused from
+    # whatever a previous run had left in place. Those are two different
+    # artifacts, and upstream moves: staged 1.1.13 against a manifest that had
+    # advanced to 1.1.18 would have built `antigravity-cli-1.1.18-r0.apk`
+    # containing the 1.1.13 binary. A package whose version lies about its
+    # payload, signed by us, shipped to strangers — and nothing would have
+    # failed, because every individual step succeeded.
+    #
+    # So the staged payload carries a stamp of what it actually is, and the
+    # version always comes from the same fetch as the bytes.
+    mkdir -p "$OUT/antigravity-stage"
+    _agy_stamp="$OUT/antigravity-stage/staged.version"
+    if curl -fsSL "$AGY_MANIFEST_URL" -o "$OUT/antigravity-stage/manifest.json.new" 2>/dev/null; then
+        mv "$OUT/antigravity-stage/manifest.json.new" "$OUT/antigravity-stage/manifest.json"
+        AGY_VERSION=$(_agy_key version)
+    else
+        # Offline builds are legitimate (a box rebuilding itself), but only
+        # against a payload that already said what it was. No stamp, no guess.
+        rm -f "$OUT/antigravity-stage/manifest.json.new"
+        AGY_VERSION=$(cat "$_agy_stamp" 2>/dev/null || true)
+        [ -n "$AGY_VERSION" ] || { echo "cannot reach the antigravity manifest and nothing is staged" >&2; exit 1; }
+        echo "==> antigravity: offline, using staged $AGY_VERSION"
+    fi
+    [ -n "$AGY_VERSION" ] || { echo "antigravity staging failed" >&2; exit 1; }
+    if [ ! -f "$OUT/antigravity-stage/antigravity" ] \
+       || [ "$(cat "$_agy_stamp" 2>/dev/null || true)" != "$AGY_VERSION" ]; then
+        echo "==> staging Antigravity CLI $AGY_VERSION from vendor manifest"
         AGY_URL=$(_agy_key url)
         AGY_SHA512=$(_agy_key sha512)
         [ -n "$AGY_URL" ] && [ -n "$AGY_SHA512" ] \
@@ -90,10 +115,12 @@ if [ "$WITH_ANTIGRAVITY" = 1 ]; then
         curl -fsSL "$AGY_URL" -o "$OUT/antigravity-stage/agy.tar.gz"
         echo "$AGY_SHA512  $OUT/antigravity-stage/agy.tar.gz" | sha512sum -c - \
             || { echo "antigravity payload sha512 mismatch — refusing to package" >&2; exit 1; }
+        rm -f "$OUT/antigravity-stage/antigravity"
         tar -xzf "$OUT/antigravity-stage/agy.tar.gz" -C "$OUT/antigravity-stage" antigravity
+        # Written LAST, so an interrupted stage leaves no stamp and re-stages
+        # rather than claiming a version it does not have.
+        echo "$AGY_VERSION" > "$_agy_stamp"
     fi
-    AGY_VERSION=$(_agy_key version)
-    [ -n "$AGY_VERSION" ] || { echo "antigravity staging failed" >&2; exit 1; }
     # The mirror of the claude assertion 30 lines up. If upstream ever starts
     # serving musl here, this fails loudly and the right fix is to delete this
     # whole block and pipeos-glibc with it — not to relax the check.
