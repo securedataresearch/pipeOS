@@ -121,6 +121,32 @@ if [ "$WITH_ANTIGRAVITY" = 1 ]; then
         # rather than claiming a version it does not have.
         echo "$AGY_VERSION" > "$_agy_stamp"
     fi
+    # THE SYSROOT MUST ACTUALLY BE NEW ENOUGH FOR THE BINARY IT CARRIES.
+    #
+    # This was an unstated assumption until it moved under us: 1.1.13 required
+    # at most GLIBC_2.25, 1.1.18 requires 2.26. The sysroot is 2.35, so both
+    # are fine — but nothing compared them, and the vendor bumps this whenever
+    # they like. If a future release crosses 2.35 the build would succeed, the
+    # apk would install, and the box would fail at RUNTIME with a symbol-not-
+    # found — the failure landing on a customer rather than here.
+    #
+    # Read with grep, not objdump/readelf: binutils is not in
+    # scripts/00-host-setup.sh, and this must not become a host dependency
+    # discovered on whichever machine lacks it. Verified to agree with
+    # `objdump -T` on the binary it was written against.
+    _agy_need=$(grep -ao 'GLIBC_[0-9]\+\.[0-9]\+' "$OUT/antigravity-stage/antigravity" \
+        | sed 's/GLIBC_//' \
+        | awk -F. '{v=$1*1000+$2; if(v>m){m=v;s=$0}} END{print s}')
+    [ -n "$_agy_need" ] || { echo "could not read the glibc requirement of the staged antigravity binary" >&2; exit 1; }
+    if ! awk -v need="$_agy_need" -v have="$GLIBC_VERSION" '
+        BEGIN{ split(need,n,"."); split(have,h,".");
+               exit !((n[1]*1000+n[2]) <= (h[1]*1000+h[2])) }'; then
+        echo "antigravity $AGY_VERSION needs glibc $_agy_need but the sysroot is $GLIBC_VERSION" >&2
+        echo "  -> bump pipeos-glibc, or (better) check whether upstream now ships a musl build" >&2
+        exit 1
+    fi
+    echo "==> antigravity needs glibc $_agy_need, sysroot provides $GLIBC_VERSION"
+
     # The mirror of the claude assertion 30 lines up. If upstream ever starts
     # serving musl here, this fails loudly and the right fix is to delete this
     # whole block and pipeos-glibc with it — not to relax the check.
