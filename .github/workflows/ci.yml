@@ -39,8 +39,27 @@ jobs:
           #
           # -S error: fail on things that are wrong, print things that are
           # merely unidiomatic. A style-red CI gets disabled within a week.
-          shellcheck -S error config.sh scripts/*.sh overlay/usr/local/bin/*
-          shellcheck config.sh scripts/*.sh overlay/usr/local/bin/* || true
+          # The periodic/ file is named explicitly rather than by glob: #104's
+          # residual is that overlay/etc/periodic and overlay/etc/local.d are
+          # still unlinted as directories, and this PR adds a file to one of
+          # them. Naming it keeps this diff from being the reason that
+          # residual gets bigger; widening to the whole tree is #104's
+          # follow-up, not a one-liner smuggled in here.
+          shellcheck -S error config.sh scripts/*.sh overlay/usr/local/bin/* \
+            overlay/etc/periodic/weekly/pipeos-worksweep
+          shellcheck config.sh scripts/*.sh overlay/usr/local/bin/* \
+            overlay/etc/periodic/weekly/pipeos-worksweep || true
+
+      # pipeOS#90 item 3. A sweep is a deletion tool: the only interesting
+      # question is what it does NOT delete, and that cannot be answered by
+      # reading it. The probe builds a fake /work, runs the shipped script over
+      # it, and asserts the survivors — the signing key, agent memory, the
+      # canonical clones' sources. The control run mutates the script four
+      # ways and asserts which of those survivors stop surviving.
+      - name: the sweep reclaims what it should and spares what it must
+        run: |
+          python3 scripts/check-worksweep.py
+          python3 scripts/check-worksweep-controls.py
 
       # pipeOS#97. The deploy tool writes /etc and then persists — no box can
       # run it from inside its sandbox, and the operator who can is exactly

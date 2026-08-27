@@ -28,6 +28,10 @@
 # and the cron wrapper are custom files under /etc that apk audit would drop
 +etc/pipeos/selfupdate.conf
 +etc/periodic/daily/pipeos-selfupdate
+# same shape, weekly: the reclaim job is a custom file under /etc/periodic, so
+# apk audit does not see it and a reboot would take it with everything else
+# that was never in a package (pipeOS#90 item 3)
++etc/periodic/weekly/pipeos-worksweep
 # repo checkouts live on ext4 (/work/repos); these are just symlinks now
 +root/pipeOS
 +root/pipe
