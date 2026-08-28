@@ -169,15 +169,33 @@ elif ! git -C "$REPO" cat-file -e "$commit:docs/cards/$NICK.card" 2>/dev/null; t
 else
     repo_card=$(mktemp)
     git -C "$REPO" show "$commit:docs/cards/$NICK.card" > "$repo_card"
-    if cmp -s "$repo_card" "$CARD"; then
-        say "card: $CARD matches docs/cards/$NICK.card"
+    # OWNER_NICK and COHORT_ID are filled on premises at first boot by
+    # pipebox-setup — the GENERIC cards ship them empty on purpose. A box
+    # value atop an EMPTY repo value is provisioning, not drift, so it is
+    # masked out of the comparison (and preserved by --install-card below).
+    # Any other difference is still drift and still dies.
+    box_norm=$(mktemp)
+    cp "$CARD" "$box_norm"
+    for _f in OWNER_NICK COHORT_ID; do
+        if [ -z "$(sed -n "s/^$_f=//p" "$repo_card" | head -1)" ]; then
+            sed -i "s/^$_f=.*/$_f=/" "$box_norm"
+        fi
+    done
+    if cmp -s "$repo_card" "$box_norm"; then
+        if cmp -s "$repo_card" "$CARD"; then
+            say "card: $CARD matches docs/cards/$NICK.card"
+        else
+            say "card: $CARD matches docs/cards/$NICK.card (owner fields filled on box)"
+        fi
+        rm -f "$box_norm"
     elif [ "$INSTALL_CARD" = yes ]; then
+        rm -f "$box_norm"
         card_action=install
         say "card: $CARD differs from docs/cards/$NICK.card — will install the repo's"
         diff -u "$CARD" "$repo_card" | sed 's/^/    /' || true
     else
-        diff -u "$CARD" "$repo_card" | sed 's/^/    /' || true
-        rm -f "$repo_card"
+        diff -u "$box_norm" "$repo_card" | sed 's/^/    /' || true
+        rm -f "$repo_card" "$box_norm"
         die "on-box card differs from docs/cards/$NICK.card at $REF.
   Per R19 the repo card is the truth, and every generated file on this box
   descends from the on-box copy — box0's stale card rendered 'allow: []', a
@@ -339,6 +357,14 @@ while read -r mode type blob path; do
 done < "$listing"
 
 if [ "$card_action" = install ]; then
+    # Carry the box's on-premises fills forward where the repo ships the
+    # field empty — installing a GENERIC card must not un-provision the box.
+    for _f in OWNER_NICK COHORT_ID; do
+        if [ -z "$(sed -n "s/^$_f=//p" "$repo_card" | head -1)" ]; then
+            _bv=$(sed -n "s/^$_f=//p" "$CARD" | head -1)
+            [ -n "$_bv" ] && sed -i "s/^$_f=.*/$_f=$_bv/" "$repo_card"
+        fi
+    done
     cp "$repo_card" "$CARD" || die "cannot install the card"
     say "installed docs/cards/$NICK.card -> $CARD"
     say "  NOTE: generated files are NOT regenerated. Run 'pipebox-card generate'."

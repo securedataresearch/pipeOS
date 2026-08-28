@@ -135,19 +135,15 @@ fix.
 
 ## Status
 
-**None of this has been executed on a box.** `make` is not installed on box2
-and the agent sandbox does not permit running shell scripts, so the generator
-was written and hand-checked against its templates but never run here — the
-same position box0 and box1 have been in all day with `cargo`. The CI job added
-in this branch is the first thing in this repo that actually runs it, and it is
-the gate this should be judged on, not on my reading of it.
+(Updated 2026-08-28.) The generator runs on the fleet and in CI
+(`check-cards.sh`); `pipebox-cohort-watch` is in the tree and deployed. The
+remaining gap is the pipeline, not the generator: no build step bakes a
+`docs/cards/*.card` into an image — the shipped image carries the
+unprovisioned default card, and a box's repo card reaches it after boot
+(`pipeos deploy-overlay --install-card`, or by hand).
 
 Not yet card-generated, and each needs its own change:
 
-- **`pipebox-cohort-watch`** — the cron poller that is the only way any box
-  hears its board. It exists on three machines and in zero commits; it is not
-  in this repo, and I cannot read `/etc` from the sandbox to commit it. A box
-  provisioned from this image today gets no board poller at all.
 - **The GitHub credential.** Per-role PATs (#648) are a secret, not card
   content. The card should record the *role*, and provisioning should pair it
   with the matching token; the card must never carry the token.

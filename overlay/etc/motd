@@ -1,5 +1,5 @@
 
   pipeOS — diskless Alpine · claude + hermes + pipe
-  Runs entirely from RAM. State is snapshotted to NVMe every 15 min
-  (lbu autosave) and on shutdown. Manual save any time: lbu commit
+  Runs entirely from RAM. State is snapshotted to the boot media every
+  15 min and on shutdown. Manual save any time: pipeos save
 

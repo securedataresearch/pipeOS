@@ -223,12 +223,47 @@ check("7 an on-box card that differs from the repo card stops the deploy",
       and c5.live("usr/local/bin/pipeos-thing") is None,
       "rc=%d installed=%r" % (c5.rc, c5.live("usr/local/bin/pipeos-thing")))
 
+# ── 7b. on-premises fills are provisioning, not drift ────────────────────
+# pipebox-setup fills OWNER_NICK/COHORT_ID at first boot; GENERIC cards ship
+# them empty on purpose. A box value atop an EMPTY repo value must deploy.
+GENERIC_FIXTURE = dict(FIXTURE)
+GENERIC_FIXTURE["docs/cards/box9.card"] = \
+    ("NICK=box9\nROLE=BUILD\nOWNER_NICK=\nCOHORT_ID=\n", 0o644)
+c5b = case(fixture=GENERIC_FIXTURE,
+           card="NICK=box9\nROLE=BUILD\nOWNER_NICK=sam\nCOHORT_ID=7\n").run()
+check("7b owner fields filled on box atop an empty repo card deploy cleanly",
+      c5b.rc == 0 and "owner fields filled on box" in c5b.log
+      and c5b.live("etc/pipeos/card.conf")
+          == "NICK=box9\nROLE=BUILD\nOWNER_NICK=sam\nCOHORT_ID=7\n"
+      and c5b.live("usr/local/bin/pipeos-thing") is not None,
+      "rc=%d card=%r" % (c5b.rc, c5b.live("etc/pipeos/card.conf")))
+
+# ── 7c. a filled field that DIFFERS from a filled repo value is still drift ─
+FILLED_FIXTURE = dict(FIXTURE)
+FILLED_FIXTURE["docs/cards/box9.card"] = \
+    ("NICK=box9\nROLE=BUILD\nOWNER_NICK=sam\n", 0o644)
+c5c = case(fixture=FILLED_FIXTURE,
+           card="NICK=box9\nROLE=BUILD\nOWNER_NICK=mallory\n").run()
+check("7c a box owner differing from a FILLED repo owner still stops the deploy",
+      c5c.rc != 0 and "R19" in c5c.log
+      and c5c.live("usr/local/bin/pipeos-thing") is None,
+      "rc=%d" % c5c.rc)
+
 # ── 8. --install-card ────────────────────────────────────────────────────
 c6 = case(card="NICK=box9\nROLE=TEST\n").run("--install-card")
 check("8 --install-card takes the repo card and says generate was not run",
       c6.rc == 0 and c6.live("etc/pipeos/card.conf") == "NICK=box9\nROLE=BUILD\n"
       and "pipebox-card generate" in c6.log,
       "rc=%d card=%r" % (c6.rc, c6.live("etc/pipeos/card.conf")))
+
+# ── 8b. --install-card keeps the box's fills where the repo ships empty ──
+c6b = case(fixture=GENERIC_FIXTURE,
+           card="NICK=box9\nROLE=TEST\nOWNER_NICK=sam\nCOHORT_ID=7\n"
+           ).run("--install-card")
+check("8b --install-card carries on-box owner fills over an empty repo card",
+      c6b.rc == 0 and c6b.live("etc/pipeos/card.conf")
+          == "NICK=box9\nROLE=BUILD\nOWNER_NICK=sam\nCOHORT_ID=7\n",
+      "rc=%d card=%r" % (c6b.rc, c6b.live("etc/pipeos/card.conf")))
 
 # ── 9. an unprovisioned box skips the gate rather than blocking ─────────
 c7 = case(card="NICK=\n").run()
