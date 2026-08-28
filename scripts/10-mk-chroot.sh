@@ -166,7 +166,12 @@ if ! ls "$ABUILD_DIR"/*.rsa >/dev/null 2>&1; then
         # abuild-keygen -a writes this too; without it abuild-sign has a key
         # on disk it does not know about and signs with nothing.
         sudo sh -c "printf 'PACKAGER_PRIVKEY=\"/home/builder/.abuild/%s\"\n' '$priv' > '$ABUILD_DIR/abuild.conf'"
-        sudo chroot "$CHROOT" chown -R builder:builder /home/builder/.abuild
+        # /bin/sh -lc, not a bare command: chroot resolves the command with
+        # the HOST's PATH, which need not contain the chroot's busybox links
+        # ("failed to run command 'chown'" on the first host this restore
+        # branch ever actually ran on). Every other chroot call in this file
+        # already goes through a login shell for the same reason.
+        sudo chroot "$CHROOT" /bin/sh -lc 'chown -R builder:builder /home/builder/.abuild'
     else
         echo "==> no signing key in any store — generating a new one"
         echo "    (searched: $SIGNING_KEY_DIR $OUT/keys ${SIGNING_KEY_DIR_ALT:-})"

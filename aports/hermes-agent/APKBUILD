@@ -16,6 +16,11 @@ source=""
 build() {
 	python3 -m venv "$srcdir"/venv
 	"$srcdir"/venv/bin/pip install --no-cache-dir --upgrade pip
+	# Upstream's build backend refuses wheel builds outside its own installer
+	# unless HERMES_NIX_BUILD=1 — the escape hatch it provides for downstream
+	# source packagers (its Nix derivation sets the same variable). We are
+	# exactly that: a from-source build into a bundled venv.
+	export HERMES_NIX_BUILD=1
 	# Preinstall the anthropic provider extra so nothing lazy-installs at
 	# runtime (runtime installs into tmpfs would not survive reboots).
 	"$srcdir"/venv/bin/pip install --no-cache-dir "/pipeOS/vendor/hermes-agent[anthropic]" \

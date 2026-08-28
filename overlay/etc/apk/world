@@ -12,6 +12,7 @@ diffutils
 dmidecode
 e2fsprogs
 ethtool
+ffmpeg
 figlet
 file
 findutils
