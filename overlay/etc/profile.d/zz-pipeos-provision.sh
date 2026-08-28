@@ -36,7 +36,19 @@ _pipeos_provision() {
     case "$_a" in n|N) ;; *) claude || true ;; esac
 
     touch /etc/pipeos/provisioned
-    lbu commit >/dev/null 2>&1 && echo '(state saved)'
+    # This save must be LOUD on failure (the same rule pipebox-setup step 6
+    # already follows): it used to be `lbu commit >/dev/null 2>&1`, so a box
+    # where persistence failed printed the same text as one where it worked,
+    # and the new password + ssh key silently evaporated at the next reboot.
+    if command -v pipeos-save >/dev/null 2>&1 && pipeos-save; then
+        echo '(state saved)'
+    elif lbu commit; then
+        echo '(state saved — lbu fallback)'
+    else
+        echo '!!! STATE NOT SAVED — your password and key exist only in RAM and'
+        echo '!!! are gone at the next reboot. The output above says why; fix it'
+        echo '!!! and run: pipeos save'
+    fi
 
     # The pipe presence: one key + one nick, handled by its own re-runnable wizard
     printf '\nLast thing — put your agent on pipe.\n'

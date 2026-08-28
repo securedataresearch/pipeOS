@@ -119,6 +119,16 @@ if [ -n "$_card_mac" ]; then
     fi
 fi
 
+# ---- 1d. provisioning is a DISPLAYED state, not an inference (appliance
+# plan, decision 3). pipeos-save exits 0 without /etc/pipeos/provisioned, so
+# a box abandoned mid-walkthrough never persists anything — and used to
+# never say so: the operator found out at the next reboot, when the box's
+# answers were gone. The issue/motd banner shows it at the console; this
+# line puts it in every boot report.
+if [ ! -f /etc/pipeos/provisioned ]; then
+    warnn "UNPROVISIONED: autosave is OFF (no /etc/pipeos/provisioned) — nothing done on this box survives a reboot; finish pipebox-setup (or bake a card: make stick)"
+fi
+
 # ---- 2. how did the last run end? (marker readable only once /work is up)
 if dmesg 2>/dev/null | grep -qi 'EXT4-fs.*recover'; then
     down="power loss / hard reset (ext4 journal recovery ran)"
@@ -595,6 +605,22 @@ installed, boot media untouched, owner not DMed. Rerun with --boot to apply."
 echo "$msg"
 
 [ "$BOOT" = yes ] || { rm -f "$R"; exit 0; }
+
+# ---- 7c. the report lands locally BEFORE any delivery attempt (appliance
+# plan, decision 4). The DM below is gated on auth + OWNER_NICK, and a
+# brand-new box has neither — which made the first boot report of exactly
+# the boxes an operator is standing at go nowhere. /run is per-boot tmpfs:
+# always "this boot's report", never persisted into the apkovl, and
+# `pipeos status` surfaces its verdict. The console gets one line only when
+# something is actually wrong — a quiet boot must not spray over the login
+# prompt (the loglevel=4 lesson).
+mkdir -p /run/pipeos 2>/dev/null
+printf '%s\n' "$msg" > /run/pipeos/boot-report 2>/dev/null
+_nall=$((ncrit + nstate))
+if [ "$_nall" -gt 0 ] || [ "$nwarn" -gt 0 ]; then
+    printf 'pipeos: boot %s — full report: pipeos status\n' "$verdict" \
+        > /dev/console 2>/dev/null || true
+fi
 
 log "boot selfcheck: $verdict (down: $down)"
 [ -s "$R" ] && sed 's/^/  /' "$R" >> "$LOG"

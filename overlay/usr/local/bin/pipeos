@@ -101,6 +101,24 @@ drift_count() {
 
 cmd_status() {
     printf '%s — up %s\n' "$(hostname)" "$(uptime | sed 's/.*up *//;s/,.*//' 2>/dev/null || uptime)"
+    # The boot report, deliverable or not (appliance plan, decision 4): the
+    # owner DM is gated on auth + OWNER_NICK, which a fresh box has neither
+    # of, so selfcheck also lands every boot report in per-boot tmpfs.
+    # "How did the boot go" must never depend on pipe being signed in.
+    if [ -r /run/pipeos/boot-report ]; then
+        bverdict=$(sed -n 's/^verdict: //p' /run/pipeos/boot-report | head -1)
+        case "$bverdict" in
+            *DEGRADED*) fail "boot report: $bverdict — cat /run/pipeos/boot-report" ;;
+            *warning*)  warn "boot report: $bverdict — cat /run/pipeos/boot-report" ;;
+            '')         warn "boot report present but verdict unreadable — cat /run/pipeos/boot-report" ;;
+            *)          ok "boot report: $bverdict" ;;
+        esac
+    else
+        warn "no boot report this boot (selfcheck --boot has not finished)"
+    fi
+    if [ ! -f /etc/pipeos/provisioned ]; then
+        fail "UNPROVISIONED — autosave is OFF; nothing persists (run pipebox-setup)"
+    fi
     if mountpoint -q /work; then
         use=$(df /work | awk 'NR==2{print $5+0}')
         if [ "$use" -ge 90 ]; then warn "/work ${use}% full"; else ok "/work mounted, ${use}% used"; fi
