@@ -102,6 +102,23 @@ if mountpoint -q /work; then
     fi
 fi
 
+# ---- 1c. chassis anchor (appliance plan, decision 2). Identity rides the
+# stick: move a stick to another machine and the box's whole identity moves
+# with it, and before this check nothing on any box said so — a swap was a
+# silent identity transplant. The card's MAC is the chassis this box was
+# surveyed into; assert some live NIC actually carries it. WARN, not CRIT:
+# the box cannot remediate it, and the swap may be deliberate — a rehomed
+# stick is fixed by updating the card's MAC, not by anything this box can do.
+# Parsed, never sourced, same rule as every other card read.
+_card_mac=$(sed -n 's/^MAC=//p' /etc/pipeos/card.conf 2>/dev/null | head -1 | tr 'A-F' 'a-f')
+if [ -n "$_card_mac" ]; then
+    if cat /sys/class/net/*/address 2>/dev/null | grep -qxF "$_card_mac"; then
+        :
+    else
+        warnn "chassis mismatch: card MAC $_card_mac is on no NIC here — this stick appears to be in a different machine's chassis (stick rehomed? update the card's MAC and serials.txt)"
+    fi
+fi
+
 # ---- 2. how did the last run end? (marker readable only once /work is up)
 if dmesg 2>/dev/null | grep -qi 'EXT4-fs.*recover'; then
     down="power loss / hard reset (ext4 journal recovery ran)"

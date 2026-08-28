@@ -22,7 +22,7 @@ SHIPPED=overlay/etc/pipeos/card.conf
 # root/.pipe/policy.json is generated but absent here, and the committed copy
 # has drifted from the shipped card since #58 — filed separately rather than
 # folded in, because closing it changes the shipped agent's capability set.
-OUTPUTS="etc/pipeos/pipebox.conf etc/pipeos/pipebox-settings.json etc/pipeos/mandate.md etc/profile.d/10-pipebox-env.sh"
+OUTPUTS="etc/pipeos/pipebox.conf etc/pipeos/pipebox-settings.json etc/pipeos/mandate.md etc/profile.d/10-pipebox-env.sh etc/hostname etc/issue etc/motd etc/network/interfaces"
 
 fails=0
 say()  { printf '%s\n' "$*"; }

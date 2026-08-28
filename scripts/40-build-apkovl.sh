@@ -25,6 +25,24 @@ if [ -n "$EXTRA_WORLD" ]; then
     echo "==> optional payloads in world: $EXTRA_WORLD"
 fi
 
+# ---- optional: bake a model card (make stick CARD=docs/cards/<box>.card).
+# The image then boots AS that box: repo card installed verbatim (so the
+# deploy-overlay card gate matches from day one), derived files generated at
+# build time, and — because the card names a NICK — the generator sets the
+# provisioned marker, so autosave is live from the first boot. Without CARD
+# the image ships the unprovisioned default from overlay/etc/pipeos/card.conf.
+# Not --strict: GENERIC cards ship OWNER_NICK empty on purpose (filled on the
+# customer's premises by pipebox-setup) and must stay bakeable.
+if [ -n "${CARD:-}" ]; then
+    [ -r "$CARD" ] || { echo "CARD not readable: $CARD" >&2; exit 1; }
+    cp "$CARD" "$STAGE/etc/pipeos/card.conf"
+    sh "$PIPEOS_ROOT/overlay/usr/local/bin/pipebox-card" generate \
+        --card "$STAGE/etc/pipeos/card.conf" \
+        --root "$STAGE" \
+        --templates "$PIPEOS_ROOT/overlay/usr/local/share/pipeos/card"
+    echo "baked card: $CARD (NICK=$(sed -n 's/^NICK=//p' "$CARD" | head -1))"
+fi
+
 # apk must trust our repo signing key at initramfs install time.
 # overlay/etc/apk/keys is an empty dir in the tree, and git does not track
 # empty dirs — so on a clean checkout it is absent and the cp below fails with

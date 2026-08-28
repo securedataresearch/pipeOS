@@ -35,7 +35,13 @@ STAMP_REL=etc/pipeos/.card-stamp
 # than shipped in the overlay so `verify` covers it: a hand-edited
 # CARGO_TARGET_DIR is how one box quietly stops sharing the artifact cache and
 # fills its stick again, which is exactly the failure this fleet just had.
-OUTPUTS="etc/pipeos/pipebox.conf etc/pipeos/pipebox-settings.json etc/pipeos/mandate.md root/.pipe/policy.json etc/profile.d/10-pipebox-env.sh"
+# etc/hostname, etc/issue, etc/motd, etc/network/interfaces are the box's
+# VISIBLE identity (appliance plan, decision 2): every box used to be
+# hostname "pipeos" with a stock banner, so fleet reports, DHCP leases and
+# the console itself could not tell one machine from another. Card-generated
+# so `verify` covers them like everything else; NICK empty renders the
+# "pipeos" fallback plus an UNPROVISIONED banner rather than a blank name.
+OUTPUTS="etc/pipeos/pipebox.conf etc/pipeos/pipebox-settings.json etc/pipeos/mandate.md root/.pipe/policy.json etc/profile.d/10-pipebox-env.sh etc/hostname etc/issue etc/motd etc/network/interfaces"
 
 die()  { printf 'pipebox-card: %s\n' "$*" >&2; exit 2; }
 ok()   { printf 'ok    %s\n' "$*"; }
@@ -433,10 +439,29 @@ has_charter() {
     case "$1" in BUILD|TEST|SHIP|GENERIC) return 0 ;; *) return 1 ;; esac
 }
 
+# The console/banner identity line. A block, not a sed marker, because it is
+# conditional: a provisioned box states what it is; an unprovisioned one says
+# so and names the next step, instead of presenting a blank identity.
+identity_block() {
+    if [ -n "$NICK" ]; then
+        printf '  box %s · role %s' "$NICK" "${ROLE:-unset}"
+        [ -n "$OWNER_NICK" ] && printf ' · owner %s' "$OWNER_NICK"
+        printf '\n'
+    else
+        printf '  UNPROVISIONED — no model card names this box.\n'
+        printf '  Log in as root and run pipebox-setup to provision it.\n'
+    fi
+}
+
 render() {
     tmpl="$1"
     [ -r "$tmpl" ] || die "template not readable: $tmpl"
-    sedexpr="s|@@NICK@@|$NICK|g
+    # A hostname must never be empty — an unprovisioned card (NICK unset)
+    # falls back to the generic name rather than rendering a blank
+    # /etc/hostname, which would break the hostname service at boot.
+    _hn=${NICK:-pipeos}
+    sedexpr="s|@@HOSTNAME@@|$_hn|g
+s|@@NICK@@|$NICK|g
 s|@@ROLE@@|$ROLE|g
 s|@@OWNER_NICK@@|$OWNER_NICK|g
 s|@@FOREMAN_NICK@@|$FOREMAN_NICK|g
@@ -466,7 +491,7 @@ s|@@CARD_SHA@@|$CARD_SHA|g"
     _rcur=$(mktemp) || die "mktemp failed"
     _rnxt=$(mktemp) || die "mktemp failed"
     cat "$tmpl" > "$_rcur" || die "read failed: $tmpl"
-    for _rmark in @@ROLE_ALLOW@@ @@ROLE_CHARTER@@ @@FOREMAN_CHARTER@@ @@PIPE_ALLOW@@; do
+    for _rmark in @@ROLE_ALLOW@@ @@ROLE_CHARTER@@ @@FOREMAN_CHARTER@@ @@PIPE_ALLOW@@ @@IDENTITY_BLOCK@@; do
         while grep -q "^$_rmark\$" "$_rcur"; do
             _rn=$(grep -n "^$_rmark\$" "$_rcur" | head -1 | cut -d: -f1)
             {
@@ -476,6 +501,7 @@ s|@@CARD_SHA@@|$CARD_SHA|g"
                     @@ROLE_CHARTER@@) charter_block "$ROLE" ;;
                     @@FOREMAN_CHARTER@@) foreman_block ;;
                     @@PIPE_ALLOW@@)   caps_block ;;
+                    @@IDENTITY_BLOCK@@) identity_block ;;
                 esac
                 tail -n +$((_rn + 1)) "$_rcur"
             } > "$_rnxt" || die "render failed at $_rmark"
@@ -495,6 +521,10 @@ tmpl_for() {
         etc/pipeos/mandate.md)             echo "$TMPL/mandate.md.tmpl" ;;
         root/.pipe/policy.json)            echo "$TMPL/policy.json.tmpl" ;;
         etc/profile.d/10-pipebox-env.sh)   echo "$TMPL/pipebox-env.sh.tmpl" ;;
+        etc/hostname)                      echo "$TMPL/hostname.tmpl" ;;
+        etc/issue)                         echo "$TMPL/issue.tmpl" ;;
+        etc/motd)                          echo "$TMPL/motd.tmpl" ;;
+        etc/network/interfaces)            echo "$TMPL/interfaces.tmpl" ;;
         *) die "no template for $1" ;;
     esac
 }
@@ -582,6 +612,13 @@ cmd_generate() {
     if [ -n "$NICK" ]; then
         marker="${ROOT%/}/etc/pipeos/provisioned"
         [ -f "$marker" ] || { : > "$marker" && echo "wrote $marker"; }
+    fi
+
+    # The hostname file takes effect at the next boot via the hostname
+    # service; when generating onto the live root, apply it now too so the
+    # prompt, syslog and the boot report pick the name up without a reboot.
+    if [ -z "${ROOT%/}" ] && command -v hostname >/dev/null 2>&1; then
+        hostname -F /etc/hostname 2>/dev/null || true
     fi
 
     echo "pipebox-card: generated from $CARD (sha256:$CARD_SHA)"
