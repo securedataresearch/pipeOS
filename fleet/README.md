@@ -5,7 +5,7 @@ so there is ONE path per operation, in the repo, not improvised each time.
 
 | Script | Runs on | Does |
 |---|---|---|
-| `flash-box.sh <box> <dev> <img>` | operator host | Writes an image to a box's USB stick, **guarded by serial** (`serials.txt`) so it can't hit the wrong stick or a system disk. |
+| `flash-box.sh <box> <dev> <img>` | operator host | Compatibility wrapper over `scripts/70-flash.sh --box`, the ONE flasher: serial guard (`serials.txt`) **plus** mount/root-disk/whole-disk guards and typed confirmation. An unregistered stick is offered registration interactively instead of an unguarded fallback. |
 | `update-box.sh` | a box | Applies the locally-built pipeos repo to boot media (Path B): `pipeos sync-media` → `apk upgrade` → `pipeos save` → verify. |
 | `serials.txt` | — | box → USB-stick serial map; the flash guard. Update when a stick is replaced. |
 
