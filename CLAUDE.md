@@ -36,8 +36,8 @@ be mirrored there.
 `image` intentionally does NOT depend on the slow `apks` target;
 `50-build-image.sh` refuses to build if `out/repo` is staler than
 `aports/`/payloads (override: `FORCE=1`). After any package change run
-`make apks` first, and keep `overlay/etc/apk/world` in lockstep with the
-`UTILS` list in `scripts/30-build-apks.sh`.
+`make apks` first. `overlay/etc/apk/world` is the single package list —
+`scripts/30-build-apks.sh` derives its `UTILS` set from it.
 
 ## Two index formats — never mix the recipes
 

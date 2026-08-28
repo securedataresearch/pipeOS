@@ -54,9 +54,8 @@ ISOs live in `~/Downloads/alpine-<flavor>-3.24.1-x86_64.iso`.
 ## Rebuild cheat-sheet
 
 - Config-only change (overlay/): `make image` / `make usb` (seconds).
-- Package change: edit `overlay/etc/apk/world` AND the `UTILS`/deps list in
-  `scripts/30-build-apks.sh` (kept in lockstep), then `make apks` and the
-  image target.
+- Package change: edit `overlay/etc/apk/world` (`scripts/30-build-apks.sh`
+  derives its `UTILS` set from it), then `make apks` and the image target.
 - VM test: `make vm` (NVMe attach) or `VARIANT=usb ./scripts/61-run-vm-usb.sh`
   (USB attach); ssh: `ssh -p 2222 root@localhost`, password `pipeos`.
   Serial console quit: Ctrl-a x.

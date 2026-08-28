@@ -79,6 +79,35 @@ controls = [
          "printf 'stale %s (deployed here, absent at %s — NOT removed)\\n' \"$rel\" \"$REF\"",
          "rm -f \"$ROOT/$rel\"")),
 
+    # K widens the owner-fill mask: the gate is meant to forgive a box value
+    # only ATOP AN EMPTY repo value; forgiving it unconditionally means any
+    # owner drift passes, and row 7c is the row that says so.
+    ("K: the owner-fill mask forgives a filled repo value too",
+     lambda s: s.replace(
+         """    box_norm=$(mktemp)
+    cp "$CARD" "$box_norm"
+    for _f in OWNER_NICK COHORT_ID; do
+        if [ -z "$(sed -n "s/^$_f=//p" "$repo_card" | head -1)" ]; then
+            sed -i "s/^$_f=.*/$_f=/" "$box_norm"
+        fi
+    done""",
+         """    box_norm=$(mktemp)
+    cp "$CARD" "$box_norm"
+    for _f in OWNER_NICK COHORT_ID; do
+        sed -i "s/^$_f=.*/$_f=/" "$box_norm" "$repo_card"
+    done""")),
+
+    ("L: --install-card drops the on-box owner fills",
+     lambda s: s.replace(
+         """    for _f in OWNER_NICK COHORT_ID; do
+        if [ -z "$(sed -n "s/^$_f=//p" "$repo_card" | head -1)" ]; then
+            _bv=$(sed -n "s/^$_f=//p" "$CARD" | head -1)
+            [ -n "$_bv" ] && sed -i "s/^$_f=.*/$_f=$_bv/" "$repo_card"
+        fi
+    done
+    cp "$repo_card" "$CARD" || die "cannot install the card\"""",
+         '    cp "$repo_card" "$CARD" || die "cannot install the card"')),
+
     # J is the review defect itself, put back. Before box1's CHANGES the scan
     # walked $ROOT/$p whole, so on a real box every apk-owned file under
     # etc/init.d and usr/local/bin printed as stale. Row 6b is the row that
