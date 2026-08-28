@@ -17,10 +17,10 @@ Related, already in the tree:
   (`docs/cards/<box>.card`); the durable provisioning path (#650).
 - `docs/fleet-update-runbook.md`, `docs/self-update.md`, `docs/model-cards.md`.
 
-Provisioning a box, end to end: build image (`make image VARIANT=usb` — NOTE:
-the image ships the *unprovisioned default* card from
-`overlay/etc/pipeos/card.conf`; nothing bakes a `docs/cards/*.card` in yet, so
-the box's card must be installed by hand or via
-`pipeos deploy-overlay --install-card` after boot) → `flash-box.sh` → boot →
-`pipebox-setup` (card-generate + sign-in + save). Bugs that used to break this — clean-checkout
+Provisioning a box, end to end: `make stick CARD=docs/cards/<box>.card`
+(bakes the card into the apkovl — identity, derived files and the provisioned
+marker ride the image, and the output is named `pipeos-usb-<box>.img` so it
+cannot be mistaken for the generic one) → `flash-box.sh` → boot →
+`pipebox-setup` (sign-in + owner + save). A plain `make image VARIANT=usb`
+still builds the generic image with the unprovisioned default card. Bugs that used to break this — clean-checkout
 build (#25) and the provisioned marker (#27) — are fixed.

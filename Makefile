@@ -4,7 +4,7 @@ SHELL := /bin/bash
 VARIANT ?= vm
 export VARIANT
 
-.PHONY: all host-deps chroot pipe apks apkovl image usb metal images vm flash clean-chroot clean cards check-cards
+.PHONY: all host-deps chroot pipe apks apkovl image usb metal images stick vm flash clean-chroot clean cards check-cards
 
 all: image
 
@@ -29,6 +29,20 @@ usb:
 # The internal-disk image (standard ISO, hardware grub.cfg, no usb wait).
 metal:
 	$(MAKE) image VARIANT=metal
+
+# A stick image for a NAMED box (appliance plan, decision 1): bakes the given
+# card into the apkovl — card + derived identity files + provisioned marker —
+# and builds the usb image under a name that says whose it is, so a
+# personalized image can never be mistaken for the generic one.
+# usage: make stick CARD=docs/cards/<box>.card
+stick:
+	@test -n "$(CARD)" || { echo "usage: make stick CARD=docs/cards/<box>.card" >&2; exit 1; }
+	CARD="$(CARD)" ./scripts/40-build-apkovl.sh
+	VARIANT=usb ./scripts/50-build-image.sh
+	mv out/pipeos-usb.img "out/pipeos-usb-$$(basename "$(CARD)" .card).img"
+	@echo "==> out/pipeos-usb-$$(basename "$(CARD)" .card).img"
+	@echo "==> note: out/pipeos.apkovl.tar.gz now carries this box's card;"
+	@echo "==>       a plain 'make image' rebuilds the generic apkovl."
 
 # All three.
 images:

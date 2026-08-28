@@ -38,7 +38,10 @@ refuses an incomplete card, and is what a provisioning run should use.
 |---|---|
 | `/etc/pipeos/pipebox.conf` | every field |
 | `/etc/pipeos/pipebox-settings.json` | the per-role allow block only |
-| `/etc/pipeos/mandate.md` | nothing today — one text, all boxes |
+| `/etc/pipeos/mandate.md` | the role charter and Foreman block |
+| `/root/.pipe/policy.json` | the PIPE_CAPS allow list |
+| `/etc/profile.d/10-pipebox-env.sh` | nothing today |
+| `/etc/hostname`, `/etc/issue`, `/etc/motd`, `/etc/network/interfaces` | NICK/ROLE/OWNER_NICK (hostname falls back to `pipeos`; empty NICK renders the UNPROVISIONED banner) |
 
 `mandate.md` is generated even though it does not vary, because the point is
 that it is *deployed and stamped* rather than hand-installed. It is also the
@@ -136,11 +139,15 @@ fix.
 ## Status
 
 (Updated 2026-08-28.) The generator runs on the fleet and in CI
-(`check-cards.sh`); `pipebox-cohort-watch` is in the tree and deployed. The
-remaining gap is the pipeline, not the generator: no build step bakes a
-`docs/cards/*.card` into an image — the shipped image carries the
-unprovisioned default card, and a box's repo card reaches it after boot
-(`pipeos deploy-overlay --install-card`, or by hand).
+(`check-cards.sh`); `pipebox-cohort-watch` is in the tree and deployed.
+`make stick CARD=docs/cards/<box>.card` bakes a box's card into the image at
+build time — card, derived files and the provisioned marker all ride the
+stick, so a named box boots as itself with autosave live. A plain
+`make image` still ships the unprovisioned default card, and such a box takes
+its repo card after boot (`pipeos deploy-overlay --install-card`, or by hand).
+The card also generates the box's visible identity: `/etc/hostname`,
+`/etc/issue`, `/etc/motd` and the DHCP-sent name in
+`/etc/network/interfaces`, with an UNPROVISIONED banner when NICK is empty.
 
 Not yet card-generated, and each needs its own change:
 
