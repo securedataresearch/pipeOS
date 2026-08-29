@@ -13,6 +13,7 @@
 +etc/init.d/pipe-daemon
 +etc/init.d/pipebox-listener
 +etc/init.d/pipeos-selfcheck
++etc/init.d/pipeos-signin
 # apk signing key (extra repo index) and gh auth — lose these and you re-key/re-auth
 +root/.abuild
 +root/.config/gh
