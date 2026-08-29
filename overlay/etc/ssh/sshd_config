@@ -1,6 +1,8 @@
-# pipeOS: headless box — root ssh with password enabled out of the box.
-# First login forces a password change (see /etc/profile.d/zz-pipeos-provision.sh).
-PermitRootLogin yes
-PasswordAuthentication yes
+# pipeOS: headless box — key-only ssh. The generic client image ships root
+# LOCKED (no password exists to guess); operator access is a baked AUTH_KEYS
+# public key (make stick AUTH_KEYS=...). Customers never ssh: first contact
+# and management is the LAN web wizard (pipeos-web, http://<nick>.local).
+PermitRootLogin prohibit-password
+PasswordAuthentication no
 AuthorizedKeysFile .ssh/authorized_keys
 Subsystem sftp internal-sftp

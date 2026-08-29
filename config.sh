@@ -179,11 +179,19 @@ IMG="$OUT/$IMG_BASENAME"
 # Partition starts at 1MiB (sector 2048)
 PART_OFFSET_MB=1
 
-# Default root password baked into the overlay; provisioning forces a change.
+# Root login posture (40-build-apkovl.sh writes /etc/shadow from this):
+#   locked   — root's password field is '!': no console/password login at all.
+#              The generic client image ships this way; first contact is the
+#              LAN web wizard (pipeos-web), operator access is AUTH_KEYS ssh.
+#   password — root gets DEFAULT_ROOT_PW; provisioning forces a change on
+#              first login. Fleet sticks (make stick) build with this.
+ROOT_LOGIN="${ROOT_LOGIN:-locked}"
+# Default root password for ROOT_LOGIN=password builds.
 DEFAULT_ROOT_PW=pipeos
 
 # qemu
 OVMF_CODE=/usr/share/edk2/x64/OVMF_CODE.4m.fd
 OVMF_VARS_SRC=/usr/share/edk2/x64/OVMF_VARS.4m.fd
 VM_SSH_PORT=2222
+VM_HTTP_PORT=8080
 VM_RAM_MB=8192

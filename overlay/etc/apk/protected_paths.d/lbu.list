@@ -13,7 +13,17 @@
 +etc/init.d/pipe-daemon
 +etc/init.d/pipebox-listener
 +etc/init.d/pipeos-selfcheck
-+etc/init.d/pipeos-signin
++etc/init.d/pipeos-web
++etc/init.d/pipeos-mdns
++etc/init.d/pipeos-stream
+# web wizard state: the claim credential, the enabled-services record, and the
+# streaming config are all custom /etc/pipeos files apk audit would drop
++etc/pipeos/web-admin.conf
++etc/pipeos/services.conf
++etc/pipeos/stream.conf
+# the Claude credential the listener/cohort-watch source (pipeOS#49 flagged it
+# as shared; here it is at least PERSISTED — before this line nothing kept it)
++etc/pipeos/claude-auth.env
 # apk signing key (extra repo index) and gh auth — lose these and you re-key/re-auth
 +root/.abuild
 +root/.config/gh

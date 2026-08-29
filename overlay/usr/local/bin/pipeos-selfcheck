@@ -153,10 +153,36 @@ fi
 [ "$BOOT" = yes ] && rm -f "$MARKER" 2>/dev/null
 
 # ---- 3. daemons (remediate: start what should be running)
+# WHICH daemons should be running is declared, not assumed: the wizard writes
+# /etc/pipeos/services.conf and this check reads it. pipe is a service a box
+# opts into, not its spine — a client box with pipe off must not read
+# DEGRADED forever (the old hardcoded pair did exactly that). A box with no
+# services.conf predates the wizard: that is a fleet box, and the legacy
+# assumption (pipe on) is the safe reading for it.
+SERVICE_PIPE=on SERVICE_CLAUDE=on SERVICE_STREAM=off SERVICE_AGY=off
+# shellcheck disable=SC1091
+[ -r /etc/pipeos/services.conf ] && . /etc/pipeos/services.conf 2>/dev/null
+want_svcs="pipeos-web pipeos-mdns"
+[ "$SERVICE_PIPE" = on ] && want_svcs="$want_svcs pipe-daemon"
+# the listener is the pipe→claude bridge: it needs BOTH ends switched on
+[ "$SERVICE_PIPE" = on ] && [ "$SERVICE_CLAUDE" = on ] && want_svcs="$want_svcs pipebox-listener"
+[ "$SERVICE_STREAM" = on ] && want_svcs="$want_svcs pipeos-stream"
+# Declared vs enforced: the wizard mirrors services.conf into rc-update, and
+# the two drifting apart is exactly the hand-maintained-state failure this
+# repo keeps refinding. Observe-only — the wizard owns the mirror.
+if [ -r /etc/pipeos/services.conf ] && command -v rc-update >/dev/null 2>&1; then
+    _rl=$(rc-update show default 2>/dev/null)
+    for svc in $want_svcs; do
+        # pipeos-web/mdns ship in the image's runlevel; only report toggles
+        case "$svc" in pipeos-web|pipeos-mdns) continue ;; esac
+        echo "$_rl" | grep -qw "$svc" \
+            || warnn "$svc enabled in services.conf but not in the default runlevel — a reboot will not start it (re-toggle it in the web UI, or rc-update add $svc default)"
+    done
+fi
 # `status` observes; `start` mutates. Only the second waits for --boot, so a
 # hand-run still reports a down daemon — which is the thing an operator ran
 # this for.
-for svc in pipe-daemon pipebox-listener; do
+for svc in $want_svcs; do
     if rc-service "$svc" status >/dev/null 2>&1; then
         :
     elif [ "$BOOT" != yes ]; then
@@ -175,22 +201,35 @@ done
 # the same check feeds both. Boot mode gets the same patience section 8
 # already gave a freshly-started daemon ("it may still be signing in"); a
 # hand-run checks once, since there is no boot-time signin race to wait out.
-# See pipeOS#19.
-_i=0
-while :; do
-    authj=$(pipe status -o json 2>/dev/null)
-    auth_ok=$(echo "${authj:-}" | jq -r '.status.authenticated // empty' 2>/dev/null)
-    [ "$auth_ok" = "true" ] && break
-    [ "$BOOT" != yes ] && break
-    _i=$((_i+1)); [ "$_i" -ge 24 ] && break; sleep 5
-done
-if [ "$auth_ok" = "true" ]; then
-    :
-elif [ -n "$authj" ]; then
-    aerr=$(echo "$authj" | jq -r '.status.auth_error // empty' 2>/dev/null)
-    crit "pipe daemon unauthenticated${aerr:+ ($aerr)}"
-else
-    crit "pipe status did not answer (daemon down or still signing in)"
+# See pipeOS#19. A box with pipe OFF has no auth to assert — skip, don't crit.
+auth_ok="" authj=""
+if [ "$SERVICE_PIPE" = on ]; then
+    _i=0
+    while :; do
+        authj=$(pipe status -o json 2>/dev/null)
+        auth_ok=$(echo "${authj:-}" | jq -r '.status.authenticated // empty' 2>/dev/null)
+        [ "$auth_ok" = "true" ] && break
+        [ "$BOOT" != yes ] && break
+        _i=$((_i+1)); [ "$_i" -ge 24 ] && break; sleep 5
+    done
+    if [ "$auth_ok" = "true" ]; then
+        :
+    elif [ -n "$authj" ]; then
+        aerr=$(echo "$authj" | jq -r '.status.auth_error // empty' 2>/dev/null)
+        crit "pipe daemon unauthenticated${aerr:+ ($aerr)}"
+    else
+        crit "pipe status did not answer (daemon down or still signing in)"
+    fi
+fi
+
+# ---- 3c. claude: with pipe off there is no listener to probe, but "the
+# Claude service is on and has no credential" is still a box that cannot do
+# its job — a WARN, not a crit: the wizard's sign-in step is skippable and
+# the dashboard says how to finish.
+if [ "$SERVICE_CLAUDE" = on ]; then
+    if [ ! -s /etc/pipeos/claude-auth.env ] && [ ! -s /root/.claude/.credentials.json ]; then
+        warnn "Claude is enabled but has no credential (no claude-auth.env, no /root/.claude/.credentials.json) — finish the Claude step in the web wizard"
+    fi
 fi
 
 # ---- 4. will a reboot reproduce this state? (covers the incident: media
@@ -598,8 +637,14 @@ verdict="all green"
 _nall=$((ncrit + nstate))
 [ "$_nall" -gt 0 ] && verdict="DEGRADED — $_nall critical"
 
+# One line each for claim state and the service set: the dashboard humanizes
+# this report, and "what did the owner turn on" is the first thing it shows.
+_claimed=no
+[ -s /etc/pipeos/web-admin.conf ] && _claimed=yes
 msg="pipeos boot report [$(hostname)] $(date -u '+%Y-%m-%d %H:%MZ')
 went down: $down
+claimed: $_claimed
+services: pipe=$SERVICE_PIPE claude=$SERVICE_CLAUDE stream=$SERVICE_STREAM agy=$SERVICE_AGY
 verdict: $verdict"
 [ -s "$R" ] && msg="$msg
 $(cat "$R")"
@@ -651,7 +696,9 @@ fi
 if [ "$sent" = no ]; then
     # leave a breadcrumb the daily pipebox-report will surface
     { echo "undelivered boot report:"; echo "$msg"; } > "$FLAG" 2>/dev/null
-    if [ -z "$OWNER_NICK" ]; then
+    if [ "$SERVICE_PIPE" != on ]; then
+        cause="pipe disabled (services.conf) — the report is on the web dashboard"
+    elif [ -z "$OWNER_NICK" ]; then
         cause="no OWNER_NICK configured"
     elif [ "$auth_ok" != "true" ]; then
         aerr=$(echo "${authj:-}" | jq -r '.status.auth_error // empty' 2>/dev/null)

@@ -6,6 +6,18 @@ _pipeos_provision() {
     [ "$(id -u)" = 0 ] || return 0
     case "$-" in *i*) ;; *) return 0 ;; esac
 
+    # Client boxes (GENERIC role, and the roleless generic image) are claimed
+    # through the LAN web wizard, never a console walkthrough — a customer
+    # box has no console, and an operator ssh'd into one must not be marched
+    # through passwd/claude-login. The console flow stays for fleet roles.
+    _role=$(sed -n 's/^ROLE=["]*\([^"]*\)["]*$/\1/p' /etc/pipeos/card.conf 2>/dev/null)
+    case "${_role:-}" in ''|GENERIC)
+        if [ ! -s /etc/pipeos/web-admin.conf ]; then
+            printf '\n>>> this box is set up in a browser: http://%s.local/\n\n' "$(hostname)"
+        fi
+        return 0
+    ;; esac
+
     if [ -f /etc/pipeos/provisioned ]; then
         # already provisioned — nudge only if the agent isn't reachable yet
         if PIPE_NO_SPAWN=1 pipe status 2>/dev/null | grep -q '^nick: anon' \

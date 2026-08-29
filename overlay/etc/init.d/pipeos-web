@@ -1,0 +1,43 @@
+#!/sbin/openrc-run
+# pipeos-web — the box's LAN web surface: first-run wizard + management.
+# This IS first contact for a client box (no console, no ssh, no pipe yet),
+# so it is unconditional in the default runlevel: everything else can be
+# toggled from it, nothing can toggle it back on without it.
+description="pipeOS web wizard and management UI (LAN, :80)"
+
+supervisor=supervise-daemon
+command=/usr/local/bin/pipeos-webd
+respawn_delay=5
+respawn_max=0
+
+export HOME=/root
+
+output_log=/work/logs/pipeos-web.log
+error_log=/work/logs/pipeos-web.log
+
+depend() {
+	need net
+	after pipeos-workspace
+}
+
+start_pre() {
+	# same boot-time /work race every service here waits out; but the web
+	# surface must come up even if /work is sick — logs just go to syslog's
+	# tmpfs instead. 30s grace, then start anyway.
+	_i=0
+	while ! mountpoint -q /work; do
+		_i=$((_i+1))
+		if [ "$_i" -ge 30 ]; then
+			output_log=/dev/null
+			error_log=/dev/null
+			ewarn "/work not mounted after 30s — starting without a logfile"
+			break
+		fi
+		sleep 1
+	done
+	mountpoint -q /work && { checkpath -d -m 0755 /work/logs || return 1; }
+	# checkpath does not create parents — /run/pipeos may not exist yet
+	# (selfcheck writes it later in the boot)
+	checkpath -d -m 0755 /run/pipeos || return 1
+	checkpath -d -m 0700 /run/pipeos/web-sessions || return 1
+}

@@ -117,7 +117,14 @@ cmd_status() {
         warn "no boot report this boot (selfcheck --boot has not finished)"
     fi
     if [ ! -f /etc/pipeos/provisioned ]; then
-        fail "UNPROVISIONED — autosave is OFF; nothing persists (run pipebox-setup)"
+        fail "UNPROVISIONED — autosave is OFF; nothing persists (claim the box at http://$(hostname).local/ or run pipebox-setup)"
+    fi
+    # Claim state: the web wizard's first credential. Unclaimed is the honest
+    # out-of-box state, not an error — but say where to go.
+    if [ -s /etc/pipeos/web-admin.conf ]; then
+        ok "claimed (web admin set)"
+    else
+        warn "UNCLAIMED — first visitor to http://$(hostname).local/ owns this box"
     fi
     if mountpoint -q /work; then
         use=$(df /work | awk 'NR==2{print $5+0}')
@@ -127,14 +134,26 @@ cmd_status() {
     fi
     free=$(df -k $MEDIA | awk 'NR==2{printf "%d", $4/1024}')
     if [ "${free:-0}" -lt 300 ]; then warn "media ${free}MB free"; else ok "media ${free}MB free"; fi
-    for svc in pipe-daemon pipebox-listener; do
+    # Which daemons SHOULD run is declared in services.conf (the web wizard
+    # writes it); a box without the file predates the wizard — fleet legacy,
+    # pipe assumed on. pipe off is a configuration, not a failure.
+    SERVICE_PIPE=on SERVICE_CLAUDE=on SERVICE_STREAM=off SERVICE_AGY=off
+    # shellcheck disable=SC1091
+    [ -r /etc/pipeos/services.conf ] && . /etc/pipeos/services.conf 2>/dev/null
+    svcs="pipeos-web pipeos-mdns"
+    [ "$SERVICE_PIPE" = on ] && svcs="$svcs pipe-daemon"
+    [ "$SERVICE_PIPE" = on ] && [ "$SERVICE_CLAUDE" = on ] && svcs="$svcs pipebox-listener"
+    [ "$SERVICE_STREAM" = on ] && svcs="$svcs pipeos-stream"
+    for svc in $svcs; do
         if rc-service "$svc" status >/dev/null 2>&1; then ok "$svc running"; else fail "$svc not running"; fi
     done
     # A running daemon with a revoked token is not healthy: it silently
     # destroys every inbound sealed message (pipe#641) and cannot send the
     # boot report (pipeOS#13/#19). Liveness above says nothing about this —
     # assert auth in both directions, not only on failure. See pipeOS#19.
-    if authj=$(pipe status -o json 2>/dev/null); then
+    if [ "$SERVICE_PIPE" != on ]; then
+        ok "pipe disabled (services.conf) — auth not applicable"
+    elif authj=$(pipe status -o json 2>/dev/null); then
         if [ "$(echo "$authj" | jq -r '.status.authenticated // empty' 2>/dev/null)" = "true" ]; then
             ok "auth ok"
         else

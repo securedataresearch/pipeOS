@@ -1,0 +1,26 @@
+#!/sbin/openrc-run
+# pipeos-mdns — answers <hostname>.local so browsers can find the box.
+description="minimal mDNS responder for <hostname>.local"
+
+supervisor=supervise-daemon
+command=/usr/local/bin/pipeos-mdnsd
+respawn_delay=5
+respawn_max=0
+
+output_log=/work/logs/pipeos-mdns.log
+error_log=/work/logs/pipeos-mdns.log
+
+depend() {
+	need net
+	after hostname pipeos-workspace
+}
+
+start_pre() {
+	mountpoint -q /work && { checkpath -d -m 0755 /work/logs || return 1; }
+	# no /work is not fatal for discovery — log to nowhere and answer anyway
+	if ! mountpoint -q /work; then
+		output_log=/dev/null
+		error_log=/dev/null
+	fi
+	return 0
+}

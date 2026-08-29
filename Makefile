@@ -34,13 +34,15 @@ metal:
 # card into the apkovl — card + derived identity files + provisioned marker —
 # and builds the usb image under a name that says whose it is, so a
 # personalized image can never be mistaken for the generic one.
-# usage: make stick CARD=docs/cards/<box>.card [AUTH_KEYS=~/.ssh/id.pub] [PIPE_KEY=<one-time key>]
-# AUTH_KEYS bakes the operator's ssh public key; PIPE_KEY stages a one-time
-# pipe sign-in the box consumes on first boot (headless first contact — the
-# box signs itself in and DMs its owner; valid ~15 min, bake-and-boot promptly).
+# usage: make stick CARD=docs/cards/<box>.card [AUTH_KEYS=~/.ssh/id.pub]
+# AUTH_KEYS bakes the operator's ssh public key. Fleet sticks keep a console
+# password (ROOT_LOGIN=password); the generic client image ships root locked
+# and is claimed through the web wizard instead. PIPE_KEY is gone — its
+# 15-minute TTL started at minting, dead on every box not booted at the desk;
+# pipe sign-in happens in the wizard (or pipebox-setup), where a human is live.
 stick:
-	@test -n "$(CARD)" || { echo "usage: make stick CARD=docs/cards/<box>.card [AUTH_KEYS=...] [PIPE_KEY=...]" >&2; exit 1; }
-	CARD="$(CARD)" AUTH_KEYS="$(AUTH_KEYS)" PIPE_KEY="$(PIPE_KEY)" ./scripts/40-build-apkovl.sh
+	@test -n "$(CARD)" || { echo "usage: make stick CARD=docs/cards/<box>.card [AUTH_KEYS=...]" >&2; exit 1; }
+	CARD="$(CARD)" AUTH_KEYS="$(AUTH_KEYS)" ROOT_LOGIN=password ./scripts/40-build-apkovl.sh
 	VARIANT=usb ./scripts/50-build-image.sh
 	mv out/pipeos-usb.img "out/pipeos-usb-$$(basename "$(CARD)" .card).img"
 	@echo "==> out/pipeos-usb-$$(basename "$(CARD)" .card).img"

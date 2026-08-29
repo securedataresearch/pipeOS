@@ -136,27 +136,24 @@ if [ -n "$_cid" ] && [ -f "$CARD" ]; then
     fi
 fi
 
-# 4. the listener's workdir must be pre-trusted or headless claude -p stalls
-#    on the trust dialog nobody is there to answer
-if [ -f /root/.claude.json ] && command -v jq >/dev/null 2>&1; then
-    if ! jq -e '.projects["/work/pipebox"].hasTrustDialogAccepted' /root/.claude.json >/dev/null 2>&1; then
-        # Say so on failure: silently leaving trust unaccepted does not fail
-        # here, it fails later and elsewhere, as a headless listener hanging
-        # on a dialog nobody can answer.
-        if jq '.projects["/work/pipebox"] = ((.projects["/work/pipebox"] // {}) + {"hasTrustDialogAccepted": true})' \
-            /root/.claude.json > /root/.claude.json.new \
-            && mv /root/.claude.json.new /root/.claude.json; then
-            :
-        else
-            rm -f /root/.claude.json.new
-            say '  WARNING: could not pre-accept the workdir trust dialog —'
-            say '           the listener may stall on it. See /root/.claude.json.'
-        fi
-    fi
-fi
+# 4+5. workdir trust + listener wake — shared with the web wizard, one
+# implementation (pipebox-claude-trust): headless claude -p stalls forever on
+# a trust dialog nobody is there to answer, and a restarted listener is what
+# picks up a fresh credential.
+pipebox-claude-trust
 
-# 5. wake the listener
-rc-service pipebox-listener restart >/dev/null 2>&1 || true
+# This console flow just signed pipe in — record that in the wizard's
+# declarative services file so selfcheck and the web UI agree with reality.
+if pipe status 2>/dev/null | grep -q '^nick: ' && ! pipe status 2>/dev/null | grep -q '^nick: anon'; then
+    if [ -f /etc/pipeos/services.conf ]; then
+        sed -i 's/^SERVICE_PIPE=.*/SERVICE_PIPE=on/;s/^SERVICE_CLAUDE=.*/SERVICE_CLAUDE=on/' /etc/pipeos/services.conf
+    else
+        printf 'SERVICE_PIPE=on\nSERVICE_CLAUDE=on\nSERVICE_STREAM=off\nSERVICE_AGY=off\n' \
+            > /etc/pipeos/services.conf
+    fi
+    rc-update add pipe-daemon default >/dev/null 2>&1 || true
+    rc-update add pipebox-listener default >/dev/null 2>&1 || true
+fi
 
 # 6. persist
 #

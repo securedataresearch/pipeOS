@@ -50,6 +50,18 @@ jobs:
           shellcheck config.sh scripts/*.sh overlay/usr/local/bin/* \
             overlay/etc/periodic/weekly/pipeos-worksweep || true
 
+      - name: compile the web daemon
+        run: |
+          # The web wizard/mDNS daemons are Python under share/pipeos/web/ —
+          # deliberately outside the shellcheck glob above (a .py in
+          # usr/local/bin reds CI by design). This is the coverage that dir
+          # gets instead: a syntax gate, so a box can't ship a daemon that
+          # dies on import.
+          python3 -m py_compile overlay/usr/local/share/pipeos/web/*.py
+
+      - name: the web wizard claims, refuses, and forgets sessions correctly
+        run: python3 scripts/check-webd.py
+
       # pipeOS#90 item 3. A sweep is a deletion tool: the only interesting
       # question is what it does NOT delete, and that cannot be answered by
       # reading it. The probe builds a fake /work, runs the shipped script over

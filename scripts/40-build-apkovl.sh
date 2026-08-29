@@ -43,14 +43,12 @@ if [ -n "${CARD:-}" ]; then
     echo "baked card: $CARD (NICK=$(sed -n 's/^NICK=//p' "$CARD" | head -1))"
 fi
 
-# ---- optional: headless first contact (appliance plan — remote admin is
-# non-negotiable; the machines ship with no keyboard, no display).
-# AUTH_KEYS=<pubkey file> bakes the operator's ssh public key, so ssh works
-# from the first boot with no password. PIPE_KEY=<one-time key> stages a
-# pipe sign-in the pipeos-signin service consumes on first boot: the box
-# signs itself in, persists, and DMs its owner — after which it is
-# administered over pipe from anywhere, no inbound access needed. The pipe
-# key is valid ~15 minutes from minting, so bake-and-boot promptly.
+# ---- optional: operator ssh (fleet sticks — remote admin with no console).
+# AUTH_KEYS=<pubkey file> bakes the operator's ssh public key, so key-based
+# ssh works from the first boot. Client first contact is the LAN web wizard
+# (pipeos-web, http://pipeos.local) — the old PIPE_KEY one-time-key staging
+# is gone: its ~15-min TTL started at minting, so it was expired on every
+# box that wasn't booted at the flashing desk (basho0, 2026-08-29).
 if [ -n "${AUTH_KEYS:-}" ]; then
     [ -r "$AUTH_KEYS" ] || { echo "AUTH_KEYS not readable: $AUTH_KEYS" >&2; exit 1; }
     grep -qE '^(ssh|ecdsa)-' "$AUTH_KEYS" \
@@ -62,9 +60,23 @@ if [ -n "${AUTH_KEYS:-}" ]; then
     echo "baked ssh key: $AUTH_KEYS"
 fi
 if [ -n "${PIPE_KEY:-}" ]; then
-    printf '%s\n' "$PIPE_KEY" > "$STAGE/etc/pipeos/pipe-signin.key"
-    chmod 600 "$STAGE/etc/pipeos/pipe-signin.key"
-    echo "staged pipe sign-in key (valid ~15 min — boot the box promptly)"
+    echo "PIPE_KEY is gone: the staged one-time key expired before any shipped box booted." >&2
+    echo "Sign pipe in from the web wizard (http://<nick>.local) or pipebox-setup." >&2
+    exit 1
+fi
+
+# ---- enabled services (the wizard's declarative record). The generic client
+# image ships everything OFF — the wizard turns services on. A fleet stick
+# (CARD with a NICK) is pipe-administered, so it ships pipe on and the pipe
+# pair in the default runlevel below; a client box gets neither until claimed.
+FLEET_SVCS=""
+if [ -n "${CARD:-}" ] && [ -n "$(sed -n 's/^NICK=//p' "$CARD" | head -1)" ]; then
+    FLEET_SVCS="pipe-daemon pipebox-listener"
+    printf 'SERVICE_PIPE=on\nSERVICE_CLAUDE=on\nSERVICE_STREAM=off\nSERVICE_AGY=off\n' \
+        > "$STAGE/etc/pipeos/services.conf"
+else
+    printf 'SERVICE_PIPE=off\nSERVICE_CLAUDE=off\nSERVICE_STREAM=off\nSERVICE_AGY=off\n' \
+        > "$STAGE/etc/pipeos/services.conf"
 fi
 
 # apk must trust our repo signing key at initramfs install time.
@@ -75,9 +87,20 @@ ls "$OUT/keys/"*.rsa.pub >/dev/null 2>&1 || { echo "no abuild key — run 10-mk-
 mkdir -p "$STAGE/etc/apk/keys"
 cp "$OUT/keys/"*.rsa.pub "$STAGE/etc/apk/keys/"
 
-# /etc/shadow: take the chroot's stock alpine-base shadow, set root's hash to
-# the default password (provisioning forces a change on first login)
-HASH=$(openssl passwd -6 "$DEFAULT_ROOT_PW")
+# /etc/shadow: take the chroot's stock alpine-base shadow and set root's
+# password field. The client posture (ROOT_LOGIN=locked, the default) LOCKS
+# root — no baked well-known password on a box that ships with a LAN web
+# wizard; the wizard owns the first credential and operator access is
+# AUTH_KEYS ssh. Fleet builds set ROOT_LOGIN=password to keep the console
+# password (DEFAULT_ROOT_PW; provisioning forces a change on first login).
+# '*', not '!': both make password login impossible, but sshd treats a
+# '!'-prefixed field as a LOCKED account and refuses public-key auth too —
+# which would brick the AUTH_KEYS operator path (found in the VM drill).
+case "${ROOT_LOGIN}" in
+    locked)   HASH='*' ;;
+    password) HASH=$(openssl passwd -6 "$DEFAULT_ROOT_PW") ;;
+    *) echo "unknown ROOT_LOGIN '$ROOT_LOGIN' (locked|password)" >&2; exit 1 ;;
+esac
 sudo cat "$CHROOT/etc/shadow" \
     | awk -F: -v h="$HASH" 'BEGIN{OFS=":"} $1=="root"{$2=h} {print}' \
     > "$STAGE/etc/shadow"
@@ -97,7 +120,11 @@ mk_runlevel() {
 }
 mk_runlevel sysinit devfs dmesg mdev hwdrivers modloop
 mk_runlevel boot     modules sysctl hostname bootmisc syslog networking hwclock seedrng watchdog
-mk_runlevel default  crond chronyd sshd local pipeos-workspace pipe-daemon pipeos-signin pipebox-listener pipeos-selfcheck
+# The pipe pair is NOT in the client default runlevel: pipe is a service the
+# wizard turns on (rc-update at claim time), not the box's spine. Fleet sticks
+# (CARD with a NICK) get it back via FLEET_SVCS above.
+# shellcheck disable=SC2086
+mk_runlevel default  crond chronyd sshd local pipeos-workspace pipeos-web pipeos-mdns $FLEET_SVCS pipeos-selfcheck
 mk_runlevel shutdown killprocs mount-ro savecache
 
 chmod +x "$STAGE/etc/local.d/"*.start "$STAGE/etc/local.d/"*.stop \
