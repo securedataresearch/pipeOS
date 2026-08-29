@@ -43,6 +43,30 @@ if [ -n "${CARD:-}" ]; then
     echo "baked card: $CARD (NICK=$(sed -n 's/^NICK=//p' "$CARD" | head -1))"
 fi
 
+# ---- optional: headless first contact (appliance plan — remote admin is
+# non-negotiable; the machines ship with no keyboard, no display).
+# AUTH_KEYS=<pubkey file> bakes the operator's ssh public key, so ssh works
+# from the first boot with no password. PIPE_KEY=<one-time key> stages a
+# pipe sign-in the pipeos-signin service consumes on first boot: the box
+# signs itself in, persists, and DMs its owner — after which it is
+# administered over pipe from anywhere, no inbound access needed. The pipe
+# key is valid ~15 minutes from minting, so bake-and-boot promptly.
+if [ -n "${AUTH_KEYS:-}" ]; then
+    [ -r "$AUTH_KEYS" ] || { echo "AUTH_KEYS not readable: $AUTH_KEYS" >&2; exit 1; }
+    grep -qE '^(ssh|ecdsa)-' "$AUTH_KEYS" \
+        || { echo "AUTH_KEYS does not look like an ssh public key: $AUTH_KEYS" >&2; exit 1; }
+    mkdir -p "$STAGE/root/.ssh"
+    chmod 700 "$STAGE/root/.ssh"
+    cat "$AUTH_KEYS" >> "$STAGE/root/.ssh/authorized_keys"
+    chmod 600 "$STAGE/root/.ssh/authorized_keys"
+    echo "baked ssh key: $AUTH_KEYS"
+fi
+if [ -n "${PIPE_KEY:-}" ]; then
+    printf '%s\n' "$PIPE_KEY" > "$STAGE/etc/pipeos/pipe-signin.key"
+    chmod 600 "$STAGE/etc/pipeos/pipe-signin.key"
+    echo "staged pipe sign-in key (valid ~15 min — boot the box promptly)"
+fi
+
 # apk must trust our repo signing key at initramfs install time.
 # overlay/etc/apk/keys is an empty dir in the tree, and git does not track
 # empty dirs — so on a clean checkout it is absent and the cp below fails with
@@ -73,7 +97,7 @@ mk_runlevel() {
 }
 mk_runlevel sysinit devfs dmesg mdev hwdrivers modloop
 mk_runlevel boot     modules sysctl hostname bootmisc syslog networking hwclock seedrng watchdog
-mk_runlevel default  crond chronyd sshd local pipeos-workspace pipe-daemon pipebox-listener pipeos-selfcheck
+mk_runlevel default  crond chronyd sshd local pipeos-workspace pipe-daemon pipeos-signin pipebox-listener pipeos-selfcheck
 mk_runlevel shutdown killprocs mount-ro savecache
 
 chmod +x "$STAGE/etc/local.d/"*.start "$STAGE/etc/local.d/"*.stop \
