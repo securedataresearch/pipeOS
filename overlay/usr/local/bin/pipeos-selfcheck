@@ -94,11 +94,21 @@ fi
 # health check should do to itself.
 if mountpoint -q /work; then
     _want=$(findfs LABEL=PIPEWORK 2>/dev/null)
-    _have=$(findmnt -n -o SOURCE --target /work 2>/dev/null)
+    # /proc/mounts, not findmnt: findmnt does not ship on pipeOS (the image's
+    # util-linux-misc carries findfs only), so the old findmnt lookup came
+    # back EMPTY on every box and this check reported a definite mismatch —
+    # "mounted from unknown" — on every boot, fleet-wide (found on basho0's
+    # first boot report, 2026-08-28). /proc/mounts is the same kernel truth
+    # and needs nothing installed; last matching line wins, the same rule as
+    # 70-flash.sh's root_source(). "Cannot read the source" is now its own
+    # answer instead of dressing up as a mismatch.
+    _have=$(awk '$2 == "/work" { src = $1 } END { print src }' /proc/mounts 2>/dev/null)
     if [ -z "$_want" ]; then
         crit "/work is mounted but LABEL=PIPEWORK does not resolve to any device"
+    elif [ -z "$_have" ]; then
+        crit "/work is a mountpoint but /proc/mounts shows no entry for it — cannot verify the backing device"
     elif [ "$_have" != "$_want" ]; then
-        crit "/work is mounted from ${_have:-unknown}, not the declared device $_want (LABEL=PIPEWORK) — writes may not persist across reboot"
+        crit "/work is mounted from $_have, not the declared device $_want (LABEL=PIPEWORK) — writes may not persist across reboot"
     fi
 fi
 
