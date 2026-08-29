@@ -222,6 +222,35 @@ if [ "$SERVICE_PIPE" = on ]; then
     fi
 fi
 
+# ---- 3b2. the operator's way in. sshd is key-only (client posture), so a
+# missing/empty authorized_keys means the next connection attempt is refused
+# and the box is unreachable by shell — exactly what happened on basho0
+# (2026-08-29): the key vanished mid-uptime, unexplained, and nothing said so
+# until an operator bounced off "Permission denied". A backup lives on /work
+# so remediation is possible; do it at boot, warn loudly on a hand-run.
+if [ ! -s /root/.ssh/authorized_keys ]; then
+    if [ -s /work/.authorized_keys.backup ]; then
+        if [ "$BOOT" = yes ]; then
+            mkdir -p /root/.ssh && chmod 700 /root/.ssh
+            if cp /work/.authorized_keys.backup /root/.ssh/authorized_keys \
+               && chmod 600 /root/.ssh/authorized_keys; then
+                fixed "authorized_keys was missing/empty; restored from /work backup"
+            else
+                crit "authorized_keys missing and the /work backup would not restore — box is unreachable by ssh"
+            fi
+        else
+            crit "authorized_keys missing/empty (backup exists on /work)"
+            would "restore /root/.ssh/authorized_keys from /work/.authorized_keys.backup"
+        fi
+    else
+        crit "authorized_keys missing/empty and no /work backup — with key-only sshd this box is unreachable by shell"
+    fi
+elif [ ! -s /work/.authorized_keys.backup ] && mountpoint -q /work; then
+    # seed the backup the first time a healthy key is seen
+    cp /root/.ssh/authorized_keys /work/.authorized_keys.backup 2>/dev/null \
+        && log "seeded /work/.authorized_keys.backup"
+fi
+
 # ---- 3c. claude: with pipe off there is no listener to probe, but "the
 # Claude service is on and has no credential" is still a box that cannot do
 # its job — a WARN, not a crit: the wizard's sign-in step is skippable and
