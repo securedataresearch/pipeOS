@@ -62,6 +62,13 @@ jobs:
       - name: the web wizard claims, refuses, and forgets sessions correctly
         run: python3 scripts/check-webd.py
 
+      - name: the shipped verify-repo.sh is the build's verify-repo.sh
+        run: |
+          # Client boxes carry no checkout, so the overlay ships its own copy
+          # of the repo gate; two copies that drift would let a box trust a
+          # repo the build would refuse. Byte-identical or red.
+          cmp scripts/verify-repo.sh overlay/usr/local/share/pipeos/verify-repo.sh
+
       # pipeOS#90 item 3. A sweep is a deletion tool: the only interesting
       # question is what it does NOT delete, and that cannot be answered by
       # reading it. The probe builds a fake /work, runs the shipped script over

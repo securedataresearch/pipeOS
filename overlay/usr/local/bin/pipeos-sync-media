@@ -9,7 +9,10 @@
 
 SRC=/work/repos/pipeOS/out/repo/pipeos/x86_64
 DST=/media/usb/apks/pipeos
-VERIFY=/work/repos/pipeOS/scripts/verify-repo.sh
+# The shipped copy first: client boxes carry no repo checkout, and the update
+# path must not depend on one (CI asserts the two copies are byte-identical).
+VERIFY=/usr/local/share/pipeos/verify-repo.sh
+[ -x "$VERIFY" ] || VERIFY=/work/repos/pipeOS/scripts/verify-repo.sh
 
 die() { echo "pipeos-sync-media: $*" >&2; exit 1; }
 

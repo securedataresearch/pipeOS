@@ -50,6 +50,7 @@ const SERVICES = [
   { key: "stream", name: "Streaming", desc: "Restream video with ffmpeg (configure after setup).", def: false },
   { key: "agy", name: "Antigravity", desc: "The agy coding agent (if installed on this image).", def: false },
   { key: "pipe", name: "pipe messaging", desc: "Talk to the box by DM from anywhere, via pipe.online.", def: false },
+  { key: "support", name: "Vendor support access", desc: "Let your vendor connect to help. Off unless you switch it on.", def: false },
 ];
 
 function wizard(state) {
@@ -280,6 +281,15 @@ async function dashboard() {
       <details><summary class="note">Full boot report</summary>
         <pre class="report">${esc(st.boot_report || "(none this boot)")}</pre></details>
     </div>
+    ${st.services.claude ? `
+    <h2>Ask the box</h2>
+    <div class="card">
+      <div id="chatlog" style="max-height:16rem;overflow-y:auto"></div>
+      <label for="chatmsg">Message</label>
+      <input id="chatmsg" type="text" autocomplete="off" placeholder="Ask your assistant anything">
+      <button id="chatgo">Send</button>
+      <p class="note" id="chatnote" hidden></p>
+    </div>` : ""}
     <h2>Services</h2>
     <div class="card">${rows}<p class="err" id="serr" hidden></p></div>
     <p>${running}</p>
@@ -309,6 +319,26 @@ async function dashboard() {
       }
     };
   });
+  const chatgo = v.querySelector("#chatgo");
+  if (chatgo) {
+    const send = async () => {
+      const inp = v.querySelector("#chatmsg"), log = v.querySelector("#chatlog"), note = v.querySelector("#chatnote");
+      const msg = inp.value.trim();
+      if (!msg) return;
+      log.appendChild(el(`<p><strong>you:</strong> ${esc(msg)}</p>`));
+      inp.value = ""; busy(chatgo, true);
+      note.hidden = false; note.textContent = "thinking…";
+      try {
+        const r = await api("/api/chat", { message: msg });
+        log.appendChild(el(`<p><strong>${esc(st.nick || "box")}:</strong> ${esc(r.reply)}</p>`));
+        note.hidden = true;
+      } catch (e) { note.textContent = e.message; }
+      busy(chatgo, false);
+      log.scrollTop = log.scrollHeight;
+    };
+    chatgo.onclick = send;
+    v.querySelector("#chatmsg").addEventListener("keydown", e => { if (e.key === "Enter") send(); });
+  }
   v.querySelector("#save").onclick = async () => {
     const b = v.querySelector("#save"); busy(b, true);
     try { const r = await api("/api/save", {}); if (!r.ok) alert("Save failed:\n" + r.detail); }

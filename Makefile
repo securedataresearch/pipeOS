@@ -4,7 +4,7 @@ SHELL := /bin/bash
 VARIANT ?= vm
 export VARIANT
 
-.PHONY: all host-deps chroot pipe apks apkovl image usb metal images stick vm flash clean-chroot clean cards check-cards
+.PHONY: all host-deps chroot pipe apks apkovl image usb metal images stick vm flash release clean-chroot clean cards check-cards
 
 all: image
 
@@ -75,6 +75,11 @@ image: apkovl
 
 vm:
 	./scripts/60-run-vm.sh
+
+# Publish the signed apk repo as a GitHub Release (the update origin boxes
+# with UPDATE_RELEASE_URL consume). Runs where the signing key lives.
+release:
+	./scripts/80-publish-release.sh
 
 # usage: make flash DEV=/dev/nvmeXn1
 flash:

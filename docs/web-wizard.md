@@ -31,7 +31,20 @@ default off; the pipe-first flow (`pipebox-setup`) remains for fleet boxes.
 
 The dashboard humanizes `/run/pipeos/boot-report` (the pipe owner-DM was the
 only delivery channel before; it still works when pipe is on), toggles
-services, shows disk/uptime, saves state, changes the password.
+services, shows disk/uptime, saves state, changes the password — and, with
+Claude enabled, carries **web chat**: `POST /api/chat` feeds the box's Claude
+(same fence as the pipe listener, one continued conversation under
+`/work/pipebox/webchat`). For a pipe-less box this is the assistant surface.
+
+Two more toggles ride the same services model:
+- **Vendor support access** (`pipeos-support`): opt-in reverse tunnel
+  (`ssh -R`) OUT to a support relay (`/etc/pipeos/support.conf`); refuses to
+  start unconfigured, off by default, one switch for the customer.
+- **Updates**: silent daily self-update once `UPDATE_RELEASE_URL` points at a
+  published release (`make release` → GitHub Release with SHA256SUMS +
+  pipeos-repo.tar.gz); applies through the existing verify → atomic swap →
+  save → verify-or-rollback path, and selfcheck warns when the update path
+  is configured but stale or erroring.
 
 ## Security posture (deliberate, owner-approved)
 

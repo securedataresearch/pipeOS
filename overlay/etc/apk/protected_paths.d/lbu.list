@@ -16,6 +16,10 @@
 +etc/init.d/pipeos-web
 +etc/init.d/pipeos-mdns
 +etc/init.d/pipeos-stream
++etc/init.d/pipeos-support
++etc/pipeos/support.conf
++etc/pipeos/support_key
++etc/pipeos/support_key.pub
 # web wizard state: the claim credential, the enabled-services record, and the
 # streaming config are all custom /etc/pipeos files apk audit would drop
 +etc/pipeos/web-admin.conf

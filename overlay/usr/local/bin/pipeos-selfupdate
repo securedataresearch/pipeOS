@@ -38,7 +38,9 @@ STAMP="$STATE/selfupdate.applied"          # last applied remote index digest
 LOG=/work/logs/selfupdate.log
 LOCK=/run/pipeos-selfupdate.lock
 SRC_REPO=/work/repos/pipeOS/out/repo/pipeos/x86_64
-VERIFY=/work/repos/pipeOS/scripts/verify-repo.sh
+# Shipped copy first — a client box has no checkout (CI keeps them identical).
+VERIFY=/usr/local/share/pipeos/verify-repo.sh
+[ -x "$VERIFY" ] || VERIFY=/work/repos/pipeOS/scripts/verify-repo.sh
 ARCH=x86_64
 
 # Identity paths an update must never drop. Kept in sync with the shipped
@@ -46,6 +48,7 @@ ARCH=x86_64
 IDENTITY_PATHS="root/.pipe root/.ssh root/.abuild root/.config/gh etc/ssh"
 
 UPDATE_URL=""
+UPDATE_RELEASE_URL=""
 [ -r "$CONF" ] && . "$CONF"
 
 log()  { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG" 2>/dev/null; }
@@ -56,10 +59,26 @@ die()  { echo "pipeos-selfupdate: $*" >&2; log "ERROR $*"; exit 1; }
 
 # Feature is off until pointed at a source. Silent success: a daily cron on an
 # unconfigured box should not nag.
-if [ -z "$UPDATE_URL" ]; then
-    say "no UPDATE_URL in $CONF — self-update disabled (this is the default)."
+if [ -z "$UPDATE_URL" ] && [ -z "$UPDATE_RELEASE_URL" ]; then
+    say "no UPDATE_URL/UPDATE_RELEASE_URL in $CONF — self-update disabled (this is the default)."
     exit 0
 fi
+
+# fetch URL OUTFILE — wget with the failure mode NAMED (#116: "source down?"
+# once sent an operator to restart a server that was up and 404ing; connect
+# failure and HTTP error are different problems with different fixes).
+fetch() {
+    _err=$(wget -q -T 20 -O "$2" "$1" 2>&1)
+    _rc=$?
+    [ "$_rc" = 0 ] && return 0
+    case "$_err" in
+        *"server returned error"*) log "HTTP error for $1: $_err"
+            echo "the origin ANSWERED but refused: ${_err#wget: } — the URL/asset is wrong or the release is gone (not a dead server)" ;;
+        *"bad address"*) echo "DNS cannot resolve the origin host (network/DNS problem)" ;;
+        *) echo "cannot connect to the origin (host down or unreachable): ${_err#wget: }" ;;
+    esac
+    return "$_rc"
+}
 
 mkdir -p "$STATE" /work/logs "$SRC_REPO" 2>/dev/null
 mountpoint -q /work || die "/work not mounted — refusing to update without persistent staging"
@@ -70,21 +89,53 @@ if ! flock -n 9; then say "another self-update is running"; exit 0; fi
 
 UPDATE_URL="${UPDATE_URL%/}"
 
-# ---- 1. cheap change check: fetch the remote index, compare its digest ------
+# ---- 1. cheap change check ---------------------------------------------------
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-if ! wget -q -T 20 -O "$tmp/APKINDEX.tar.gz" "$UPDATE_URL/$ARCH/APKINDEX.tar.gz"; then
-    die "cannot fetch $UPDATE_URL/$ARCH/APKINDEX.tar.gz (source down?)"
-fi
-remote_digest=$(sha256sum "$tmp/APKINDEX.tar.gz" | cut -d' ' -f1)
-if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$remote_digest" ]; then
-    log "up to date ($remote_digest)"
-    exit 0
-fi
-say "new repo index — updating."
-log "change detected: applied=$( [ -f "$STAMP" ] && cat "$STAMP" || echo none ) remote=$remote_digest"
 
-# ---- 2. fetch the whole repo into ext4 staging ------------------------------
+if [ -n "$UPDATE_RELEASE_URL" ]; then
+    # RELEASE MODE (the client/product path): the origin is a flat release-asset
+    # URL (e.g. https://github.com/<owner>/<repo>/releases/latest/download)
+    # holding SHA256SUMS + pipeos-repo.tar.gz, published by `make release`.
+    # SHA256SUMS is the cheap change probe; the snapshot is verified against it
+    # before anything is trusted, and apk re-verifies every package signature
+    # against the box's own /etc/apk/keys at install time regardless.
+    UPDATE_RELEASE_URL="${UPDATE_RELEASE_URL%/}"
+    if ! err=$(fetch "$UPDATE_RELEASE_URL/SHA256SUMS" "$tmp/SHA256SUMS"); then
+        die "cannot fetch $UPDATE_RELEASE_URL/SHA256SUMS — $err"
+    fi
+    remote_digest=$(awk '$2=="pipeos-repo.tar.gz"{print $1}' "$tmp/SHA256SUMS")
+    [ -n "$remote_digest" ] || die "SHA256SUMS names no pipeos-repo.tar.gz — malformed release"
+    if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$remote_digest" ]; then
+        log "up to date ($remote_digest)"
+        exit 0
+    fi
+    say "new release — updating."
+    log "change detected: applied=$( [ -f "$STAMP" ] && cat "$STAMP" || echo none ) remote=$remote_digest"
+    if ! err=$(fetch "$UPDATE_RELEASE_URL/pipeos-repo.tar.gz" "$tmp/snapshot.tar.gz"); then
+        die "cannot fetch release snapshot — $err"
+    fi
+    echo "$remote_digest  $tmp/snapshot.tar.gz" | sha256sum -c - >/dev/null 2>&1 \
+        || die "snapshot does not match SHA256SUMS — refusing (corrupt or tampered download)"
+    stage="$tmp/repo"
+    mkdir -p "$stage"
+    tar -xzf "$tmp/snapshot.tar.gz" -C "$stage" || die "snapshot would not extract"
+    # the snapshot carries the arch level flat: APKINDEX.tar.gz + *.apk
+    [ -f "$stage/APKINDEX.tar.gz" ] || die "snapshot has no APKINDEX.tar.gz at its root — wrong artifact shape"
+else
+    if ! err=$(fetch "$UPDATE_URL/$ARCH/APKINDEX.tar.gz" "$tmp/APKINDEX.tar.gz"); then
+        die "cannot fetch $UPDATE_URL/$ARCH/APKINDEX.tar.gz — $err"
+    fi
+    remote_digest=$(sha256sum "$tmp/APKINDEX.tar.gz" | cut -d' ' -f1)
+    if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$remote_digest" ]; then
+        log "up to date ($remote_digest)"
+        exit 0
+    fi
+    say "new repo index — updating."
+    log "change detected: applied=$( [ -f "$STAMP" ] && cat "$STAMP" || echo none ) remote=$remote_digest"
+fi
+
+# ---- 2. fetch the whole repo into ext4 staging (URL mode only) ---------------
 # Parse the package filenames straight from the index (apk-2 tar or apk-3 ADB).
 list_pkgs() {
     if tar -xzOf "$1" APKINDEX > "$tmp/raw" 2>/dev/null && [ -s "$tmp/raw" ]; then
@@ -95,15 +146,23 @@ list_pkgs() {
         awk '/^ *- name: /{n=$3} /^ *version: /{if(n!=""){print n"-"$2".apk"; n=""}}' "$tmp/raw"
     fi
 }
-pkgs=$(list_pkgs "$tmp/APKINDEX.tar.gz")
-[ -n "$pkgs" ] || die "remote index parsed to zero packages — refusing"
+if [ -z "$UPDATE_RELEASE_URL" ]; then
+    pkgs=$(list_pkgs "$tmp/APKINDEX.tar.gz")
+    [ -n "$pkgs" ] || die "remote index parsed to zero packages — refusing"
 
-stage="$tmp/repo"
-mkdir -p "$stage"
-cp "$tmp/APKINDEX.tar.gz" "$stage/"
-for f in $pkgs; do
-    wget -q -T 30 -O "$stage/$f" "$UPDATE_URL/$ARCH/$f" || die "fetch failed: $f"
-done
+    stage="$tmp/repo"
+    mkdir -p "$stage"
+    cp "$tmp/APKINDEX.tar.gz" "$stage/"
+    for f in $pkgs; do
+        if ! err=$(fetch "$UPDATE_URL/$ARCH/$f" "$stage/$f"); then
+            die "fetch failed: $f — $err"
+        fi
+    done
+else
+    # release mode staged already; still assert the index parses to packages
+    pkgs=$(list_pkgs "$stage/APKINDEX.tar.gz")
+    [ -n "$pkgs" ] || die "release index parsed to zero packages — refusing"
+fi
 
 # ---- 3. verify staged repo before it touches media --------------------------
 [ -x "$VERIFY" ] || die "missing $VERIFY (is /work/repos/pipeOS present?)"

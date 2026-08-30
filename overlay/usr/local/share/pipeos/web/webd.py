@@ -43,7 +43,7 @@ STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 SESSION_IDLE_S = 24 * 3600
 NICK_RE = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
-SVC_KEYS = ("pipe", "claude", "stream", "agy")
+SVC_KEYS = ("pipe", "claude", "stream", "agy", "support")
 
 
 def run(argv, timeout=60, input_text=None):
@@ -161,6 +161,8 @@ def daemons_for(svcs):
             out.append("pipebox-listener")
     if svcs["stream"]:
         out.append("pipeos-stream")
+    if svcs["support"]:
+        out.append("pipeos-support")
     return out
 
 
@@ -169,16 +171,18 @@ def apply_services(svcs):
     daemon; returns a list of human-readable problems (empty == clean)."""
     problems = []
     want = set(daemons_for(svcs))
-    managed = ("pipe-daemon", "pipebox-listener", "pipeos-stream")
+    managed = ("pipe-daemon", "pipebox-listener", "pipeos-stream", "pipeos-support")
     for svc in managed:
         if svc in want:
             run(["rc-update", "add", svc, "default"])
             rc, out = run(["rc-service", svc, "start"], timeout=150)
             if rc != 0:
-                # pipeos-stream refuses to start unconfigured — that is its
-                # documented shape, not a broken box.
+                # pipeos-stream / pipeos-support refuse to start unconfigured —
+                # that is their documented shape, not a broken box.
                 if svc == "pipeos-stream":
                     problems.append("streaming is enabled but not configured yet")
+                elif svc == "pipeos-support":
+                    problems.append("support access is enabled but no relay is configured yet")
                 else:
                     problems.append("%s failed to start: %s" % (svc, out.strip()[-200:]))
         else:
@@ -336,6 +340,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/pipe-key": self.api_pipe_key,
             "/api/password": self.api_password,
             "/api/save": self.api_save,
+            "/api/chat": self.api_chat,
         }
         fn = handlers.get(path)
         if fn is None:
@@ -523,6 +528,43 @@ class Handler(BaseHTTPRequestHandler):
     def api_save(self, _body):
         saved, detail = save_state()
         self.send(200, {"ok": saved, "detail": "" if saved else detail})
+
+    def api_chat(self, body):
+        """Talk to the box's Claude from the dashboard — the assistant surface
+        for a pipe-less box. Same fence as the pipe listener (the shipped
+        pipebox settings); one conversation per box, continued across turns."""
+        msg = (body.get("message") or "").strip()
+        if not msg or len(msg) > 8000:
+            return self.err(400, "say something (under 8000 characters)")
+        svcs = read_services()
+        if not svcs["claude"]:
+            return self.err(400, "the Claude service is switched off")
+        env = dict(os.environ, HOME="/root")
+        try:
+            with open(CLAUDE_AUTH) as f:
+                m = re.search(r"CLAUDE_CODE_OAUTH_TOKEN=(\S+)", f.read())
+            if m:
+                env["CLAUDE_CODE_OAUTH_TOKEN"] = m.group(1)
+        except OSError:
+            pass
+        os.makedirs("/work/pipebox/webchat", exist_ok=True)
+        argv = ["claude", "-p", "--settings", "/etc/pipeos/pipebox-settings.json"]
+        if os.path.exists("/work/pipebox/webchat/.started"):
+            argv.append("--continue")
+        try:
+            p = subprocess.run(
+                argv, input=msg, capture_output=True, text=True,
+                timeout=180, env=env, cwd="/work/pipebox/webchat",
+            )
+        except subprocess.TimeoutExpired:
+            return self.err(504, "Claude took longer than 3 minutes — try again")
+        except FileNotFoundError:
+            return self.err(500, "claude is not installed on this image")
+        if p.returncode != 0:
+            return self.err(502, "Claude errored: " + (p.stderr or p.stdout or "")[-300:].strip())
+        with open("/work/pipebox/webchat/.started", "a"):
+            pass
+        self.send(200, {"reply": (p.stdout or "").strip()})
 
 
 def main():
