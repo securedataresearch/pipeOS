@@ -15,7 +15,7 @@ exec qemu-system-x86_64 \
     -drive if=pflash,format=raw,file="$VARS" \
     -drive file="$IMG",if=none,format=raw,id=stick \
     -device qemu-xhci -device usb-storage,drive=stick \
-    -netdev user,id=n0,hostfwd=tcp::"$VM_SSH_PORT"-:22 \
+    -netdev user,id=n0,hostfwd=tcp::"$VM_SSH_PORT"-:22,hostfwd=tcp::"$VM_HTTP_PORT"-:80 \
     -device virtio-net-pci,netdev=n0 \
     -nographic \
     "$@"

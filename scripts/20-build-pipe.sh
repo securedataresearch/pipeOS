@@ -3,20 +3,32 @@
 set -euo pipefail
 . "$(dirname "$0")/../config.sh"
 
-TARGET=x86_64-unknown-linux-musl
 mkdir -p "$OUT/payloads"
 
-# C deps (ring) need a musl C compiler; Arch's `musl` package provides musl-gcc
-command -v musl-gcc >/dev/null || { echo "musl-gcc missing — run 00-host-setup.sh" >&2; exit 1; }
-export CC_x86_64_unknown_linux_musl=musl-gcc
-export TARGET_CC=musl-gcc
-export TARGET_AR=ar
-
-# the `pipe` binary is produced by the pipe-client crate
-cd "$PIPE_SRC"
-cargo build --release -p pipe-client --target "$TARGET"
-
-src="$PIPE_SRC/target/$TARGET/release/pipe"
+if command -v musl-gcc >/dev/null; then
+    # cross host (laptop): C deps (ring) need a musl C compiler; Arch's
+    # `musl` package provides musl-gcc
+    TARGET=x86_64-unknown-linux-musl
+    export CC_x86_64_unknown_linux_musl=musl-gcc
+    export TARGET_CC=musl-gcc
+    export TARGET_AR=ar
+    # the `pipe` binary is produced by the pipe-client crate
+    cd "$PIPE_SRC"
+    cargo build --release -p pipe-client --target "$TARGET"
+    src="$PIPE_SRC/target/$TARGET/release/pipe"
+elif mountpoint -q "$CHROOT/pipe" 2>/dev/null; then
+    # musl host (pipeOS itself): build natively inside the Alpine chroot.
+    # Explicit --target keeps RUSTFLAGS off build scripts and proc-macros,
+    # so +crt-static yields a static binary without breaking the host builds.
+    TARGET=x86_64-alpine-linux-musl
+    CR="$PIPEOS_ROOT/scripts/chroot-run.sh"
+    "$CR" 'apk add --quiet rust cargo build-base'
+    "$CR" "cd /pipe && RUSTFLAGS='-C target-feature=+crt-static' cargo build --release -p pipe-client --target $TARGET"
+    src="$PIPE_SRC/target/$TARGET/release/pipe"
+else
+    echo "no musl toolchain: need musl-gcc (cross host) or a mounted chroot — run 10-mk-chroot.sh" >&2
+    exit 1
+fi
 [ -f "$src" ] || { echo "ERROR: pipe binary not produced" >&2; exit 1; }
 cp "$src" "$OUT/payloads/pipe"
 file "$OUT/payloads/pipe" | grep -q 'static' \

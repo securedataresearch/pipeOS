@@ -1,0 +1,7 @@
+#!/bin/sh
+# pipeos-webd — launcher for the LAN web wizard/management daemon.
+# The daemon itself is Python and lives under share/ (CI shellchecks every
+# file in this directory and reds non-shell files by design).
+export HOME=/root
+export PIPE_NO_SPAWN=1
+exec python3 /usr/local/share/pipeos/web/webd.py "$@"

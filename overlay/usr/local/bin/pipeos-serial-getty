@@ -1,0 +1,22 @@
+#!/bin/sh
+# pipeos-serial-getty — getty on ttyS0 only where a serial console is wanted.
+#
+# inittab runs this instead of getty directly. On qemu (-nographic) the UART
+# is the console, so the vm variant needs the getty unconditionally. On real
+# hardware a ttyS0 getty is opt-in: chassis firmware with console
+# redirection / Serial-over-LAN mirrors the serial getty onto the panel,
+# which shows up as a doubled welcome banner + login prompt next to tty1's.
+#
+# Opt in on a real box (for a genuine UART debug hookup):
+#     touch /etc/pipeos/serial-getty && pipeos save && kill -HUP 1
+#
+# When declining, this must BLOCK, not exit: busybox init respawns us, and a
+# fast exit loop earns "respawning too fast" churn on every boot.
+
+if [ -e /etc/pipeos/serial-getty ]; then
+    exec /sbin/getty -L 115200 ttyS0 vt100
+fi
+if [ "$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)" = "QEMU" ]; then
+    exec /sbin/getty -L 115200 ttyS0 vt100
+fi
+while :; do sleep 2147483647; done

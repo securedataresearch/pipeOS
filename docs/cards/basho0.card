@@ -1,0 +1,30 @@
+# pipeOS model card — basho0 (Sam's basho.dev → YouTube streaming box)
+#
+# GENERIC role, Sam-owned: no Foreman, no GitHub, no repo lane. The box's
+# job is to run the basho.dev → YouTube restream (ffmpeg ships in the image
+# for it) and answer its owner over DM. It deliberately joins no fleet
+# cohort — a streaming appliance has no verdicts to give and the fleet
+# board would only be noise in its context.
+#
+# MAC is unsurveyed: the chassis was swapped around on 2026-08-28 and has
+# not been re-surveyed. Fill it (cat /sys/class/net/eth0/address on the
+# box) so selfcheck's chassis anchor (1c) can hold; empty skips the check.
+
+NICK=basho0
+ROLE=GENERIC
+OWNER_NICK=sam
+FOREMAN_NICK=
+COHORT_ID=
+GH_OWNER=
+MAC=
+
+TOOLCHAIN=
+REPOS=
+PIPE_CAPS=read,send.dm,send.room,send.lobby,send.bbs
+
+DISK_WARN_PCT=70
+DISK_CRIT_PCT=85
+GC_INTERVAL_HOURS=
+OVERLAY_CRIT_DAYS=
+AGENT_TIMEOUT_MIN=30
+CLEAN_AFTER_RUN=

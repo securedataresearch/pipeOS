@@ -1,0 +1,44 @@
+#!/bin/sh
+# pipebox-claude-trust — make headless `claude -p` runnable in /work/pipebox.
+# Extracted from pipebox-setup steps 4-5 so the web wizard and the console
+# flow share one implementation. Idempotent; safe to re-run.
+#
+# 1. Pre-accept the workdir trust dialog: a headless listener stalls forever
+#    on a dialog nobody is there to answer.
+# 2. Restart the listener IF it is meant to run (pipe+claude both on) — a
+#    fresh credential does nothing for a listener still holding the old env.
+
+say() { printf '%s\n' "$*"; }
+
+if [ -f /root/.claude.json ] && command -v jq >/dev/null 2>&1; then
+    if ! jq -e '.projects["/work/pipebox"].hasTrustDialogAccepted' /root/.claude.json >/dev/null 2>&1; then
+        # Say so on failure: silently leaving trust unaccepted does not fail
+        # here, it fails later and elsewhere, as a headless listener hanging
+        # on a dialog nobody can answer.
+        if jq '.projects["/work/pipebox"] = ((.projects["/work/pipebox"] // {}) + {"hasTrustDialogAccepted": true})' \
+            /root/.claude.json > /root/.claude.json.new \
+            && mv /root/.claude.json.new /root/.claude.json; then
+            :
+        else
+            rm -f /root/.claude.json.new
+            say 'WARNING: could not pre-accept the workdir trust dialog —'
+            say '         the listener may stall on it. See /root/.claude.json.'
+        fi
+    fi
+elif [ ! -f /root/.claude.json ]; then
+    # First credential on a box claude has never run on: write the minimal
+    # trust file rather than waiting for claude to create it and stall once.
+    if command -v jq >/dev/null 2>&1; then
+        printf '{"projects":{"/work/pipebox":{"hasTrustDialogAccepted":true}}}\n' \
+            > /root/.claude.json && chmod 600 /root/.claude.json
+    fi
+fi
+
+# services.conf is the wizard's declarative record; absent means a pre-wizard
+# fleet box, where the listener is unconditional.
+SERVICE_PIPE=on SERVICE_CLAUDE=on
+# shellcheck disable=SC1091
+[ -r /etc/pipeos/services.conf ] && . /etc/pipeos/services.conf 2>/dev/null
+if [ "$SERVICE_PIPE" = on ] && [ "$SERVICE_CLAUDE" = on ]; then
+    rc-service pipebox-listener restart >/dev/null 2>&1 || true
+fi

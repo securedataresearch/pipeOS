@@ -1,0 +1,163 @@
+name: ci
+
+# pipeOS has had no CI. The scripts in this repo are the ones that decide
+# whether a box boots, and until now nothing ran them except a person on a
+# box — and no box in the fleet can execute them from inside its agent
+# sandbox. This runs the card gate on every push, which is the difference
+# between "the generator should be byte-stable" and "it is".
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  cards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck the shell surface
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # Globs, not a file list. The three files named here before were the
+          # card tooling; config.sh and the numbered build scripts — the ones
+          # that decide whether a stick boots — were never linted, so a green
+          # tick on a PR touching them said nothing about the diff. (#98)
+          #
+          # No -s flag: every file's own shebang picks its dialect. scripts/ is
+          # a mix (nine `#!/usr/bin/env bash`, three `#!/bin/sh`) and forcing
+          # `-s sh` on the bash half would invent SC3xxx noise about POSIX
+          # features those files are entitled to use. The three files linted
+          # before are all `#!/bin/sh`, so dropping `-s sh` changes nothing for
+          # them. config.sh has no shebang — it is sourced, never executed —
+          # and carries a `# shellcheck shell=bash` directive instead.
+          #
+          # A non-shell file dropped into overlay/usr/local/bin/ will red this
+          # step with SC1008 rather than silently falling out of coverage. That
+          # is the intended behaviour: exclude it here on purpose, in writing.
+          #
+          # -S error: fail on things that are wrong, print things that are
+          # merely unidiomatic. A style-red CI gets disabled within a week.
+          # The periodic/ file is named explicitly rather than by glob: #104's
+          # residual is that overlay/etc/periodic and overlay/etc/local.d are
+          # still unlinted as directories, and this PR adds a file to one of
+          # them. Naming it keeps this diff from being the reason that
+          # residual gets bigger; widening to the whole tree is #104's
+          # follow-up, not a one-liner smuggled in here.
+          shellcheck -S error config.sh scripts/*.sh overlay/usr/local/bin/* \
+            overlay/etc/periodic/weekly/pipeos-worksweep
+          shellcheck config.sh scripts/*.sh overlay/usr/local/bin/* \
+            overlay/etc/periodic/weekly/pipeos-worksweep || true
+
+      - name: compile the web daemon
+        run: |
+          # The web wizard/mDNS daemons are Python under share/pipeos/web/ —
+          # deliberately outside the shellcheck glob above (a .py in
+          # usr/local/bin reds CI by design). This is the coverage that dir
+          # gets instead: a syntax gate, so a box can't ship a daemon that
+          # dies on import.
+          python3 -m py_compile overlay/usr/local/share/pipeos/web/*.py
+
+      - name: the web wizard claims, refuses, and forgets sessions correctly
+        run: python3 scripts/check-webd.py
+
+      - name: the shipped verify-repo.sh is the build's verify-repo.sh
+        run: |
+          # Client boxes carry no checkout, so the overlay ships its own copy
+          # of the repo gate; two copies that drift would let a box trust a
+          # repo the build would refuse. Byte-identical or red.
+          cmp scripts/verify-repo.sh overlay/usr/local/share/pipeos/verify-repo.sh
+
+      # pipeOS#90 item 3. A sweep is a deletion tool: the only interesting
+      # question is what it does NOT delete, and that cannot be answered by
+      # reading it. The probe builds a fake /work, runs the shipped script over
+      # it, and asserts the survivors — the signing key, agent memory, the
+      # canonical clones' sources. The control run mutates the script four
+      # ways and asserts which of those survivors stop surviving.
+      - name: the sweep reclaims what it should and spares what it must
+        run: |
+          python3 scripts/check-worksweep.py
+          python3 scripts/check-worksweep-controls.py
+
+      # pipeOS#97. The deploy tool writes /etc and then persists — no box can
+      # run it from inside its sandbox, and the operator who can is exactly
+      # the person who should not be finding its bugs by hand on a live box.
+      # So the probe deploys real commits into a throwaway root, and the
+      # control run mutates the shipped script eleven ways and asserts WHICH
+      # rows go red: a probe that cannot fail is not evidence.
+      - name: deploy-overlay behaves, and its probe can see it misbehave
+        run: |
+          python3 scripts/check-deploy-overlay.py
+          python3 scripts/check-deploy-overlay-controls.py
+
+      # The deploy verb is run by hand; these two run on every box at every
+      # boot, and until box1's review they had no rows at all — which is where
+      # both of the defects that review found were living. (#102 review)
+      - name: the two overlay-age readers, and controls that put the bugs back
+        run: |
+          python3 scripts/check-overlay-freshness.py
+          python3 scripts/check-overlay-freshness-controls.py
+
+      # pipeOS#134. The product image is one artifact for every business, so
+      # the two things that used to be baked or fleet-scoped now have gates:
+      # the box derives its own NICK at setup, and fleet machinery (the work
+      # heartbeat, the standing orders naming this org's repos) stays off a
+      # customer box. Both defects were invisible from the box and paid for by
+      # someone else, which is why they are gates and not comments.
+      - name: the box derives its own nick, and fleet work stays off customer boxes
+        run: |
+          python3 scripts/check-setup-nick.py
+          python3 scripts/check-heartbeat-scope.py
+
+      - name: card generation is stable and matches the committed overlay
+        run: ./scripts/check-cards.sh
+
+      # pipeOS#100. The resume predicate had been permanently false fleet-wide
+      # and nothing said so, because the only test of it staged the one layout
+      # #80 says is wrong. This runs the SHIPPED predicate against both layouts
+      # and against the pre-fix control.
+      - name: the resume predicate sees a transcript behind the projects symlink
+        run: python3 scripts/check-cohort-watch.py
+
+      # pipeOS#101. The defect was a correct value assigned in the wrong place,
+      # so this checks the ORDERING against the shipped file as well as the
+      # arithmetic — a probe that only tested the numbers would have passed
+      # against the bug.
+      - name: the agent run budget comes from the card, not from a hardcode
+        run: python3 scripts/check-agent-timeout.py
+
+      - name: derived files are not hand-editable without detection
+        run: |
+          set -eu
+          tmp=$(mktemp -d)
+          sh overlay/usr/local/bin/pipebox-card generate \
+            --card docs/cards/box3.card --root "$tmp" \
+            --templates overlay/usr/local/share/pipeos/card >/dev/null
+          cp docs/cards/box3.card "$tmp/card.conf"
+          sh overlay/usr/local/bin/pipebox-card verify \
+            --card "$tmp/card.conf" --root "$tmp" \
+            --templates overlay/usr/local/share/pipeos/card
+          # a hand edit must be caught, and must exit 1 rather than 0 or 2
+          echo '# hand edit' >> "$tmp/etc/pipeos/mandate.md"
+          set +e
+          sh overlay/usr/local/bin/pipebox-card verify \
+            --card "$tmp/card.conf" --root "$tmp" \
+            --templates overlay/usr/local/share/pipeos/card
+          rc=$?
+          set -e
+          [ "$rc" = 1 ] || { echo "expected exit 1 for a hand-edited file, got $rc"; exit 1; }
+          echo "hand edit detected, exit 1 as specified"
+
+      - name: an unprovisioned box reports "cannot tell", not "fine"
+        run: |
+          set -eu
+          tmp=$(mktemp -d)
+          set +e
+          sh overlay/usr/local/bin/pipebox-card verify \
+            --card "$tmp/absent.conf" --root "$tmp" \
+            --templates overlay/usr/local/share/pipeos/card
+          rc=$?
+          set -e
+          [ "$rc" = 2 ] || { echo "expected exit 2 with no card, got $rc"; exit 1; }
+          echo "no card reports exit 2, not a false PASS"

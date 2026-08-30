@@ -1,0 +1,719 @@
+#!/bin/sh
+# pipebox-card — generate a box's identity from one declarative model card.
+#
+# For securedataresearch/pipe#650. A box's mandate, agent settings and runtime
+# conf stop being things a human types onto each machine and become output of
+# a card that is itself the record of what the box is.
+#
+#   pipebox-card generate [--card F] [--root D] [--strict]
+#   pipebox-card verify   [--card F] [--root D]
+#   pipebox-card show     [--card F]
+#
+# Exit codes are the point of `verify` and are a stable API:
+#   0  derived files match the card
+#   1  divergent — a hand edit, or a card changed since the last generation
+#   2  cannot tell (no card, no stamp, unreadable template)
+#
+# 2 exists because "no card here" and "card matches" are different answers and
+# a checker that returns 0 for both is the fail-open shape this repo has spent
+# three PRs removing (#15, #16). Callers decide what to do about 2; this
+# script will not decide for them by pretending it checked.
+
+set -u
+
+CARD=/etc/pipeos/card.conf
+ROOT=/
+TMPL=/usr/local/share/pipeos/card
+STRICT=0
+
+STAMP_REL=etc/pipeos/.card-stamp
+# root/.pipe/policy.json is pipe#650 item 9. It is NOT under /etc like the
+# others: the daemon reads it from $HOME, so its path is fixed by pipe rather
+# than by us. Listed here anyway so `verify` treats a hand-edit to it as the
+# same defect as a hand-edit to the mandate — which it is, and more dangerous.
+# etc/profile.d/10-pipebox-env.sh is pipeOS#90 item 1. It is generated rather
+# than shipped in the overlay so `verify` covers it: a hand-edited
+# CARGO_TARGET_DIR is how one box quietly stops sharing the artifact cache and
+# fills its stick again, which is exactly the failure this fleet just had.
+# etc/hostname, etc/issue, etc/motd, etc/network/interfaces are the box's
+# VISIBLE identity (appliance plan, decision 2): every box used to be
+# hostname "pipeos" with a stock banner, so fleet reports, DHCP leases and
+# the console itself could not tell one machine from another. Card-generated
+# so `verify` covers them like everything else; NICK empty renders the
+# "pipeos" fallback plus an UNPROVISIONED banner rather than a blank name.
+OUTPUTS="etc/pipeos/pipebox.conf etc/pipeos/pipebox-settings.json etc/pipeos/mandate.md root/.pipe/policy.json etc/profile.d/10-pipebox-env.sh etc/hostname etc/issue etc/motd etc/network/interfaces"
+
+die()  { printf 'pipebox-card: %s\n' "$*" >&2; exit 2; }
+ok()   { printf 'ok    %s\n' "$*"; }
+bad()  { printf 'FAIL  %s\n' "$*"; }
+note() { printf '      %s\n' "$*"; }
+
+# ------------------------------------------------------------------ card
+# Parsed, never sourced. A card is data that arrives with a machine — over
+# HTTP from the boot server under #651 — so it must not be able to run code
+# on the box that reads it.
+NICK= ROLE= OWNER_NICK= FOREMAN_NICK= COHORT_ID= GH_OWNER= MAC=
+TOOLCHAIN= REPOS= PIPE_CAPS=
+DISK_WARN_PCT= DISK_CRIT_PCT=
+GC_INTERVAL_HOURS=
+OVERLAY_CRIT_DAYS=
+AGENT_TIMEOUT_MIN=
+CLEAN_AFTER_RUN=
+
+# pipe#650 item 9. The capabilities a card is ALLOWED to grant the agent —
+# every other spelling in pipe's vocabulary is refused here, by this script,
+# regardless of what the card says.
+#
+# THE CEILING IS THE POINT, and it is not paranoia about our own cards. A card
+# is data that arrives with a machine, over HTTP from a boot server (#651),
+# which is exactly why read_card parses rather than sources it. A card key
+# that wrote straight into the policy allow list would hand that boot server
+# `admin` — the capability that reaches Config::apply_patch and can repoint
+# the relay the daemon talks to. So the card CHOOSES WITHIN a ceiling it
+# cannot raise, the same way pipebox-settings.json's deny list is fixed in the
+# template rather than card-tunable.
+#
+# Deliberately absent, and each for its own reason rather than as a blanket:
+#   identity  registers/rotates/releases the nick — the account itself
+#   admin     shutdown and prefs; prefs reach the relay address
+#   moderate  acts on OTHER PEOPLE: kick, mute, topic, vote
+#   file.*    reads an arbitrary local path off the machine / writes attacker-named bytes
+#   room.*    puts our peer key in front of a chosen peer
+#   contacts.write  a contact pins a peer key, so writing one poisons trust grading
+#   *         a glob would defeat the enumeration entirely
+# The last five are not banned outright — they sit in the template's `confirm`
+# list, which is where the mandate already puts them ("confirm-gated
+# capabilities; leave them to the owner"). A card cannot promote them to
+# allow; an operator editing the template can.
+PIPE_CAPS_CEILING="read send.dm send.room send.lobby send.bbs claim"
+
+read_card() {
+    [ -r "$1" ] || die "card not readable: $1"
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in ''|'#'*) continue ;; esac
+        key=${line%%=*}
+        val=${line#*=}
+        [ "$key" != "$line" ] || die "card line is not KEY=value: $line"
+        # strip one layer of quotes and surrounding blanks
+        val=${val#"${val%%[![:space:]]*}"}
+        val=${val%"${val##*[![:space:]]}"}
+        case "$val" in \"*\") val=${val#\"}; val=${val%\"} ;; esac
+        case "$key" in
+            NICK|ROLE|OWNER_NICK|FOREMAN_NICK|COHORT_ID|GH_OWNER|MAC) ;;
+            TOOLCHAIN|REPOS|PIPE_CAPS) ;;
+            DISK_WARN_PCT|DISK_CRIT_PCT) ;;
+            GC_INTERVAL_HOURS|OVERLAY_CRIT_DAYS) ;;
+            AGENT_TIMEOUT_MIN) ;;
+            CLEAN_AFTER_RUN) ;;
+            *) die "unknown card key: $key" ;;
+        esac
+        # Values land in sed expressions and in a shell-sourced conf file.
+        # Refuse anything that is not a plain identifier rather than trying to
+        # quote it correctly in three languages.
+        #
+        # The two list-valued keys (pipe#650 items 7-8) additionally allow a
+        # comma, and ONLY a comma — it is inert in both destinations, unlike
+        # the space that would be the obvious alternative. The widening is
+        # per-key rather than global on purpose: the strict charset is what
+        # keeps a card that arrives over HTTP from a boot server (#651) out of
+        # the shell, and it should stay strict everywhere it can.
+        case "$key" in
+            TOOLCHAIN|REPOS|PIPE_CAPS)
+                case "$val" in
+                    *[!A-Za-z0-9_.:,-]*) die "card value for $key is not a comma-separated list of plain identifiers: $val" ;;
+                    *,,*|,*|*,) die "card value for $key has an empty list element: $val" ;;
+                esac
+                ;;
+            # Every card value that is a NUMBER, validated in one place.
+            #
+            # pipeOS#41: disk-pressure thresholds and the gc interval are
+            # digits-only, tighter than the generic plain-identifier charset
+            # below (which would also take letters and dots) — a threshold is a
+            # number or it is nothing. pipeOS#101 added AGENT_TIMEOUT_MIN, the
+            # agent run budget in minutes.
+            #
+            # A LEADING ZERO IS REFUSED, not silently accepted, because
+            # digits-only is not the same rule as "a number a shell agrees
+            # with", and this generator is the layer that gets to say no. Three
+            # fences disagreed until #106: `case *[!0-9]*` is lexical, `test
+            # -ge` parses DECIMAL, and `$(( ))` parses OCTAL. `030` cleared all
+            # three and ran 24 minutes while the conf read 030 and no log line
+            # anywhere said the operator's number had been reinterpreted; `08`
+            # and `09` are not valid octal at all and took the box off the board
+            # entirely (box2 and box0 on #106, each measured end to end through
+            # this generator). The consumers carry a matching runtime arm, since
+            # a conf is a file a box can be hand-repaired into — but a CARD is
+            # data arriving with a machine, so here it dies rather than falls
+            # back. All four keys get the rule from this one arm: only
+            # AGENT_TIMEOUT_MIN reaches a `$(( ))` today, and "today" is exactly
+            # the qualifier that made this bug possible.
+            # pipeOS#41 / #101 / #97: digits-only, octal-aware, one arm for
+            # every numeric key — a split here is how the octal guard got
+            # shadowed once already during a merge.
+            DISK_WARN_PCT|DISK_CRIT_PCT|GC_INTERVAL_HOURS|OVERLAY_CRIT_DAYS|AGENT_TIMEOUT_MIN|CLEAN_AFTER_RUN)
+                case "$val" in
+                    '') ;;
+                    *[!0-9]*) die "card value for $key must be a plain integer: $val" ;;
+                    # `0?*`, not `0*`: a bare `0` carries no octal ambiguity and
+                    # every one of these keys already has a range check with a
+                    # floor of 1 or more, which refuses it with the message that
+                    # names the actual range. Only a zero with digits BEHIND it
+                    # is the octal hazard.
+                    0?*) die "card value for $key must not have a leading zero (a shell reads it as octal): $val" ;;
+                esac
+                ;;
+            *)
+                case "$val" in
+                    *[!A-Za-z0-9_.:-]*) die "card value for $key is not a plain identifier: $val" ;;
+                esac
+                ;;
+        esac
+        eval "$key=\$val"
+    done < "$1"
+
+    case "$ROLE" in ''|BUILD|TEST|SHIP|GENERIC) ;; *) die "unknown ROLE: $ROLE" ;; esac
+
+    # Every declared capability must be inside the ceiling. Checked HERE, at
+    # parse time, so a card naming `admin` never reaches a rendered file at
+    # all — not filtered silently during render, which would leave an operator
+    # believing a grant they wrote had taken effect.
+    for _c in $(printf '%s' "$PIPE_CAPS" | tr ',' ' '); do
+        _hit=0
+        for _ok in $PIPE_CAPS_CEILING; do
+            [ "$_c" = "$_ok" ] && { _hit=1; break; }
+        done
+        [ "$_hit" = 1 ] || die "PIPE_CAPS entry '$_c' is not grantable by a card (allowed: $PIPE_CAPS_CEILING)"
+    done
+    case "$COHORT_ID" in ''|*[!0-9]*) [ -z "$COHORT_ID" ] || die "COHORT_ID must be numeric: $COHORT_ID" ;; esac
+
+    # pipeOS#41: each threshold, if declared, must be a sane percent (1-99),
+    # and if both are declared WARN must actually be below CRIT — a card that
+    # declares them backwards would make selfcheck crit before it warns.
+    for k in DISK_WARN_PCT DISK_CRIT_PCT; do
+        eval "v=\$$k"
+        [ -z "$v" ] && continue
+        [ "$v" -ge 1 ] 2>/dev/null && [ "$v" -le 99 ] 2>/dev/null || die "$k must be 1-99: $v"
+    done
+    if [ -n "$DISK_WARN_PCT" ] && [ -n "$DISK_CRIT_PCT" ]; then
+        [ "$DISK_WARN_PCT" -lt "$DISK_CRIT_PCT" ] || \
+            die "DISK_WARN_PCT ($DISK_WARN_PCT) must be less than DISK_CRIT_PCT ($DISK_CRIT_PCT)"
+    fi
+
+    # pipeOS#41 (Foreman ruling 2026-08-10): the reclamation half's own
+    # per-box constant. 1-168 (an hour to a week) — a GC pass that never runs
+    # more often than weekly is not the "keep usage low continuously" this
+    # was ruled for, and a value below an hour is finer than pipeos-gc's own
+    # hourly cron tick can even honor.
+    if [ -n "$GC_INTERVAL_HOURS" ]; then
+        [ "$GC_INTERVAL_HOURS" -ge 1 ] 2>/dev/null && [ "$GC_INTERVAL_HOURS" -le 168 ] 2>/dev/null || \
+            die "GC_INTERVAL_HOURS must be 1-168: $GC_INTERVAL_HOURS"
+    fi
+
+    # pipeOS#97: how many days an undeployed overlay commit may sit before
+    # selfcheck calls it CRITICAL rather than a warning. 1-90. Zero would mean
+    # "crit the instant main moves", which would fire on every box between a
+    # merge and the deploy that follows it and teach the fleet to ignore the
+    # signal; past 90 days the box is not behind, it is abandoned.
+    if [ -n "$OVERLAY_CRIT_DAYS" ]; then
+        [ "$OVERLAY_CRIT_DAYS" -ge 1 ] 2>/dev/null && [ "$OVERLAY_CRIT_DAYS" -le 90 ] 2>/dev/null || \
+            die "OVERLAY_CRIT_DAYS must be 1-90: $OVERLAY_CRIT_DAYS"
+    fi
+    # pipeOS#101: one agent run's clock, in minutes. 5-120.
+    #
+    # The floor is not decoration: the cron tick is 2 minutes and the wake does
+    # a board fetch and several `gh` calls before the agent even starts, so
+    # anything under about 5 guarantees kills and would present as "the agent
+    # is broken". The ceiling is the flock — one watcher at a time, so a run
+    # longer than 2 hours holds the lock through 60 ticks and the box stops
+    # responding to the board for the duration. A card wanting more than that
+    # wants a different mechanism, not a bigger number.
+    case "${CLEAN_AFTER_RUN:-}" in ''|0|1) ;; *) die "CLEAN_AFTER_RUN must be 0 or 1: $CLEAN_AFTER_RUN" ;; esac
+    if [ -n "$AGENT_TIMEOUT_MIN" ]; then
+        [ "$AGENT_TIMEOUT_MIN" -ge 5 ] 2>/dev/null && [ "$AGENT_TIMEOUT_MIN" -le 120 ] 2>/dev/null || \
+            die "AGENT_TIMEOUT_MIN must be 5-120 (minutes): $AGENT_TIMEOUT_MIN"
+    fi
+
+    if [ "$STRICT" = 1 ]; then
+        # GENERIC boxes have no Foreman, no GitHub, and may start life
+        # DM-only (cohort joined later at the owner's pace) — requiring the
+        # fleet fields would make the one card type built for outsiders
+        # unshippable. Fleet roles keep the full list.
+        case "$ROLE" in
+            GENERIC) _req="NICK ROLE OWNER_NICK" ;;
+            *)       _req="NICK ROLE OWNER_NICK FOREMAN_NICK COHORT_ID GH_OWNER" ;;
+        esac
+        for k in $_req; do
+            eval "v=\$$k"
+            [ -n "$v" ] || die "--strict: card is missing $k"
+        done
+        has_charter "$ROLE" || die "--strict: no role charter for ROLE=$ROLE"
+    fi
+}
+
+# ------------------------------------------------------------- rendering
+# Per-role allow entries. Deliberately thin: today's roles barely differ in
+# what shell commands they need, and the fences that matter are the hard-ban
+# deny list and the GitHub credential (#648), not this block.
+#
+# "TEST cannot push product code" is NOT expressible here and must not be
+# attempted here: `git push` is one command whose legitimacy depends on the
+# branch and the files, which a command allowlist cannot see. That fence lives
+# at the platform, on the token. Two layers claiming the same rule is how a
+# later reader ends up unable to tell which one is authoritative.
+# pipe#650 item 9: the card's PIPE_CAPS as a JSON array body.
+#
+# EMPTY MEANS EMPTY, NOT "DEFAULT". A card with no PIPE_CAPS generates an
+# agent that can do nothing, and that is the safe direction — pipe's own
+# PolicySet::default is what applies when there is NO FILE, and this generator
+# always writes one. The two are not the same state and conflating them is how
+# a box ends up with a policy nobody chose. The card is the declaration; if it
+# declares nothing, nothing is granted.
+caps_block() {
+    _cfirst=1
+    for _cc in $(printf '%s' "$PIPE_CAPS" | tr ',' ' '); do
+        [ "$_cfirst" = 1 ] || printf ',\n'
+        printf '        "%s"' "$_cc"
+        _cfirst=0
+    done
+    [ "$_cfirst" = 1 ] || printf '\n'
+}
+
+role_block() {
+    case "$1" in
+        BUILD|TEST)
+            # BUILD authors, TEST runs the gate; both need the toolchain.
+            printf '      "Bash(cargo *)",\n'
+            printf '      "Bash(rustc *)",\n'
+            printf '      "Bash(just *)",\n'
+            ;;
+        *) : ;;
+    esac
+}
+
+# Per-role charter (pipeOS#35). ROLE used to expand to an allow-block and a
+# token class and nothing else; what a role actually DOES lived as oral
+# tradition on the board, and every out-of-lane incident this week traces to
+# that gap. The charter is the varying block of an otherwise common mandate.
+#
+# This is prose the model obeys, so two rules govern edits: it states the lane
+# and the handoffs, and it does NOT restate a fence that is enforced elsewhere
+# as though the text were the enforcement. The charter says *why* the PAT
+# fence exists so a box stops mistaking enforcement for the definition.
+#
+# The text is the Foreman's draft on pipeOS#35 and is pending the owner's
+# blessing — the mandate is his document. Amending it is an edit to this
+# function alone; no caller changes.
+charter_block() {
+    case "$1" in
+        BUILD) cat <<'EOF'
+Your ROLE is **BUILD** — the write lane.
+
+- You author and land product code. Yours is the only PAT carrying Contents
+  write. Push over HTTPS so the credential is the thing being checked; never
+  reach for a side-channel remote.
+- You land other roles' completed work unchanged — `git am` or a byte-identical
+  transfer that preserves authorship. Their commit, your push.
+- You never merge your own PRs. Two TEST verdicts plus green CI, and the
+  Foreman merges.
+- Branch per issue. Fix with new commits. `--force-with-lease` only to remove
+  something that must not stay published, and disclose it in the same post.
+- You may decline work; you must not take it. Assignment comes from the
+  Foreman. The one standing exception is mechanical formatter output needed to
+  green a gate.
+EOF
+            ;;
+        TEST) cat <<'EOF'
+Your ROLE is **TEST** — the verification lane, doubled because verification is
+the scarce resource.
+
+- You produce verdicts: LGTM or CHANGES, with the defect named concretely.
+  Verify against an exact commit, say which SHA your verdict covers, and
+  re-verify after any rewrite.
+- Build the reproduction before the fix is written. A repro that discriminates
+  between competing fixes outranks one that merely fails.
+- Authoring conflicts you out of the verdict on your own work; the other TEST
+  box carries it. Reach your verdict independently — do not coordinate it.
+- You cannot push product code. That is your PAT, not a rule you are keeping,
+  and it is deliberate. Hand patches to BUILD or the Foreman with the scope
+  stated from `git status --short` — `git diff --stat` cannot see untracked
+  files, which is how stray files reach a PR.
+- State verification limits plainly: "diff-reviewed, not run-verified" when
+  execution was unavailable. Silence is never a pass.
+EOF
+            ;;
+        SHIP) cat <<'EOF'
+Your ROLE is **SHIP** — release, pipeline health, and specification.
+
+- You own CI and release-pipeline health: watch the gates, read the timing
+  rows, call the regressions.
+- You write the specs and design notes for work your read-only PAT bars you
+  from implementing. The spec is the deliverable; BUILD types it in.
+- Fixes you author route to BUILD or the Foreman to land. Never invent a
+  workaround remote.
+- You run the release verbs — `sync-media`, `save`, `verify` — when the
+  Foreman calls the update.
+EOF
+            ;;
+        GENERIC) cat <<'EOF'
+Your ROLE is **GENERIC** — a team assistant, not a fleet lane.
+
+- You serve the people in your owner's cohort: answer questions, draft and
+  summarize, investigate, and do the legwork a capable colleague would take
+  on. DMs and the cohort board are your whole surface.
+- Be direct and concise. Deliver the thing asked for; say plainly what you
+  could not do and why. Never pad an answerable question into a project.
+- You have no repository lane, no verdict machinery, and no build duties.
+  If someone asks for those, say this box is not provisioned for them.
+- The owner outranks everyone. When members conflict, do the owner's
+  standing instruction first and say that is what you are doing.
+- What you write on the board is visible to the whole team; keep private
+  matters in the DM that raised them.
+EOF
+            ;;
+        *) cat <<'EOF'
+Your ROLE is **unset**. This box is unprovisioned: its card names no role, so
+nothing below has assigned you a lane.
+
+Take direction from nobody and author nothing. Answer questions in text, say
+plainly that you are unprovisioned, and ask for a card with a ROLE before
+doing any work. An unprovisioned box guessing at a lane is the failure this
+posture exists to prevent.
+EOF
+            ;;
+    esac
+    cat <<'EOF'
+
+When you cannot tell whether an action is in your lane, ask on the board
+instead of acting. "I would rather be told off for acting" was this week's
+failure shape; the charter exists so that neither happens.
+EOF
+}
+
+# The Foreman charter (pipeOS#39), identical in every box's mandate whatever
+# its ROLE — that sameness is the point. Roles differ; who the Foreman is and
+# what it owes the fleet does not, and a box that learned the Foreman's duties
+# from a different text than its neighbour is the drift this closes.
+#
+# READ, NOT INLINED. The per-role charters above are heredocs because they have
+# no home outside this generator. The Foreman's does: `docs/foreman.md` is the
+# citable document Sam blessed, and a heredoc copy of it here would be a second
+# text that can silently disagree with the first — the exact defect class of
+# pipe#668. So the doc ships beside the templates and this function emits it.
+# `scripts/check-cards.sh` fails the build if the two copies ever differ.
+#
+# A missing file is fatal rather than an empty section: a mandate that simply
+# omits the Foreman's duties reads as complete and is not, which is the
+# fail-open shape `has_charter` was written to avoid.
+#
+# Headings are demoted one level. The doc is a standalone `#`-titled document;
+# the mandate is also `#`-titled, and pasting one inside the other would put a
+# second document title mid-file and lift the charter's sections above the
+# mandate's own. Mechanical, and it keeps the source single.
+foreman_block() {
+    # A box with no Foreman gets no Foreman charter. Before this guard the
+    # 200-line fleet charter — naming the fleet's own Foreman nick — shipped
+    # verbatim in every mandate, including a customer's GENERIC box that will
+    # never meet that person or that process.
+    if [ -z "${FOREMAN_NICK:-}" ]; then
+        printf '%s\n' '## Coordination'
+        printf '%s\n' ''
+        printf '%s\n' 'This box has no Foreman: the owner (nick in Principals) directs it'
+        printf '%s\n' 'directly. There is no fleet process to follow beyond this mandate.'
+        return 0
+    fi
+    _fsrc="$TMPL/foreman.md"
+    [ -r "$_fsrc" ] || die "foreman charter not readable: $_fsrc"
+    printf '%s\n' '## The Foreman charter'
+    printf '%s\n' ''
+    # Drop the doc's own title, demote what is left, then strip the blank line
+    # the title left behind — otherwise the heading above is followed by two.
+    sed -e '1{/^# /d;}' -e 's|^#|##|' "$_fsrc" | sed -e '/./,$!d' \
+        || die "render failed: $_fsrc"
+}
+
+# True when $1 names a role this generator has a charter for. --strict refuses
+# to write a mandate whose charter would silently fall through to the
+# unprovisioned posture — a box told it has no lane when the card says BUILD is
+# worse than a hard failure at generation time.
+has_charter() {
+    case "$1" in BUILD|TEST|SHIP|GENERIC) return 0 ;; *) return 1 ;; esac
+}
+
+# The console/banner identity line. A block, not a sed marker, because it is
+# conditional: a provisioned box states what it is; an unprovisioned one says
+# so and names the next step, instead of presenting a blank identity.
+identity_block() {
+    if [ -n "$NICK" ]; then
+        printf '  box %s · role %s' "$NICK" "${ROLE:-unset}"
+        [ -n "$OWNER_NICK" ] && printf ' · owner %s' "$OWNER_NICK"
+        printf '\n'
+    else
+        printf '  UNPROVISIONED — no model card names this box.\n'
+        printf '  Log in as root and run pipebox-setup to provision it.\n'
+    fi
+}
+
+render() {
+    tmpl="$1"
+    [ -r "$tmpl" ] || die "template not readable: $tmpl"
+    # A hostname must never be empty — an unprovisioned card (NICK unset)
+    # falls back to the generic name rather than rendering a blank
+    # /etc/hostname, which would break the hostname service at boot.
+    _hn=${NICK:-pipeos}
+    sedexpr="s|@@HOSTNAME@@|$_hn|g
+s|@@NICK@@|$NICK|g
+s|@@ROLE@@|$ROLE|g
+s|@@OWNER_NICK@@|$OWNER_NICK|g
+s|@@FOREMAN_NICK@@|$FOREMAN_NICK|g
+s|@@COHORT_ID@@|$COHORT_ID|g
+s|@@GH_OWNER@@|$GH_OWNER|g
+s|@@TOOLCHAIN@@|$TOOLCHAIN|g
+s|@@REPOS@@|$REPOS|g
+s|@@DISK_WARN_PCT@@|$DISK_WARN_PCT|g
+s|@@DISK_CRIT_PCT@@|$DISK_CRIT_PCT|g
+s|@@GC_INTERVAL_HOURS@@|$GC_INTERVAL_HOURS|g
+s|@@OVERLAY_CRIT_DAYS@@|$OVERLAY_CRIT_DAYS|g
+s|@@AGENT_TIMEOUT_MIN@@|$AGENT_TIMEOUT_MIN|g
+s|@@CLEAN_AFTER_RUN@@|$CLEAN_AFTER_RUN|g
+s|@@CARD_SHA@@|$CARD_SHA|g"
+    # Block markers occupy a line of their own and expand to generated text.
+    # There are three now (#35 added the role charter, #39 the Foreman's), so
+    # the head/tail split is a loop rather than a single special case — the old
+    # form handled exactly one marker and would have emitted the others
+    # verbatim into the model's own instructions.
+    #
+    # Every variable here is _r-prefixed. This function has no `local` (POSIX
+    # sh), so a plain name like `rc` is global and silently clobbers the
+    # caller's — cmd_verify accumulates its failures in `rc` and calls
+    # render_all halfway through, so a bare `rc` here turned a detected
+    # hand-edit back into a PASS. Fail-open, in the one function whose exit
+    # code is documented as a stable API.
+    _rcur=$(mktemp) || die "mktemp failed"
+    _rnxt=$(mktemp) || die "mktemp failed"
+    cat "$tmpl" > "$_rcur" || die "read failed: $tmpl"
+    for _rmark in @@ROLE_ALLOW@@ @@ROLE_CHARTER@@ @@FOREMAN_CHARTER@@ @@PIPE_ALLOW@@ @@IDENTITY_BLOCK@@; do
+        while grep -q "^$_rmark\$" "$_rcur"; do
+            _rn=$(grep -n "^$_rmark\$" "$_rcur" | head -1 | cut -d: -f1)
+            {
+                head -n $((_rn - 1)) "$_rcur"
+                case "$_rmark" in
+                    @@ROLE_ALLOW@@)   role_block "$ROLE" ;;
+                    @@ROLE_CHARTER@@) charter_block "$ROLE" ;;
+                    @@FOREMAN_CHARTER@@) foreman_block ;;
+                    @@PIPE_ALLOW@@)   caps_block ;;
+                    @@IDENTITY_BLOCK@@) identity_block ;;
+                esac
+                tail -n +$((_rn + 1)) "$_rcur"
+            } > "$_rnxt" || die "render failed at $_rmark"
+            cat "$_rnxt" > "$_rcur" || die "render failed at $_rmark"
+        done
+    done
+    sed "$sedexpr" "$_rcur"
+    _rrc=$?
+    rm -f "$_rcur" "$_rnxt"
+    return $_rrc
+}
+
+tmpl_for() {
+    case "$1" in
+        etc/pipeos/pipebox.conf)           echo "$TMPL/pipebox.conf.tmpl" ;;
+        etc/pipeos/pipebox-settings.json)  echo "$TMPL/pipebox-settings.json.tmpl" ;;
+        etc/pipeos/mandate.md)             echo "$TMPL/mandate.md.tmpl" ;;
+        root/.pipe/policy.json)            echo "$TMPL/policy.json.tmpl" ;;
+        etc/profile.d/10-pipebox-env.sh)   echo "$TMPL/pipebox-env.sh.tmpl" ;;
+        etc/hostname)                      echo "$TMPL/hostname.tmpl" ;;
+        etc/issue)                         echo "$TMPL/issue.tmpl" ;;
+        etc/motd)                          echo "$TMPL/motd.tmpl" ;;
+        etc/network/interfaces)            echo "$TMPL/interfaces.tmpl" ;;
+        *) die "no template for $1" ;;
+    esac
+}
+
+sha() { sha256sum "$1" | cut -d' ' -f1; }
+
+# Render every output into $1, a directory, preserving relative paths.
+render_all() {
+    for rel in $OUTPUTS; do
+        mkdir -p "$1/${rel%/*}" || die "mkdir failed under $1"
+        render "$(tmpl_for "$rel")" > "$1/$rel" || die "render failed: $rel"
+        # Render COMPLETENESS: an @@MARKER@@ that survives means a template
+        # gained a key the sed list never learned — the output then SHIPS the
+        # placeholder as the live value (box3 ran with DISK_WARN_PCT literally
+        # "@@DISK_WARN_PCT@@" for a day; CLEAN_AFTER_RUN repeated it on three
+        # boxes within the hour). Byte-stability cannot catch it: both renders
+        # agree on the wrong bytes. Refuse instead.
+        if grep -q '@@[A-Z_][A-Z_]*@@' "$1/$rel"; then
+            die "unexpanded marker in $rel: $(grep -o '@@[A-Z_]*@@' "$1/$rel" | head -1) — the render list in render() is missing it"
+        fi
+    done
+    # The env file is the one output that /etc/profile SOURCES. A syntax error
+    # in it breaks every login shell on the box, including the agent's Bash
+    # tool and the operator's ssh — the same "box goes quiet" failure the
+    # write-then-rename in cmd_generate exists to prevent, arrived at from the
+    # other direction. Checked here, before anything is installed.
+    sh -n "$1/etc/profile.d/10-pipebox-env.sh" \
+        || die "generated shell env does not parse — refusing to install"
+
+    # mandate.md is fed to the model verbatim as a prompt, so it carries no
+    # generator header — its provenance is the stamp, not a line of chatter
+    # in the agent's own instructions.
+    if command -v jq >/dev/null 2>&1; then
+        jq -e . "$1/etc/pipeos/pipebox-settings.json" >/dev/null 2>&1 \
+            || die "generated settings are not valid JSON — refusing to install"
+        # The policy file fails DIFFERENTLY from the settings file and that is
+        # why it gets its own check rather than sharing the line above. Claude
+        # refuses to start on malformed settings — loud. The pipe daemon falls
+        # back to PolicySet::default and logs a fault (policy/mod.rs `load`) —
+        # quiet, and in the permissive direction relative to a card that meant
+        # to grant less. An unparseable policy must never reach the box.
+        jq -e . "$1/root/.pipe/policy.json" >/dev/null 2>&1 \
+            || die "generated policy is not valid JSON — refusing to install"
+        # A policy with no `default` key is not a small mistake. PolicySet's
+        # `default` field is #[serde(default)], so an absent key deserializes
+        # to empty allow lists, and decide() default-denies — which locks the
+        # OPERATOR out of their own CLI while leaving the agent working. The
+        # template carries "default": {"allow": ["*"]}; this asserts it
+        # survived rendering.
+        jq -e '.default.allow | index("*")' "$1/root/.pipe/policy.json" >/dev/null 2>&1 \
+            || die "generated policy does not grant the human at the terminal — refusing to install"
+    fi
+}
+
+# ------------------------------------------------------------- generate
+cmd_generate() {
+    read_card "$CARD"
+    tmpd=$(mktemp -d) || die "mktemp failed"
+    trap 'rm -rf "$tmpd"' EXIT INT TERM
+    render_all "$tmpd"
+
+    {
+        echo "# generated by pipebox-card — regenerate, do not edit"
+        echo "card sha256:$CARD_SHA"
+        for rel in $OUTPUTS; do echo "$(sha "$tmpd/$rel")  $rel"; done
+    } > "$tmpd/$STAMP_REL"
+
+    for rel in $OUTPUTS $STAMP_REL; do
+        dst="${ROOT%/}/$rel"
+        mkdir -p "${dst%/*}" || die "mkdir failed for $dst"
+        # write-then-rename: a power cut must not leave a half-written mandate,
+        # which the listener would refuse to run on and the box would go quiet
+        cp "$tmpd/$rel" "$dst.new" || die "write failed: $dst.new"
+        mv "$dst.new" "$dst" || die "install failed: $dst"
+        echo "wrote $dst"
+    done
+
+    # A card with a real NICK means this box has been provisioned. pipeos-save
+    # gates on etc/pipeos/provisioned and silently exits 0 without it — so a
+    # box brought up by the card path (no interactive login, hence
+    # zz-pipeos-provision.sh never runs) would never persist anything: sign-in,
+    # config, all lost at the next reboot. Set the marker here so the #650
+    # headless path is actually durable. The empty default card (NICK unset)
+    # leaves the box unprovisioned, as intended.
+    if [ -n "$NICK" ]; then
+        marker="${ROOT%/}/etc/pipeos/provisioned"
+        [ -f "$marker" ] || { : > "$marker" && echo "wrote $marker"; }
+    fi
+
+    # The hostname file takes effect at the next boot via the hostname
+    # service; when generating onto the live root, apply it now too so the
+    # prompt, syslog and the boot report pick the name up without a reboot.
+    if [ -z "${ROOT%/}" ] && command -v hostname >/dev/null 2>&1; then
+        hostname -F /etc/hostname 2>/dev/null || true
+    fi
+
+    echo "pipebox-card: generated from $CARD (sha256:$CARD_SHA)"
+    printf '%s\n' "note: nothing here survives a reboot until it is committed —" \
+                  "      run 'pipeos save' (operator; hard-banned for the agent)."
+}
+
+# --------------------------------------------------------------- verify
+cmd_verify() {
+    stamp="${ROOT%/}/$STAMP_REL"
+    if [ ! -r "$CARD" ]; then
+        printf 'skip  no model card at %s — this box is not card-provisioned\n' "$CARD"
+        note "cannot tell whether its config matches anything; exit 2"
+        return 2
+    fi
+    [ -r "$stamp" ] || { printf 'skip  card present but no stamp at %s\n' "$stamp"
+                         note "generate has never run here; exit 2"; return 2; }
+
+    read_card "$CARD"
+    rc=0
+
+    # (a) is any derived file hand-edited since it was generated?
+    while read -r want rel; do
+        case "$want" in '#'*|card) continue ;; esac
+        [ -n "${rel:-}" ] || continue
+        f="${ROOT%/}/$rel"
+        if [ ! -r "$f" ]; then bad "derived file missing: $f"; rc=1; continue; fi
+        got=$(sha "$f")
+        if [ "$got" = "$want" ]; then ok "unmodified since generation: $rel"
+        else bad "hand-edited since generation: $rel"; rc=1; fi
+    done < "$stamp"
+
+    # (b) does the stamp still describe what this card would produce?
+    stamped_card=$(sed -n 's/^card sha256://p' "$stamp" | head -1)
+    if [ "$stamped_card" != "$CARD_SHA" ]; then
+        bad "stale: card changed since generation (stamp $stamped_card, card $CARD_SHA)"
+        note "run 'pipebox-card generate'"
+        rc=1
+    else
+        ok "stamp matches the current card (sha256:$CARD_SHA)"
+    fi
+
+    # (c) byte-stability: regenerating from an unchanged card must reproduce
+    # the same bytes, or (a) and (b) are both meaningless
+    tmpd=$(mktemp -d) || die "mktemp failed"
+    trap 'rm -rf "$tmpd"' EXIT INT TERM
+    render_all "$tmpd"
+    for rel in $OUTPUTS; do
+        want=$(sed -n "s|^\([0-9a-f]*\)  $rel\$|\1|p" "$stamp" | head -1)
+        [ -n "$want" ] || { bad "stamp has no entry for $rel"; rc=1; continue; }
+        [ "$(sha "$tmpd/$rel")" = "$want" ] || {
+            bad "generator is not byte-stable for $rel"; rc=1; }
+    done
+    [ "$rc" = 0 ] && ok "regeneration reproduces the stamped bytes"
+
+    if [ "$rc" = 0 ]; then echo "card: PASS — derived files match the card"
+    else echo "card: FAIL — derived files do not match the card"; fi
+    return $rc
+}
+
+cmd_show() {
+    read_card "$CARD"
+    echo "card:        $CARD (sha256:$CARD_SHA)"
+    for k in NICK ROLE OWNER_NICK FOREMAN_NICK COHORT_ID GH_OWNER MAC \
+             DISK_WARN_PCT DISK_CRIT_PCT GC_INTERVAL_HOURS OVERLAY_CRIT_DAYS \
+             AGENT_TIMEOUT_MIN CLEAN_AFTER_RUN; do
+        eval "v=\$$k"
+        printf '%-12s %s\n' "$k:" "${v:-<unset>}"
+    done
+}
+
+# ----------------------------------------------------------------- main
+verb=${1:-}; [ $# -gt 0 ] && shift
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --card)      CARD=${2:?--card needs a path}; shift 2 ;;
+        --root)      ROOT=${2:?--root needs a path}; shift 2 ;;
+        --templates) TMPL=${2:?--templates needs a path}; shift 2 ;;
+        --strict)    STRICT=1; shift ;;
+        *) die "unknown option: $1" ;;
+    esac
+done
+
+CARD_SHA=$([ -r "$CARD" ] && sha "$CARD" || echo none)
+
+case "$verb" in
+    generate) cmd_generate ;;
+    verify)   cmd_verify ;;
+    show)     cmd_show ;;
+    *) cat >&2 <<'EOF'
+usage: pipebox-card {generate|verify|show} [--card F] [--root D] [--templates D] [--strict]
+
+  generate   write the derived files and their stamp
+  verify     0 = matches the card, 1 = divergent, 2 = cannot tell
+  show       print the resolved card
+EOF
+       exit 2 ;;
+esac

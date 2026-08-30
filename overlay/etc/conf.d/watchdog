@@ -1,0 +1,9 @@
+# pipeOS hardware watchdog (Intel iTCO, nowayout=0).
+# Plain interval petting only, on purpose: busybox watchdog has no
+# test-command support, and a custom health-conditional petter would be a
+# new always-on daemon whose own bugs hard-reset the box. A wedged kernel
+# or dead userspace stops the petting and the TCO reboots us; with the
+# boot selfcheck + mount-race retries, a reboot is a full recovery.
+# -T 30: hardware timeout 30s;  -t 10: pet every 10s.
+WATCHDOG_DEV="/dev/watchdog0"
+WATCHDOG_OPTS="-T 30 -t 10"

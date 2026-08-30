@@ -4,9 +4,23 @@ SHELL := /bin/bash
 VARIANT ?= vm
 export VARIANT
 
-.PHONY: all host-deps chroot pipe apks apkovl image usb metal images vm flash clean-chroot clean
+.PHONY: all host-deps chroot pipe apks apkovl image usb metal images stick vm flash release clean-chroot clean cards check-cards
 
 all: image
+
+# ---------------------------------------------------------------- #650 cards
+# The overlay's per-box config is generated from a model card, never hand-typed.
+# `make cards` regenerates the checked-in defaults; `make check-cards` is the
+# gate that fails if anyone edits the derived files instead of the card.
+cards:
+	chmod +x overlay/usr/local/bin/pipebox-card scripts/check-cards.sh
+	./overlay/usr/local/bin/pipebox-card generate \
+	  --card overlay/etc/pipeos/card.conf \
+	  --root overlay \
+	  --templates overlay/usr/local/share/pipeos/card
+
+check-cards:
+	./scripts/check-cards.sh
 
 # The USB-stick image for real hardware (extended ISO, hardware grub.cfg).
 usb:
@@ -15,6 +29,25 @@ usb:
 # The internal-disk image (standard ISO, hardware grub.cfg, no usb wait).
 metal:
 	$(MAKE) image VARIANT=metal
+
+# A stick image for a NAMED box (appliance plan, decision 1): bakes the given
+# card into the apkovl — card + derived identity files + provisioned marker —
+# and builds the usb image under a name that says whose it is, so a
+# personalized image can never be mistaken for the generic one.
+# usage: make stick CARD=docs/cards/<box>.card [AUTH_KEYS=~/.ssh/id.pub]
+# AUTH_KEYS bakes the operator's ssh public key. Fleet sticks keep a console
+# password (ROOT_LOGIN=password); the generic client image ships root locked
+# and is claimed through the web wizard instead. PIPE_KEY is gone — its
+# 15-minute TTL started at minting, dead on every box not booted at the desk;
+# pipe sign-in happens in the wizard (or pipebox-setup), where a human is live.
+stick:
+	@test -n "$(CARD)" || { echo "usage: make stick CARD=docs/cards/<box>.card [AUTH_KEYS=...]" >&2; exit 1; }
+	CARD="$(CARD)" AUTH_KEYS="$(AUTH_KEYS)" ROOT_LOGIN=password ./scripts/40-build-apkovl.sh
+	VARIANT=usb ./scripts/50-build-image.sh
+	mv out/pipeos-usb.img "out/pipeos-usb-$$(basename "$(CARD)" .card).img"
+	@echo "==> out/pipeos-usb-$$(basename "$(CARD)" .card).img"
+	@echo "==> note: out/pipeos.apkovl.tar.gz now carries this box's card;"
+	@echo "==>       a plain 'make image' rebuilds the generic apkovl."
 
 # All three.
 images:
@@ -42,6 +75,11 @@ image: apkovl
 
 vm:
 	./scripts/60-run-vm.sh
+
+# Publish the signed apk repo as a GitHub Release (the update origin boxes
+# with UPDATE_RELEASE_URL consume). Runs where the signing key lives.
+release:
+	./scripts/80-publish-release.sh
 
 # usage: make flash DEV=/dev/nvmeXn1
 flash:

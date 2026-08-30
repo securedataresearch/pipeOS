@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "default": {
+    "allow": ["*"]
+  },
+  "agent": {
+    "pipebox": {
+      "allow": [
+      ],
+      "deny": [
+        "identity",
+        "admin",
+        "moderate"
+      ],
+      "confirm": [
+        "file.send",
+        "file.accept",
+        "room.create",
+        "room.accept",
+        "contacts.write"
+      ],
+      "rate": {
+        "send.*": "30/min"
+      },
+      "dm_targets": "contacts"
+    }
+  }
+}

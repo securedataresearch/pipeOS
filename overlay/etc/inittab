@@ -3,9 +3,18 @@
 ::sysinit:/sbin/openrc boot
 ::wait:/sbin/openrc default
 
-tty1::respawn:/sbin/getty 38400 tty1
-# serial console for qemu (-nographic) and headless debugging
-ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100
+# NO tty1 getty here, on purpose: Alpine's initramfs appends a getty for the
+# kernel's primary console (console=tty0 on the hardware grub.cfg) when that
+# tty has no inittab entry. Shipping our own tty1 line put TWO gettys on the
+# same panel — tty0 aliases the active VT — so the machine banner and login
+# prompt printed doubled (seen on basho0, 2026-08-29). One console, one getty:
+# the appended tty0 entry is it.
+# serial console: unconditional under qemu, opt-in on real hardware
+# (touch /etc/pipeos/serial-getty). Firmware console redirection mirrors a
+# serial getty onto the panel as a doubled login prompt — see the wrapper.
+# Having this entry also stops the initramfs appending a second ttyS0 getty
+# in the VM, where ttyS0 is the primary console.
+ttyS0::respawn:/usr/local/bin/pipeos-serial-getty
 
 ::shutdown:/sbin/openrc shutdown
 ::ctrlaltdel:/sbin/reboot

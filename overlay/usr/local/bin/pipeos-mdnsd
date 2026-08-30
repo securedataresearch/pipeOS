@@ -1,0 +1,3 @@
+#!/bin/sh
+# pipeos-mdnsd — launcher for the minimal mDNS responder (<hostname>.local).
+exec python3 /usr/local/share/pipeos/web/mdnsd.py "$@"

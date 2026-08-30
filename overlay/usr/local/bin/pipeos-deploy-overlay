@@ -1,0 +1,455 @@
+#!/bin/sh
+# pipeos-deploy-overlay — put a repo commit's overlay onto this live box.
+#
+# WHY THIS EXISTS: #51/#62/#63/#71 were merged 2026-08-10/11 and ran on zero
+# boxes until 2026-08-15. Three boxes were dead for four days on a bug that
+# had been fixed the whole time. Every other update path this fleet has moves
+# APKS: `pipeos selfupdate` fetches a signed repo, `pipeos sync-media` swaps it
+# onto the media, `fleet/update-box.sh` and `dev-push` push packages. NOTHING
+# moved the overlay. The overlay reached a live box only by an operator
+# hand-copying files and remembering to run `pipeos save`, and `pipeos status`
+# merely WARNed about the resulting drift — a warning nobody was reading,
+# against whatever branch the local checkout happened to be on. (pipeOS#97,
+# deploy record on #79.)
+#
+#   pipeos deploy-overlay [--from REF] [--dry-run] [--install-card] [--yes]
+#
+# WHAT IT WILL NOT TOUCH, ever, flag or no flag:
+#
+#   etc/pipeos/*             per-box, GENERATED from the model card
+#   root/.pipe/policy.json   per-box, generated from the same card
+#
+# Those are the outputs of `pipebox-card generate` on THIS box. The repo ships
+# unprovisioned defaults for them (NICK=, ROLE=, allow: []), so copying the
+# repo's copy over a live box's is how a box loses its identity and its pipe
+# entitlements in one step — which is precisely what box0's stale card did on
+# 2026-08-15. The exclusion is enforced twice below: the deploy list does not
+# name them, and a second filter drops them even if someone adds them to it.
+#
+# THE CARD GATE (R19 — the card in the repo is the only source of truth): the
+# on-box /etc/pipeos/card.conf is meant to be a copy of docs/cards/$NICK.card.
+# When it is stale, generation renders a box that can do nothing. So a deploy
+# stops when they differ, rather than shipping new generator code onto a box
+# whose input is wrong. `--install-card` installs the repo's card instead of
+# refusing; it does NOT regenerate — that is `pipebox-card generate`, operator
+# territory, and it is named in the output.
+#
+# OPERATOR ONLY. Like `pipeos save`, this is fenced away from the resident
+# agent in pipebox-settings.json: it writes /etc, it saves, and a box must not
+# be able to deploy code to itself from a branch it just wrote.
+
+set -u
+
+REPO=${PIPEOS_REPO:-/work/repos/pipeOS}
+STAMP=/etc/pipeos/.overlay-stamp
+CARD=/etc/pipeos/card.conf
+# LOG relocates with the test seam: box2 measured 100KB of probe noise in the
+# production log on a box that had never really deployed — the seam moved the
+# install target and left the audit trail behind.
+LOG=${PIPEOS_DEPLOY_ROOT:-}/work/logs/deploy-overlay.log
+LOCK=/run/pipeos-deploy-overlay.lock
+# Test seam. PIPEOS_DEPLOY_ROOT relocates every install target, so the probe
+# can deploy a real commit into a throwaway tree. It is fenced: a relocated
+# run must ALSO set PIPEOS_DEPLOY_NO_PERSIST=1, because save/verify/--seed act
+# on the box itself and cannot be relocated with it. Without that fence a test
+# would write a fake root and then persist the real one. (See the check below.)
+ROOT=${PIPEOS_DEPLOY_ROOT:-}
+NO_PERSIST=${PIPEOS_DEPLOY_NO_PERSIST:-0}
+
+# What a deploy carries: code and declarations, never per-box generated state.
+# lbu.list is a single file rather than the whole of etc/apk — repositories and
+# world are box state, and a wrong /etc/apk/repositories is a brick (CLAUDE.md
+# §4), so this list names the one file in there that is repo-owned.
+DEPLOY_PATHS="usr/local/bin
+usr/local/share/pipeos
+etc/periodic
+etc/local.d
+etc/init.d
+etc/apk/protected_paths.d/lbu.list
+root/.claude/CLAUDE.md"
+
+# Second gate. Anything whose overlay-relative path starts with one of these
+# is dropped even if the list above grows to include it by accident.
+NEVER="etc/pipeos root/.pipe"
+
+say()  { echo "deploy-overlay: $*"; }
+die()  { echo "deploy-overlay: $*" >&2; log "ERROR $*"; exit 1; }
+log()  { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG" 2>/dev/null; }
+sha()  { sha256sum "$1" | cut -d' ' -f1; }
+
+REF=origin/main
+DRY=no
+INSTALL_CARD=no
+ASSUME_YES=no
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --from)         REF=${2:-}; [ -n "$REF" ] || die "--from needs a ref"; shift 2 ;;
+        --from=*)       REF=${1#--from=}; shift ;;
+        --dry-run|-n)   DRY=yes; shift ;;
+        --install-card) INSTALL_CARD=yes; shift ;;
+        --yes|-y)       ASSUME_YES=yes; shift ;;
+        -h|--help)      sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *)              die "unknown argument: $1 (try --help)" ;;
+    esac
+done
+
+# Root is required to write /etc and to save — and ONLY for that. A relocated
+# run (PIPEOS_DEPLOY_ROOT, fenced below to no-persist) writes nothing outside
+# the tree it was handed, so demanding root there would mean the probe could
+# run only as root, i.e. only on a box, i.e. nowhere the fence allows. That is
+# how this file's first CI run failed: every row red on `run as root`.
+if [ -z "$ROOT" ]; then
+    [ "$(id -u)" = 0 ] || die "run as root"
+fi
+[ -d "$REPO/.git" ] || die "no pipeOS checkout at $REPO (set PIPEOS_REPO)"
+
+if [ -n "$ROOT" ] && [ "$NO_PERSIST" != 1 ]; then
+    die "PIPEOS_DEPLOY_ROOT is set but PIPEOS_DEPLOY_NO_PERSIST is not 1.
+  A relocated deploy installs into $ROOT, but pipeos-save, pipeos verify and
+  cohort-watch --seed act on THIS box and cannot follow it there. Running
+  them after a relocated install would persist the real root from a test."
+fi
+if [ -n "$ROOT" ]; then
+    STAMP="$ROOT$STAMP"
+    CARD="$ROOT$CARD"
+    # The log and the lock follow the relocation too. /work/logs and /run are
+    # box paths: a relocated run has no business writing either, and on a CI
+    # runner it cannot. Same reasoning as the root check above.
+    LOG="$ROOT/deploy-overlay.log"
+    LOCK="$ROOT/deploy-overlay.lock"
+fi
+
+# A dry run reads nothing but the repo and the live files, so it takes no lock
+# and needs no log directory. It is the reviewable half: an operator can see
+# exactly what a real run would do before letting it do anything.
+if [ "$DRY" = no ]; then
+    mkdir -p "$(dirname "$LOG")" 2>/dev/null
+    exec 9> "$LOCK"
+    flock -n 9 || die "another deploy is running"
+fi
+
+# ---- 1. the ref, and the credential that is usually why this fails ---------
+#
+# root's git HTTPS credential (`gh auth setup-git` -> /root/.gitconfig) lives
+# in tmpfs and is NOT in the lbu include list, so on box0/2/3 it dies at every
+# reboot and `git fetch` then asks for a username on a non-interactive tty and
+# fails with something that does not mention credentials at all. The same fix
+# (`+root/.gitconfig`) ships in this commit's lbu.list; this message is for the
+# box that has not booted into it yet. (pipeOS#97 item 4a.)
+if ! fetch_err=$(git -C "$REPO" fetch --quiet origin 2>&1); then
+    case "$fetch_err" in
+        *"could not read Username"*|*"Authentication failed"*|*"terminal prompts disabled"*)
+            die "git fetch cannot authenticate — root's HTTPS credential is gone.
+  It lives in /root/.gitconfig, which is tmpfs and not persisted before this
+  commit lands. Re-run 'gh auth setup-git' (or deploy --from a local ref that
+  is already fetched), then try again.
+  git said: $fetch_err" ;;
+        *)  say "warning: git fetch failed, continuing against what is already
+  fetched — the ref below may be stale. git said: $fetch_err"
+            log "fetch failed: $fetch_err" ;;
+    esac
+fi
+
+commit=$(git -C "$REPO" rev-parse --verify "$REF^{commit}" 2>/dev/null) \
+    || die "no such ref in $REPO: $REF"
+subject=$(git -C "$REPO" log -1 --format=%s "$commit")
+cdate=$(git -C "$REPO" log -1 --format=%cI "$commit")
+
+# ---- 2. the card gate (R19) ------------------------------------------------
+# NICK comes from the on-box card. An unprovisioned box has none, and there is
+# no repo card to compare against either, so the gate reports and steps aside
+# rather than blocking a first deploy.
+NICK=
+[ -r "$CARD" ] && NICK=$(sed -n 's/^NICK=//p' "$CARD" | tr -d '"' | head -1)
+card_action=none
+if [ -z "$NICK" ]; then
+    say "no NICK in $CARD — unprovisioned box, card gate skipped"
+elif ! git -C "$REPO" cat-file -e "$commit:docs/cards/$NICK.card" 2>/dev/null; then
+    say "no docs/cards/$NICK.card at $REF — card gate skipped (box not in the repo yet)"
+else
+    repo_card=$(mktemp)
+    git -C "$REPO" show "$commit:docs/cards/$NICK.card" > "$repo_card"
+    # OWNER_NICK and COHORT_ID are filled on premises at first boot by
+    # pipebox-setup — the GENERIC cards ship them empty on purpose. A box
+    # value atop an EMPTY repo value is provisioning, not drift, so it is
+    # masked out of the comparison (and preserved by --install-card below).
+    # Any other difference is still drift and still dies.
+    box_norm=$(mktemp)
+    cp "$CARD" "$box_norm"
+    for _f in OWNER_NICK COHORT_ID; do
+        if [ -z "$(sed -n "s/^$_f=//p" "$repo_card" | head -1)" ]; then
+            sed -i "s/^$_f=.*/$_f=/" "$box_norm"
+        fi
+    done
+    if cmp -s "$repo_card" "$box_norm"; then
+        if cmp -s "$repo_card" "$CARD"; then
+            say "card: $CARD matches docs/cards/$NICK.card"
+        else
+            say "card: $CARD matches docs/cards/$NICK.card (owner fields filled on box)"
+        fi
+        rm -f "$box_norm"
+    elif [ "$INSTALL_CARD" = yes ]; then
+        rm -f "$box_norm"
+        card_action=install
+        say "card: $CARD differs from docs/cards/$NICK.card — will install the repo's"
+        diff -u "$CARD" "$repo_card" | sed 's/^/    /' || true
+    else
+        diff -u "$box_norm" "$repo_card" | sed 's/^/    /' || true
+        rm -f "$repo_card" "$box_norm"
+        die "on-box card differs from docs/cards/$NICK.card at $REF.
+  Per R19 the repo card is the truth, and every generated file on this box
+  descends from the on-box copy — box0's stale card rendered 'allow: []', a
+  box that could do nothing on pipe. Deploying generator code onto a wrong
+  input makes that worse, not better.
+  Re-run with --install-card to take the repo's card (then run
+  'pipebox-card generate' yourself), or fix the repo card first."
+    fi
+fi
+
+# ---- 3. what would change --------------------------------------------------
+# Compared per file against the live box, by content and by mode. The overlay
+# is the source; anything live and absent from the overlay is REPORTED, never
+# deleted — a deploy tool that removes files it does not recognise is one
+# operator mistake away from taking out a box's own state.
+excluded() {
+    for n in $NEVER; do
+        case "$1" in "$n"|"$n"/*) return 0 ;; esac
+    done
+    return 1
+}
+
+listing=$(mktemp); changes=$(mktemp); stamp_body=$(mktemp)
+trap 'rm -f "$listing" "$changes" "$stamp_body" "${repo_card:-}"' EXIT
+
+for p in $DEPLOY_PATHS; do
+    git -C "$REPO" ls-tree -r "$commit" -- "overlay/$p" 2>/dev/null
+done > "$listing"
+[ -s "$listing" ] || die "no overlay files found at $REF — refusing to deploy nothing"
+
+n_same=0; n_new=0; n_mod=0; n_skip=0
+while read -r mode type blob path; do
+    [ "$type" = blob ] || continue
+    rel=${path#overlay/}
+    if excluded "$rel"; then
+        n_skip=$((n_skip+1))
+        printf 'skip  %s (per-box generated, never deployed)\n' "$rel" >> "$changes"
+        continue
+    fi
+    case "$mode" in
+        100644|100755) : ;;
+        *)  die "overlay/$rel is mode $mode (symlink or submodule).
+  This tool installs regular files only; a link needs a decision about its
+  target on a box where /work may not be mounted yet. Add explicit handling
+  before shipping one." ;;
+    esac
+    dst="$ROOT/$rel"
+    newsha=$(git -C "$REPO" cat-file blob "$blob" | sha256sum | cut -d' ' -f1)
+    if [ -f "$dst" ]; then
+        oldsha=$(sha "$dst")
+        oldmode=$(stat -c '%a' "$dst" 2>/dev/null || echo '?')
+        wantmode=$([ "$mode" = 100755 ] && echo 755 || echo 644)
+        if [ "$oldsha" = "$newsha" ] && [ "$oldmode" = "$wantmode" ]; then
+            n_same=$((n_same+1))
+        else
+            n_mod=$((n_mod+1))
+            printf 'mod   %s (%s -> %s' "$rel" "$(echo "$oldsha" | cut -c1-8)" \
+                "$(echo "$newsha" | cut -c1-8)" >> "$changes"
+            [ "$oldmode" = "$wantmode" ] || printf ', mode %s -> %s' "$oldmode" "$wantmode" >> "$changes"
+            printf ')\n' >> "$changes"
+        fi
+    else
+        n_new=$((n_new+1))
+        printf 'new   %s\n' "$rel" >> "$changes"
+    fi
+    printf '%s  /%s\n' "$newsha" "$rel" >> "$stamp_body"
+done < "$listing"
+
+# Files a PREVIOUS deploy installed that this ref no longer has. Reported so a
+# stale script cannot keep running unnoticed; not removed.
+#
+# This used to walk $ROOT/$p whole, and box1 found what that does on a real
+# box: etc/init.d and usr/local/bin are shared with apk, so every
+# package-owned OpenRC script and every binary nobody deployed prints as
+# "stale". Nothing is deleted either way — but a report where dozens of lines
+# are not findings buries the one line the operator is reading for, and an
+# alarm that is usually wrong stops being read at all. That is the same
+# failure this PR's selfcheck section is written against.
+#
+# The stamp already records "every file this deploy is responsible for", and
+# that IS the predicate: a file is stale iff a previous deploy put it here and
+# this ref dropped it. Exact in both directions, and it needs no denylist of
+# things apk owns.
+ref_paths=$(mktemp)
+cut -f2- "$listing" | sed 's|^overlay/||' | sort -u > "$ref_paths"
+if [ -f "$STAMP" ]; then
+    # Stamp body lines are `<sha256>  /<rel>`; the header lines are not.
+    sed -n 's|^[0-9a-f]\{64\}  /||p' "$STAMP" | while read -r rel; do
+        [ -n "$rel" ] || continue
+        excluded "$rel" && continue
+        [ -e "$ROOT/$rel" ] || continue      # already gone: not a live stale file
+        grep -qxF "$rel" "$ref_paths" && continue
+        printf 'stale %s (deployed here, absent at %s — NOT removed)\n' "$rel" "$REF"
+    done >> "$changes"
+else
+    # Said out loud rather than left as a silent pass: on a box with no stamp
+    # there is no record of what a previous deploy owned, so "no stale files"
+    # would be an answer this tool cannot actually give yet.
+    printf 'note  no previous deploy stamp — stale-file detection starts from this deploy\n' >> "$changes"
+fi
+rm -f "$ref_paths"
+
+echo
+say "$REF = ${commit} ($cdate)"
+say "  $subject"
+sort "$changes" | sed 's/^/  /'
+say "$n_new new, $n_mod changed, $n_same unchanged, $n_skip never-deployed"
+
+if [ "$n_new" = 0 ] && [ "$n_mod" = 0 ] && [ "$card_action" = none ]; then
+    say "already at $REF — nothing to do."
+    # The stamp is still worth writing on a box that predates it: it is what
+    # lets `pipeos status` and selfcheck say how old this overlay is instead
+    # of guessing from a local checkout's branch.
+    if [ "$DRY" = no ] && [ ! -f "$STAMP" ]; then
+        say "writing the missing stamp so status and selfcheck can age this overlay."
+        write_stamp=yes
+        ASSUME_YES=yes
+    else
+        exit 0
+    fi
+fi
+
+if [ "$DRY" = yes ]; then
+    say "dry run — nothing written."
+    exit 0
+fi
+
+if [ "$ASSUME_YES" != yes ] && [ -t 0 ]; then
+    printf 'deploy-overlay: proceed? [y/N] '
+    read -r ans
+    case "$ans" in y|Y|yes) : ;; *) say "aborted."; exit 1 ;; esac
+fi
+
+# ---- 4. install ------------------------------------------------------------
+watcher_changed=no
+installed_rels=$(mktemp)
+[ "${write_stamp:-no}" = yes ] || log "deploying $REF=$commit ($n_new new, $n_mod changed)"
+
+while read -r mode type blob path; do
+    [ "$type" = blob ] || continue
+    rel=${path#overlay/}
+    excluded "$rel" && continue
+    dst="$ROOT/$rel"
+    m=$([ "$mode" = 100755 ] && echo 755 || echo 644)
+    tmpf="$dst.deploy.$$"
+    mkdir -p "$(dirname "$dst")" || die "cannot create $(dirname "$dst")"
+    git -C "$REPO" cat-file blob "$blob" > "$tmpf" || die "cannot stage $rel"
+    chmod "$m" "$tmpf"
+    if [ -f "$dst" ] && [ "$(sha "$tmpf")" = "$(sha "$dst")" ] \
+       && [ "$(stat -c '%a' "$dst" 2>/dev/null)" = "$m" ]; then
+        rm -f "$tmpf"
+        continue
+    fi
+    # Rename, so a script that is executing right now keeps its old inode and
+    # a half-written file is never reachable under the real name.
+    mv -f "$tmpf" "$dst" || die "cannot install $rel"
+    [ "$rel" = usr/local/bin/pipebox-cohort-watch ] && watcher_changed=yes
+    printf '%s\n' "$rel" >> "$installed_rels"
+done < "$listing"
+
+if [ "$card_action" = install ]; then
+    # Carry the box's on-premises fills forward where the repo ships the
+    # field empty — installing a GENERIC card must not un-provision the box.
+    for _f in OWNER_NICK COHORT_ID; do
+        if [ -z "$(sed -n "s/^$_f=//p" "$repo_card" | head -1)" ]; then
+            _bv=$(sed -n "s/^$_f=//p" "$CARD" | head -1)
+            [ -n "$_bv" ] && sed -i "s/^$_f=.*/$_f=$_bv/" "$repo_card"
+        fi
+    done
+    cp "$repo_card" "$CARD" || die "cannot install the card"
+    say "installed docs/cards/$NICK.card -> $CARD"
+    say "  NOTE: generated files are NOT regenerated. Run 'pipebox-card generate'."
+fi
+
+{
+    echo "commit $commit"
+    echo "ref $REF"
+    echo "commit_date $cdate"
+    echo "deployed_at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "deployed_by $(id -un)@$(hostname)"
+    echo "#  sha256 of every file this deploy is responsible for"
+    sort -k2 "$stamp_body"
+} > "$STAMP.new" && mv -f "$STAMP.new" "$STAMP" || die "cannot write $STAMP"
+say "recorded $STAMP"
+
+# ---- 5. re-seed the watcher if its code changed ---------------------------
+# A changed cohort-watch has a changed idea of what it has already seen; its
+# own --seed exists for exactly this moment (its header documents the
+# post-deploy wake that re-reads every thread).
+if [ "$NO_PERSIST" = 1 ]; then
+    say "PIPEOS_DEPLOY_NO_PERSIST=1 — skipping --seed, pipeos-save and pipeos verify."
+    log "OK installed $REF=$commit into ${ROOT:-/} (no-persist)"
+    exit 0
+fi
+if [ "$watcher_changed" = yes ] && [ -x "$ROOT/usr/local/bin/pipebox-cohort-watch" ]; then
+    if "$ROOT/usr/local/bin/pipebox-cohort-watch" --seed 9>&-; then
+        say "re-seeded the cohort watcher"
+    else
+        die "cohort-watch --seed failed after deploying a new watcher"
+    fi
+fi
+
+# ---- 5b. a deploy reaches files, not running services (box0, #102 review) --
+# The rename-install keeps an executing script on its old inode ON PURPOSE —
+# which means a supervised service keeps RUNNING the old code after a deploy
+# reports success, and the stamp's freshness cannot tell the difference.
+# For each repo-owned supervised service whose own files changed this deploy:
+# restart it if it is running (this tool is operator-run and already gated),
+# and say so either way. Cron-run scripts (the watcher, periodic jobs) start
+# fresh every tick and need nothing here.
+svc_files() {
+    case "$1" in
+        pipe-daemon)      echo "etc/init.d/pipe-daemon" ;;
+        pipebox-listener) echo "etc/init.d/pipebox-listener usr/local/bin/pipebox-listener" ;;
+        pipeos-web)       echo "etc/init.d/pipeos-web usr/local/bin/pipeos-webd usr/local/share/pipeos/web/webd.py usr/local/share/pipeos/web/static/index.html usr/local/share/pipeos/web/static/app.js usr/local/share/pipeos/web/static/style.css" ;;
+        pipeos-mdns)      echo "etc/init.d/pipeos-mdns usr/local/bin/pipeos-mdnsd usr/local/share/pipeos/web/mdnsd.py" ;;
+        pipeos-stream)    echo "etc/init.d/pipeos-stream" ;;
+        pipeos-support)   echo "etc/init.d/pipeos-support" ;;
+    esac
+}
+for svc in pipe-daemon pipebox-listener pipeos-web pipeos-mdns pipeos-stream pipeos-support; do
+    hit=no
+    for f in $(svc_files "$svc"); do
+        grep -qxF "$f" "$installed_rels" 2>/dev/null && hit=yes
+    done
+    [ "$hit" = yes ] || continue
+    if rc-service "$svc" status >/dev/null 2>&1; then
+        say "restarting $svc (its code changed in this deploy; the running copy was the old inode)"
+        # 9>&- : the lock fd must NOT leak into the daemon we start here, or
+        # the running service holds the deploy lock until its next restart —
+        # every later deploy then dies "another deploy is running" with no
+        # deploy running (field bug, all four boxes, 2026-08-16; same fix the
+        # watcher uses when launching claude).
+        rc-service "$svc" restart >/dev/null 2>&1 9>&- \
+            && log "restarted $svc after deploy" \
+            || { log "RESTART FAILED: $svc after deploy"; die "$svc restart failed after deploy — the box is running old code under a new stamp"; }
+    else
+        say "note: $svc changed but is not running — nothing restarted"
+    fi
+done
+rm -f "$installed_rels"
+
+# ---- 6. persist, then prove a reboot reproduces it -------------------------
+# In that order: an unsaved deploy is a deploy that dies at the next reboot,
+# which is the failure this whole tool exists to end.
+say "saving…"
+/usr/local/bin/pipeos-save || die "pipeos-save FAILED — the new overlay is live but NOT persisted; fix and re-save"
+say "verifying…"
+if ! pipeos verify; then
+    log "verify FAILED after deploy of $commit"
+    die "pipeos verify FAILED after the deploy — this box may not come back the same.
+  The overlay is installed and saved; decide between fixing forward and
+  'pipeos rollback known-good'."
+fi
+
+log "OK deployed $REF=$commit ($n_new new, $n_mod changed)"
+say "deployed $REF = $(echo "$commit" | cut -c1-12), saved and verified."

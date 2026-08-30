@@ -1,0 +1,24 @@
+pipeOS
+Copyright 2026 Secure Data Research, LLC
+
+Licensed under the Apache License, Version 2.0 (the "License"); see the
+LICENSE file. Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
+
+Trademarks
+----------
+"pipeOS" and the pipeOS logo are trademarks of Secure Data Research, LLC.
+The Apache License grants NO rights to these marks (see Section 6).
+
+You may build, modify, and distribute this software freely under the
+License — but you may not market, sell, or distribute a derivative work
+under the name "pipeOS" or any confusingly similar name, and you may not
+use the marks in a way that implies your product or service is made,
+endorsed, or supported by Secure Data Research, LLC. Truthful, nominative
+references ("based on pipeOS", "compatible with pipeOS") are fine.
+
+This repository contains packaging RECIPES that repackage third-party
+software fetched at build time (e.g. Claude Code, Antigravity CLI). No
+third-party binaries are included here, and those programs remain governed
+by their own vendors' licenses, not by this repository's License.

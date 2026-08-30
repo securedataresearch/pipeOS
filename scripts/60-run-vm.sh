@@ -17,7 +17,7 @@ exec qemu-system-x86_64 \
     -drive if=pflash,format=raw,file="$VARS" \
     -drive file="$IMG",if=none,format=raw,id=nvm \
     -device nvme,serial=pipeos,drive=nvm \
-    -netdev user,id=n0,hostfwd=tcp::"$VM_SSH_PORT"-:22 \
+    -netdev user,id=n0,hostfwd=tcp::"$VM_SSH_PORT"-:22,hostfwd=tcp::"$VM_HTTP_PORT"-:80 \
     -device virtio-net-pci,netdev=n0 \
     -nographic \
     "$@"

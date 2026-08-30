@@ -1,3 +1,23 @@
+# pipeOS is offline-only: boot-time apk runs from the initramfs BEFORE
+# networking is up, so a network repo here costs a resolver/connect timeout on
+# every boot — and installs can silently resolve a newer network version whose
+# .apk is not on the media, vanishing on the next reboot.
+#
+# To install something new, seed the local mirror instead (one-shot, network
+# used explicitly): extra-add [--repo main|community] <pkg>...
+# or by hand:
+#   mount -o remount,rw /media/usb
+#   apk fetch --recursive --arch x86_64 -o /media/usb/apks/extra/x86_64 \
+#     --repository https://dl-cdn.alpinelinux.org/alpine/v3.24/main <pkg> <deps>
+#   (re-index + sign the extra repo, then apk add <pkg>; lbu commit)
+#   mount -o remount,ro /media/usb
+#
+# apks/dev: rollback-safe staging for locally built packages (pipeOS#8). Listed
+# after apks/pipeos so a local rebuild's higher pkgver wins without ever
+# writing to the known-good pipeos repo; `dev-push`/`dev-push --remove` manage
+# it. apk always resolves the highest pkgver regardless of repo order, so this
+# ordering documents intent rather than changing resolution.
 /media/usb/apks
 /media/usb/apks/pipeos
+/media/usb/apks/dev
 /media/usb/apks/extra

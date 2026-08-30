@@ -1,0 +1,57 @@
+#!/sbin/openrc-run
+# pipeos-support — OPT-IN vendor support access: the box dials OUT to a
+# support relay with a reverse tunnel, so the vendor can reach a box behind
+# the customer's NAT — but only while the customer has the toggle on. Off by
+# default, off until configured, visible in the wizard as a plain switch.
+#
+# support.conf (mode 600):
+#   SUPPORT_RELAY=      user@host of the relay (the vendor's VPS)
+#   SUPPORT_PORT=       remote port the relay binds back to this box's sshd
+#   SUPPORT_KEY=        identity file (default /etc/pipeos/support_key)
+description="opt-in reverse tunnel to the vendor support relay"
+
+supervisor=supervise-daemon
+respawn_delay=30
+respawn_max=0
+
+output_log=/work/logs/pipeos-support.log
+error_log=/work/logs/pipeos-support.log
+
+CONF=/etc/pipeos/support.conf
+
+depend() {
+	need net
+	after chronyd
+}
+
+start_pre() {
+	if [ ! -r "$CONF" ]; then
+		eerror "support access is enabled but $CONF does not exist — no relay configured"
+		return 1
+	fi
+	# shellcheck disable=SC1090
+	. "$CONF"
+	if [ -z "${SUPPORT_RELAY:-}" ] || [ -z "${SUPPORT_PORT:-}" ]; then
+		eerror "support access is not configured (SUPPORT_RELAY/SUPPORT_PORT empty in $CONF)"
+		return 1
+	fi
+	[ -r "${SUPPORT_KEY:-/etc/pipeos/support_key}" ] || { eerror "no support key at ${SUPPORT_KEY:-/etc/pipeos/support_key}"; return 1; }
+	mountpoint -q /work && { checkpath -d -m 0755 /work/logs || return 1; }
+	return 0
+}
+
+start() {
+	# shellcheck disable=SC1090
+	. "$CONF"
+	ebegin "Starting support tunnel to $SUPPORT_RELAY"
+	supervise-daemon pipeos-support --start \
+		--stdout "$output_log" --stderr "$error_log" \
+		--respawn-delay "$respawn_delay" --respawn-max "$respawn_max" \
+		/usr/bin/ssh -- -N -T \
+		-o BatchMode=yes -o ExitOnForwardFailure=yes \
+		-o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+		-o StrictHostKeyChecking=accept-new \
+		-i "${SUPPORT_KEY:-/etc/pipeos/support_key}" \
+		-R "${SUPPORT_PORT}:127.0.0.1:22" "$SUPPORT_RELAY"
+	eend $?
+}

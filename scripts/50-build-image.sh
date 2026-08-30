@@ -10,6 +10,17 @@ for f in "$OUT/pipeos.apkovl.tar.gz" "$OUT/repo/pipeos/$ALPINE_ARCH/APKINDEX.tar
     [ -f "$f" ] || { echo "missing $f — run earlier stages" >&2; exit 1; }
 done
 
+# --- repo gates: staleness (image does not depend on the slow apks target,
+# so refuse to ship an out/repo older than its sources) and coherence (the
+# 2026-08-05 media incident was an incoherent repo shipped unchecked).
+# FORCE=1 skips the staleness gate only.
+if [ "${FORCE:-0}" != 1 ]; then
+    stale=$(find "$PIPEOS_ROOT/aports" "$OUT/payloads" -type f \
+        -newer "$OUT/repo/pipeos/$ALPINE_ARCH/APKINDEX.tar.gz" 2>/dev/null | head -n1)
+    [ -n "$stale" ] && { echo "out/repo is older than $stale — run 'make apks' first (or FORCE=1)" >&2; exit 1; }
+fi
+"$(dirname "$0")/verify-repo.sh" "$OUT/repo/pipeos/$ALPINE_ARCH" "$OUT/repo/extra/$ALPINE_ARCH"
+
 # --- extract ISO tree once per flavor
 ISOTREE="$OUT/isotree-$ALPINE_FLAVOR"
 if [ ! -d "$ISOTREE/boot" ]; then
@@ -109,5 +120,6 @@ MC "$OUT/.boot_repository" ::/apks/extra/.boot_repository
 
 echo "==> merging partition into image"
 dd if="$P1" of="$IMG" bs=1M seek=$PART_OFFSET_MB conv=notrunc,sparse status=none
+rm -f "$P1"   # merged into $IMG; keeping it double-books P1_SIZE_MB of scratch
 ls -lh "$IMG"
 echo "image ready: $IMG"

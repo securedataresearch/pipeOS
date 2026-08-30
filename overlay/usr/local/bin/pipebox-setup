@@ -1,0 +1,195 @@
+#!/bin/sh
+# pipebox-setup — one-command onboarding for the resident agent. Safe to
+# re-run any time; each step skips itself if already done. Run as root at a
+# terminal (the whole point is that a human is present for these approvals).
+
+CONF=/etc/pipeos/pipebox.conf
+CARD=/etc/pipeos/card.conf
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'pipebox-setup: %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" = 0 ] || die "run as root"
+[ -f "$CONF" ] || die "$CONF missing — is this a pipeOS box?"
+
+# 0. daemon up (idempotent)
+rc-service pipe-daemon start >/dev/null 2>&1 || true
+
+# 1. sign in as the box's nick
+if pipe status 2>/dev/null | grep -q '^nick: anon'; then
+    say ''
+    say 'Step 1: sign this box in to pipe.'
+    say '  On your phone or laptop, get a one-time key at https://pipe.online'
+    say '  (valid ~15 minutes).'
+    while :; do
+        printf 'paste key (or Enter to skip)> '
+        read -r _key
+        [ -n "$_key" ] || { say '  skipped — re-run pipebox-setup later.'; break; }
+        if pipe "$_key"; then break; fi
+        say '  that key did not work (expired?) — mint a fresh one and retry.'
+    done
+else
+    say "already signed in: $(pipe status 2>/dev/null | head -1)"
+fi
+
+
+# 1b. the box's OWN nick (#134)
+#
+# This is what lets ONE image serve every business instead of a bespoke build
+# per customer: NICK used to be baked into the shipped card at build time, so
+# the downloadable artifact was one pilot box's or nobody's.
+#
+# DERIVED, NOT PROMPTED, and the difference matters. The issue proposed a
+# prompt on the OWNER_NICK pattern, but the box's nick is not a free choice —
+# it is whatever the sign-in key in step 1 actually signed in as. Asking a
+# human to retype it invents a way for the card to disagree with the daemon,
+# and the symptom of that disagreement is an agent that cannot tell a message
+# about itself from a message about a sibling. So: read it back from the thing
+# that knows. The prompt survives only as the fallback for a box that skipped
+# sign-in, where there is genuinely nothing to read.
+_boxnick=$(pipe status 2>/dev/null | sed -n 's/^nick: \([^ ]*\).*/\1/p')
+[ "$_boxnick" = anon ] && _boxnick=''
+_curn=$(sed -n 's/^NICK=["]*\([^"]*\)["]*$/\1/p' "$CARD" 2>/dev/null)
+if [ -z "$_boxnick" ] && [ -z "$_curn" ]; then
+    say ''
+    say 'This box is not signed in, so it has no nick of its own yet. Leaving it'
+    say 'unset — re-run pipebox-setup after signing in and it fills itself in.'
+elif [ -n "$_boxnick" ] && [ "$_boxnick" != "$_curn" ]; then
+    case "$_boxnick" in
+        *[!A-Za-z0-9_.-]*) die "pipe reports a nick that is not a plain nick ('$_boxnick') — refusing to write it to the card" ;;
+    esac
+    if [ -f "$CARD" ]; then
+        sed -i "s/^NICK=.*/NICK=$_boxnick/" "$CARD"
+        if pipebox-card generate --card "$CARD"; then
+            say "  this box is: $_boxnick (card regenerated)"
+        else
+            die "card regeneration failed — /etc/pipeos is now inconsistent with $CARD"
+        fi
+    fi
+fi
+# 2. owner-approved settings (no-ops if already set; harmless when signed out)
+pipe set remember_login on >/dev/null 2>&1 || true
+pipe set agent_events on  >/dev/null 2>&1 || true
+
+# 3. who is the owner
+#
+# The owner nick goes into the CARD, not into pipebox.conf. pipebox.conf is
+# generated (#650); writing it directly here would be the first hand edit on a
+# brand-new box, and `pipebox-card verify` would then report the machine as
+# divergent from the moment it was provisioned.
+_cur=$(sed -n 's/^OWNER_NICK=["]*\([^"]*\)["]*$/\1/p' "$CARD" 2>/dev/null)
+say ''
+say 'Step 2: your own pipe nick. Only this nick can ask the agent to do real'
+say 'work; everyone else just gets conversation.'
+printf 'your nick%s> ' "${_cur:+ [$_cur]}"
+read -r _nick
+[ -n "$_nick" ] || _nick="$_cur"
+if [ -n "$_nick" ]; then
+    case "$_nick" in
+        *[!A-Za-z0-9_.-]*) die "'$_nick' is not a plain nick — refusing to write it to the card" ;;
+    esac
+    if [ -f "$CARD" ]; then
+        sed -i "s/^OWNER_NICK=.*/OWNER_NICK=$_nick/" "$CARD"
+        if pipebox-card generate --card "$CARD"; then
+            say "  owner set to: $_nick (card regenerated)"
+        else
+            die "card regeneration failed — /etc/pipeos is now inconsistent with $CARD"
+        fi
+    else
+        # pre-card box being upgraded in place: say so rather than silently
+        # writing the derived file and leaving a machine nobody can verify
+        say '  WARNING: no /etc/pipeos/card.conf on this box — writing the'
+        say '           derived conf directly. This box is not card-managed;'
+        say '           `pipebox-card verify` will report "cannot tell".'
+        sed -i "s/^OWNER_NICK=.*/OWNER_NICK=\"$_nick\"/" "$CONF"
+        say "  owner set to: $_nick"
+    fi
+    # DMs are contacts-only by policy; adding you is what lets the agent reply.
+    # NOTE: `pipe contacts` does not exist on clients before 0.41.18 — on the
+    # current fleet build this line fails and is swallowed. Reported, not hidden.
+    if ! pipe contacts add "$_nick" >/dev/null 2>&1; then
+        say "  note: could not add $_nick as a contact (client too old?) —"
+        say "        contacts-only DM policy may block the agent's replies."
+    fi
+fi
+
+# 3b. the team board (optional, GENERIC-era). A cohort wires the box to a
+#     shared board the whole team reads; without one the agent is DM-only,
+#     which is a fine way to start. Digits only — the id comes from
+#     `pipe cohorts` after the owner creates the cohort on the web/CLI.
+_curc=$(sed -n 's/^COHORT_ID=["]*\([^"]*\)["]*$/\1/p' "$CARD" 2>/dev/null)
+say ''
+say 'Step 3: team board (optional). If you have created a cohort for your'
+say 'team, enter its id; Enter to skip — the agent still answers DMs.'
+printf 'cohort id%s> ' "${_curc:+ [$_curc]}"
+read -r _cid
+[ -n "$_cid" ] || _cid="$_curc"
+if [ -n "$_cid" ] && [ -f "$CARD" ]; then
+    case "$_cid" in
+        *[!0-9]*) die "'$_cid' is not a numeric cohort id — refusing to write it to the card" ;;
+    esac
+    sed -i "s/^COHORT_ID=.*/COHORT_ID=$_cid/" "$CARD"
+    if pipebox-card generate --card "$CARD"; then
+        say "  cohort set to: $_cid (card regenerated; board watcher active)"
+    else
+        die "card regeneration failed — /etc/pipeos is now inconsistent with $CARD"
+    fi
+fi
+
+# 4+5. workdir trust + listener wake — shared with the web wizard, one
+# implementation (pipebox-claude-trust): headless claude -p stalls forever on
+# a trust dialog nobody is there to answer, and a restarted listener is what
+# picks up a fresh credential.
+pipebox-claude-trust
+
+# This console flow just signed pipe in — record that in the wizard's
+# declarative services file so selfcheck and the web UI agree with reality.
+if pipe status 2>/dev/null | grep -q '^nick: ' && ! pipe status 2>/dev/null | grep -q '^nick: anon'; then
+    if [ -f /etc/pipeos/services.conf ]; then
+        sed -i 's/^SERVICE_PIPE=.*/SERVICE_PIPE=on/;s/^SERVICE_CLAUDE=.*/SERVICE_CLAUDE=on/' /etc/pipeos/services.conf
+    else
+        printf 'SERVICE_PIPE=on\nSERVICE_CLAUDE=on\nSERVICE_STREAM=off\nSERVICE_AGY=off\nSERVICE_SUPPORT=off\n' \
+            > /etc/pipeos/services.conf
+    fi
+    rc-update add pipe-daemon default >/dev/null 2>&1 || true
+    rc-update add pipebox-listener default >/dev/null 2>&1 || true
+fi
+
+# 6. persist
+#
+# This is the step the whole script exists for: on a tmpfs root, anything not
+# committed here is gone at the next boot. It used to end `|| true`, with both
+# attempts silenced, so a box where persistence failed outright finished setup
+# printing the same success text as one where it worked — and the operator
+# found out at the next reboot, when their nick and their config were gone.
+#
+# A guard that cannot evaluate must refuse (#580). This one cannot refuse
+# — setup has already written the config and there is nothing to roll back —
+# so it does the next honest thing: it says so, loudly, and exits non-zero.
+_saved=no
+if command -v pipeos-save >/dev/null 2>&1; then
+    if pipeos-save; then
+        _saved=yes
+    else
+        say "  pipeos-save failed; falling back to lbu commit"
+    fi
+fi
+if [ "$_saved" = no ] && lbu commit; then
+    _saved=yes
+fi
+if [ "$_saved" = no ]; then
+    say ''
+    say 'SETUP DID NOT PERSIST. Your answers are live in RAM and will be gone'
+    say 'at the next boot. The output above says why. Fix it and re-run'
+    say 'pipeos-save (or `pipeos verify` to see what the box thinks).'
+    exit 1
+fi
+
+say ''
+if pipe status 2>/dev/null | grep -q '^nick: anon'; then
+    say 'Not signed in yet — the agent is idle. Re-run pipebox-setup when you'
+    say 'have a key.'
+else
+    _box=$(pipe status 2>/dev/null | sed -n 's/^nick: \([^ ]*\).*/\1/p')
+    say "Done. DM ${_box:-this box} from any pipe client and the agent answers."
+fi

@@ -1,0 +1,766 @@
+#!/bin/sh
+# pipeos-selfcheck — boot-time health check: remediate, then report.
+#
+# Launched (backgrounded) by /etc/init.d/pipeos-selfcheck once the default
+# runlevel is up. The 2026-08-05 power loss showed this box can come back
+# wounded and silent: packages missing, daemons down, nobody told. This
+# script fixes what it can, DMs the owner the verdict, and — only when
+# nothing is CRITICAL — promotes the canonical apkovl to known-good.
+
+# Only --boot (passed by the init.d hook) opts into changing anything. A bare
+# hand-run observes and prints: it writes no file, starts no service, installs
+# no package, touches neither /work nor the boot media, and sends no DM. Every
+# remediation it declined is reported as "would fix", so read-only does not
+# mean quiet. See pipeOS#13.
+#
+# Gating only the DM and the known-good promotion is not enough, which is what
+# the first pass at #13 did: the mount fixup, the state-dir mkdir, consuming
+# the clean-shutdown marker, the daemon starts and `apk fix` all ran before
+# that gate, so a hand-run still mutated the box. #13 asks for "safe to run any
+# time, by anyone, on any box", and that is the whole of it.
+BOOT=no
+case "$1" in
+    --boot) BOOT=yes ;;
+esac
+
+LOG=/work/logs/selfcheck.log
+MARKER=/work/.pipeos/clean-shutdown
+FLAG=/work/pipebox/state/selfcheck-attention   # daily pipebox-report notices this
+MEDIA=/media/usb
+OVL=$MEDIA/pipeos.apkovl.tar.gz
+KNOWN_GOOD=$MEDIA/pipeos.known-good.tar.gz
+
+R=$(mktemp)
+ncrit=0; nstate=0; nfix=0; nwarn=0; nwould=0
+crit()  { echo "CRITICAL: $*" >> "$R"; ncrit=$((ncrit+1)); }
+# A CRITICAL about the FLEET's state rather than about whether this boot came
+# up healthy. Reported at full severity — it is a critical in the report, in
+# the verdict and in the DM — but it does NOT gate the known-good promotion in
+# section 6, and the reason is section 6's own rule: a finding that does not
+# make the *state* bad must not freeze known-good forever.
+#
+# box1 found this on review of #97 and the argument is exact. "Behind main"
+# says nothing about this boot; main moves most days; OVERLAY_CRIT_DAYS
+# defaults to 3; and the cure is a verb the agent on the box is fenced from,
+# so the box cannot clear it by itself. Gating on it makes ncrit>=1 the steady
+# state — and the box running old code, which is the one most likely to need a
+# rollback, is exactly the box that would stop maintaining a rollback anchor.
+# That turns a staleness WARNING into an availability defect. Any check that
+# reports a condition the box cannot itself remediate belongs here.
+critstate() { echo "CRITICAL: $*" >> "$R"; nstate=$((nstate+1)); }
+fixed() { echo "fixed: $*"    >> "$R"; nfix=$((nfix+1)); }
+warnn() { echo "warn: $*"     >> "$R"; nwarn=$((nwarn+1)); }
+# The hand-run counterpart to fixed(): names the remediation that was skipped
+# rather than performing it. An operator inspecting a sick box needs to know
+# what the boot path *would* have done — silence there reads as "nothing to
+# fix", which is the same wrong answer #13 is about.
+would() { echo "would fix: $*" >> "$R"; nwould=$((nwould+1)); }
+log()   { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG" 2>/dev/null; }
+
+# ---- 1. /work first — the marker and the log both live on it
+if mountpoint -q /work; then
+    :
+elif [ "$BOOT" = yes ]; then
+    # poll: device enumeration can lag well past service start
+    _i=0
+    until dev=$(findfs LABEL=PIPEWORK 2>/dev/null); do
+        _i=$((_i+1)); [ "$_i" -ge 60 ] && break; sleep 1
+    done
+    [ -n "$dev" ] && mount -o noatime "$dev" /work 2>/dev/null
+    if mountpoint -q /work; then
+        fixed "/work was not mounted; mounted it"
+    else
+        crit "/work not mounted and could not mount it (LABEL=PIPEWORK missing?)"
+    fi
+else
+    # Still CRITICAL — an unmounted /work is the condition, not the mount
+    # attempt. The hand-run just reports it instead of correcting it, and
+    # does not spend 60s polling for a device it will not mount.
+    crit "/work not mounted"
+    would "mount LABEL=PIPEWORK on /work"
+fi
+# Creating the state dirs is a write, so it waits for --boot too. Everything
+# under them (LOG, FLAG) is written only on the boot path anyway.
+[ "$BOOT" = yes ] && mkdir -p /work/.pipeos /work/logs /work/pipebox/state 2>/dev/null
+
+# ---- 1b. /work is the declared block device, not just "something mounted
+# there" (pipe#650 item 11). box0's /work was tmpfs silently masking an
+# unmounted PIPEWORK partition; `mountpoint -q /work` was true the whole
+# time, so section 1's check above would not have caught it — a tmpfs
+# mount is still a mountpoint. LABEL=PIPEWORK is the declared device (same
+# label section 1 already searches for); confirm the live backing device
+# actually resolves to it. Read-only: this only reports, never remounts —
+# swapping a live /work out from under running writes is not something a
+# health check should do to itself.
+if mountpoint -q /work; then
+    _want=$(findfs LABEL=PIPEWORK 2>/dev/null)
+    # /proc/mounts, not findmnt: findmnt does not ship on pipeOS (the image's
+    # util-linux-misc carries findfs only), so the old findmnt lookup came
+    # back EMPTY on every box and this check reported a definite mismatch —
+    # "mounted from unknown" — on every boot, fleet-wide (found on basho0's
+    # first boot report, 2026-08-28). /proc/mounts is the same kernel truth
+    # and needs nothing installed; last matching line wins, the same rule as
+    # 70-flash.sh's root_source(). "Cannot read the source" is now its own
+    # answer instead of dressing up as a mismatch.
+    _have=$(awk '$2 == "/work" { src = $1 } END { print src }' /proc/mounts 2>/dev/null)
+    if [ -z "$_want" ]; then
+        crit "/work is mounted but LABEL=PIPEWORK does not resolve to any device"
+    elif [ -z "$_have" ]; then
+        crit "/work is a mountpoint but /proc/mounts shows no entry for it — cannot verify the backing device"
+    elif [ "$_have" != "$_want" ]; then
+        crit "/work is mounted from $_have, not the declared device $_want (LABEL=PIPEWORK) — writes may not persist across reboot"
+    fi
+fi
+
+# ---- 1c. chassis anchor (appliance plan, decision 2). Identity rides the
+# stick: move a stick to another machine and the box's whole identity moves
+# with it, and before this check nothing on any box said so — a swap was a
+# silent identity transplant. The card's MAC is the chassis this box was
+# surveyed into; assert some live NIC actually carries it. WARN, not CRIT:
+# the box cannot remediate it, and the swap may be deliberate — a rehomed
+# stick is fixed by updating the card's MAC, not by anything this box can do.
+# Parsed, never sourced, same rule as every other card read.
+_card_mac=$(sed -n 's/^MAC=//p' /etc/pipeos/card.conf 2>/dev/null | head -1 | tr 'A-F' 'a-f')
+if [ -n "$_card_mac" ]; then
+    if cat /sys/class/net/*/address 2>/dev/null | grep -qxF "$_card_mac"; then
+        :
+    else
+        warnn "chassis mismatch: card MAC $_card_mac is on no NIC here — this stick appears to be in a different machine's chassis (stick rehomed? update the card's MAC and serials.txt)"
+    fi
+fi
+
+# ---- 1d. provisioning is a DISPLAYED state, not an inference (appliance
+# plan, decision 3). pipeos-save exits 0 without /etc/pipeos/provisioned, so
+# a box abandoned mid-walkthrough never persists anything — and used to
+# never say so: the operator found out at the next reboot, when the box's
+# answers were gone. The issue/motd banner shows it at the console; this
+# line puts it in every boot report.
+if [ ! -f /etc/pipeos/provisioned ]; then
+    warnn "UNPROVISIONED: autosave is OFF (no /etc/pipeos/provisioned) — nothing done on this box survives a reboot; finish pipebox-setup (or bake a card: make stick)"
+fi
+
+# ---- 2. how did the last run end? (marker readable only once /work is up)
+if dmesg 2>/dev/null | grep -qi 'EXT4-fs.*recover'; then
+    down="power loss / hard reset (ext4 journal recovery ran)"
+elif [ -f "$MARKER" ]; then
+    down="clean shutdown"
+else
+    down="unclean (no clean-shutdown marker; first boot on this scheme?)"
+fi
+# Consuming the marker is what makes it mean "the *last* run"; a hand-run
+# that ate it would make the next boot report an unclean shutdown that never
+# happened. Boot-only, and not merely because it is a write.
+[ "$BOOT" = yes ] && rm -f "$MARKER" 2>/dev/null
+
+# ---- 3. daemons (remediate: start what should be running)
+# WHICH daemons should be running is declared, not assumed: the wizard writes
+# /etc/pipeos/services.conf and this check reads it. pipe is a service a box
+# opts into, not its spine — a client box with pipe off must not read
+# DEGRADED forever (the old hardcoded pair did exactly that). A box with no
+# services.conf predates the wizard: that is a fleet box, and the legacy
+# assumption (pipe on) is the safe reading for it.
+SERVICE_PIPE=on SERVICE_CLAUDE=on SERVICE_STREAM=off SERVICE_AGY=off SERVICE_SUPPORT=off
+# shellcheck disable=SC1091
+[ -r /etc/pipeos/services.conf ] && . /etc/pipeos/services.conf 2>/dev/null
+want_svcs="pipeos-web pipeos-mdns"
+[ "$SERVICE_PIPE" = on ] && want_svcs="$want_svcs pipe-daemon"
+# the listener is the pipe→claude bridge: it needs BOTH ends switched on
+[ "$SERVICE_PIPE" = on ] && [ "$SERVICE_CLAUDE" = on ] && want_svcs="$want_svcs pipebox-listener"
+[ "$SERVICE_STREAM" = on ] && want_svcs="$want_svcs pipeos-stream"
+[ "${SERVICE_SUPPORT:-off}" = on ] && want_svcs="$want_svcs pipeos-support"
+# Declared vs enforced: the wizard mirrors services.conf into rc-update, and
+# the two drifting apart is exactly the hand-maintained-state failure this
+# repo keeps refinding. Observe-only — the wizard owns the mirror.
+if [ -r /etc/pipeos/services.conf ] && command -v rc-update >/dev/null 2>&1; then
+    _rl=$(rc-update show default 2>/dev/null)
+    for svc in $want_svcs; do
+        # pipeos-web/mdns ship in the image's runlevel; only report toggles
+        case "$svc" in pipeos-web|pipeos-mdns) continue ;; esac
+        echo "$_rl" | grep -qw "$svc" \
+            || warnn "$svc enabled in services.conf but not in the default runlevel — a reboot will not start it (re-toggle it in the web UI, or rc-update add $svc default)"
+    done
+fi
+# `status` observes; `start` mutates. Only the second waits for --boot, so a
+# hand-run still reports a down daemon — which is the thing an operator ran
+# this for.
+for svc in $want_svcs; do
+    if rc-service "$svc" status >/dev/null 2>&1; then
+        :
+    elif [ "$BOOT" != yes ]; then
+        crit "$svc down"
+        would "start $svc"
+    elif rc-service "$svc" start >/dev/null 2>&1; then
+        fixed "$svc was down; started it"
+    else
+        crit "$svc down and would not start"
+    fi
+done
+
+# ---- 3b. auth: a live daemon with a revoked token is not healthy. Per
+# pipe#641 it silently destroys every inbound sealed message, and it is
+# exactly what stops the boot report (section 8) from reaching the owner —
+# the same check feeds both. Boot mode gets the same patience section 8
+# already gave a freshly-started daemon ("it may still be signing in"); a
+# hand-run checks once, since there is no boot-time signin race to wait out.
+# See pipeOS#19. A box with pipe OFF has no auth to assert — skip, don't crit.
+auth_ok="" authj=""
+if [ "$SERVICE_PIPE" = on ]; then
+    _i=0
+    while :; do
+        authj=$(pipe status -o json 2>/dev/null)
+        auth_ok=$(echo "${authj:-}" | jq -r '.status.authenticated // empty' 2>/dev/null)
+        [ "$auth_ok" = "true" ] && break
+        [ "$BOOT" != yes ] && break
+        _i=$((_i+1)); [ "$_i" -ge 24 ] && break; sleep 5
+    done
+    if [ "$auth_ok" = "true" ]; then
+        :
+    elif [ -n "$authj" ]; then
+        aerr=$(echo "$authj" | jq -r '.status.auth_error // empty' 2>/dev/null)
+        crit "pipe daemon unauthenticated${aerr:+ ($aerr)}"
+    else
+        crit "pipe status did not answer (daemon down or still signing in)"
+    fi
+fi
+
+# ---- 3b2. the operator's way in. sshd is key-only (client posture), so a
+# missing/empty authorized_keys means the next connection attempt is refused
+# and the box is unreachable by shell — exactly what happened on basho0
+# (2026-08-29): the key vanished mid-uptime, unexplained, and nothing said so
+# until an operator bounced off "Permission denied". A backup lives on /work
+# so remediation is possible; do it at boot, warn loudly on a hand-run.
+if [ ! -s /root/.ssh/authorized_keys ]; then
+    if [ -s /work/.authorized_keys.backup ]; then
+        if [ "$BOOT" = yes ]; then
+            mkdir -p /root/.ssh && chmod 700 /root/.ssh
+            if cp /work/.authorized_keys.backup /root/.ssh/authorized_keys \
+               && chmod 600 /root/.ssh/authorized_keys; then
+                fixed "authorized_keys was missing/empty; restored from /work backup"
+            else
+                crit "authorized_keys missing and the /work backup would not restore — box is unreachable by ssh"
+            fi
+        else
+            crit "authorized_keys missing/empty (backup exists on /work)"
+            would "restore /root/.ssh/authorized_keys from /work/.authorized_keys.backup"
+        fi
+    else
+        crit "authorized_keys missing/empty and no /work backup — with key-only sshd this box is unreachable by shell"
+    fi
+elif [ ! -s /work/.authorized_keys.backup ] && mountpoint -q /work; then
+    # seed the backup the first time a healthy key is seen
+    cp /root/.ssh/authorized_keys /work/.authorized_keys.backup 2>/dev/null \
+        && log "seeded /work/.authorized_keys.backup"
+fi
+
+# ---- 3c. claude: with pipe off there is no listener to probe, but "the
+# Claude service is on and has no credential" is still a box that cannot do
+# its job — a WARN, not a crit: the wizard's sign-in step is skippable and
+# the dashboard says how to finish.
+if [ "$SERVICE_CLAUDE" = on ]; then
+    if [ ! -s /etc/pipeos/claude-auth.env ] && [ ! -s /root/.claude/.credentials.json ]; then
+        warnn "Claude is enabled but has no credential (no claude-auth.env, no /root/.claude/.credentials.json) — finish the Claude step in the web wizard"
+    fi
+fi
+
+# ---- 3d. update-path health (#116). The last outage ran five days with zero
+# signal because nothing asserted the path worked; this is that signal. File
+# checks only — no network at boot: the daily cron run writes the stamp and
+# the log, and this reads what they left.
+_suc=/etc/pipeos/selfupdate.conf
+if [ -r "$_suc" ]; then
+    UPDATE_URL="" UPDATE_RELEASE_URL=""
+    # shellcheck disable=SC1090
+    . "$_suc" 2>/dev/null
+    if [ -n "${UPDATE_RELEASE_URL:-}${UPDATE_URL:-}" ]; then
+        _stamp=/work/.pipeos/selfupdate.applied
+        _sulog=/work/logs/selfupdate.log
+        if [ ! -f "$_stamp" ]; then
+            warnn "self-update is configured but has never applied anything — check $_sulog"
+        elif [ -n "$(find "$_stamp" -mtime +14 2>/dev/null)" ]; then
+            warnn "self-update has not applied anything in >14 days — origin dead or stuck? see $_sulog"
+        fi
+        case "$(tail -1 "$_sulog" 2>/dev/null)" in *ERROR*)
+            warnn "last self-update run ERRORED: $(tail -1 "$_sulog" | cut -c1-140)" ;;
+        esac
+    fi
+fi
+
+# ---- 4. will a reboot reproduce this state? (covers the incident: media
+# repo coherence, world resolution, all packages installed, apkovl readable)
+# `pipeos verify` only reads; `apk fix` installs, so it is the boot-only half.
+if vout=$(pipeos verify 2>&1); then
+    :
+elif [ "$BOOT" != yes ]; then
+    crit "pipeos verify FAIL: $(echo "$vout" | grep '^FAIL' | head -3 | tr '\n' '; ')"
+    would "run apk fix to repair the boot path from the media repos"
+else
+    apk fix >/dev/null 2>&1 && log "verify failed; ran apk fix"
+    if vout=$(pipeos verify 2>&1); then
+        fixed "boot path was broken; apk fix repaired it from the media repos"
+    else
+        crit "pipeos verify FAIL: $(echo "$vout" | grep '^FAIL' | head -3 | tr '\n' '; ')"
+    fi
+fi
+
+# ---- 5. disk pressure (pipeOS#41). Thresholds are card-declared
+# (DISK_WARN_PCT / DISK_CRIT_PCT) because a 53G box and a 25G box hitting the
+# same percentage have very different GB of headroom left — box1 measured a
+# single cargo incremental cache eating 24G (60% of ALL disk on that box) in
+# one busy day, and nothing warned before the owner happened to look at a
+# dashboard. Falls back to 70/85 when the card leaves them unset (unprovisioned
+# boxes, or boxes not yet carrying this field), well below the old 90/95 that
+# let box1 reach 79% in silence. /work also holds this agent's own state
+# (/work/claude/projects — transcripts, file memory), so losing it is not just
+# a stalled build, it is losing the box's ability to report the problem — the
+# reason this is a crit near the top end and not just a warn.
+_dp_conf=/etc/pipeos/pipebox.conf
+[ -r "$_dp_conf" ] && . "$_dp_conf" 2>/dev/null
+disk_warn=${DISK_WARN_PCT:-70}
+disk_crit=${DISK_CRIT_PCT:-85}
+use=$(df /work 2>/dev/null | awk 'NR==2{print $5+0}')
+if [ "${use:-0}" -ge "$disk_crit" ] || [ "${use:-0}" -ge "$disk_warn" ]; then
+    # Named, not just a percentage: "full-ish disk" with no culprit is exactly
+    # how box1's 24G incremental cache went unnoticed. `du` here is read-only
+    # (no writes, nothing mutated) and is only run once a threshold is already
+    # crossed, so a healthy box never pays for it. Depth-1 under /work finds
+    # the big-ticket subtree (e.g. repos/); a second pass one level into
+    # repos/*/target catches the specific cargo cache pattern box1 found,
+    # without hardcoding it as the only thing this check can name.
+    top=$(du -xsk /work/*/ 2>/dev/null | sort -rn | head -1)
+    topt=$(du -xsk /work/repos/*/target 2>/dev/null | sort -rn | head -1)
+    culprit="top consumer: ${top:-unknown}"
+    [ -n "$topt" ] && culprit="$culprit; ${topt}"
+    if [ "${use:-0}" -ge "$disk_crit" ]; then
+        crit "/work ${use}% full (>= ${disk_crit}% crit) — $culprit"
+    else
+        warnn "/work ${use}% full (>= ${disk_warn}% warn) — $culprit"
+    fi
+fi
+free=$(df -k "$MEDIA" 2>/dev/null | awk 'NR==2{printf "%d", $4/1024}')
+[ "${free:-0}" -lt 300 ] && warnn "boot media only ${free}MB free"
+
+# ---- 5b. agent state layout. root/.claude/projects is meant to be a symlink
+# onto /work so transcripts never reach the apkovl; lbu.list also excludes it
+# defensively, but an unmigrated box should say so rather than silently bloat.
+# A DANGLING link is worse than no link: agent memory is then unreachable.
+#
+# THE ABSENT CASE IS THE ONE THAT MATTERS AT BOOT, and it used to fall through
+# both arms in silence (pipeOS#80). On an unmigrated box `projects` is a real
+# directory, and lbu.list keeps it OUT of the apkovl — the `+root/.claude/
+# projects` include is self-limiting (lbu's `_gen_filelist` re-adds a `+` path
+# only when it is a symlink or a plain file) and the `-` line excludes the
+# tree. So at boot the path does not exist at all: not a symlink, not a
+# directory, and neither arm above fires. `claude` then creates it as a real
+# directory on its first run, long after this check has already passed.
+#
+# That made this check structurally blind on exactly the boxes it exists to
+# find. box3 booted 2026-08-10 20:28 and logged "all green" — the verdict is
+# only "all green" when nwarn is 0 — while `/root/.claude/projects` was a real
+# tmpfs directory the whole time. Three of four boxes are in that state.
+#
+# Absence is a clean signal precisely BECAUSE of the include above: on a
+# migrated box the symlink itself rides in the apkovl and is restored, so it
+# exists at boot. Absent here therefore means unmigrated, not "too early".
+if [ -L /root/.claude/projects ]; then
+    [ -d /root/.claude/projects/ ] || \
+        crit "/root/.claude/projects symlink target missing — agent memory unreachable"
+elif [ -d /root/.claude/projects ]; then
+    warnn "/root/.claude/projects is a real directory, not a symlink onto /work — transcripts land in the apkovl (migrate copy-first: link-first destroys agent memory)"
+elif [ -d /root/.claude ]; then
+    # Guarded on /root/.claude existing so a box with no agent installed at
+    # all stays quiet — this is about an agent box that is unmigrated, not
+    # about every machine that has never run claude.
+    warnn "/root/.claude/projects does not exist at boot — on a migrated box the symlink is restored from the apkovl, so its absence means this box is UNMIGRATED: claude will create a real directory on tmpfs and every transcript and memory file will die at the next reboot (pipeOS#80)"
+fi
+
+# ---- 5c. does this box still match its own model card? (pipe#650)
+#
+# `pipebox-card verify` is read-only and its exit codes are a stable API, so
+# this is an observation and runs on the hand-run path too — same rule as
+# `pipeos verify` above. There is no remediation half: regenerating writes
+# /etc/pipeos/*, which is `pipebox-card generate`'s job under an operator, not
+# something a health check should do to a running box behind its back.
+#
+# Exit 2 is deliberately NOT a failure. It means "cannot tell" — no card, or
+# no stamp — which is exactly true of every box provisioned before the card
+# path existed. Grading that as a fault would make the check cry wolf on the
+# whole fleet on day one, and a check nobody believes is worse than no check.
+if command -v pipebox-card >/dev/null 2>&1; then
+    cout=$(pipebox-card verify 2>&1); crc=$?
+    case "$crc" in
+        0) : ;;
+        1) crit "model card divergence: $(echo "$cout" | grep '^FAIL' | head -3 | tr '\n' '; ')"
+           note_fix="run 'pipebox-card generate' (operator; it writes /etc)"
+           [ "$BOOT" = yes ] || would "$note_fix" ;;
+        *) warnn "cannot verify the model card (exit $crc) — not card-provisioned, or never generated" ;;
+    esac
+fi
+
+# ---- 5cc. is this box running the overlay that was merged? (pipeOS#97)
+#
+# THE NUMBER THIS EXISTS FOR IS FOUR. #51/#62/#63/#71 were merged 2026-08-10
+# and 08-11 and ran on zero boxes until 2026-08-15 — three of the four boxes
+# were dead that entire time on a bug that was already fixed in main. Nothing
+# on any box said so. `pipeos status` did carry an overlay-drift WARN, but it
+# counted files against whatever branch the local checkout was on, so on a box
+# mid-review it was noise, and warnings that are usually noise are not read.
+#
+# So this asks a different question, against a different reference: what
+# commit did `pipeos deploy-overlay` last install here, and how far is main
+# ahead of it? Any undeployed commit warns at once; OVERLAY_CRIT_DAYS (card,
+# default 3) is where an old one becomes CRITICAL, because an undeployed fix
+# is how this fleet dies quietly and a warning alone was not enough to stop it.
+#
+# Read-only, and never fetches: this runs at boot, before the network is up,
+# so it reads the local checkout only. That means it UNDERSTATES how far
+# behind a box is when the checkout is stale — an understatement that gets
+# corrected at the next fetch, rather than a fabricated reassurance.
+_ov_stamp=/etc/pipeos/.overlay-stamp
+_ov_repo=${PIPEOS_REPO:-/work/repos/pipeOS}
+_ov_ref=${PIPEOS_BASE_REF:-origin/main}
+_ov_crit=${OVERLAY_CRIT_DAYS:-3}          # $_dp_conf was sourced in section 5
+if [ ! -r "$_ov_stamp" ]; then
+    # Absence is a finding, not a pass: every box provisioned before this
+    # existed is in exactly the state #97 was filed about — an overlay of
+    # unknown age, hand-copied, with no record of what it came from.
+    [ -d "$_ov_repo/.git" ] && \
+        warnn "no overlay deploy record ($_ov_stamp) — this box's overlay was hand-copied and its age is unknown (run 'pipeos deploy-overlay', operator)"
+elif [ ! -d "$_ov_repo/.git" ]; then
+    warnn "cannot check overlay freshness: no pipeOS checkout at $_ov_repo"
+else
+    _ov_c=$(sed -n 's/^commit //p' "$_ov_stamp" | head -1)
+    if ! git -C "$_ov_repo" rev-parse --verify -q "$_ov_c^{commit}" >/dev/null 2>&1; then
+        warnn "deployed overlay commit ${_ov_c:-<none>} is not in the local checkout — cannot tell how old this overlay is"
+    elif _ov_tip=$(git -C "$_ov_repo" rev-parse --verify -q "$_ov_ref^{commit}" 2>/dev/null); then
+        # Same one-line fix as pipeos:overlay_behind, and for the same reason:
+        # `rev-list --count c..tip` is 0 when the tip is an ancestor of c, so a
+        # box deployed from an UNMERGED commit cut off main's tip reports
+        # nothing at all. This PR makes `--from <branch>` easy, so it makes
+        # that state easy too, and the check that was supposed to notice it is
+        # the one blind to it.
+        _ov_n=$(git -C "$_ov_repo" rev-list --count "$_ov_c..$_ov_tip" 2>/dev/null || echo 0)
+        if ! git -C "$_ov_repo" merge-base --is-ancestor "$_ov_c" "$_ov_tip" 2>/dev/null; then
+            warnn "deployed overlay commit $(echo "$_ov_c" | cut -c1-12) is NOT on $_ov_ref — this box is running an overlay that was never merged"
+        elif [ "${_ov_n:-0}" -gt 0 ]; then
+            # Age of the OLDEST undeployed commit — how long the fleet has
+            # been missing the fix, not how recently someone merged.
+            _ov_old=$(git -C "$_ov_repo" log --format=%ct "$_ov_c..$_ov_tip" 2>/dev/null | tail -1)
+            _ov_days=0
+            [ -n "$_ov_old" ] && _ov_days=$(( ($(date +%s) - _ov_old) / 86400 ))
+            _ov_what="$_ov_n commit(s) behind $_ov_ref, oldest undeployed merged ${_ov_days}d ago"
+            if [ "$_ov_days" -ge "$_ov_crit" ]; then
+                critstate "overlay is stale: $_ov_what (>= ${_ov_crit}d) — deploy it (operator: pipeos deploy-overlay)"
+            else
+                warnn "overlay is behind: $_ov_what"
+            fi
+        fi
+    else
+        warnn "no $_ov_ref in $_ov_repo — cannot tell how old this overlay is"
+    fi
+fi
+
+# ---- 5d. cohort-watch could-not-start vs nothing-to-do (pipeOS#44)
+#
+# `pipebox-cohort-watch` (cron, every 2 min) drops a timestamp in
+# cohort-*.startfail whenever `claude -p` fails to even start — rc 126/127
+# (exec error) or rc=1, which is what a shared session-pool exhaustion looks
+# like from here. That file is cleared on the next successful start. Its
+# presence is exactly the "agent could not run" condition that pipeOS#44
+# says must not look identical to "nothing to do": without it, an exhausted
+# session pool and a quiet board are indistinguishable from outside the box.
+#
+# Read-only observation on both paths — there is nothing to remediate here,
+# only to report; the fix is either the next cron tick succeeding on its own
+# (rc=1/126/127 already retry without advancing $SEEN) or a human addressing
+# the shared token. A stale startfail (older than 30 min, i.e. well past the
+# 15-min backoff pipebox-cohort-watch uses for rc=1) means it's not just a
+# single blip.
+for sf in /work/pipebox/state/cohort-*.startfail; do
+    [ -e "$sf" ] || continue
+    ts=$(cat "$sf" 2>/dev/null)
+    now=$(date -u +%s)
+    if [ -n "$ts" ] && [ "$((now - ts))" -ge 1800 ] 2>/dev/null; then
+        crit "cohort-watch ($sf): claude -p has failed to start for $(( (now - ts) / 60 ))min — agent could not run, not just idle (pipeOS#44)"
+    else
+        warnn "cohort-watch ($sf): claude -p failed to start on the last tick — agent could not run (pipeOS#44)"
+    fi
+done
+
+# ---- 5e. apk index signing trust — loud, not silent (pipe#650 item 10).
+# box0's /etc/apk/keys lacked the pipebox signing pubkey, so the index read
+# UNTRUSTED and apk silently kept an old package version — no error, just a
+# quiet pin. Read-only on both paths, same as 5c: this observes, it does not
+# install a key (that is an operator/provisioning action, not a health-check
+# remediation).
+if [ -z "$(ls -A /etc/apk/keys 2>/dev/null)" ]; then
+    crit "no apk signing keys in /etc/apk/keys — index reads UNTRUSTED and apk silently falls back to whatever is already installed"
+else
+    akout=$(apk update 2>&1)
+    if echo "$akout" | grep -qi 'untrusted'; then
+        crit "apk index UNTRUSTED: $(echo "$akout" | grep -i untrusted | head -3 | tr '\n' '; ')"
+    fi
+fi
+
+# ---- 5f. default route present (pipe#650 item 12). Not a card field and not
+# remediated here — udhcpc has been seen to drop the default route on link
+# bounce (pipeOS#645) and the fix belongs in the base image/network config.
+# This just makes the symptom visible instead of a silently degraded box.
+if ! ip route show default 2>/dev/null | grep -q default; then
+    warnn "no default route — network reachability degraded (udhcpc route-drop, see pipeOS#645)"
+fi
+
+# ---- 5g. the declared toolchain actually BUILDS (pipe#650 item 7).
+#
+# The acceptance criterion names its own counter-example: `cargo --version`
+# answered fine on three boxes whose linker was broken, three times, so a
+# version string is not evidence and this check does not accept one. It
+# compiles a real artifact and looks for the artifact.
+#
+# Card-declared and skipped when empty: a TEST or SHIP box that compiles
+# nothing must not be told its missing toolchain is a fault. Read-only in the
+# sense that matters — it builds into a temp dir and removes it; it never
+# installs, and provisioning a missing toolchain is the generator's job.
+#
+# A PURE-RUST PROBE IS NOT ENOUGH, and that is pipeOS#52 (found by box3).
+# After a reboot box3 could still `rustc` a Rust file to a working binary while
+# `cargo test` died in cc-rs on "stdint.h: No such file or directory" — the
+# tmpfs root's libc headers were gone (machine notes §1: apk-added live, never
+# in world). Compile and link both worked; the HEADER path was missing.
+#
+# So the probe this section exists to be — "a version string is not evidence" —
+# was itself blind one layer down, on the exact box that proved it. A box
+# declaring `cargo` is declaring it can build the workspace, and this workspace
+# has C build scripts (ring is transitive to both relay crates). So `cargo`
+# additionally requires a C compile of a file that includes a system header.
+#
+# Verified to discriminate rather than assumed: with the system include path
+# hidden, the Rust probe still passes with a real artifact while the C probe
+# fails with "no include path in which to search for stdint.h".
+#
+# THE PROBE RUNS A BARE `cc`, AND THAT IS DELIBERATE. It took three attempts
+# to land on that, so the reasoning is recorded rather than left to be
+# rediscovered by whoever next thinks it looks wrong.
+#
+# `/work/buildroot/env.sh` documents that buildroot's gcc needs
+# `CFLAGS=--sysroot=/work/buildroot` to find libc headers, and exports it.
+# That file is real, correct, and — this is the part that decides it —
+# **NOTHING SOURCES IT**. `pipebox-cohort-watch` and `pipebox-listener`, the
+# two scripts that start every unattended agent, each export
+# `PATH=/work/buildroot/usr/bin:$PATH` and nothing else; a grep across
+# `overlay/`, `scripts/` and `.github/` for `env.sh` or `CFLAGS` finds those
+# PATH lines and no other caller.
+#
+# So a bare `cc` is EXACTLY what the agent gets. An earlier version of this
+# check sourced env.sh, on the theory that it was the documented build
+# procedure; that made the probe test an environment no agent ever runs in,
+# which is the original blindness in mirror image — it would have reported
+# healthy on a box whose agent genuinely cannot build. Reverted.
+#
+# The proof is box3: started by cohort-watch, its `cargo` died in cc-rs on
+# exactly this, which is a measurement of the agent's environment rather than
+# a hypothesis about it. A CRIT there is a TRUE positive.
+#
+# Note also that which way a bare `cc` goes is box-specific — box1 and box0
+# have `/usr/include/stdint.h` on their tmpfs roots and box3 does not — so the
+# check reports a real per-box difference rather than a fleet-wide constant.
+#
+# The live defect this leaves is not in this file: `pipebox-cohort-watch`'s own
+# comment says putting buildroot on PATH lets "a BUILD/TEST box's agent run
+# cargo/rustc/cc", which is false on box3, because PATH alone does not carry
+# the sysroot. Either that script sources env.sh or the headers belong in
+# `world`; both fix it, and this check reports the symptom under either.
+_tc_conf=/etc/pipeos/pipebox.conf
+[ -r "$_tc_conf" ] && . "$_tc_conf" 2>/dev/null
+if [ -n "${TOOLCHAIN:-}" ]; then
+    for _probe in $(echo "$TOOLCHAIN" | tr ',' ' '); do
+        case "$_probe" in
+            cargo|rustc)
+                if ! command -v "$_probe" >/dev/null 2>&1; then
+                    crit "card declares TOOLCHAIN=$_probe but $_probe is not on PATH"
+                    continue
+                fi
+                _tcd=$(mktemp -d) || continue
+                printf 'fn main() { println!("ok"); }\n' > "$_tcd/p.rs"
+                # rustc is the link step for both names: a broken linker fails
+                # here and answers a --version probe, which is the whole point.
+                if rustc -o "$_tcd/p" "$_tcd/p.rs" >"$_tcd/err" 2>&1 && [ -x "$_tcd/p" ]; then
+                    :
+                else
+                    crit "card declares TOOLCHAIN=$_probe and $_probe --version answers, but a real compile FAILS: $(head -2 "$_tcd/err" 2>/dev/null | tr '\n' ' ')"
+                fi
+                # cargo means "builds the workspace", and the workspace has C
+                # build scripts. Rust alone passing proves nothing about them
+                # (pipeOS#52). Only for cargo: a bare `rustc` declaration is a
+                # narrower claim and this would be answering a question the
+                # card did not ask.
+                if [ "$_probe" = cargo ]; then
+                    if ! command -v cc >/dev/null 2>&1; then
+                        crit "card declares TOOLCHAIN=cargo but there is no cc — the workspace's C build scripts cannot run"
+                    else
+                        printf '#include <stdint.h>\nint main(void){ return (int)(uint8_t)0; }\n' > "$_tcd/p.c"
+                        if cc -o "$_tcd/pc" "$_tcd/p.c" >"$_tcd/cerr" 2>&1 && [ -x "$_tcd/pc" ]; then
+                            :
+                        else
+                            crit "card declares TOOLCHAIN=cargo and Rust compiles, but a C compile including <stdint.h> FAILS — build scripts (cc-rs) cannot build: $(head -2 "$_tcd/cerr" 2>/dev/null | tr '\n' ' ')"
+                        fi
+                    fi
+                fi
+                rm -rf "$_tcd"
+                ;;
+            *)
+                if ! command -v "$_probe" >/dev/null 2>&1; then
+                    crit "card declares TOOLCHAIN=$_probe but $_probe is not on PATH"
+                elif ! "$_probe" --version >/dev/null 2>&1; then
+                    crit "card declares TOOLCHAIN=$_probe but '$_probe --version' fails"
+                else
+                    # Named but with no build probe here: say so rather than
+                    # let a PATH hit read as a verified toolchain.
+                    warnn "card declares TOOLCHAIN=$_probe — present on PATH, but this check has no real-build probe for it, so it is NOT verified to compile"
+                fi
+                ;;
+        esac
+    done
+fi
+
+# ---- 5h. the declared repos are on disk and point where the card says
+# (pipe#650 item 8). box0 posted a claim against a branch in `pipe` on a box
+# with no `pipe` checkout at all; presence, git-ness and remote are each a
+# different way that goes wrong.
+#
+# Fetch reachability is deliberately a warn, not a crit: the network is not
+# this box's to guarantee and 5f already reports a missing route. A wrong
+# remote IS a crit — it means work would land somewhere nobody is looking.
+if [ -n "${REPOS:-}" ]; then
+    for _repo in $(echo "$REPOS" | tr ',' ' '); do
+        _rp=/work/repos/$_repo
+        if [ ! -d "$_rp" ]; then
+            crit "card declares REPOS=$_repo but $_rp does not exist — this box cannot work an issue in it"
+        elif [ ! -e "$_rp/.git" ]; then
+            crit "$_rp exists but is not a git repo"
+        else
+            _rem=$(git -C "$_rp" remote get-url origin 2>/dev/null)
+            if [ -z "$_rem" ]; then
+                crit "$_rp is a git repo with no 'origin' remote"
+            elif ! echo "$_rem" | grep -q "$_repo"; then
+                crit "$_rp origin is $_rem, which does not name $_repo — pushes would go somewhere unexpected"
+            fi
+        fi
+    done
+fi
+
+# ---- 6. known-good promotion: this apkovl booted and nothing is critical.
+# Warnings (e.g. a full-ish disk) do not block promotion — they don't make
+# the *state* bad, and blocking on them would freeze known-good forever.
+# `nstate` is deliberately not consulted for the same reason: see critstate()
+# at the top. This apkovl booting is what the promotion attests to, and a
+# stale overlay does not unsay it.
+# Boot-only: a hand-run must never mutate the boot media.
+promoted=no
+skipped_promotion=no
+if [ "$BOOT" = yes ] && [ "$ncrit" -eq 0 ] && [ -f "$OVL" ]; then
+    (
+        exec 9> /run/pipeos-save.lock
+        _i=0
+        until flock -n 9; do
+            _i=$((_i+1)); [ "$_i" -ge 60 ] && exit 1; sleep 1
+        done
+        if [ -f "$KNOWN_GOOD" ] && \
+           [ "$(sha256sum "$OVL" | cut -d' ' -f1)" = "$(sha256sum "$KNOWN_GOOD" | cut -d' ' -f1)" ]; then
+            exit 0    # already promoted
+        fi
+        mount -o remount,rw "$MEDIA" || exit 1
+        cp "$OVL" "$KNOWN_GOOD.new" && sync && mv "$KNOWN_GOOD.new" "$KNOWN_GOOD" && sync
+        rc=$?
+        rm -f "$KNOWN_GOOD.new"
+        sync; mount -o remount,ro "$MEDIA" 2>/dev/null
+        exit $rc
+    ) && promoted=yes
+elif [ "$BOOT" != yes ] && [ "$ncrit" -eq 0 ]; then
+    skipped_promotion=yes
+fi
+
+# ---- 7. compose the report
+verdict="all green"
+[ "$nwarn" -gt 0 ] && verdict="green with $nwarn warning(s)"
+[ "$nwould" -gt 0 ] && verdict="needs $nwould remediation(s) — none applied (hand-run)"
+[ "$nfix" -gt 0 ] && verdict="recovered ($nfix fix(es) applied)"
+# The verdict counts BOTH kinds: a stale overlay is critical to the fleet even
+# though it does not block promotion, and the operator reading one line must
+# see it. Only the gate above distinguishes them.
+_nall=$((ncrit + nstate))
+[ "$_nall" -gt 0 ] && verdict="DEGRADED — $_nall critical"
+
+# One line each for claim state and the service set: the dashboard humanizes
+# this report, and "what did the owner turn on" is the first thing it shows.
+_claimed=no
+[ -s /etc/pipeos/web-admin.conf ] && _claimed=yes
+msg="pipeos boot report [$(hostname)] $(date -u '+%Y-%m-%d %H:%MZ')
+went down: $down
+claimed: $_claimed
+services: pipe=$SERVICE_PIPE claude=$SERVICE_CLAUDE stream=$SERVICE_STREAM agy=$SERVICE_AGY support=$SERVICE_SUPPORT
+verdict: $verdict"
+[ -s "$R" ] && msg="$msg
+$(cat "$R")"
+[ "$promoted" = yes ] && msg="$msg
+apkovl promoted to known-good"
+[ "$skipped_promotion" = yes ] && msg="$msg
+apkovl promotion skipped (hand-run — rerun with --boot to apply it)"
+[ "$BOOT" != yes ] && msg="$msg
+hand-run: nothing was changed — no writes, no services started, no packages
+installed, boot media untouched, owner not DMed. Rerun with --boot to apply."
+
+# ---- 7b. a hand-run only ever prints; the boot path also logs and DMs.
+echo "$msg"
+
+[ "$BOOT" = yes ] || { rm -f "$R"; exit 0; }
+
+# ---- 7c. the report lands locally BEFORE any delivery attempt (appliance
+# plan, decision 4). The DM below is gated on auth + OWNER_NICK, and a
+# brand-new box has neither — which made the first boot report of exactly
+# the boxes an operator is standing at go nowhere. /run is per-boot tmpfs:
+# always "this boot's report", never persisted into the apkovl, and
+# `pipeos status` surfaces its verdict. The console gets one line only when
+# something is actually wrong — a quiet boot must not spray over the login
+# prompt (the loglevel=4 lesson).
+mkdir -p /run/pipeos 2>/dev/null
+printf '%s\n' "$msg" > /run/pipeos/boot-report 2>/dev/null
+_nall=$((ncrit + nstate))
+if [ "$_nall" -gt 0 ] || [ "$nwarn" -gt 0 ]; then
+    printf 'pipeos: boot %s — full report: pipeos status\n' "$verdict" \
+        > /dev/console 2>/dev/null || true
+fi
+
+log "boot selfcheck: $verdict (down: $down)"
+[ -s "$R" ] && sed 's/^/  /' "$R" >> "$LOG"
+
+# ---- 8. tell the owner. Gated on authenticated == true (section 3b already
+# waited out the signin race), not on pipe status merely answering — an
+# unauthenticated daemon answers pipe status fine and cannot send. See
+# pipeOS#19: this was the circularity, the boot report failing for the same
+# reason it needed sending, with no way to tell which of three causes it was.
+. /etc/pipeos/pipebox.conf 2>/dev/null || true
+export HOME=/root
+export PIPE_AGENT=pipebox
+export PIPE_NO_SPAWN=1
+sent=no
+if [ -n "$OWNER_NICK" ] && [ "$auth_ok" = "true" ]; then
+    pipe dm "$OWNER_NICK" "$msg" >/dev/null 2>&1 && sent=yes
+fi
+if [ "$sent" = no ]; then
+    # leave a breadcrumb the daily pipebox-report will surface
+    { echo "undelivered boot report:"; echo "$msg"; } > "$FLAG" 2>/dev/null
+    if [ "$SERVICE_PIPE" != on ]; then
+        cause="pipe disabled (services.conf) — the report is on the web dashboard"
+    elif [ -z "$OWNER_NICK" ]; then
+        cause="no OWNER_NICK configured"
+    elif [ "$auth_ok" != "true" ]; then
+        aerr=$(echo "${authj:-}" | jq -r '.status.auth_error // empty' 2>/dev/null)
+        cause="daemon unauthenticated${aerr:+ ($aerr)}"
+    else
+        cause="pipe dm send failed"
+    fi
+    log "owner DM not delivered: $cause"
+fi
+
+rm -f "$R"
+exit 0

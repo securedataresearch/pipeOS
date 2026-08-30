@@ -1,0 +1,55 @@
+#!/sbin/openrc-run
+# pipeos-stream — the streaming service (ffmpeg restream). Toggled from the
+# web UI; NOT in the image's default runlevel. Refuses to start until
+# /etc/pipeos/stream.conf is filled in — an enabled-but-unconfigured stream
+# should say so on the dashboard, not spin a broken ffmpeg.
+#
+# stream.conf (shell-sourceable, mode 600 — STREAM_KEY is a secret):
+#   STREAM_SRC=   input url/device (e.g. https://basho.dev/live or /dev/video0)
+#   STREAM_DST=   output url (e.g. rtmp://a.rtmp.youtube.com/live2)
+#   STREAM_KEY=   stream key, appended to STREAM_DST
+#   STREAM_ARGS=  extra ffmpeg args (default: copy codecs, flv container)
+description="ffmpeg restream (configured in /etc/pipeos/stream.conf)"
+
+supervisor=supervise-daemon
+respawn_delay=15
+respawn_max=0
+
+output_log=/work/logs/pipeos-stream.log
+error_log=/work/logs/pipeos-stream.log
+
+CONF=/etc/pipeos/stream.conf
+
+depend() {
+	need net pipeos-workspace
+	after chronyd
+}
+
+start_pre() {
+	if [ ! -r "$CONF" ]; then
+		eerror "streaming is enabled but $CONF does not exist yet — configure it in the web UI"
+		return 1
+	fi
+	# shellcheck disable=SC1090
+	. "$CONF"
+	if [ -z "${STREAM_SRC:-}" ] || [ -z "${STREAM_DST:-}" ]; then
+		eerror "streaming is not configured (STREAM_SRC/STREAM_DST empty in $CONF) — fill it in from the web UI"
+		return 1
+	fi
+	command -v ffmpeg >/dev/null 2>&1 || { eerror "ffmpeg is not installed on this image"; return 1; }
+	checkpath -d -m 0755 /work/logs || return 1
+}
+
+start() {
+	# shellcheck disable=SC1090
+	. "$CONF"
+	_dst="${STREAM_DST%/}${STREAM_KEY:+/$STREAM_KEY}"
+	ebegin "Starting ffmpeg restream"
+	# shellcheck disable=SC2086
+	supervise-daemon pipeos-stream --start \
+		--stdout "$output_log" --stderr "$error_log" \
+		--respawn-delay "$respawn_delay" --respawn-max "$respawn_max" \
+		/usr/bin/ffmpeg -- -hide_banner -loglevel warning \
+		-re -i "$STREAM_SRC" ${STREAM_ARGS:--c copy -f flv} "$_dst"
+	eend $?
+}

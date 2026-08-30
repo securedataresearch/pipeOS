@@ -1,0 +1,14 @@
+#!/bin/sh
+# Rotate /work/logs when a log passes 10MB. copytruncate, never mv:
+# supervise-daemon holds the log fds open (O_APPEND), so truncating in
+# place is safe but renaming would leave the daemon writing to the
+# rotated file forever.
+LIMIT=$((10 * 1024 * 1024))
+for f in /work/logs/*.log; do
+    [ -f "$f" ] || continue
+    [ "$(wc -c < "$f")" -gt "$LIMIT" ] || continue
+    [ -f "$f.2" ] && mv "$f.2" "$f.3"
+    [ -f "$f.1" ] && mv "$f.1" "$f.2"
+    cp "$f" "$f.1" && : > "$f"
+done
+exit 0

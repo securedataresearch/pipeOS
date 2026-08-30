@@ -9,9 +9,12 @@ headless ThinkCentre-class boxes with NVMe; developed and tested in qemu.
 - State (claude auth/sessions, pipe identity, hermes config, /etc changes) is
   snapshotted to the NVMe by `lbu commit`, run automatically every 15 minutes
   and at shutdown.
-- SSH is enabled out of the box: `root` / `pipeos`. The first interactive
-  login runs a provisioning walkthrough (forces a password change, then claude
-  login, pipe identity, hermes API keys) and commits.
+- First contact is a browser, not a console: the box serves a setup wizard on
+  the LAN (`http://pipeos.local/`) where the owner claims it, names it, and
+  turns on services (Claude / streaming / pipe — pipe is off until a key is
+  supplied). See docs/web-wizard.md. The generic image ships with root
+  LOCKED and key-only ssh; fleet builds (`make stick`, ROOT_LOGIN=password)
+  keep the console walkthrough for non-GENERIC roles.
 
 ## Build
 
@@ -24,7 +27,9 @@ make image       # apkovl + GPT/FAT32 pipeos.img (no root needed)
 make vm          # boot the image in qemu (serial console; ctrl-a x to quit)
 ```
 
-Then `ssh -p 2222 root@localhost` (password `pipeos`).
+Then claim the box at `http://localhost:8080/` (the VM forwards :80 there).
+For a shell, build with `AUTH_KEYS=~/.ssh/id_ed25519.pub make apkovl image`
+and `ssh -p 2222 root@localhost` (key-only; there is no password anymore).
 
 ## Flash to NVMe or USB
 
@@ -37,6 +42,13 @@ Safety-checked `dd` of `out/pipeos.img`. The boot media is found by its
 `PIPEOS` filesystem label, so the identical image boots from NVMe, USB, or
 SATA. Boot the target in UEFI mode with Secure Boot disabled. Reflashing
 wipes state; the image itself contains no secrets.
+
+## License
+
+Apache-2.0 (see LICENSE). "pipeOS" is a trademark of Secure Data Research, LLC —
+the license grants no rights to the name; see NOTICE for the trademark
+policy. Build recipes for third-party software (Claude Code, Antigravity)
+ship no binaries and leave those programs under their vendors' own terms.
 
 ## Layout
 
