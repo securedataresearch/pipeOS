@@ -138,7 +138,7 @@ unset _cand
 #   WITH_ANTIGRAVITY=1 make apks && WITH_ANTIGRAVITY=1 make usb
 WITH_ANTIGRAVITY="${WITH_ANTIGRAVITY:-0}"
 # OVERRIDABLE, and that is not decoration: the customer build
-# (pilot-build/run-root-build.sh) exports PIPEOS_PKGS="pipe claude-code"
+# (the customer build's run-root-build.sh) exports PIPEOS_PKGS="pipe claude-code"
 # because a customer box ships no hermes. An unconditional assignment here
 # would be re-sourced by 30-build-apks.sh and silently put hermes back on a
 # stick that is meant not to have it — a fleet-ism reappearing in the factory

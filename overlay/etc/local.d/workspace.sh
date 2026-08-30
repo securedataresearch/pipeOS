@@ -18,7 +18,7 @@ mkdir -p /work
 # -t ext4 EXPLICITLY: busybox mount auto-detection misread this ext4
 # partition as FAT on the first customer boot (kernel: "FAT-fs (sda2): utf8
 # is not a recommended IO charset") and failed — /work then never mounted
-# and every /work-dependent service stayed down. Measured on pilot0,
+# and every /work-dependent service stayed down. Measured on the pilot box,
 # 2026-08-16. PIPEWORK is always ext4 (grow.sh makes it); say so.
 mountpoint -q /work || mount -t ext4 -o noatime "$dev" /work || exit 0
 mkdir -p /work/repos /work/logs /work/cache /work/claude /work/pipebox /work/backup

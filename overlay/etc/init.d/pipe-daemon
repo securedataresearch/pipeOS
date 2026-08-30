@@ -5,7 +5,7 @@ supervisor=supervise-daemon
 # Prefer /usr/local/bin/pipe — the lbu-persisted, non-apk path where release
 # updates land (pipeOS#123) — and FALL BACK to apk's /usr/bin/pipe. A factory
 # image has only the apk binary; hardcoding the update path bricked the
-# daemon on the first customer first-boot (the pilot business, 2026-08-16): fleet-ism
+# daemon on the first customer first-boot (pilot box, 2026-08-16): fleet-ism
 # in the factory path, the exact drift class the card work exists to end.
 if [ -x /usr/local/bin/pipe ]; then
     command=/usr/local/bin/pipe
@@ -37,7 +37,7 @@ start_pre() {
 	while ! mountpoint -q /work; do
 		_i=$((_i+1))
 		# 120s, not 30: a FIRST boot is still mkfs-ing PIPEWORK across the
-		# whole stick (54G took ~1min on pilot0) when this service starts;
+		# whole stick (54G took ~1min on the pilot box) when this service starts;
 		# 30s lost that race and the daemon stayed down for the whole boot.
 		if [ "$_i" -ge 120 ]; then
 			eerror "/work not mounted after 120s (LABEL=PIPEWORK missing, or first-boot mkfs still running?)"

@@ -37,7 +37,7 @@ fi
 #
 # This is what lets ONE image serve every business instead of a bespoke build
 # per customer: NICK used to be baked into the shipped card at build time, so
-# the downloadable artifact was pilot0's or nobody's.
+# the downloadable artifact was one pilot box's or nobody's.
 #
 # DERIVED, NOT PROMPTED, and the difference matters. The issue proposed a
 # prompt on the OWNER_NICK pattern, but the box's nick is not a free choice —
@@ -148,7 +148,7 @@ if pipe status 2>/dev/null | grep -q '^nick: ' && ! pipe status 2>/dev/null | gr
     if [ -f /etc/pipeos/services.conf ]; then
         sed -i 's/^SERVICE_PIPE=.*/SERVICE_PIPE=on/;s/^SERVICE_CLAUDE=.*/SERVICE_CLAUDE=on/' /etc/pipeos/services.conf
     else
-        printf 'SERVICE_PIPE=on\nSERVICE_CLAUDE=on\nSERVICE_STREAM=off\nSERVICE_AGY=off\n' \
+        printf 'SERVICE_PIPE=on\nSERVICE_CLAUDE=on\nSERVICE_STREAM=off\nSERVICE_AGY=off\nSERVICE_SUPPORT=off\n' \
             > /etc/pipeos/services.conf
     fi
     rc-update add pipe-daemon default >/dev/null 2>&1 || true
