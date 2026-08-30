@@ -45,7 +45,7 @@ wipes state; the image itself contains no secrets.
 
 ## License
 
-Apache-2.0 (see LICENSE). "pipeOS" is a trademark of Secure Data Research —
+Apache-2.0 (see LICENSE). "pipeOS" is a trademark of Secure Data Research, LLC —
 the license grants no rights to the name; see NOTICE for the trademark
 policy. Build recipes for third-party software (Claude Code, Antigravity)
 ship no binaries and leave those programs under their vendors' own terms.
