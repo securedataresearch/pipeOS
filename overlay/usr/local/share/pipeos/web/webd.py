@@ -29,6 +29,8 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 ETC = "/etc/pipeos"
@@ -314,10 +316,19 @@ class Handler(BaseHTTPRequestHandler):
             return self.serve_static(path[len("/static/"):])
         if path == "/api/state":
             return self.api_state()
-        if path == "/api/status":
+        readers = {
+            "/api/status": self.api_status,
+            "/api/logs": self.api_logs,
+            "/api/stream": self.api_stream_get,
+            "/api/stream-log": self.api_stream_log,
+            "/api/pipe": self.api_pipe_get,
+            "/api/update": self.api_update_get,
+        }
+        fn = readers.get(path)
+        if fn is not None:
             if not self.authed():
                 return self.err(401, "sign in first")
-            return self.api_status()
+            return fn()
         self.err(404, "no such page")
 
     def do_POST(self):
@@ -343,6 +354,9 @@ class Handler(BaseHTTPRequestHandler):
             "/api/chat": self.api_chat,
             "/api/reboot": self.api_reboot,
             "/api/repair-access": self.api_repair_access,
+            "/api/stream-config": self.api_stream_set,
+            "/api/cohort": self.api_cohort,
+            "/api/update-now": self.api_update_now,
         }
         fn = handlers.get(path)
         if fn is None:
@@ -604,6 +618,171 @@ class Handler(BaseHTTPRequestHandler):
         actions.append("restarted sshd" if rc == 0
                        else "sshd restart FAILED: " + out.strip()[-150:])
         self.send(200, {"ok": True, "actions": actions})
+
+
+# ---- Phase B surfaces: logs, streaming, pipe, updates ----------------------
+
+LOG_ALLOW = {
+    "selfcheck": "/work/logs/selfcheck.log",
+    "pipe-daemon": "/work/logs/pipe-daemon.log",
+    "pipebox-listener": "/work/logs/pipebox-listener.log",
+    "pipeos-web": "/work/logs/pipeos-web.log",
+    "pipeos-mdns": "/work/logs/pipeos-mdns.log",
+    "pipeos-stream": "/work/logs/pipeos-stream.log",
+    "selfupdate": "/work/logs/selfupdate.log",
+    "worksweep": "/work/logs/worksweep.log",
+}
+STREAM_CONF = ETC + "/stream.conf"
+SELFUPDATE_CONF = ETC + "/selfupdate.conf"
+UPDATE_STAMP = "/work/.pipeos/selfupdate.applied"
+
+
+def tail_file(path, lines):
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 64 * 1024))
+            data = f.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    return "\n".join(data.splitlines()[-lines:])
+
+
+def read_conf_values(path, keys):
+    out = {k: "" for k in keys}
+    try:
+        with open(path) as f:
+            text = f.read()
+    except OSError:
+        return out
+    for k in keys:
+        m = re.search(rf"^{k}='?\"?([^'\"\n]*)", text, re.M)
+        if m:
+            out[k] = m.group(1)
+    return out
+
+
+class PhaseB:
+    """Mixin-style handlers kept in one place; bound onto Handler below."""
+
+    def api_logs(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        name = (q.get("name") or ["selfcheck"])[0]
+        path = LOG_ALLOW.get(name)
+        if path is None:
+            return self.err(400, "unknown log (choose: %s)" % ", ".join(sorted(LOG_ALLOW)))
+        try:
+            lines = min(500, max(10, int((q.get("lines") or ["100"])[0])))
+        except ValueError:
+            lines = 100
+        text = tail_file(path, lines)
+        self.send(200, {"name": name, "text": text if text is not None
+                        else "(no log yet — the service may not have run)"})
+
+    def api_stream_get(self):
+        vals = read_conf_values(STREAM_CONF, ["STREAM_SRC", "STREAM_DST", "STREAM_ARGS", "STREAM_KEY"])
+        rc, _ = run(["rc-service", "pipeos-stream", "status"], timeout=15)
+        self.send(200, {"src": vals["STREAM_SRC"], "dst": vals["STREAM_DST"],
+                        "args": vals["STREAM_ARGS"], "key_set": bool(vals["STREAM_KEY"]),
+                        "running": rc == 0})
+
+    def api_stream_set(self, body):
+        fields = {}
+        for k, name in (("src", "STREAM_SRC"), ("dst", "STREAM_DST"),
+                        ("key", "STREAM_KEY"), ("args", "STREAM_ARGS")):
+            v = (body.get(k) or "").strip()
+            # the conf is shell-sourced by the init script: refuse anything
+            # that could escape a single-quoted value rather than escaping it
+            if any(c in v for c in "'\n\r\0"):
+                return self.err(400, "%s may not contain quotes or newlines" % k)
+            if len(v) > 500:
+                return self.err(400, "%s is too long" % k)
+            fields[name] = v
+        if not fields["STREAM_KEY"] and body.get("keep_key"):
+            fields["STREAM_KEY"] = read_conf_values(STREAM_CONF, ["STREAM_KEY"])["STREAM_KEY"]
+        write_private(STREAM_CONF, "".join(
+            "%s='%s'\n" % (k, v) for k, v in fields.items()))
+        problems = []
+        if read_services()["stream"]:
+            rc, out = run(["rc-service", "pipeos-stream", "restart"], timeout=60)
+            if rc != 0:
+                problems.append("stream service did not start: " + out.strip()[-200:])
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "problems": problems,
+                        "saved": saved, "save_detail": "" if saved else detail})
+
+    def api_stream_log(self):
+        self.send(200, {"text": tail_file(LOG_ALLOW["pipeos-stream"], 100)
+                        or "(no stream log yet)"})
+
+    def api_pipe_get(self):
+        rc, out = run(["pipe", "status", "-o", "json"], timeout=20)
+        nick, authed_flag = "", False
+        if rc == 0:
+            try:
+                j = json.loads(out[out.index("{"):])
+                nick = j.get("nick") or j.get("status", {}).get("nick") or ""
+                authed_flag = bool(j.get("status", {}).get("authenticated"))
+            except (ValueError, AttributeError):
+                pass
+        if not nick:
+            rc2, out2 = run(["pipe", "status"], timeout=20)
+            m = re.search(r"^nick: (\S+)", out2, re.M) if rc2 == 0 else None
+            nick = m.group(1) if m else ""
+        self.send(200, {"enabled": read_services()["pipe"], "nick": nick,
+                        "authed": authed_flag,
+                        "owner": card_get("OWNER_NICK"),
+                        "cohort": card_get("COHORT_ID")})
+
+    def api_cohort(self, body):
+        cid = (body.get("id") or "").strip()
+        if cid and not re.fullmatch(r"[0-9]{1,12}", cid):
+            return self.err(400, "cohort id is digits only")
+        try:
+            card_set({"COHORT_ID": cid})
+        except RuntimeError as e:
+            return self.err(500, str(e))
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "cohort": cid,
+                        "saved": saved, "save_detail": "" if saved else detail})
+
+    def api_update_get(self):
+        conf = read_conf_values(SELFUPDATE_CONF, ["UPDATE_RELEASE_URL", "UPDATE_URL"])
+        origin = conf["UPDATE_RELEASE_URL"] or conf["UPDATE_URL"]
+        applied = ""
+        try:
+            with open(UPDATE_STAMP) as f:
+                applied = f.read().strip()
+        except OSError:
+            pass
+        remote, state = "", "unknown"
+        if conf["UPDATE_RELEASE_URL"]:
+            try:
+                with urllib.request.urlopen(
+                        conf["UPDATE_RELEASE_URL"].rstrip("/") + "/SHA256SUMS",
+                        timeout=10) as r:
+                    m = re.search(r"^([0-9a-f]{64})\s+pipeos-repo\.tar\.gz",
+                                  r.read().decode(), re.M)
+                    remote = m.group(1) if m else ""
+            except OSError:
+                state = "origin unreachable"
+        if remote:
+            state = "current" if remote == applied else "update available"
+        elif not origin:
+            state = "self-update disabled"
+        self.send(200, {"origin": origin, "applied": applied[:12],
+                        "remote": remote[:12], "state": state,
+                        "last": tail_file(LOG_ALLOW["selfupdate"], 3) or ""})
+
+    def api_update_now(self, _body):
+        rc, out = run(["pipeos-selfupdate"], timeout=900)
+        self.send(200, {"ok": rc == 0, "detail": out.strip()[-500:]})
+
+
+for _n in dir(PhaseB):
+    if _n.startswith("api_"):
+        setattr(Handler, _n, getattr(PhaseB, _n))
 
 
 def main():

@@ -293,6 +293,44 @@ async function dashboard() {
     <h2>Services</h2>
     <div class="card">${rows}<p class="err" id="serr" hidden></p></div>
     <p>${running}</p>
+    ${st.services.stream ? `
+    <h2>Streaming</h2>
+    <div class="card">
+      <label for="ssrc">Source (input URL or device)</label>
+      <input id="ssrc" type="text" placeholder="e.g. https://example.com/live or /dev/video0">
+      <label for="sdst">Destination</label>
+      <input id="sdst" type="text" placeholder="e.g. rtmp://a.rtmp.youtube.com/live2">
+      <label for="skey">Stream key</label>
+      <input id="skey" type="password" autocomplete="off" placeholder="leave blank to keep the saved key">
+      <label for="sargs">Extra ffmpeg args (optional)</label>
+      <input id="sargs" type="text" placeholder="default: -c copy -f flv">
+      <button id="ssave">Save & restart stream</button>
+      <button id="slog" class="ghost">Show stream log</button>
+      <p class="note" id="smsg" hidden></p>
+      <pre class="report" id="slogbox" hidden></pre>
+    </div>` : ""}
+    ${st.services.pipe ? `
+    <h2>pipe</h2>
+    <div class="card" id="pipecard">
+      <p class="note" id="pmsg">loading…</p>
+      <div id="pipesignin" hidden>
+        <label for="pkey2">One-time key from pipe.online</label>
+        <input id="pkey2" type="password" autocomplete="off">
+        <button id="pgo2">Sign in</button>
+      </div>
+      <label for="cid">Team board (cohort id, digits; blank to leave)</label>
+      <input id="cid" type="text">
+      <button id="cgo2" class="ghost">Set cohort</button>
+      <p class="note" id="cmsg2" hidden></p>
+    </div>` : ""}
+    <h2>Logs</h2>
+    <div class="card">
+      <select id="logsel">
+        ${["selfcheck", "pipeos-web", "pipeos-mdns", "pipe-daemon", "pipebox-listener", "pipeos-stream", "selfupdate", "worksweep"].map(l => `<option>${l}</option>`).join("")}
+      </select>
+      <button id="logview" class="ghost" style="margin-top:.4rem">View</button>
+      <pre class="report" id="logbox" hidden></pre>
+    </div>
     <h2>Maintenance</h2>
     <div class="card">
       <button id="save" style="margin-top:0">Save state to boot media now</button>
@@ -300,6 +338,10 @@ async function dashboard() {
       <button id="repair" class="ghost">Repair remote access</button>
       <button id="reboot" class="ghost">Reboot the box</button>
       <p class="note" id="mmsg" hidden></p>
+      <div id="updrow" style="margin-top:1rem">
+        <span class="pill" id="updstate">updates: checking…</span>
+        <button id="updnow" class="ghost" hidden>Update now</button>
+      </div>
       <details><summary class="note">Change admin password</summary>
         <label for="cur">Current password</label><input id="cur" type="password">
         <label for="new">New password</label><input id="new" type="password" minlength="8">
@@ -346,6 +388,73 @@ async function dashboard() {
     const b = v.querySelector("#save"); busy(b, true);
     try { const r = await api("/api/save", {}); if (!r.ok) alert("Save failed:\n" + r.detail); }
     catch (e) { alert(e.message); }
+    busy(b, false);
+  };
+  const ssave = v.querySelector("#ssave");
+  if (ssave) {
+    api("/api/stream").then(s => {
+      v.querySelector("#ssrc").value = s.src; v.querySelector("#sdst").value = s.dst;
+      v.querySelector("#sargs").value = s.args;
+      if (s.key_set) v.querySelector("#skey").placeholder = "(a key is saved — blank keeps it)";
+    }).catch(() => {});
+    ssave.onclick = async () => {
+      const msg = v.querySelector("#smsg"); msg.hidden = false; msg.textContent = "saving…";
+      busy(ssave, true);
+      try {
+        const r = await api("/api/stream-config", {
+          src: v.querySelector("#ssrc").value, dst: v.querySelector("#sdst").value,
+          key: v.querySelector("#skey").value, args: v.querySelector("#sargs").value,
+          keep_key: !v.querySelector("#skey").value,
+        });
+        msg.textContent = r.problems.length ? r.problems.join("; ") : "Saved — stream restarted.";
+      } catch (e) { msg.textContent = e.message; }
+      busy(ssave, false);
+    };
+    v.querySelector("#slog").onclick = async () => {
+      const box = v.querySelector("#slogbox"); box.hidden = false; box.textContent = "…";
+      try { box.textContent = (await api("/api/stream-log")).text; } catch (e) { box.textContent = e.message; }
+    };
+  }
+  const pcard = v.querySelector("#pipecard");
+  if (pcard) {
+    api("/api/pipe").then(p => {
+      const msg = v.querySelector("#pmsg");
+      if (p.authed) msg.textContent = `Signed in as ${p.nick}. Owner: ${p.owner || "(unset)"}. Cohort: ${p.cohort || "(none)"}.`;
+      else { msg.textContent = "Not signed in — the box cannot send or receive DMs."; v.querySelector("#pipesignin").hidden = false; }
+      v.querySelector("#cid").value = p.cohort || "";
+    }).catch(() => {});
+    const pgo2 = v.querySelector("#pgo2");
+    pgo2.onclick = async () => {
+      busy(pgo2, true);
+      try { const r = await api("/api/pipe-key", { key: v.querySelector("#pkey2").value.trim() });
+        v.querySelector("#pmsg").textContent = "Signed in as " + r.nick + "."; v.querySelector("#pipesignin").hidden = true;
+      } catch (e) { v.querySelector("#pmsg").textContent = e.message; }
+      busy(pgo2, false);
+    };
+    v.querySelector("#cgo2").onclick = async () => {
+      const m = v.querySelector("#cmsg2"); m.hidden = false; m.textContent = "…";
+      try { const r = await api("/api/cohort", { id: v.querySelector("#cid").value.trim() });
+        m.textContent = r.cohort ? "Cohort set to " + r.cohort + "." : "Cohort cleared.";
+      } catch (e) { m.textContent = e.message; }
+    };
+  }
+  v.querySelector("#logview").onclick = async () => {
+    const box = v.querySelector("#logbox"); box.hidden = false; box.textContent = "…";
+    try {
+      const r = await fetch("/api/logs?name=" + encodeURIComponent(v.querySelector("#logsel").value) + "&lines=150");
+      box.textContent = (await r.json()).text;
+    } catch (e) { box.textContent = e.message; }
+  };
+  api("/api/update").then(u => {
+    v.querySelector("#updstate").textContent = "updates: " + u.state + (u.applied ? ` (applied ${u.applied})` : "");
+    if (u.state === "update available") v.querySelector("#updnow").hidden = false;
+  }).catch(() => {});
+  v.querySelector("#updnow").onclick = async () => {
+    const b = v.querySelector("#updnow"); busy(b, true);
+    v.querySelector("#updstate").textContent = "updates: applying (takes a few minutes)…";
+    try { const r = await api("/api/update-now", {});
+      v.querySelector("#updstate").textContent = "updates: " + (r.ok ? "applied — verified" : "FAILED: " + r.detail.slice(-120));
+    } catch (e) { v.querySelector("#updstate").textContent = "updates: " + e.message; }
     busy(b, false);
   };
   v.querySelector("#repair").onclick = async () => {

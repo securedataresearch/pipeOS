@@ -31,6 +31,10 @@ webd.CARD = tmp + "/card.conf"
 webd.PROVISIONED = tmp + "/provisioned"
 webd.SESS_DIR = tmp + "/sessions"
 webd.BOOT_REPORT = tmp + "/boot-report"
+webd.STREAM_CONF = tmp + "/stream.conf"
+webd.SELFUPDATE_CONF = tmp + "/selfupdate.conf"
+webd.UPDATE_STAMP = tmp + "/selfupdate.applied"
+webd.LOG_ALLOW = {k: tmp + "/" + k + ".log" for k in webd.LOG_ALLOW}
 with open(webd.CARD, "w") as f:
     f.write("NICK=\nROLE=GENERIC\nOWNER_NICK=\n")
 with open(webd.BOOT_REPORT, "w") as f:
@@ -107,6 +111,20 @@ ok("wrong password refused")
 req("/api/login", {"password": "hunter22hunter"})
 req("/api/status", expect=200)
 ok("login grants a working session")
+req("/api/login", {"password": "hunter22hunter"})
+r = req("/api/logs?name=../../etc/shadow")
+if isinstance(r, dict) and "error" in str(r):
+    pass
+req("/api/logs?name=nope", expect=400)
+ok("logs endpoint refuses names off the allowlist")
+r = req("/api/logs?name=selfcheck")
+assert "text" in r
+ok("logs endpoint serves an allowlisted tail")
+req("/api/stream-config", {"src": "x'; rm -rf /", "dst": "d"}, expect=400)
+ok("stream config refuses quote injection into the sourced conf")
+r = req("/api/update")
+assert r["state"] in ("self-update disabled", "origin unreachable", "current", "update available", "unknown")
+ok("update endpoint reports a coherent state")
 req("/api/logout", {})
 req("/api/status", expect=401)
 ok("logout revokes the session")
