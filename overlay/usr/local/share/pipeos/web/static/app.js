@@ -270,132 +270,172 @@ async function dashboard() {
     </div>`).join("");
   const running = Object.entries(st.running).map(([k, ok]) =>
     `<span class="pill">${esc(k)}: ${ok ? "up" : "down"}</span>`).join(" ");
-  const v = el(`<div>
-    <div class="topbar">
-      <div><h1>${esc(st.nick || st.hostname)}</h1>
-        <span class="note">up ${fmtUptime(st.uptime_s)} · disk ${st.work_pct == null ? "?" : st.work_pct + "% used"}${st.work_free_mb != null ? " (" + Math.round(st.work_free_mb / 1024) + " GB free)" : ""}</span>
+  const showStream = !!st.services.stream;
+  const showAssist = !!(st.services.claude || st.services.assistant);
+  const navItem = (id, label) => `<a data-nav="${id}" href="#/${id}"><span class="ic"></span>${label}</a>`;
+  const v = el(`<div class="app">
+    <aside class="sidenav">
+      <div class="brand"><span class="dot"></span>pipeOS</div>
+      <div class="boxid">
+        <div class="boxname">${esc(st.nick || st.hostname)}</div>
+        <span class="${vcls}">${esc(verdict)}</span>
       </div>
-      <button id="logout" class="ghost">Sign out</button>
-    </div>
-    <div class="card">
-      <p style="margin-top:0">Last boot: <span class="${vcls}">${esc(verdict)}</span></p>
-      <details><summary class="note">Full boot report</summary>
-        <pre class="report">${esc(st.boot_report || "(none this boot)")}</pre></details>
-    </div>
-    ${st.services.claude ? `
-    <h2>Ask the box</h2>
-    <div class="card">
-      <div id="chatlog" style="max-height:16rem;overflow-y:auto"></div>
-      <label for="chatmsg">Message</label>
-      <input id="chatmsg" type="text" autocomplete="off" placeholder="Ask your assistant anything">
-      <button id="chatgo">Send</button>
-      <p class="note" id="chatnote" hidden></p>
-    </div>` : ""}
-    <h2>Services</h2>
-    <div class="card">${rows}<p class="err" id="serr" hidden></p></div>
-    <p>${running}</p>
-    ${st.services.stream ? `
-    <h2>Streaming</h2>
-    <div class="card">
-      <label for="smode">Mode</label>
-      <select id="smode">
-        <option value="media">Restream an existing video feed</option>
-        <option value="browser">Render a web page to video (browser)</option>
-      </select>
-      <div id="smedia">
-        <label for="ssrc">Source (input URL or device)</label>
-        <input id="ssrc" type="text" placeholder="e.g. https://example.com/live or /dev/video0">
+      <nav>
+        ${navItem("overview", "Overview")}
+        ${showStream ? navItem("streaming", "Streaming") : ""}
+        ${showAssist ? navItem("assistant", "Assistant") : ""}
+        ${navItem("services", "Services")}
+        ${navItem("network", "Network")}
+        ${navItem("system", "System")}
+      </nav>
+      <div class="navfoot">
+        <span class="note">up ${fmtUptime(st.uptime_s)} · ${st.work_pct == null ? "disk ?" : st.work_pct + "% disk"}${st.work_free_mb != null ? " · " + Math.round(st.work_free_mb / 1024) + " GB free" : ""}</span>
+        <button id="logout" class="ghost">Sign out</button>
       </div>
-      <div id="sbrowser" hidden>
-        <label for="surl">Page URL to render</label>
-        <input id="surl" type="text" placeholder="e.g. https://basho.dev">
-        <label for="sres">Resolution</label>
-        <input id="sres" type="text" placeholder="1920x1080">
-        <label for="sfps">Frame rate</label>
-        <input id="sfps" type="text" placeholder="30">
-        <label class="note" style="display:flex;align-items:center;gap:.5rem;margin-top:.4rem">
-          <input id="svaapi" type="checkbox" style="width:auto"> Hardware encode on the Intel GPU (VAAPI)
-        </label>
-      </div>
-      <label>Providers</label>
-      <div id="targets"></div>
-      <button id="addtarget" class="ghost" type="button" style="margin-bottom:.6rem">+ Add a provider</button>
-      <label for="sbitrate">Bitrate (per target)</label>
-      <input id="sbitrate" type="text" placeholder="3500k">
-      <label for="sargs">Extra ffmpeg args (optional)</label>
-      <input id="sargs" type="text" placeholder="advanced — usually blank">
-      <button id="ssave">Save & restart stream</button>
-      <button id="slog" class="ghost">Show stream log</button>
-      <p class="note" id="smsg" hidden></p>
-      <pre class="report" id="slogbox" hidden></pre>
-    </div>` : ""}
-    ${st.services.assistant ? `
-    <h2>Assistant terminal</h2>
-    <div class="card">
-      <p class="note">A full terminal into this box's assistant, in your browser — the same session as the chat above.</p>
-      <label for="apass">Terminal password</label>
-      <input id="apass" type="password" autocomplete="off" placeholder="leave blank to keep the saved password">
-      <label for="aport">Port</label>
-      <input id="aport" type="text" placeholder="7681">
-      <button id="asave">Save & restart terminal</button>
-      <a id="aopen" class="ghost" href="#" target="_blank" rel="noopener" style="display:none">Open terminal ↗</a>
-      <p class="note" id="amsg" hidden></p>
-    </div>` : ""}
-    ${st.services.pipe ? `
-    <h2>pipe</h2>
-    <div class="card" id="pipecard">
-      <p class="note" id="pmsg">loading…</p>
-      <div id="pipesignin" hidden>
-        <label for="pkey2">One-time key from pipe.online</label>
-        <input id="pkey2" type="password" autocomplete="off">
-        <button id="pgo2">Sign in</button>
-      </div>
-      <label for="cid">Team board (cohort id, digits; blank to leave)</label>
-      <input id="cid" type="text">
-      <button id="cgo2" class="ghost">Set cohort</button>
-      <p class="note" id="cmsg2" hidden></p>
-    </div>` : ""}
-    <h2>Logs</h2>
-    <div class="card">
-      <select id="logsel">
-        ${["selfcheck", "pipeos-web", "pipeos-mdns", "pipe-daemon", "pipebox-listener", "pipeos-stream", "pipeos-assistant", "selfupdate", "worksweep"].map(l => `<option>${l}</option>`).join("")}
-      </select>
-      <button id="logview" class="ghost" style="margin-top:.4rem">View</button>
-      <pre class="report" id="logbox" hidden></pre>
-    </div>
-    <h2>Secure access (HTTPS)</h2>
-    <div class="card">
-      <p class="note" id="tlsnote">checking…</p>
-      <a class="btn ghost" id="camobile" href="/pipeos-ca.mobileconfig">iPhone / iPad: install profile</a>
-      <a class="btn ghost" id="cadl" href="/ca.crt" download>Everyone else: download certificate</a>
-      <details><summary class="note">How to install it (once per device)</summary>
-        <p class="note" style="line-height:1.5">
-        <b>iPhone/iPad:</b> tap the profile above → Settings offers to install it → then Settings › General › About › Certificate Trust Settings → turn it on.<br>
-        <b>Mac:</b> open the .crt → Keychain Access → double-click “pipeOS … CA” → Trust → “Always Trust”.<br>
-        <b>Windows:</b> open the .crt → Install Certificate → Local Machine → Trusted Root Certification Authorities.<br>
-        <b>Android:</b> Settings › Security › Encryption &amp; credentials › Install a certificate › CA certificate → pick the .crt.<br>
-        Then reload over <span id="httpslink"></span> and you’ll see the padlock.</p>
-      </details>
-    </div>
-    <h2>Maintenance</h2>
-    <div class="card">
-      <button id="save" style="margin-top:0">Save state to boot media now</button>
-      <p class="note">The box also saves automatically every 15 minutes.</p>
-      <button id="repair" class="ghost">Repair remote access</button>
-      <button id="reboot" class="ghost">Reboot the box</button>
-      <button id="rebootfw" class="ghost">Reboot into BIOS</button>
-      <p class="note" id="mmsg" hidden></p>
-      <div id="updrow" style="margin-top:1rem">
-        <span class="pill" id="updstate">updates: checking…</span>
-        <button id="updnow" class="ghost" hidden>Update now</button>
-      </div>
-      <details><summary class="note">Change admin password</summary>
-        <label for="cur">Current password</label><input id="cur" type="password">
-        <label for="new">New password</label><input id="new" type="password" minlength="8">
-        <button id="chpw">Change password</button>
-        <p class="note" id="pwmsg" hidden></p>
-      </details>
-    </div>
+    </aside>
+    <main class="content">
+      <section data-view="overview">
+        <div class="viewhead"><h1>Overview</h1></div>
+        <div class="card">
+          <p style="margin-top:0">Last boot: <span class="${vcls}">${esc(verdict)}</span></p>
+          <div>${running}</div>
+          <details><summary class="note">Full boot report</summary>
+            <pre class="report">${esc(st.boot_report || "(none this boot)")}</pre></details>
+        </div>
+      </section>
+
+      ${showStream ? `
+      <section data-view="streaming" hidden>
+        <div class="viewhead"><h1>Streaming</h1></div>
+        <div class="card">
+          <label for="smode">Mode</label>
+          <select id="smode">
+            <option value="media">Restream an existing video feed</option>
+            <option value="browser">Render a web page to video (browser)</option>
+          </select>
+          <div id="smedia">
+            <label for="ssrc">Source (input URL or device)</label>
+            <input id="ssrc" type="text" placeholder="e.g. https://example.com/live or /dev/video0">
+          </div>
+          <div id="sbrowser" hidden>
+            <label for="surl">Page URL to render</label>
+            <input id="surl" type="text" placeholder="e.g. https://basho.dev">
+            <label for="sres">Resolution</label>
+            <input id="sres" type="text" placeholder="1920x1080">
+            <label for="sfps">Frame rate</label>
+            <input id="sfps" type="text" placeholder="30">
+            <label class="note" style="display:flex;align-items:center;gap:.5rem;margin-top:.4rem">
+              <input id="svaapi" type="checkbox" style="width:auto"> Hardware encode on the Intel GPU (VAAPI)
+            </label>
+          </div>
+          <label>Providers</label>
+          <div id="targets"></div>
+          <button id="addtarget" class="ghost" type="button" style="margin-bottom:.6rem">+ Add a provider</button>
+          <label for="sbitrate">Bitrate (per target)</label>
+          <input id="sbitrate" type="text" placeholder="3500k">
+          <label for="sargs">Extra ffmpeg args (optional)</label>
+          <input id="sargs" type="text" placeholder="advanced — usually blank">
+          <button id="ssave">Save & restart stream</button>
+          <button id="slog" class="ghost">Show stream log</button>
+          <p class="note" id="smsg" hidden></p>
+          <pre class="report" id="slogbox" hidden></pre>
+        </div>
+      </section>` : ""}
+
+      ${showAssist ? `
+      <section data-view="assistant" hidden>
+        <div class="viewhead"><h1>Assistant</h1></div>
+        ${st.services.claude ? `
+        <div class="card">
+          <h2>Ask the box</h2>
+          <div id="chatlog" style="max-height:16rem;overflow-y:auto"></div>
+          <label for="chatmsg">Message</label>
+          <input id="chatmsg" type="text" autocomplete="off" placeholder="Ask your assistant anything">
+          <button id="chatgo">Send</button>
+          <p class="note" id="chatnote" hidden></p>
+        </div>` : ""}
+        ${st.services.assistant ? `
+        <div class="card">
+          <h2>Terminal</h2>
+          <p class="note">A full terminal into this box's assistant, in your browser — the same session as the chat.</p>
+          <label for="apass">Terminal password</label>
+          <input id="apass" type="password" autocomplete="off" placeholder="leave blank to keep the saved password">
+          <label for="aport">Port</label>
+          <input id="aport" type="text" placeholder="7681">
+          <button id="asave">Save & restart terminal</button>
+          <a id="aopen" class="btn ghost" href="#" target="_blank" rel="noopener" style="display:none">Open terminal ↗</a>
+          <p class="note" id="amsg" hidden></p>
+        </div>` : ""}
+      </section>` : ""}
+
+      <section data-view="services" hidden>
+        <div class="viewhead"><h1>Services</h1></div>
+        <div class="card">${rows}<p class="err" id="serr" hidden></p></div>
+        ${st.services.pipe ? `
+        <div class="card" id="pipecard">
+          <h2>pipe messaging</h2>
+          <p class="note" id="pmsg">loading…</p>
+          <div id="pipesignin" hidden>
+            <label for="pkey2">One-time key from pipe.online</label>
+            <input id="pkey2" type="password" autocomplete="off">
+            <button id="pgo2">Sign in</button>
+          </div>
+          <label for="cid">Team board (cohort id, digits; blank to leave)</label>
+          <input id="cid" type="text">
+          <button id="cgo2" class="ghost">Set cohort</button>
+          <p class="note" id="cmsg2" hidden></p>
+        </div>` : ""}
+      </section>
+
+      <section data-view="network" hidden>
+        <div class="viewhead"><h1>Network</h1></div>
+        <div class="card">
+          <h2>Secure access (HTTPS)</h2>
+          <p class="note" id="tlsnote">checking…</p>
+          <a class="btn ghost" id="camobile" href="/pipeos-ca.mobileconfig">iPhone / iPad: install profile</a>
+          <a class="btn ghost" id="cadl" href="/ca.crt" download>Everyone else: download certificate</a>
+          <details><summary class="note">How to install it (once per device)</summary>
+            <p class="note" style="line-height:1.5">
+            <b>iPhone/iPad:</b> tap the profile above → Settings offers to install it → then Settings › General › About › Certificate Trust Settings → turn it on.<br>
+            <b>Mac:</b> open the .crt → Keychain Access → double-click “pipeOS … CA” → Trust → “Always Trust”.<br>
+            <b>Windows:</b> open the .crt → Install Certificate → Local Machine → Trusted Root Certification Authorities.<br>
+            <b>Android:</b> Settings › Security › Encryption &amp; credentials › Install a certificate › CA certificate → pick the .crt.<br>
+            Then reload over <span id="httpslink"></span> and you’ll see the padlock.</p>
+          </details>
+        </div>
+      </section>
+
+      <section data-view="system" hidden>
+        <div class="viewhead"><h1>System</h1></div>
+        <div class="card">
+          <h2>Logs</h2>
+          <select id="logsel">
+            ${["selfcheck", "pipeos-web", "pipeos-mdns", "pipe-daemon", "pipebox-listener", "pipeos-stream", "pipeos-assistant", "selfupdate", "worksweep"].map(l => `<option>${l}</option>`).join("")}
+          </select>
+          <button id="logview" class="ghost" style="margin-top:.4rem">View</button>
+          <pre class="report" id="logbox" hidden></pre>
+        </div>
+        <div class="card">
+          <h2>Maintenance</h2>
+          <button id="save" style="margin-top:0">Save state to boot media now</button>
+          <p class="note">The box also saves automatically every 15 minutes.</p>
+          <button id="repair" class="ghost">Repair remote access</button>
+          <button id="reboot" class="ghost">Reboot the box</button>
+          <button id="rebootfw" class="ghost">Reboot into BIOS</button>
+          <p class="note" id="mmsg" hidden></p>
+          <div id="updrow" style="margin-top:1rem">
+            <span class="pill" id="updstate">updates: checking…</span>
+            <button id="updnow" class="ghost" hidden>Update now</button>
+          </div>
+          <details><summary class="note">Change admin password</summary>
+            <label for="cur">Current password</label><input id="cur" type="password">
+            <label for="new">New password</label><input id="new" type="password" minlength="8">
+            <button id="chpw">Change password</button>
+            <p class="note" id="pwmsg" hidden></p>
+          </details>
+        </div>
+      </section>
+    </main>
   </div>`);
   v.querySelector("#logout").onclick = async () => { try { await api("/api/logout", {}); } catch (e) {} boot(); };
   v.querySelectorAll("input[type=checkbox]").forEach(c => {
@@ -628,6 +668,19 @@ async function dashboard() {
       msg.textContent = "Password changed.";
     } catch (e) { msg.textContent = e.message; }
   };
+  // ---- view router: show one section at a time, driven by the URL hash ----
+  const views = v.querySelectorAll("[data-view]");
+  const navs = v.querySelectorAll("[data-nav]");
+  const names = Array.from(views).map(s => s.dataset.view);
+  const show = (name) => {
+    if (!names.includes(name)) name = names[0];
+    views.forEach(s => { s.hidden = s.dataset.view !== name; });
+    navs.forEach(a => a.classList.toggle("active", a.dataset.nav === name));
+    const c = v.querySelector(".content"); if (c) c.scrollTop = 0;
+  };
+  const route = () => show((location.hash.match(/^#\/(\w+)/) || [])[1] || names[0]);
+  window.addEventListener("hashchange", route);
+  route();
   app.replaceChildren(v);
 }
 
