@@ -289,7 +289,15 @@ def apply_services(svcs):
     managed = ("pipe-daemon", "pipebox-listener", "pipeos-stream", "pipeos-support", "pipeos-assistant")
     for svc in managed:
         if svc in want:
-            run(["rc-update", "add", svc, "default"])
+            # STREAM_BOOT=0 = "stream now when asked, but not by itself at
+            # boot": start it, keep it out of the runlevel. The boot
+            # reconciler (etc/local.d/pipeos-services.start) applies the same
+            # rule, so toggle-time and boot-time can never disagree.
+            if (svc == "pipeos-stream"
+                    and read_conf_values(STREAM_CONF, ["STREAM_BOOT"])["STREAM_BOOT"] == "0"):
+                run(["rc-update", "del", svc, "default"])
+            else:
+                run(["rc-update", "add", svc, "default"])
             rc, out = run(["rc-service", svc, "start"], timeout=150)
             if rc != 0:
                 # pipeos-stream / pipeos-support refuse to start unconfigured —
@@ -1245,7 +1253,8 @@ class PhaseB:
 
     def api_stream_get(self):
         base = ["STREAM_MODE", "STREAM_SRC", "STREAM_URL", "STREAM_RES",
-                "STREAM_FPS", "STREAM_VAAPI", "STREAM_BITRATE", "STREAM_ARGS"]
+                "STREAM_FPS", "STREAM_VAAPI", "STREAM_BITRATE", "STREAM_ARGS",
+                "STREAM_BOOT"]
         tk = []
         for n in range(1, STREAM_MAX_TARGETS + 1):
             tk += ["STREAM_T%d_URL" % n, "STREAM_T%d_KEY" % n,
@@ -1263,7 +1272,8 @@ class PhaseB:
             "src": vals["STREAM_SRC"], "url": vals["STREAM_URL"],
             "res": vals["STREAM_RES"] or "1920x1080", "fps": vals["STREAM_FPS"] or "30",
             "vaapi": vals["STREAM_VAAPI"] == "1", "bitrate": vals["STREAM_BITRATE"] or "3500k",
-            "args": vals["STREAM_ARGS"], "targets": targets, "running": rc == 0})
+            "args": vals["STREAM_ARGS"], "boot": vals["STREAM_BOOT"] != "0",
+            "targets": targets, "running": rc == 0})
 
     def api_stream_set(self, body):
         # Everything written here is shell-sourced by the wrapper, so every
@@ -1308,13 +1318,29 @@ class PhaseB:
         if fields["STREAM_BITRATE"] and not re.match(r"^\d{2,6}k?$", fields["STREAM_BITRATE"]):
             return self.err(400, "bitrate must look like 3500k")
         fields["STREAM_VAAPI"] = "1" if body.get("vaapi") else "0"
+        fields["STREAM_BOOT"] = "1" if body.get("boot", True) else "0"
         write_private(STREAM_CONF, "".join(
             "%s='%s'\n" % (k, v) for k, v in fields.items()))
         problems = []
-        if read_services()["stream"]:
+        svcs = read_services()
+        has_target = any(fields["STREAM_T%d_ON" % n] == "1" and fields["STREAM_T%d_URL" % n]
+                         for n in range(1, STREAM_MAX_TARGETS + 1))
+        if not svcs["stream"] and has_target:
+            # Configure implies enable: "I filled in the form" means "it
+            # streams — now, and after a reboot". The Services toggle and
+            # STREAM_BOOT=0 remain the two opt-outs.
+            svcs["stream"] = True
+            write_services(svcs)
+            problems += apply_services(svcs)
+        elif svcs["stream"]:
             rc, out = run(["rc-service", "pipeos-stream", "restart"], timeout=60)
             if rc != 0:
                 problems.append("stream service did not start: " + out.strip()[-200:])
+            # keep the runlevel in step with a changed STREAM_BOOT
+            if fields["STREAM_BOOT"] == "0":
+                run(["rc-update", "del", "pipeos-stream", "default"])
+            else:
+                run(["rc-update", "add", "pipeos-stream", "default"])
         saved, detail = save_state()
         self.send(200, {"ok": True, "problems": problems,
                         "saved": saved, "save_detail": "" if saved else detail})

@@ -223,6 +223,19 @@ ok("upload streams a raw body and refuses hostile names")
 req("/api/pipe-set", {"pref": "evil_pref", "value": True}, expect=400)
 req("/api/pipe-contact", {"nick": "bad nick!"}, expect=400)
 ok("pipe endpoints validate pref names and nicks")
+# stream boot flag + configure-implies-enable: posting a config with a live
+# target flips services.conf stream=on by itself; boot:false lands as
+# STREAM_BOOT='0' and round-trips
+with open(webd.SERVICES_CONF) as f:
+    assert "SERVICE_STREAM=on" in f.read()  # earlier config post enabled it
+r = req("/api/stream-config", {"mode": "browser", "url": "https://basho.dev",
+        "boot": False,
+        "targets": [{"name": "YouTube", "url": "rtmp://a.rtmp.youtube.com/live2", "on": True, "keep_key": True}]})
+assert r["ok"]
+with open(webd.STREAM_CONF) as f:
+    assert "STREAM_BOOT='0'" in f.read()
+assert req("/api/stream")["boot"] is False
+ok("configure implies enable; boot opt-out round-trips")
 req("/api/logout", {})
 req("/api/status", expect=401)
 ok("logout revokes the session")
