@@ -189,8 +189,9 @@ details summary { cursor: pointer; }
 .chhead { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: .15rem; }
 .chhead .chy { color: var(--faint); font-size: .74rem; }
 .chfoot { display: flex; justify-content: space-between; color: var(--faint); font-size: .74rem; margin-top: .15rem; }
-.legend { display: flex; gap: .9rem; margin-bottom: .2rem; }
+.legend { display: flex; gap: .9rem; margin-bottom: .2rem; flex-wrap: wrap; }
 .legend .lg { display: inline-flex; align-items: center; gap: .35rem; font-size: .78rem; color: var(--muted); }
+.legend .lg b { color: var(--ink); font-weight: 600; }
 .legend .lg i { width: 10px; height: 3px; border-radius: 2px; display: inline-block; }
 button.small { padding: .3rem .65rem; font-size: .82rem; margin: 0; width: auto; }
 #spanbtns .active { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
