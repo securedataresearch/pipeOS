@@ -28,16 +28,29 @@ cd "$WORKDIR" 2>/dev/null || cd /root || exit 1
 
 USER=${ASSISTANT_USER:-admin}
 PORT=${ASSISTANT_PORT:-7681}
+BACKEND=${ASSISTANT_BACKEND:-claude}
 if [ -z "${ASSISTANT_PASS:-}" ]; then
 	echo "pipeos-assistant-run: ASSISTANT_PASS is empty — refusing to serve an open terminal" >&2
 	exit 1
 fi
 
+# The box can ship more than one assistant; ASSISTANT_BACKEND picks which one
+# the terminal drops into (the dashboard writes it).
+case "$BACKEND" in
+hermes) CMD="hermes" ;;
+agy)    CMD="agy" ;;
+*)      CMD="claude --continue --settings $SETTINGS" ;;
+esac
+command -v "${CMD%% *}" >/dev/null 2>&1 || {
+	echo "pipeos-assistant-run: backend '$BACKEND' is not installed" >&2
+	exit 1
+}
+
 # --writable so the client can type; one shared tmux session (`-A` attach-or-
-# create) so every browser sees the same claude. Resuming --continue in this
-# cwd lands on the same conversation the dashboard chat uses.
+# create) so every browser sees the same assistant. For claude, resuming
+# --continue in this cwd lands on the same conversation the dashboard chat uses.
 exec ttyd --writable --interface 0.0.0.0 --port "$PORT" \
 	--credential "${USER}:${ASSISTANT_PASS}" \
 	-t "titleFixed=$(hostname 2>/dev/null || echo pipeos) assistant" \
 	-t 'theme={"background":"#131417"}' \
-	tmux new -A -s assistant "claude --continue --settings $SETTINGS"
+	tmux new -A -s assistant "$CMD"
