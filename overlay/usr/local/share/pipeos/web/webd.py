@@ -20,6 +20,7 @@ Sessions live in /run/pipeos/web-sessions (tmpfs: a reboot logs everyone out).
 """
 
 import base64
+import collections
 import glob
 import hmac
 import html
@@ -27,6 +28,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import signal
 import socket
 import ssl
@@ -363,12 +365,12 @@ def uptime_disk():
     return up, pct, free_mb
 
 
-def system_metrics():
-    """Cheap /proc + /sys reads for the System page. Everything is optional —
-    a missing sensor reports None rather than failing the whole call."""
+def proc_metrics():
+    """The subprocess-free half of the metrics: pure /proc + /sys reads,
+    cheap enough for a 10s sampler. A missing sensor reports None rather
+    than failing the whole call."""
     m = {"load1": None, "load5": None, "load15": None, "ncpu": None,
-         "mem_total_mb": None, "mem_avail_mb": None,
-         "root_pct": None, "temp_c": None}
+         "mem_total_mb": None, "mem_avail_mb": None, "temp_c": None}
     try:
         with open("/proc/loadavg") as f:
             l1, l5, l15 = f.read().split()[:3]
@@ -389,13 +391,6 @@ def system_metrics():
         m["mem_avail_mb"] = int(fields["MemAvailable"].split()[0]) // 1024
     except (OSError, KeyError, ValueError, IndexError):
         pass
-    # root is tmpfs — its fill level is RAM the overlay is eating
-    rc, out = run(["df", "-k", "/"], timeout=10)
-    if rc == 0 and len(out.splitlines()) >= 2:
-        try:
-            m["root_pct"] = int(out.splitlines()[1].split()[4].rstrip("%"))
-        except (IndexError, ValueError):
-            pass
     best = None
     for zone in sorted(glob.glob("/sys/class/thermal/thermal_zone*/temp")):
         try:
@@ -408,6 +403,137 @@ def system_metrics():
     if best is not None:
         m["temp_c"] = round(best, 1)
     return m
+
+
+def root_pct():
+    # root is tmpfs — its fill level is RAM the overlay is eating
+    rc, out = run(["df", "-k", "/"], timeout=10)
+    if rc == 0 and len(out.splitlines()) >= 2:
+        try:
+            return int(out.splitlines()[1].split()[4].rstrip("%"))
+        except (IndexError, ValueError):
+            pass
+    return None
+
+
+def system_metrics():
+    m = proc_metrics()
+    m["root_pct"] = root_pct()
+    return m
+
+
+def net_counters():
+    """(rx_bytes, tx_bytes) summed over every interface but lo, plus the
+    primary interface name. Raw counters — rates come from deltas."""
+    rx = tx = 0
+    iface = None
+    try:
+        with open("/proc/net/dev") as f:
+            for line in f.readlines()[2:]:
+                name, _, rest = line.partition(":")
+                name = name.strip()
+                if name == "lo":
+                    continue
+                parts = rest.split()
+                if len(parts) < 10:
+                    continue
+                r, t = int(parts[0]), int(parts[8])
+                rx += r; tx += t
+                if iface is None and r > 0:
+                    iface = name  # first interface that has actually received
+    except (OSError, ValueError, IndexError):
+        return None, None, None
+    return rx, tx, iface
+
+
+def primary_ip():
+    """(ip, iface) of the first global IPv4 — same source pipeos-tls-init
+    uses for the cert SAN."""
+    rc, out = run(["ip", "-4", "-o", "addr", "show", "scope", "global"], timeout=10)
+    if rc == 0:
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[2] == "inet":
+                return parts[3].split("/")[0], parts[1]
+    return None, None
+
+
+# The only pipe preferences the dashboard may flip (pipe set's own settable set)
+PIPE_PREFS = ("dm_relay", "remember_login", "agent_events")
+
+# ---- metrics history: one sample every SAMPLE_S, 24h ring -------------------
+
+SAMPLE_S = 10
+METRICS_LOCK = threading.Lock()
+METRICS_HIST = collections.deque(maxlen=(24 * 3600) // SAMPLE_S)
+
+
+def metrics_sampler():
+    """Daemon thread. The df-based numbers fork a subprocess, so they run
+    every 6th tick (once a minute) and ride along stale in between."""
+    slow = {"work_pct": None, "root_pct": None}
+    tick = 0
+    while True:
+        try:
+            p = proc_metrics()
+            rx, tx, _ = net_counters()
+            if tick % 6 == 0:
+                _, wpct, _ = uptime_disk()
+                slow = {"work_pct": wpct, "root_pct": root_pct()}
+            mem = None
+            if p["mem_total_mb"] and p["mem_avail_mb"] is not None:
+                mem = round((p["mem_total_mb"] - p["mem_avail_mb"]) * 100.0
+                            / p["mem_total_mb"], 1)
+            with METRICS_LOCK:
+                METRICS_HIST.append({
+                    "t": int(time.time()), "load1": p["load1"], "mem": mem,
+                    "temp": p["temp_c"], "rx": rx, "tx": tx,
+                    "work_pct": slow["work_pct"], "root_pct": slow["root_pct"],
+                })
+        except Exception:
+            pass  # a bad sample must never kill the sampler
+        tick += 1
+        time.sleep(SAMPLE_S)
+
+
+def _bucket(vals, how):
+    vs = [v for v in vals if v is not None]
+    if not vs:
+        return None
+    if how == "max":
+        return max(vs)
+    return round(sum(vs) / len(vs), 2)
+
+
+def metrics_history(span_s):
+    """Series for the last span_s seconds, downsampled to <=360 points.
+    Rates are per-pair deltas with resets clamped to zero."""
+    cut = time.time() - span_s
+    with METRICS_LOCK:
+        rows = [r for r in METRICS_HIST if r["t"] >= cut]
+    # rates first, on the raw samples
+    rates = []
+    for i, r in enumerate(rows):
+        bps = (None, None)
+        if i and r["rx"] is not None and rows[i - 1]["rx"] is not None:
+            dt = max(1, r["t"] - rows[i - 1]["t"])
+            bps = (max(0, r["rx"] - rows[i - 1]["rx"]) * 8 // dt,
+                   max(0, r["tx"] - rows[i - 1]["tx"]) * 8 // dt)
+        rates.append(bps)
+    k = max(1, (len(rows) + 359) // 360)
+    out = {"interval_s": k * SAMPLE_S, "t0": rows[0]["t"] if rows else None,
+           "cpu": [], "mem_pct": [], "temp": [], "rx_bps": [], "tx_bps": [],
+           "work_pct": [], "root_pct": []}
+    for i in range(0, len(rows), k):
+        b, rb = rows[i:i + k], rates[i:i + k]
+        out["cpu"].append(_bucket([r["load1"] for r in b], "max"))
+        out["mem_pct"].append(_bucket([r["mem"] for r in b], "avg"))
+        out["temp"].append(_bucket([r["temp"] for r in b], "max"))
+        out["rx_bps"].append(_bucket([r[0] for r in rb], "avg"))
+        out["tx_bps"].append(_bucket([r[1] for r in rb], "avg"))
+        out["work_pct"].append(_bucket([r["work_pct"] for r in b], "avg"))
+        out["root_pct"].append(_bucket([r["root_pct"] for r in b], "avg"))
+    return out
 
 
 # ---- HTTP ------------------------------------------------------------------
@@ -487,11 +613,16 @@ class Handler(BaseHTTPRequestHandler):
         readers = {
             "/api/status": self.api_status,
             "/api/metrics": self.api_metrics,
+            "/api/metrics-history": self.api_metrics_history,
+            "/api/files": self.api_files,
+            "/api/file-dl": self.api_file_dl,
             "/api/logs": self.api_logs,
             "/api/stream": self.api_stream_get,
             "/api/stream-log": self.api_stream_log,
             "/api/assistant": self.api_assistant_get,
             "/api/pipe": self.api_pipe_get,
+            "/api/pipe-contacts": self.api_pipe_contacts,
+            "/api/pipe-board": self.api_pipe_board,
             "/api/update": self.api_update_get,
         }
         fn = readers.get(path)
@@ -502,6 +633,15 @@ class Handler(BaseHTTPRequestHandler):
         self.err(404, "no such page")
 
     def do_POST(self):
+        # Uploads stream a raw body and may run for minutes — they skip both
+        # the JSON body cap and MUTATE_LOCK (a big file must not freeze every
+        # other mutation). Still same-origin + session gated like the rest.
+        if self.path.split("?")[0] == "/api/file-up":
+            if not self.same_origin():
+                return self.err(403, "cross-origin request refused")
+            if not self.authed():
+                return self.err(401, "sign in first")
+            return self.api_file_up()
         # Every mutation serializes on MUTATE_LOCK; GET readers are not held, so
         # the dashboard still loads while a slow POST runs. The lock also keeps
         # the claim race single-winner now that the server is threaded.
@@ -526,6 +666,10 @@ class Handler(BaseHTTPRequestHandler):
             "/api/services": self.api_services,
             "/api/claude-token": self.api_claude_token,
             "/api/pipe-key": self.api_pipe_key,
+            "/api/pipe-contact": self.api_pipe_contact,
+            "/api/file-op": self.api_file_op,
+            "/api/pipe-set": self.api_pipe_set,
+            "/api/pipe-logout": self.api_pipe_logout,
             "/api/password": self.api_password,
             "/api/save": self.api_save,
             "/api/chat": self.api_chat,
@@ -670,11 +814,179 @@ class Handler(BaseHTTPRequestHandler):
             "boot_report": boot_report(),
         })
 
+    # -- files: a /work-only explorer. Everything else on the box is either
+    # regenerated tmpfs or the agent's identity — not the owner's to shuffle.
+    FILES_ROOT = "/work"
+
+    def _files_path(self, rel):
+        """Resolve a user-supplied relative path inside FILES_ROOT or raise
+        ValueError. Symlinks may not escape the root."""
+        rel = (rel or "").strip().lstrip("/")
+        if "\0" in rel:
+            raise ValueError("bad path")
+        p = os.path.realpath(os.path.join(self.FILES_ROOT, rel))
+        root = os.path.realpath(self.FILES_ROOT)
+        if p != root and not p.startswith(root + "/"):
+            raise ValueError("path escapes /work")
+        return p
+
+    def api_files(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        try:
+            p = self._files_path((q.get("path") or [""])[0])
+        except ValueError as e:
+            return self.err(400, str(e))
+        if not os.path.isdir(p):
+            return self.err(404, "no such folder")
+        dirs, files = [], []
+        try:
+            with os.scandir(p) as it:
+                for de in it:
+                    try:
+                        st = de.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    row = {"name": de.name, "mtime": int(st.st_mtime)}
+                    if de.is_dir(follow_symlinks=False):
+                        dirs.append(row)
+                    else:
+                        row["size"] = st.st_size
+                        files.append(row)
+        except OSError as e:
+            return self.err(500, "cannot read folder: %s" % e)
+        dirs.sort(key=lambda d: d["name"])
+        files.sort(key=lambda f: f["name"])
+        rel = os.path.relpath(p, os.path.realpath(self.FILES_ROOT))
+        self.send(200, {"path": "" if rel == "." else rel,
+                        "dirs": dirs[:2000], "files": files[:2000],
+                        "truncated": len(dirs) > 2000 or len(files) > 2000})
+
+    def api_file_op(self, body):
+        op = body.get("op")
+        try:
+            p = self._files_path(body.get("path"))
+        except ValueError as e:
+            return self.err(400, str(e))
+        if os.path.realpath(p) == os.path.realpath(self.FILES_ROOT) and op != "mkdir":
+            return self.err(400, "not on /work itself")
+        try:
+            if op == "mkdir":
+                name = (body.get("name") or "").strip()
+                if not name or "/" in name or name.startswith("."):
+                    return self.err(400, "folder name: no slashes, no leading dot")
+                os.makedirs(os.path.join(p, name), exist_ok=False)
+            elif op in ("move", "rename"):
+                dest = self._files_path(body.get("dest"))
+                if os.path.isdir(dest):
+                    dest = os.path.join(dest, os.path.basename(p))
+                if os.path.exists(dest):
+                    return self.err(400, "destination already exists")
+                os.rename(p, dest)
+            elif op == "delete":
+                if os.path.isdir(p):
+                    if os.listdir(p) and not body.get("recursive"):
+                        return self.err(400, "folder is not empty")
+                    shutil.rmtree(p)
+                else:
+                    os.unlink(p)
+            else:
+                return self.err(400, "op must be mkdir, move, rename or delete")
+        except FileExistsError:
+            return self.err(400, "already exists")
+        except FileNotFoundError:
+            return self.err(404, "no such file")
+        except OSError as e:
+            return self.err(500, str(e))
+        self.send(200, {"ok": True})
+
+    def api_file_dl(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        try:
+            p = self._files_path((q.get("path") or [""])[0])
+        except ValueError as e:
+            return self.err(400, str(e))
+        if not os.path.isfile(p):
+            return self.err(404, "no such file")
+        try:
+            size = os.path.getsize(p)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition",
+                             'attachment; filename="%s"' % os.path.basename(p).replace('"', "_"))
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            with open(p, "rb") as f:
+                while True:
+                    chunk = f.read(1 << 16)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except OSError:
+            pass  # client went away or file vanished mid-stream
+
+    UPLOAD_MAX = 4 << 30  # 4 GiB — media files are the use case
+
+    def api_file_up(self):
+        # Any refusal leaves the raw body unread on the socket — close rather
+        # than let keep-alive read it as the next request.
+        self.close_connection = True
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        name = (q.get("name") or [""])[0]
+        if not name or "/" in name or name.startswith(".") or "\0" in name:
+            return self.err(400, "file name: no slashes, no leading dot")
+        try:
+            d = self._files_path((q.get("path") or [""])[0])
+        except ValueError as e:
+            return self.err(400, str(e))
+        if not os.path.isdir(d):
+            return self.err(404, "no such folder")
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            return self.err(400, "bad length")
+        if n <= 0 or n > self.UPLOAD_MAX:
+            return self.err(400, "upload must be 1 byte to 4 GiB")
+        tmp = os.path.join(d, ".upload-%s.part" % secrets.token_hex(6))
+        try:
+            left = n
+            with open(tmp, "wb") as f:
+                while left > 0:
+                    chunk = self.rfile.read(min(1 << 16, left))
+                    if not chunk:
+                        raise OSError("connection dropped mid-upload")
+                    f.write(chunk)
+                    left -= len(chunk)
+            os.rename(tmp, os.path.join(d, name))
+        except OSError as e:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return self.err(500, str(e))
+        self.send(200, {"ok": True, "name": name, "size": n})
+
     def api_metrics(self):
         up, pct, free_mb = uptime_disk()
         m = system_metrics()
         m.update({"uptime_s": up, "work_pct": pct, "work_free_mb": free_mb})
+        ip, iface = primary_ip()
+        rx, tx, niface = net_counters()
+        m.update({"ip": ip, "iface": iface or niface,
+                  "rx_total": rx, "tx_total": tx,
+                  "rx_bps": None, "tx_bps": None})
+        with METRICS_LOCK:
+            tail = list(METRICS_HIST)[-2:]
+        if len(tail) == 2 and tail[1]["rx"] is not None and tail[0]["rx"] is not None:
+            dt = max(1, tail[1]["t"] - tail[0]["t"])
+            m["rx_bps"] = max(0, tail[1]["rx"] - tail[0]["rx"]) * 8 // dt
+            m["tx_bps"] = max(0, tail[1]["tx"] - tail[0]["tx"]) * 8 // dt
         self.send(200, m)
+
+    def api_metrics_history(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        span = (q.get("span") or ["1h"])[0]
+        span_s = {"1h": 3600, "6h": 6 * 3600, "24h": 24 * 3600}.get(span, 3600)
+        self.send(200, metrics_history(span_s))
 
     def api_name(self, body):
         nick = (body.get("nick") or "").strip()
@@ -1064,10 +1376,66 @@ class PhaseB:
             rc2, out2 = run(["pipe", "status"], timeout=20)
             m = re.search(r"^nick: (\S+)", out2, re.M) if rc2 == 0 else None
             nick = m.group(1) if m else ""
+        prefs = {}
+        rc3, out3 = run(["pipe", "get"], timeout=20)
+        if rc3 == 0:
+            for m in re.finditer(r"^\s*(dm_relay|remember_login|agent_events)\b\D*?\b(on|off|true|false)\b",
+                                 out3, re.M | re.I):
+                prefs[m.group(1)] = m.group(2).lower() in ("on", "true")
         self.send(200, {"enabled": read_services()["pipe"], "nick": nick,
                         "authed": authed_flag,
                         "owner": card_get("OWNER_NICK"),
-                        "cohort": card_get("COHORT_ID")})
+                        "cohort": card_get("COHORT_ID"),
+                        "prefs": prefs})
+
+    def api_pipe_contacts(self):
+        rc, out = run(["pipe", "contacts", "-o", "json"], timeout=20)
+        contacts = None
+        if rc == 0:
+            try:
+                contacts = json.loads(out[out.index("["):])
+            except ValueError:
+                try:
+                    contacts = json.loads(out[out.index("{"):])
+                except ValueError:
+                    pass
+        self.send(200, {"contacts": contacts,
+                        "text": "" if contacts is not None else out.strip()[-2000:]})
+
+    def api_pipe_contact(self, body):
+        nick = (body.get("nick") or "").strip()
+        if not NICK_RE.fullmatch(nick):
+            return self.err(400, "nick: letters, digits, . _ - only")
+        verb = "remove" if body.get("remove") else "add"
+        rc, out = run(["pipe", verb, nick], timeout=20)
+        if rc != 0:
+            return self.err(500, ("could not %s %s: " % (verb, nick)) + out.strip()[-200:])
+        self.send(200, {"ok": True})
+
+    def api_pipe_set(self, body):
+        pref = body.get("pref") or ""
+        if pref not in PIPE_PREFS:
+            return self.err(400, "pref must be one of: " + ", ".join(PIPE_PREFS))
+        val = "on" if body.get("value") else "off"
+        rc, out = run(["pipe", "set", pref, val], timeout=20)
+        if rc != 0:
+            return self.err(500, "pipe set failed: " + out.strip()[-200:])
+        self.send(200, {"ok": True, "pref": pref, "value": val == "on"})
+
+    def api_pipe_logout(self, body):
+        rc, out = run(["pipe", "logout"], timeout=20)
+        if rc != 0:
+            return self.err(500, "logout failed: " + out.strip()[-200:])
+        self.send(200, {"ok": True})
+
+    def api_pipe_board(self):
+        cid = card_get("COHORT_ID")
+        if not cid:
+            return self.send(200, {"cohort": "", "text": ""})
+        rc, out = run(["pipe", "cohorts", "board", cid], timeout=20)
+        self.send(200, {"cohort": cid,
+                        "text": out.strip()[-4000:] if rc == 0
+                        else "(board unavailable: %s)" % out.strip()[-200:]})
 
     def api_cohort(self, body):
         cid = (body.get("id") or "").strip()
@@ -1148,6 +1516,7 @@ def main():
     port = int(os.environ.get("PIPEOS_WEB_PORT", "80"))
     os.makedirs(SESS_DIR, mode=0o700, exist_ok=True)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    threading.Thread(target=metrics_sampler, daemon=True).start()
     start_https()
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     srv.daemon_threads = True
