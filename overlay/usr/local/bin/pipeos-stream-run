@@ -197,7 +197,7 @@ else
 	# branch, and give every group its own tee (so per-leg fifo isolation is
 	# kept). STREAM_ARGS is single-encode-only and skipped here on purpose.
 	FC="[0:v]split=$NG"
-	g=0; while [ "$g" -lt "$NG" ]; do FC="$FC[s$g]"; g=$((g + 1)); done
+	g=0; while [ "$g" -lt "$NG" ]; do FC="${FC}[s$g]"; g=$((g + 1)); done
 	g=0; while [ "$g" -lt "$NG" ]; do
 		if [ "$USE_VAAPI" = 1 ]; then
 			FC="$FC;[s$g]format=nv12,hwupload[v$g]"
