@@ -400,9 +400,12 @@ def resolve(home, work=None, export=None, mkdirs=(), keys=()):
     env.pop("SIGNING_KEY_DIR_ALT", None)
     if export:
         env["SIGNING_KEY_DIR"] = os.path.join(root, export)
+    # [*] join: SIGNING_KEY_DIR_ALT became an array (pipeOS#111 — a $HOME
+    # with a space split the old string into nonexistent paths); the harness
+    # roots are space-free, so the space-join stays parseable by .split().
     r = subprocess.run(["bash", "-c", "set -eu\n" + block +
                         '\nprintf "%s\\n%s" "$SIGNING_KEY_DIR" '
-                        '"${SIGNING_KEY_DIR_ALT:-}"'],
+                        '"${SIGNING_KEY_DIR_ALT[*]:-}"'],
                        capture_output=True, text=True, env=env)
     chosen, _, alt = r.stdout.partition("\n")
     return chosen, alt, r.returncode, root

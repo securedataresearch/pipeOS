@@ -285,6 +285,17 @@ if [ -r "$_suc" ]; then
     fi
 fi
 
+# ---- 3e. a REFUSED worksweep candidate is a bug, not a log line (#110).
+# The sweep refuses when its allowlist and protected list disagree about a
+# path — a disagreement in the deletion tool's own map. It logs and moves on
+# (an unattended cron must not wedge), so this is where it becomes a finding
+# a human sees.
+if [ -r /work/logs/worksweep.log ]; then
+    _ws_ref=$(grep -c 'REFUSED' /work/logs/worksweep.log 2>/dev/null || echo 0)
+    [ "${_ws_ref:-0}" -gt 0 ] && \
+        warnn "worksweep has REFUSED $_ws_ref candidate(s) — its allowlist and protected list disagree; see /work/logs/worksweep.log (pipeOS#110)"
+fi
+
 # ---- 4. will a reboot reproduce this state? (covers the incident: media
 # repo coherence, world resolution, all packages installed, apkovl readable)
 # `pipeos verify` only reads; `apk fix` installs, so it is the boot-only half.
@@ -438,6 +449,16 @@ else
         # nothing at all. This PR makes `--from <branch>` easy, so it makes
         # that state easy too, and the check that was supposed to notice it is
         # the one blind to it.
+        # pipeOS#119: this count is only as fresh as the checkout's last
+        # fetch. A box that CANNOT fetch would otherwise report a gap that
+        # never grows — an unmeasurable gap dressed as a shrinking one. Say
+        # the measurement's age out loud once it stops being current.
+        _ov_fh="$_ov_repo/.git/FETCH_HEAD"
+        if [ -f "$_ov_fh" ]; then
+            _ov_fage=$(( ($(date +%s) - $(date -r "$_ov_fh" +%s 2>/dev/null || date +%s)) / 86400 ))
+            [ "$_ov_fage" -gt 7 ] && \
+                warnn "overlay gap is measured against a checkout last fetched ${_ov_fage}d ago — the real gap can only be larger (fetch to re-measure; pipeOS#119)"
+        fi
         _ov_n=$(git -C "$_ov_repo" rev-list --count "$_ov_c..$_ov_tip" 2>/dev/null || echo 0)
         if ! git -C "$_ov_repo" merge-base --is-ancestor "$_ov_c" "$_ov_tip" 2>/dev/null; then
             warnn "deployed overlay commit $(echo "$_ov_c" | cut -c1-12) is NOT on $_ov_ref — this box is running an overlay that was never merged"

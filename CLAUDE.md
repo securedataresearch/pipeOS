@@ -45,7 +45,9 @@ be mirrored there.
   signs `APKINDEX.tar.gz` in the chroot. Re-index only via abuild/`apk index`
   + `abuild-sign` in the chroot.
 - `apks/extra` (CDN closure): apk-**3** ADB index — `apk mkndx --sign-key`
-  (see `extra-add`). The wrong recipe produces an index apk parses but whose
+  with the `../noarch` split, and BOTH writers now use it: `extra-add` on a
+  box and `30-build-apks.sh` at build time (the build used the apk-2 recipe
+  until pipeOS#150). The wrong recipe produces an index apk parses but whose
   packages fail install.
 
 ## The 2026-08-05 incident (why verification exists)

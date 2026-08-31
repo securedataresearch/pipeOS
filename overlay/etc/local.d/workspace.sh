@@ -22,3 +22,12 @@ mkdir -p /work
 # 2026-08-16. PIPEWORK is always ext4 (grow.sh makes it); say so.
 mountpoint -q /work || mount -t ext4 -o noatime "$dev" /work || exit 0
 mkdir -p /work/repos /work/logs /work/cache /work/claude /work/pipebox /work/backup
+# Agent memory belongs on ext4 from the box's FIRST boot (pipeOS#80): if
+# /root/.claude/projects does not exist yet, lay the symlink before claude's
+# first run can create a real tmpfs directory there — a box born migrated
+# never loses a transcript. A real directory already present is a pre-fix box
+# mid-life: leave it for the copy-first operator migration; selfcheck warns.
+if [ ! -e /root/.claude/projects ] && [ ! -L /root/.claude/projects ]; then
+	mkdir -p /work/claude/projects /root/.claude
+	ln -s /work/claude/projects /root/.claude/projects
+fi

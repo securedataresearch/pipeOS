@@ -18,11 +18,11 @@ cd "$(dirname "$0")/.."
 CARDTOOL=overlay/usr/local/bin/pipebox-card
 TMPLDIR=overlay/usr/local/share/pipeos/card
 SHIPPED=overlay/etc/pipeos/card.conf
-# Must track the generator's own OUTPUTS in pipebox-card. It does NOT yet:
-# root/.pipe/policy.json is generated but absent here, and the committed copy
-# has drifted from the shipped card since #58 — filed separately rather than
-# folded in, because closing it changes the shipped agent's capability set.
-OUTPUTS="etc/pipeos/pipebox.conf etc/pipeos/pipebox-settings.json etc/pipeos/mandate.md etc/profile.d/10-pipebox-env.sh etc/hostname etc/issue etc/motd etc/network/interfaces"
+# Tracks the generator's own OUTPUTS in pipebox-card — including
+# root/.pipe/policy.json (pipeOS#94: it was generated but ungated here, and
+# the committed copy drifted; the 2026-08-31 `make cards` realigned it and
+# this line is what keeps it aligned).
+OUTPUTS="etc/pipeos/pipebox.conf etc/pipeos/pipebox-settings.json etc/pipeos/mandate.md etc/profile.d/10-pipebox-env.sh etc/hostname etc/issue etc/motd etc/network/interfaces root/.pipe/policy.json"
 
 fails=0
 say()  { printf '%s\n' "$*"; }

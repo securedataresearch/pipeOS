@@ -116,10 +116,15 @@ fi
 # same silent-wrong-key class as the rest of this section. The census's answer
 # to two populated stores is to stop and make a human choose, which is the right
 # answer to a half-finished rotation too.
-SIGNING_KEY_DIR_ALT=
+# An ARRAY, not a space-joined string (pipeOS#111): one candidate lives under
+# $HOME, and a $HOME with a space silently split into two nonexistent paths —
+# the census then saw nothing there and the two-different-keys refusal was
+# disabled exactly where it was needed. Consumers iterate
+# "${SIGNING_KEY_DIR_ALT[@]}"; this file is bash (see shebang note above).
+SIGNING_KEY_DIR_ALT=()
 for _cand in "$HOME/.pipeos/keys" /work/keys/pipeos; do
     if [ "$_cand" != "$SIGNING_KEY_DIR" ]; then
-        SIGNING_KEY_DIR_ALT="${SIGNING_KEY_DIR_ALT:+$SIGNING_KEY_DIR_ALT }$_cand"
+        SIGNING_KEY_DIR_ALT+=("$_cand")
     fi
 done
 unset _cand

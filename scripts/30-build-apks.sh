@@ -218,8 +218,18 @@ mkdir -p "$OUT/repo/extra/$ALPINE_ARCH"; chmod -R a+rwX "$OUT/repo/extra" 2>/dev
 "$CR" "apk fetch --recursive -o /pipeOS/out/repo/extra/$ALPINE_ARCH \
     --repository https://dl-cdn.alpinelinux.org/alpine/v3.24/community \
     $(echo $UTILS)"
+# apk-3 ADB index with the ../noarch split — the SAME recipe extra-add runs
+# on a box (pipeOS#150): this repo had two writers using two index formats
+# (build: apk-2 tar via apk index+abuild-sign; box: apk-3 via mkndx), and
+# CLAUDE.md's "never mix the recipes" rule was being broken by the build
+# itself. One recipe now, the reboot-verified one from extra-add.
 "$CR" -u builder "cd /pipeOS/out/repo/extra/$ALPINE_ARCH && \
-    apk index --rewrite-arch $ALPINE_ARCH -o APKINDEX.tar.gz *.apk && \
-    abuild-sign APKINDEX.tar.gz"
+    mkdir -p ../noarch && \
+    for f in *.apk; do \
+        tar -xzOf \"\$f\" .PKGINFO 2>/dev/null | grep -q '^arch = noarch' && mv \"\$f\" ../noarch/ || true; \
+    done && \
+    apk mkndx --sign-key /home/builder/.abuild/*.rsa -d \"pipeos extra \$(date -u +%Y%m%d)\" \
+        -o APKINDEX.tar.gz.new \$(find . ../noarch -name '*.apk' | sort) && \
+    mv APKINDEX.tar.gz.new APKINDEX.tar.gz"
 
 echo "apk build complete"
