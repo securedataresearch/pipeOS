@@ -11,6 +11,11 @@ status, toggles — happens here, authenticated by that password.
 stdlib only, single-threaded on purpose: one request at a time means the
 claim race (two browsers on an unclaimed box) is serialized for free.
 
+Runs as ROOT, deliberately and permanently: this daemon IS the box's control
+plane (rc-service/rc-update, lbu saves, adduser via pipeos-user, mount,
+reboot, /etc/pipeos writes). De-rooting efforts go into the services it
+manages (svc-stream, svc-mdns), never into this process.
+
 State files (all persisted via lbu.list + lines):
   /etc/pipeos/web-admin.conf   HASH='$6$...'   — absent == unclaimed
   /etc/pipeos/services.conf    SERVICE_PIPE=on/off ...
