@@ -85,6 +85,10 @@ tar -C "$stage/overlay" --numeric-owner --owner=0 --group=0 \
 ssh "$HOST" '
 set -e
 tar -C / -xf - </dev/stdin
+# the payload necessarily carries parent dir entries (./, ./root/, ./etc/…);
+# owner is forced to 0 at creation, but their 755 mode still lands on
+# extraction — put the credential home back the way the image ships it
+chmod 700 /root
 for svc in pipeos-web pipeos-mdns; do
     rc-service "$svc" status >/dev/null 2>&1 && rc-service "$svc" restart >/dev/null 2>&1 || true
 done
