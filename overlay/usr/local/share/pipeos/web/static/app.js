@@ -303,10 +303,16 @@ function chart(elm, series, opts) {
     parts.push(`<path d="${line}" fill="none" stroke="${s.color}" stroke-width="1.8" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`);
   }
   const t = s => { const d = new Date(s * 1000); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); };
-  const legend = series.length > 1 ? series.map(s =>
-    `<span class="lg"><i style="background:${s.color}"></i>${esc(s.label || "")}</span>`).join("") : "";
+  // Header shows the CURRENT value per series (the number people want) and
+  // the scale as an explicit range — a bare axis-max up there read as a
+  // value ("memory 100%!" while the line sat at 12%).
+  const last = d => { for (let i = d.length - 1; i >= 0; i--) if (d[i] != null) return d[i]; return null; };
+  const now = series.map(s => {
+    const v = last(s.data);
+    return `<span class="lg">${series.length > 1 ? `<i style="background:${s.color}"></i>` : ""}${s.label ? esc(s.label) + " " : ""}<b>${v == null ? "—" : fmtY(v)}</b></span>`;
+  }).join("");
   elm.innerHTML = `
-    <div class="chhead"><span class="chy">${fmtY(ymax)}</span>${legend ? `<span class="legend">${legend}</span>` : ""}</div>
+    <div class="chhead"><span class="legend">${now}</span><span class="chy">scale 0–${fmtY(ymax)}</span></div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="tschart">${parts.join("\n")}</svg>
     <div class="chfoot">${opts.t0 ? `<span>${t(opts.t0)}</span><span>${t(opts.t0 + n * opts.interval)}</span>` : ""}</div>`;
 }
@@ -755,8 +761,9 @@ async function dashboard() {
   renderAlerts();
   if (st.services.pipe) api("/api/pipe").then(p => {
     if (!p.authed) return;
+    // both phrasings the boot report has used for a signed-out pipe
     for (let i = alertItems.length - 1; i >= 0; i--)
-      if (/unauthenticated/i.test(alertItems[i][1])) alertItems.splice(i, 1);
+      if (/unauthenticated|not signed in/i.test(alertItems[i][1])) alertItems.splice(i, 1);
     renderAlerts();
   }).catch(() => {});
   api("/api/metrics").then(m => {
@@ -1304,7 +1311,7 @@ async function dashboard() {
         if (!exts.length) {
           bstate.textContent = "no drive";
           bstate.className = "pill status-warn";
-          bnote.textContent = "Plug in an external drive and mount it above — one button then copies everything a restore needs (work disk + boot media).";
+          bnote.textContent = "Mount a spare disk above — a USB drive or an unused internal disk both work — and one button copies everything a restore needs (work disk + boot media). A spare disk can also become a pipeOS install target instead (flashed from an operator machine).";
           brow.hidden = true;
           return;
         }
