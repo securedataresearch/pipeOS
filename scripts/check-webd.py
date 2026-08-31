@@ -254,6 +254,16 @@ with open(webd.STREAM_CONF) as f:
     assert "STREAM_BOOT='0'" in f.read()
 assert req("/api/stream")["boot"] is False
 ok("configure implies enable; boot opt-out round-trips")
+# a pre-multi-user session file (bare timestamp body) must read as the admin,
+# not crash the handler — json.loads parses a timestamp fine, as an int
+import time as _t
+with open(os.path.join(webd.SESS_DIR, "ab" * 32), "w") as f:
+    f.write(str(int(_t.time())))
+old_cookie = cookie["v"]
+cookie["v"] = "ab" * 32
+assert req("/api/status")["user"] == "admin"
+ok("legacy timestamp-format session reads as admin, not a crash")
+cookie["v"] = old_cookie
 # users: multi-user login, roles, and the lockout guards
 req("/api/login", {"username": "ghost", "password": "hunter22hunter"}, expect=403)
 ok("unknown username refused with the same flat error")
