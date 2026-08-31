@@ -234,6 +234,34 @@ for d in r["disks"]:
         req("/api/disk-op", {"op": "format", "dev": d["parts"][0]["dev"]}, expect=400)
         break
 ok("disk inventory lists; protected/system devices refuse every op")
+# backup: dest validation, then a real rsync round-trip against redirected
+# sources and a fake mounted external (ismount patched for the tempdir)
+req("/api/backup", {"dest": "work"}, expect=400)
+req("/api/backup", {"dest": "ext/ghost"}, expect=400)
+os.makedirs(tmp + "/ext/sdx1", exist_ok=True)
+os.makedirs(tmp + "/srcwork/sub", exist_ok=True)
+with open(tmp + "/srcwork/data.txt", "w") as f:
+    f.write("precious")
+webd.BACKUP_SRCS = ((tmp + "/srcwork/", "work"),)
+_real_ismount = webd.os.path.ismount
+webd.os.path.ismount = lambda p: p.startswith(tmp + "/ext/") or _real_ismount(p)
+r = req("/api/backup", {"dest": "ext/sdx1"})
+assert r["started"]
+import select as _sel  # time.sleep is no-op-patched above; select isn't
+for _ in range(100):
+    if not req("/api/backup")["running"]:
+        break
+    _sel.select([], [], [], 0.1)
+b = req("/api/backup")
+assert b["ok"] is True, b
+found = False
+for root, dirs, files in os.walk(tmp + "/ext/sdx1/pipeos-backup"):
+    if "data.txt" in files:
+        found = True
+assert found, "backup did not copy the source file"
+assert b["exts"][0]["last"] is not None
+webd.os.path.ismount = _real_ismount
+ok("backup validates dest and mirrors sources onto the external")
 raw = urllib.request.Request(base + "/api/file-up?path=work&name=up.bin", data=b"x" * 100)
 raw.add_header("Cookie", "session=" + cookie["v"])
 raw.add_header("Origin", base)

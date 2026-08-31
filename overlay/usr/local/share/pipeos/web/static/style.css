@@ -183,10 +183,12 @@ details summary { cursor: pointer; }
 .charts .card { padding: .8rem .9rem; }
 .charts .k, .card > .k { color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; font-weight: 600; margin-bottom: .3rem; }
 .ch { min-height: 40px; }
-.tschart { width: 100%; height: auto; display: block; }
-.tschart .grid { stroke: var(--line); stroke-dasharray: 3 4; stroke-width: 1; }
-.tschart .refline { stroke: var(--faint); stroke-dasharray: 5 4; stroke-width: 1; }
-.tschart .tick { fill: var(--faint); font-size: 10px; font-family: inherit; }
+.tschart { width: 100%; height: 110px; display: block; border-bottom: 1px solid var(--line); }
+.tschart .grid { stroke: var(--line); stroke-dasharray: 3 4; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.tschart .refline { stroke: var(--faint); stroke-dasharray: 5 4; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.chhead { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: .15rem; }
+.chhead .chy { color: var(--faint); font-size: .74rem; }
+.chfoot { display: flex; justify-content: space-between; color: var(--faint); font-size: .74rem; margin-top: .15rem; }
 .legend { display: flex; gap: .9rem; margin-bottom: .2rem; }
 .legend .lg { display: inline-flex; align-items: center; gap: .35rem; font-size: .78rem; color: var(--muted); }
 .legend .lg i { width: 10px; height: 3px; border-radius: 2px; display: inline-block; }
