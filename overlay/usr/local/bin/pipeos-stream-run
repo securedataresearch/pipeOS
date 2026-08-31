@@ -45,6 +45,22 @@ fi
 # — the dashboard writes these from a provider list (YouTube, Twitch, …). A slot
 # streams only when it is ON and has a URL. onfail=ignore + use_fifo (below)
 # keep one target's hiccup from stuttering the others.
+# Force plain rtmp:// targets to IPv4. Home networks routinely hand out an IPv6
+# address with no working route; ffmpeg (on musl, which ignores gai.conf) then
+# tries the AAAA record first and hangs, and the whole stream reaches nobody.
+# rtmp:// carries no TLS/SNI, so connecting by IP is fine; rtmps:// needs the
+# hostname for SNI and is left alone (working IPv6, or a fixed route, is on it).
+resolve4() {
+	case "$1" in
+	rtmp://*)
+		rest=${1#rtmp://}; host=${rest%%/*}; path=${rest#*/}
+		hostonly=${host%%:*}; port=""
+		case "$host" in *:*) port=":${host#*:}" ;; esac
+		ip=$(getent ahostsv4 "$hostonly" 2>/dev/null | awk 'NR==1{print $1}')
+		[ -n "$ip" ] && printf 'rtmp://%s%s/%s' "$ip" "$port" "$path" || printf '%s' "$1" ;;
+	*) printf '%s' "$1" ;;
+	esac
+}
 DESTS=""
 i=1
 while [ "$i" -le "${STREAM_MAX_TARGETS:-4}" ]; do
@@ -52,15 +68,15 @@ while [ "$i" -le "${STREAM_MAX_TARGETS:-4}" ]; do
 	eval "url=\${STREAM_T${i}_URL:-}"
 	eval "key=\${STREAM_T${i}_KEY:-}"
 	if [ "$on" = 1 ] && [ -n "$url" ]; then
-		url=${url%/}
-		DESTS="${DESTS:+$DESTS|}[f=flv:onfail=ignore]${url}${key:+/$key}"
+		url=$(resolve4 "${url%/}")
+		DESTS="${DESTS:+$DESTS|}[f=flv]${url}${key:+/$key}"
 	fi
 	i=$((i + 1))
 done
 # Back-compat: honour the old single/dual DST fields if no slot is set.
 if [ -z "$DESTS" ] && [ -n "${STREAM_DST:-}" ]; then
-	DESTS="[f=flv:onfail=ignore]${STREAM_DST%/}${STREAM_KEY:+/$STREAM_KEY}"
-	[ -n "${STREAM_DST2:-}" ] && DESTS="$DESTS|[f=flv:onfail=ignore]${STREAM_DST2%/}${STREAM_KEY2:+/$STREAM_KEY2}"
+	DESTS="[f=flv]${STREAM_DST%/}${STREAM_KEY:+/$STREAM_KEY}"
+	[ -n "${STREAM_DST2:-}" ] && DESTS="$DESTS|[f=flv]${STREAM_DST2%/}${STREAM_KEY2:+/$STREAM_KEY2}"
 fi
 if [ -z "$DESTS" ]; then
 	echo "pipeos-stream-run: no enabled stream targets configured" >&2
@@ -129,7 +145,9 @@ ffmpeg -hide_banner -loglevel warning -stats -nostdin \
 	"${VENC[@]}" \
 	-c:a aac -b:a 128k -ar 44100 \
 	${STREAM_ARGS:-} \
-	-f tee -use_fifo 1 "$DESTS" &
+	-f tee -use_fifo 1 \
+	-fifo_options "attempt_recovery=1:drop_pkts_on_overflow=1:recovery_wait_time=2:max_recovery_attempts=0" \
+	"$DESTS" &
 FPID=$!
 
 # Respawn as a set: fall through the instant any child (renderer OR encoder)
