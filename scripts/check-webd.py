@@ -224,6 +224,24 @@ req("/api/file-op", {"op": "delete", "path": "work/sub"}, expect=400)  # non-emp
 req("/api/file-op", {"op": "delete", "path": "work/sub", "recursive": True})
 assert req("/api/files?path=work")["dirs"] == []
 ok("file ops: mkdir/move/rename/delete with guards")
+# folder-as-tarball download: jailed like everything else, streams gzip
+os.makedirs(tmp + "/work/tardir", exist_ok=True)
+with open(tmp + "/work/tardir/f.txt", "w") as f:
+    f.write("tarme")
+req("/api/file-tar?path=work/../../etc", expect=400)
+req("/api/file-tar?path=work/nope", expect=404)
+data = req("/api/file-tar?path=work/tardir")
+assert data[:2] == b"\x1f\x8b", "not gzip: %r" % data[:8]
+req("/api/file-op", {"op": "delete", "path": "work/tardir", "recursive": True})
+ok("folder tar.gz download streams and stays jailed")
+# health: the read-only re-check runs the selfcheck binary and reports verdict
+webd.SELFCHECK_BIN = tmp + "/selfcheck-stub"
+with open(webd.SELFCHECK_BIN, "w") as f:
+    f.write("#!/bin/sh\necho 'ok all fine'\necho 'verdict: all green'\n")
+os.chmod(webd.SELFCHECK_BIN, 0o755)
+h = req("/api/health")
+assert h["ok"] is True and h["verdict"] == "all green"
+ok("health re-check runs selfcheck and extracts the verdict")
 # disks: inventory answers, and every system disk refuses ops
 r = req("/api/disks")
 assert isinstance(r["disks"], list)

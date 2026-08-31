@@ -39,6 +39,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import tarfile
 import threading
 import uuid
 import time
@@ -575,6 +576,10 @@ PIPE_PREFS = ("dm_relay", "remember_login", "agent_events")
 # The id doubles as the binary name; a backend is offered only when installed.
 ASSISTANT_BACKENDS = ("claude", "hermes", "agy")
 
+# bare (no --boot) is read-only by contract — pipeOS#13's "safe to run any
+# time, by anyone, on any box": no DM, no writes, no service starts
+SELFCHECK_BIN = "/usr/local/bin/pipeos-selfcheck"
+
 # ---- disks -----------------------------------------------------------------
 # Inventory straight from /sys/block + busybox blkid (no lsblk on the image).
 # A disk is PROTECTED — untouchable by every disk-op — when any part of it is
@@ -873,8 +878,10 @@ class Handler(BaseHTTPRequestHandler):
             "/api/metrics-history": self.api_metrics_history,
             "/api/files": self.api_files,
             "/api/file-dl": self.api_file_dl,
+            "/api/file-tar": self.api_file_tar,
             "/api/disks": self.api_disks,
             "/api/backup": self.api_backup_get,
+            "/api/health": self.api_health,
             "/api/logs": self.api_logs,
             "/api/stream": self.api_stream_get,
             "/api/stream-log": self.api_stream_log,
@@ -1261,6 +1268,29 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             pass  # client went away or file vanished mid-stream
 
+    def api_file_tar(self):
+        """A folder as one download: streamed tar.gz, no temp file. Length is
+        unknowable up front, so the connection closes to end the stream."""
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        try:
+            p = self._files_path((q.get("path") or [""])[0])
+        except ValueError as e:
+            return self.err(400, str(e))
+        if p is None or not os.path.isdir(p):
+            return self.err(404, "no such folder")
+        name = (os.path.basename(p) or "drive") + ".tar.gz"
+        self.close_connection = True
+        self.send_response(200)
+        self.send_header("Content-Type", "application/gzip")
+        self.send_header("Content-Disposition", 'attachment; filename="%s"' % name.replace('"', "_"))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            with tarfile.open(fileobj=self.wfile, mode="w|gz") as tf:
+                tf.add(p, arcname=os.path.basename(p) or "drive")
+        except (OSError, tarfile.TarError):
+            pass  # client went away or a file vanished mid-walk
+
     UPLOAD_MAX = 4 << 30  # 4 GiB — media files are the use case
 
     def api_file_up(self):
@@ -1304,6 +1334,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_disks(self):
         self.send(200, {"disks": disk_inventory(), "ext_base": FILES_EXT_BASE})
+
+    def api_health(self):
+        """A fresh health verdict, NOW — the boot report is a snapshot of boot,
+        and healed findings linger there until the next reboot. Runs the bare
+        (read-only) selfcheck."""
+        rc, out = run([SELFCHECK_BIN], timeout=180)
+        m = re.search(r"^verdict: (.*)$", out, re.M)
+        self.send(200, {"ok": rc == 0, "text": out[-8000:],
+                        "verdict": m.group(1) if m else ""})
 
     def api_backup_get(self):
         nick = card_get("NICK") or socket.gethostname()
