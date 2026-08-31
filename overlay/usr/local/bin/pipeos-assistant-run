@@ -38,5 +38,6 @@ fi
 # cwd lands on the same conversation the dashboard chat uses.
 exec ttyd --writable --interface 0.0.0.0 --port "$PORT" \
 	--credential "${USER}:${ASSISTANT_PASS}" \
-	-t titleFixed=basho0-assistant -t 'theme={"background":"#131417"}' \
+	-t "titleFixed=$(hostname 2>/dev/null || echo pipeos) assistant" \
+	-t 'theme={"background":"#131417"}' \
 	tmux new -A -s assistant "claude --continue --settings $SETTINGS"
