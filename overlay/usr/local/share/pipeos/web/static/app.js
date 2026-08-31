@@ -372,6 +372,7 @@ async function dashboard() {
       <p class="note">The box also saves automatically every 15 minutes.</p>
       <button id="repair" class="ghost">Repair remote access</button>
       <button id="reboot" class="ghost">Reboot the box</button>
+      <button id="rebootfw" class="ghost">Reboot into BIOS</button>
       <p class="note" id="mmsg" hidden></p>
       <div id="updrow" style="margin-top:1rem">
         <span class="pill" id="updstate">updates: checking…</span>
@@ -556,6 +557,14 @@ async function dashboard() {
       setTimeout(() => { const t = setInterval(async () => {
         try { await api("/api/state"); clearInterval(t); location.reload(); } catch (e) {}
       }, 5000); }, 20000);
+    } catch (e) { msg.textContent = e.message; }
+  };
+  v.querySelector("#rebootfw").onclick = async () => {
+    if (!confirm("Reboot into the BIOS/UEFI setup? Connect a monitor + keyboard to the box first — it will stop at the firmware screen, not boot pipeOS.")) return;
+    const msg = v.querySelector("#mmsg"); msg.hidden = false; msg.textContent = "arming firmware setup…";
+    try {
+      const r = await api("/api/reboot-firmware", {});
+      msg.textContent = r.note || "Rebooting into firmware setup.";
     } catch (e) { msg.textContent = e.message; }
   };
   v.querySelector("#chpw").onclick = async () => {

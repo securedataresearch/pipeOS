@@ -28,10 +28,11 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 ETC = "/etc/pipeos"
 ADMIN_CONF = ETC + "/web-admin.conf"
@@ -46,6 +47,14 @@ STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 SESSION_IDLE_S = 24 * 3600
 NICK_RE = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
 SVC_KEYS = ("pipe", "claude", "stream", "agy", "support", "assistant")
+
+# The server is threaded (ThreadingHTTPServer) so a slow request — a service
+# start, an update, a save — never blocks the dashboard from loading: that
+# single-threaded stall was the "the box isn't coming up" symptom. Reads run
+# concurrently; every state-mutating POST takes this lock, which preserves the
+# claim-race serialization the single-threaded server used to give for free
+# (two browsers claiming an unclaimed box still resolve to one winner).
+MUTATE_LOCK = threading.Lock()
 
 
 def run(argv, timeout=60, input_text=None):
@@ -337,6 +346,13 @@ class Handler(BaseHTTPRequestHandler):
         self.err(404, "no such page")
 
     def do_POST(self):
+        # Every mutation serializes on MUTATE_LOCK; GET readers are not held, so
+        # the dashboard still loads while a slow POST runs. The lock also keeps
+        # the claim race single-winner now that the server is threaded.
+        with MUTATE_LOCK:
+            self._do_post_locked()
+
+    def _do_post_locked(self):
         if not self.same_origin():
             return self.err(403, "cross-origin request refused")
         path = self.path.split("?")[0]
@@ -358,6 +374,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/save": self.api_save,
             "/api/chat": self.api_chat,
             "/api/reboot": self.api_reboot,
+            "/api/reboot-firmware": self.api_reboot_firmware,
             "/api/repair-access": self.api_repair_access,
             "/api/stream-config": self.api_stream_set,
             "/api/assistant-config": self.api_assistant_set,
@@ -598,6 +615,21 @@ class Handler(BaseHTTPRequestHandler):
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         self.send(200, {"ok": True, "note": "rebooting — the box is back in about a minute"})
+
+    def api_reboot_firmware(self, _body):
+        """Reboot into the UEFI setup (BIOS). On a headless box nobody can hit
+        the POST key, so the wizard sets the firmware-setup indication instead.
+        Check support first and only reboot on success, so a firmware that does
+        not support it reports back cleanly rather than doing a plain reboot."""
+        rc, out = run(["/usr/local/bin/pipeos-reboot-firmware"], timeout=15)
+        if rc != 0:
+            return self.err(400, out.strip()[-200:] or "could not enter firmware setup")
+        # Armed the indication; answer first, then reboot (as api_reboot does).
+        subprocess.Popen(
+            ["sh", "-c", "sleep 2; reboot"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self.send(200, {"ok": True, "note": "rebooting into firmware setup — connect a display to the box"})
 
     def api_repair_access(self, _body):
         """Cheaper than a reboot when only remote access is wedged: put the
@@ -856,7 +888,8 @@ def main():
     port = int(os.environ.get("PIPEOS_WEB_PORT", "80"))
     os.makedirs(SESS_DIR, mode=0o700, exist_ok=True)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    srv = HTTPServer(("0.0.0.0", port), Handler)
+    srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    srv.daemon_threads = True
     sys.stderr.write("pipeos-webd listening on :%d (claimed=%s)\n" % (port, claimed()))
     srv.serve_forever()
 
