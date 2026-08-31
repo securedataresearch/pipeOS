@@ -124,6 +124,11 @@ sleep 8
 #   - -fps_mode cfr + a big thread_queue: kills x11grab's dup/drop jitter.
 #   - tee -use_fifo 1 + onfail=ignore (per slot): each target gets its own FIFO,
 #     so one platform buffering can't stutter the others.
+#   - queue_size=1024 (~8 s at 60 fps): the fifo default is 60 packets (~0.5 s),
+#     and YouTube's ingest throttles the TCP window every so often — with the
+#     tiny default every such pause overflowed the fifo and dropped packets on
+#     that leg only ("FIFO queue full"), seen as YouTube-only framerate stutter
+#     while the same bytes played smooth on Twitch (basho0, 2026-08-31).
 #   - default ~3.5 Mbps: two targets = ~7 Mbps up, kind to a home uplink; text
 #     streams clean at that. STREAM_BITRATE overrides.
 # anullsrc adds the silent audio track both platforms require.
@@ -146,7 +151,7 @@ ffmpeg -hide_banner -loglevel warning -stats -nostdin \
 	-c:a aac -b:a 128k -ar 44100 \
 	${STREAM_ARGS:-} \
 	-f tee -use_fifo 1 \
-	-fifo_options "attempt_recovery=1:drop_pkts_on_overflow=1:recovery_wait_time=2:max_recovery_attempts=0" \
+	-fifo_options "queue_size=1024:attempt_recovery=1:drop_pkts_on_overflow=1:recovery_wait_time=2:max_recovery_attempts=0" \
 	"$DESTS" &
 FPID=$!
 
