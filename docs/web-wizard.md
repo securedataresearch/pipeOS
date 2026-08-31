@@ -78,6 +78,39 @@ Two more toggles ride the same services model:
 
 All runtime state files carry `+` lines in `protected_paths.d/lbu.list`.
 
+## Users (multi-user login, non-root accounts, terminals)
+
+One "box user" record (`/etc/pipeos/users.json`, mode 600) grants any subset
+of: web login (role `admin` or `viewer` — viewers read, every mutating POST
+403s), an SSH account, a browser terminal, and doas. The claim still writes
+`web-admin.conf`; it stays the claim marker AND the lockout escape hatch — if
+users.json is missing or corrupt, auth falls back to the original admin
+password, so the dashboard is always reachable.
+
+- Unix accounts are created by `usr/local/bin/pipeos-user` (dashboard shells
+  out; also usable over ssh). Homes are real paths on `/work/home/<name>`
+  (ext4): they survive a media reflash even though the accounts (apkovl) do
+  not — recreating the user re-adopts the surviving home's uid. Shadow gets
+  `*`, never busybox's `!` (which blocks even pubkey auth); sshd_config is
+  never touched.
+- doas policy is `permit persist :wheel` (`etc/doas.d/pipeos.conf`); it
+  checks the user's own password, so sudo-flagged users get their web
+  password hash synced into shadow. No `nopass`, ever. The doas package
+  rides `world` — boxes on older media get a graceful warning until their
+  next image update.
+- Browser terminals: one ttyd per terminal-enabled user (ports 7701+, own
+  password), each running `su -l <user>` — a real non-root shell in their
+  /work home. `etc/init.d/pipeos-terminals` supervises the set;
+  `/etc/pipeos/terminals.conf` is generated from users.json.
+- Guards: you cannot delete yourself, nor delete/disable the last enabled
+  admin; deleting keeps `/work/home/<name>` unless purge is chosen; every
+  /etc/shadow edit is awk → temp → atomic rename.
+
+**Future work (deliberately out of scope):** the claude agent, pipe daemon,
+and assistant terminal still run as root — `/root` IS the agent's identity
+(.claude, .pipe, gh auth) and lbu.list is built around those paths. Moving
+the agent to its own user is a separate project.
+
 ## Testing
 
 VM: `make vm` forwards `:8080 → :80` (and ssh on 2222). Claim at

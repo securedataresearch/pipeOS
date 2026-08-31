@@ -1,0 +1,17 @@
+#!/bin/sh
+# pipeos-term-run — one user's browser terminal (see init.d/pipeos-terminals).
+#
+# ttyd serves xterm.js on this user's port; the command is `su -l <user>`,
+# which root runs without a password, so the shell that appears is a REAL
+# non-root login shell in /work/home/<user> — not root's. The ttyd password on
+# argv is visible in `ps` to root only; same accepted trade-off as
+# pipeos-assistant-run.
+set -u
+U=${1:?user}
+PORT=${2:?port}
+PASS=${3:?password}
+
+exec ttyd --writable --interface 0.0.0.0 --port "$PORT" \
+	--credential "${U}:${PASS}" \
+	-t "titleFixed=$(hostname 2>/dev/null || echo pipeos) — ${U}" \
+	su -s /bin/bash -l "$U"

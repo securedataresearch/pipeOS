@@ -21,7 +21,7 @@ mkdir -p /work
 # and every /work-dependent service stayed down. Measured on the pilot box,
 # 2026-08-16. PIPEWORK is always ext4 (grow.sh makes it); say so.
 mountpoint -q /work || mount -t ext4 -o noatime "$dev" /work || exit 0
-mkdir -p /work/repos /work/logs /work/cache /work/claude /work/pipebox /work/backup
+mkdir -p /work/repos /work/logs /work/cache /work/claude /work/pipebox /work/backup /work/home
 # Agent memory belongs on ext4 from the box's FIRST boot (pipeOS#80): if
 # /root/.claude/projects does not exist yet, lay the symlink before claude's
 # first run can create a real tmpfs directory there — a box born migrated

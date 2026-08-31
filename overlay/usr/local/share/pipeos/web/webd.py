@@ -55,9 +55,16 @@ SESS_DIR = "/run/pipeos/web-sessions"
 BOOT_REPORT = "/run/pipeos/boot-report"
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
+USERS_CONF = ETC + "/users.json"
+TERMINALS_CONF = ETC + "/terminals.conf"
+
 SESSION_IDLE_S = 24 * 3600
 NICK_RE = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
-SVC_KEYS = ("pipe", "claude", "stream", "agy", "support", "assistant")
+USER_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+# names that must never become unix accounts from the dashboard
+USER_NAME_DENY = {"root", "nobody", "operator", "shutdown", "halt", "sync", "bin", "daemon", "adm"}
+TERM_PORT_BASE = 7701
+SVC_KEYS = ("pipe", "claude", "stream", "agy", "support", "assistant", "terminals")
 
 # How many stream targets (providers) the dashboard manages. Each is a slot in
 # stream.conf: STREAM_T{N}_URL / _KEY / _ON / _NAME.
@@ -195,15 +202,9 @@ def hash_password(pw):
     return out
 
 
-def check_password(pw):
-    try:
-        with open(ADMIN_CONF) as f:
-            m = re.search(r"HASH='(\$6\$[^']+)'", f.read())
-    except OSError:
+def check_hash(pw, stored):
+    if not stored or not stored.startswith("$6$"):
         return False
-    if not m:
-        return False
-    stored = m.group(1)
     salt = stored.split("$")[2]
     rc, out = run(
         ["openssl", "passwd", "-6", "-salt", salt, "-stdin"], input_text=pw + "\n"
@@ -211,27 +212,111 @@ def check_password(pw):
     return rc == 0 and hmac.compare_digest(out.strip(), stored)
 
 
+def legacy_admin_hash():
+    try:
+        with open(ADMIN_CONF) as f:
+            m = re.search(r"HASH='(\$6\$[^']+)'", f.read())
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def check_password(pw):
+    # legacy single-admin check — still what api_claim/first-login rest on
+    return check_hash(pw, legacy_admin_hash())
+
+
+# ---- users -----------------------------------------------------------------
+# users.json is the dashboard's user store: web login (role+hash) plus flags
+# for the unix account, sudo, and the browser terminal. Unix truth itself
+# stays in /etc/passwd|shadow|group (lbu-captured); pipeos-user edits those.
+# LOCKOUT SAFETY: if users.json is missing or corrupt, read_users() serves the
+# legacy web-admin.conf admin instead — the dashboard must always be
+# reachable with the original admin password.
+
+def read_users():
+    try:
+        with open(USERS_CONF) as f:
+            j = json.load(f)
+        users = j.get("users")
+        if isinstance(users, list) and any(
+                u.get("role") == "admin" and not u.get("disabled") for u in users):
+            return users
+    except (OSError, ValueError, AttributeError):
+        pass
+    h = legacy_admin_hash()
+    return [{"name": "admin", "role": "admin", "hash": h}] if h else []
+
+
+def write_users(users):
+    write_private(USERS_CONF, json.dumps({"version": 1, "users": users}, indent=1) + "\n")
+
+
+def find_user(users, name):
+    for u in users:
+        if u.get("name") == name:
+            return u
+    return None
+
+
+def write_terminals(users):
+    """Generate the shell-sourceable conf pipeos-terminals reads. Values pass
+    the same single-quote guard as stream.conf (they are shell-quoted)."""
+    lines, n = [], 0
+    for u in users:
+        if not (u.get("terminal") and u.get("unix") and u.get("term_pass")
+                and u.get("term_port") and not u.get("disabled")):
+            continue
+        if any(c in u["term_pass"] for c in "'\n\r\0"):
+            continue
+        n += 1
+        lines.append("TERM_%d_USER='%s'\nTERM_%d_PORT='%s'\nTERM_%d_PASS='%s'\n"
+                     % (n, u["name"], n, int(u["term_port"]), n, u["term_pass"]))
+    write_private(TERMINALS_CONF, "".join(lines))
+    return n
+
+
 # ---- sessions --------------------------------------------------------------
 
-def new_session():
+def new_session(user="admin", role="admin"):
     os.makedirs(SESS_DIR, mode=0o700, exist_ok=True)
     tok = secrets.token_hex(32)
-    write_private(os.path.join(SESS_DIR, tok), str(int(time.time())))
+    write_private(os.path.join(SESS_DIR, tok),
+                  json.dumps({"user": user, "role": role}))
     return tok
 
 
 def valid_session(tok):
+    """The session record {user, role}, or None. A pre-multi-user session
+    file (bare timestamp) reads as the admin — live sessions survive a webd
+    upgrade."""
     if not tok or not re.fullmatch(r"[0-9a-f]{64}", tok):
-        return False
+        return None
     path = os.path.join(SESS_DIR, tok)
     try:
         if time.time() - os.path.getmtime(path) > SESSION_IDLE_S:
             os.unlink(path)
-            return False
+            return None
+        with open(path) as f:
+            body = f.read()
         os.utime(path)
-        return True
     except OSError:
-        return False
+        return None
+    try:
+        j = json.loads(body)
+        return {"user": j.get("user") or "admin", "role": j.get("role") or "admin"}
+    except ValueError:
+        return {"user": "admin", "role": "admin"}
+
+
+def drop_user_sessions(name):
+    try:
+        for tok in os.listdir(SESS_DIR):
+            s = valid_session(tok)
+            if s and s["user"] == name:
+                os.unlink(os.path.join(SESS_DIR, tok))
+    except OSError:
+        pass
 
 
 def drop_session(tok):
@@ -278,6 +363,8 @@ def daemons_for(svcs):
         out.append("pipeos-support")
     if svcs.get("assistant"):
         out.append("pipeos-assistant")
+    if svcs.get("terminals"):
+        out.append("pipeos-terminals")
     return out
 
 
@@ -286,7 +373,8 @@ def apply_services(svcs):
     daemon; returns a list of human-readable problems (empty == clean)."""
     problems = []
     want = set(daemons_for(svcs))
-    managed = ("pipe-daemon", "pipebox-listener", "pipeos-stream", "pipeos-support", "pipeos-assistant")
+    managed = ("pipe-daemon", "pipebox-listener", "pipeos-stream",
+               "pipeos-support", "pipeos-assistant", "pipeos-terminals")
     for svc in managed:
         if svc in want:
             # STREAM_BOOT=0 = "stream now when asked, but not by itself at
@@ -308,6 +396,8 @@ def apply_services(svcs):
                     problems.append("support access is enabled but no relay is configured yet")
                 elif svc == "pipeos-assistant":
                     problems.append("the assistant terminal is enabled but has no password yet")
+                elif svc == "pipeos-terminals":
+                    problems.append("user terminals are enabled but no user has one configured yet")
                 else:
                     problems.append("%s failed to start: %s" % (svc, out.strip()[-200:]))
         else:
@@ -620,6 +710,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.serve_ca_installer()
         readers = {
             "/api/status": self.api_status,
+            "/api/users": self.api_users,
             "/api/metrics": self.api_metrics,
             "/api/metrics-history": self.api_metrics_history,
             "/api/files": self.api_files,
@@ -647,8 +738,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.split("?")[0] == "/api/file-up":
             if not self.same_origin():
                 return self.err(403, "cross-origin request refused")
-            if not self.authed():
+            sess = self.authed()
+            if not sess:
                 return self.err(401, "sign in first")
+            if sess.get("role") == "viewer":
+                return self.err(403, "your account can view this box, not change it")
             return self.api_file_up()
         # Every mutation serializes on MUTATE_LOCK; GET readers are not held, so
         # the dashboard still loads while a slow POST runs. The lock also keeps
@@ -666,8 +760,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/login":
             return self.api_login(body)
         # everything below requires a session
-        if not self.authed():
+        sess = self.authed()
+        if not sess:
             return self.err(401, "sign in first")
+        # viewers read; only admins mutate (their two POSTs are self-scoped)
+        if sess.get("role") == "viewer" and path not in ("/api/logout", "/api/password"):
+            return self.err(403, "your account can view this box, not change it")
         handlers = {
             "/api/logout": self.api_logout,
             "/api/name": self.api_name,
@@ -679,6 +777,9 @@ class Handler(BaseHTTPRequestHandler):
             "/api/pipe-set": self.api_pipe_set,
             "/api/pipe-logout": self.api_pipe_logout,
             "/api/password": self.api_password,
+            "/api/users/add": self.api_users_add,
+            "/api/users/set": self.api_users_set,
+            "/api/users/del": self.api_users_del,
             "/api/save": self.api_save,
             "/api/chat": self.api_chat,
             "/api/reboot": self.api_reboot,
@@ -764,7 +865,7 @@ class Handler(BaseHTTPRequestHandler):
     def api_state(self):
         self.send(200, {
             "claimed": claimed(),
-            "authed": self.authed(),
+            "authed": bool(self.authed()),
             "hostname": socket.gethostname(),
         })
 
@@ -775,9 +876,14 @@ class Handler(BaseHTTPRequestHandler):
         if len(pw) < 8:
             return self.err(400, "password must be at least 8 characters")
         try:
-            write_private(ADMIN_CONF, "HASH='%s'\n" % hash_password(pw))
+            h = hash_password(pw)
+            write_private(ADMIN_CONF, "HASH='%s'\n" % h)
         except RuntimeError as e:
             return self.err(500, str(e))
+        # seed the multi-user store; web-admin.conf stays the claim marker
+        # and the lockout-safety fallback
+        write_users([{"name": "admin", "role": "admin", "hash": h,
+                      "created": int(time.time())}])
         # The claim IS the provisioning event: from here on, saves persist.
         # Save NOW — a claim that exists only in RAM is not a claim.
         with open(PROVISIONED, "a"):
@@ -790,11 +896,20 @@ class Handler(BaseHTTPRequestHandler):
     def api_login(self, body):
         if not claimed():
             return self.err(403, "box is not claimed yet")
-        if not check_password(body.get("password") or ""):
-            time.sleep(2)  # flat cost per wrong guess
-            return self.err(403, "wrong password")
-        tok = new_session()
-        self.send(200, {"ok": True},
+        name = (body.get("username") or "").strip() or "admin"
+        users = read_users()
+        u = find_user(users, name)
+        # one flat cost and one message for every failure — no user enumeration
+        if (u is None or u.get("disabled")
+                or not check_hash(body.get("password") or "", u.get("hash"))):
+            time.sleep(2)
+            return self.err(403, "wrong username or password")
+        if not os.path.exists(USERS_CONF) and name == "admin":
+            # pre-multi-user box: lazily seed the store from the legacy hash
+            write_users([{"name": "admin", "role": "admin", "hash": u["hash"],
+                          "created": int(time.time())}])
+        tok = new_session(name, u.get("role") or "admin")
+        self.send(200, {"ok": True, "user": name, "role": u.get("role") or "admin"},
                   cookie="session=%s; HttpOnly; SameSite=Strict; Path=/" % tok)
 
     # -- API: authenticated --
@@ -810,7 +925,10 @@ class Handler(BaseHTTPRequestHandler):
         for svc in ["pipeos-web", "pipeos-mdns"] + daemons_for(svcs):
             rc, _ = run(["rc-service", svc, "status"], timeout=15)
             running[svc] = rc == 0
+        sess = self.authed() or {}
         self.send(200, {
+            "user": sess.get("user"),
+            "role": sess.get("role"),
             "hostname": socket.gethostname(),
             "nick": card_get("NICK"),
             "owner": card_get("OWNER_NICK"),
@@ -1082,18 +1200,217 @@ class Handler(BaseHTTPRequestHandler):
                         "saved": saved, "save_detail": "" if saved else detail})
 
     def api_password(self, body):
-        if not check_password(body.get("current") or ""):
+        # Changes the SESSION's own password (any role). Admins reset other
+        # users through /api/users/set instead.
+        sess = self.authed()
+        users = read_users()
+        u = find_user(users, sess["user"])
+        if u is None:
+            return self.err(403, "your account no longer exists")
+        if not check_hash(body.get("current") or "", u.get("hash")):
             time.sleep(2)
             return self.err(403, "current password is wrong")
         new = body.get("new") or ""
         if len(new) < 8:
             return self.err(400, "new password must be at least 8 characters")
         try:
-            write_private(ADMIN_CONF, "HASH='%s'\n" % hash_password(new))
+            h = hash_password(new)
         except RuntimeError as e:
             return self.err(500, str(e))
+        u["hash"] = h
+        write_users(users)
+        if u["name"] == "admin":
+            # keep the legacy fallback credential in step — it is the
+            # users.json-corruption escape hatch and must never go stale
+            write_private(ADMIN_CONF, "HASH='%s'\n" % h)
+        if u.get("unix") and u.get("sudo"):
+            run(["/usr/local/bin/pipeos-user", "set-hash", u["name"]],
+                input_text=h + "\n")
         saved, detail = save_state()
         self.send(200, {"ok": True, "saved": saved, "save_detail": "" if saved else detail})
+
+    # -- users ----------------------------------------------------------------
+
+    def _user_admin_guard(self):
+        sess = self.authed()
+        if not sess or sess.get("role") != "admin":
+            self.err(403, "admin only")
+            return None
+        return sess
+
+    def api_users(self):
+        sess = self._user_admin_guard()
+        if sess is None:
+            return
+        out = [{k: u.get(k) for k in
+                ("name", "role", "unix", "sudo", "terminal", "term_port", "disabled")}
+               for u in read_users()]
+        for u in out:
+            u["self"] = u["name"] == sess["user"]
+        self.send(200, {"users": out,
+                        "terminals_on": read_services().get("terminals", False)})
+
+    def _last_admin_guard(self, users, name):
+        """True if removing/disabling `name` would leave no enabled admin."""
+        return not any(u["name"] != name and u.get("role") == "admin"
+                       and not u.get("disabled") for u in users)
+
+    def api_users_add(self, body):
+        if self._user_admin_guard() is None:
+            return
+        name = (body.get("name") or "").strip()
+        if not USER_NAME_RE.fullmatch(name) or name in USER_NAME_DENY:
+            return self.err(400, "user name: a-z, digits, _ -, max 32, lowercase first")
+        users = read_users()
+        if find_user(users, name):
+            return self.err(400, "that user already exists")
+        role = body.get("role") or "viewer"
+        if role not in ("admin", "viewer"):
+            return self.err(400, "role must be admin or viewer")
+        pw = body.get("password") or ""
+        if len(pw) < 8:
+            return self.err(400, "password must be at least 8 characters")
+        want_unix = bool(body.get("unix"))
+        want_sudo = bool(body.get("sudo"))
+        want_term = bool(body.get("terminal"))
+        term_pass = (body.get("term_pass") or "").strip()
+        key = (body.get("ssh_key") or "").strip()
+        if want_sudo and not want_unix:
+            return self.err(400, "sudo needs an ssh/terminal account (enable unix access)")
+        if want_term and not want_unix:
+            want_unix = True  # a terminal IS a unix login
+        if want_unix and not (key or want_term):
+            return self.err(400, "an ssh account needs a public key (or enable the browser terminal)")
+        if want_term and (not term_pass or any(c in term_pass for c in "'\n\r\0")):
+            return self.err(400, "the browser terminal needs its own password (no quotes/newlines)")
+        if want_unix and name in [l.split(":")[0] for l in
+                                  open("/etc/passwd").read().splitlines() if l]:
+            return self.err(400, "that name is taken by a system account")
+        try:
+            h = hash_password(pw)
+        except RuntimeError as e:
+            return self.err(500, str(e))
+        problems = []
+        if want_unix:
+            rc, out = run(["/usr/local/bin/pipeos-user", "add", name], timeout=30)
+            if rc != 0:
+                return self.err(500, "could not create the unix user: " + out.strip()[-200:])
+            if key:
+                rc, out = run(["/usr/local/bin/pipeos-user", "set-key", name],
+                              input_text=key + "\n")
+                if rc != 0:
+                    problems.append("ssh key not installed: " + out.strip()[-200:])
+            if want_sudo:
+                run(["/usr/local/bin/pipeos-user", "grant-sudo", name])
+                run(["/usr/local/bin/pipeos-user", "set-hash", name],
+                    input_text=h + "\n")
+        u = {"name": name, "role": role, "hash": h, "unix": want_unix,
+             "sudo": want_sudo, "terminal": want_term,
+             "created": int(time.time())}
+        if want_term:
+            ports = [x.get("term_port") or 0 for x in users]
+            u["term_port"] = max([TERM_PORT_BASE - 1] + ports) + 1
+            u["term_pass"] = term_pass
+        users.append(u)
+        write_users(users)
+        problems += self._apply_terminals(users)
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "problems": problems, "term_port": u.get("term_port"),
+                        "saved": saved, "save_detail": "" if saved else detail})
+
+    def _apply_terminals(self, users):
+        """Regenerate terminals.conf; keep the service running iff it should."""
+        n = write_terminals(users)
+        svcs = read_services()
+        problems = []
+        if n and not svcs.get("terminals"):
+            svcs["terminals"] = True
+            write_services(svcs)
+            problems += apply_services(svcs)
+        elif svcs.get("terminals"):
+            if n:
+                run(["rc-service", "pipeos-terminals", "restart"], timeout=60)
+            else:
+                svcs["terminals"] = False
+                write_services(svcs)
+                problems += apply_services(svcs)
+        return problems
+
+    def api_users_set(self, body):
+        sess = self._user_admin_guard()
+        if sess is None:
+            return
+        users = read_users()
+        u = find_user(users, (body.get("name") or "").strip())
+        if u is None:
+            return self.err(404, "no such user")
+        if "role" in body and body["role"] not in ("admin", "viewer"):
+            return self.err(400, "role must be admin or viewer")
+        demote = (body.get("role") == "viewer" or body.get("disabled") is True)
+        if demote and u.get("role") == "admin" and self._last_admin_guard(users, u["name"]):
+            return self.err(400, "that would leave the box with no admin")
+        if "role" in body:
+            u["role"] = body["role"]
+        if "disabled" in body:
+            u["disabled"] = bool(body["disabled"])
+            if u["disabled"]:
+                drop_user_sessions(u["name"])
+        if body.get("password"):
+            if len(body["password"]) < 8:
+                return self.err(400, "password must be at least 8 characters")
+            try:
+                u["hash"] = hash_password(body["password"])
+            except RuntimeError as e:
+                return self.err(500, str(e))
+            if u["name"] == "admin":
+                write_private(ADMIN_CONF, "HASH='%s'\n" % u["hash"])
+            if u.get("unix") and u.get("sudo"):
+                run(["/usr/local/bin/pipeos-user", "set-hash", u["name"]],
+                    input_text=u["hash"] + "\n")
+        if body.get("ssh_key") and u.get("unix"):
+            rc, out = run(["/usr/local/bin/pipeos-user", "set-key", u["name"]],
+                          input_text=body["ssh_key"].strip() + "\n")
+            if rc != 0:
+                return self.err(400, "ssh key rejected: " + out.strip()[-200:])
+        if "term_pass" in body and u.get("terminal"):
+            tp = (body.get("term_pass") or "").strip()
+            if not tp or any(c in tp for c in "'\n\r\0"):
+                return self.err(400, "terminal password: no quotes/newlines")
+            u["term_pass"] = tp
+        write_users(users)
+        problems = self._apply_terminals(users)
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "problems": problems,
+                        "saved": saved, "save_detail": "" if saved else detail})
+
+    def api_users_del(self, body):
+        sess = self._user_admin_guard()
+        if sess is None:
+            return
+        users = read_users()
+        name = (body.get("name") or "").strip()
+        u = find_user(users, name)
+        if u is None:
+            return self.err(404, "no such user")
+        if name == sess["user"]:
+            return self.err(400, "sign in as another admin to remove this account")
+        if u.get("role") == "admin" and self._last_admin_guard(users, name):
+            return self.err(400, "that would leave the box with no admin")
+        problems = []
+        if u.get("unix"):
+            args = ["/usr/local/bin/pipeos-user", "del", name]
+            if body.get("purge_home"):
+                args.append("--purge-home")
+            rc, out = run(args, timeout=30)
+            if rc != 0:
+                problems.append("unix account not fully removed: " + out.strip()[-200:])
+        users.remove(u)
+        write_users(users)
+        drop_user_sessions(name)
+        problems += self._apply_terminals(users)
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "problems": problems,
+                        "saved": saved, "save_detail": "" if saved else detail})
 
     def api_save(self, _body):
         saved, detail = save_state()
@@ -1408,10 +1725,19 @@ class PhaseB:
             for m in re.finditer(r"^\s*(dm_relay|remember_login|agent_events)\b\D*?\b(on|off|true|false)\b",
                                  out3, re.M | re.I):
                 prefs[m.group(1)] = m.group(2).lower() in ("on", "true")
+        # memberships are discovered, never typed — pipe knows them already
+        cohorts = []
+        rc4, out4 = run(["pipe", "cohorts", "-o", "json"], timeout=20)
+        if rc4 == 0:
+            try:
+                cohorts = json.loads(out4[out4.index("{"):]).get("cohorts") or []
+            except (ValueError, AttributeError):
+                pass
         self.send(200, {"enabled": read_services()["pipe"], "nick": nick,
                         "authed": authed_flag,
                         "owner": card_get("OWNER_NICK"),
                         "cohort": card_get("COHORT_ID"),
+                        "cohorts": cohorts,
                         "prefs": prefs})
 
     def api_pipe_contacts(self):
@@ -1455,7 +1781,10 @@ class PhaseB:
         self.send(200, {"ok": True})
 
     def api_pipe_board(self):
-        cid = card_get("COHORT_ID")
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        cid = (q.get("id") or [""])[0] or card_get("COHORT_ID")
+        if cid and not re.fullmatch(r"[0-9]{1,12}", cid):
+            return self.err(400, "cohort id is digits only")
         if not cid:
             return self.send(200, {"cohort": "", "text": ""})
         rc, out = run(["pipe", "cohorts", "board", cid], timeout=20)

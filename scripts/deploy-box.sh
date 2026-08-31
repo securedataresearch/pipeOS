@@ -25,7 +25,7 @@ DRY=no
 # The same set pipeos-deploy-overlay owns, plus etc/profile.d (overlay-shipped
 # login config). etc/pipeos and root/.pipe are per-box state and are simply
 # never in this list; etc/ssh is posture, changed deliberately, not by deploy.
-PATHS="usr/local/bin usr/local/share/pipeos etc/init.d etc/periodic etc/local.d etc/profile.d etc/apk/protected_paths.d/lbu.list root/.claude/CLAUDE.md"
+PATHS="usr/local/bin usr/local/share/pipeos etc/init.d etc/periodic etc/local.d etc/profile.d etc/doas.d etc/apk/protected_paths.d/lbu.list root/.claude/CLAUDE.md"
 
 commit=$(git rev-parse HEAD)
 cdate=$(git show -s --format=%cs HEAD)

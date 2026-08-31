@@ -213,8 +213,10 @@ function step4(services) {
 function loginView(state) {
   const v = el(`<div>
     <h1>${esc(state.hostname)}</h1>
-    <p class="sub">Enter the admin password.</p>
+    <p class="sub">Sign in to manage this box.</p>
     <div class="card">
+      <label for="lu">Username</label>
+      <input id="lu" type="text" autocomplete="username" placeholder="admin">
       <label for="pw">Password</label>
       <input id="pw" type="password" autocomplete="current-password">
       <button id="go">Sign in</button>
@@ -225,7 +227,10 @@ function loginView(state) {
     const err = v.querySelector("#err"); err.hidden = true;
     busy(v.querySelector("#go"), true);
     try {
-      await api("/api/login", { password: v.querySelector("#pw").value });
+      await api("/api/login", {
+        username: v.querySelector("#lu").value.trim(),
+        password: v.querySelector("#pw").value,
+      });
       dashboard();
     } catch (e) {
       err.textContent = e.message; err.hidden = false;
@@ -344,7 +349,9 @@ async function dashboard() {
     files: '<svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
     network: '<svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
     system: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="2" x2="9" y2="4"/><line x1="15" y1="2" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="22"/><line x1="15" y1="20" x2="15" y2="22"/><line x1="20" y1="9" x2="22" y2="9"/><line x1="20" y1="15" x2="22" y2="15"/><line x1="2" y1="9" x2="4" y2="9"/><line x1="2" y1="15" x2="4" y2="15"/></svg>',
+    users: '<svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
   };
+  const isAdmin = st.role !== "viewer";
   const navItem = (id, label) => `<a data-nav="${id}" href="#/${id}"><span class="ic">${ICON[id] || ""}</span>${label}</a>`;
   const v = el(`<div class="app">
     <aside class="sidenav">
@@ -360,12 +367,14 @@ async function dashboard() {
         ${navItem("files", "Files")}
         ${st.services.pipe ? navItem("pipe", "pipe") : ""}
         ${navItem("services", "Services")}
+        ${isAdmin ? navItem("users", "Users") : ""}
         ${navItem("network", "Network")}
         ${navItem("system", "System")}
       </nav>
       <div class="navfoot">
         <span class="note">up ${fmtUptime(st.uptime_s)} · ${st.work_pct == null ? "disk ?" : st.work_pct + "% disk"}${st.work_free_mb != null ? " · " + Math.round(st.work_free_mb / 1024) + " GB free" : ""}</span>
-        <button id="logout" class="ghost">Sign out</button>
+        <span class="note">${esc(st.user || "")}${st.role ? " · " + esc(st.role) : ""}</span>
+        <button id="logout" class="ghost" data-vok>Sign out</button>
       </div>
     </aside>
     <main class="content">
@@ -512,14 +521,17 @@ async function dashboard() {
           <p class="note">The nick is the signed-in identity — to change it, sign out, then sign in with a key minted for the new nick.</p>
         </div>
         <div class="card">
-          <h2>Owner &amp; cohort</h2>
+          <h2>Owner</h2>
           <label for="pown2">Owner nick (the box DMs this person)</label>
           <input id="pown2" type="text">
-          <label for="pcid2">Cohort id (digits; blank for none)</label>
-          <input id="pcid2" type="text">
           <button id="pocsave" type="button">Save</button>
           <p class="note" id="pocmsg" hidden></p>
-          <details><summary class="note">Cohort board</summary><pre class="report" id="pboard">…</pre></details>
+        </div>
+        <div class="card">
+          <h2>Cohorts</h2>
+          <p class="note">Groups this box's nick belongs to — discovered from pipe, nothing to type.</p>
+          <div id="pcohorts" class="note">loading…</div>
+          <pre class="report" id="pboard" hidden></pre>
         </div>
         <div class="card">
           <h2>Contacts</h2>
@@ -545,6 +557,42 @@ async function dashboard() {
           <p class="note">Sign-in, contacts and cohort moved to the <a href="#/pipe">pipe panel</a>.</p>
         </div>` : ""}
       </section>
+
+      ${isAdmin ? `
+      <section data-view="users" hidden>
+        <div class="viewhead"><h1>Users</h1></div>
+        <div class="card">
+          <div class="cardhead"><h2>Accounts</h2></div>
+          <div id="ulist" class="note">loading…</div>
+          <p class="err" id="uerr" hidden></p>
+        </div>
+        <div class="card">
+          <h2>Add a user</h2>
+          <label for="uname">Name</label>
+          <input id="uname" type="text" autocomplete="off" placeholder="lowercase, e.g. alex">
+          <label for="upass">Password (web sign-in — and doas, for admins of the box)</label>
+          <input id="upass" type="password" autocomplete="new-password" minlength="8">
+          <label for="urole">Role</label>
+          <select id="urole">
+            <option value="viewer">viewer — sees the dashboard, changes nothing</option>
+            <option value="admin">admin — full control of this dashboard</option>
+          </select>
+          <label class="note" style="display:flex;align-items:center;gap:.5rem;margin-top:.6rem">
+            <input id="uunix" type="checkbox" style="width:auto"> SSH login (paste their public key below)
+          </label>
+          <textarea id="ukey" rows="2" placeholder="ssh-ed25519 AAAA… alex@laptop" style="width:100%;font-family:inherit"></textarea>
+          <label class="note" style="display:flex;align-items:center;gap:.5rem;margin-top:.4rem">
+            <input id="uterm" type="checkbox" style="width:auto"> Browser terminal (their own non-root shell, own port)
+          </label>
+          <input id="utpass" type="password" autocomplete="off" placeholder="terminal password">
+          <label class="note" style="display:flex;align-items:center;gap:.5rem;margin-top:.4rem">
+            <input id="usudo" type="checkbox" style="width:auto"> May administer the box over ssh (doas, asks their password)
+          </label>
+          <button id="uadd" type="button">Create user</button>
+          <p class="note" id="umsg" hidden></p>
+          <p class="note">Accounts live in the box's saved state; their files live on the work disk at /work/home/&lt;name&gt; and survive even a media reflash.</p>
+        </div>
+      </section>` : ""}
 
       <section data-view="network" hidden>
         <div class="viewhead"><h1>Network</h1></div>
@@ -583,9 +631,9 @@ async function dashboard() {
         </div>
         <div class="cardhead" style="margin:1.1rem 0 .7rem"><h2>History</h2>
           <span id="spanbtns">
-            <button class="ghost small" type="button" data-mspan="1h">1h</button>
-            <button class="ghost small" type="button" data-mspan="6h">6h</button>
-            <button class="ghost small" type="button" data-mspan="24h">24h</button>
+            <button class="ghost small" type="button" data-vok data-mspan="1h">1h</button>
+            <button class="ghost small" type="button" data-vok data-mspan="6h">6h</button>
+            <button class="ghost small" type="button" data-vok data-mspan="24h">24h</button>
           </span>
         </div>
         <div class="charts">
@@ -600,7 +648,7 @@ async function dashboard() {
           <select id="logsel">
             ${["selfcheck", "pipeos-web", "pipeos-mdns", "pipe-daemon", "pipebox-listener", "pipeos-stream", "pipeos-assistant", "selfupdate", "worksweep"].map(l => `<option>${l}</option>`).join("")}
           </select>
-          <button id="logview" class="ghost" style="margin-top:.4rem">View</button>
+          <button id="logview" class="ghost" data-vok style="margin-top:.4rem">View</button>
           <pre class="report" id="logbox" hidden></pre>
         </div>
         <div class="card">
@@ -843,7 +891,38 @@ async function dashboard() {
         v.querySelector("#psignin").hidden = !!p.authed;
         v.querySelector("#plogout").hidden = !p.authed;
         if (document.activeElement !== v.querySelector("#pown2")) v.querySelector("#pown2").value = p.owner || "";
-        if (document.activeElement !== v.querySelector("#pcid2")) v.querySelector("#pcid2").value = p.cohort || "";
+        const cbox = v.querySelector("#pcohorts");
+        const cohorts = p.cohorts || [];
+        if (!cohorts.length) {
+          cbox.className = "note";
+          cbox.textContent = p.authed ? "This nick belongs to no cohorts." : "Sign in to see cohorts.";
+        } else {
+          cbox.className = "";
+          cbox.replaceChildren(...cohorts.map(c => {
+            const active = String(c.id) === String(p.cohort);
+            const row = el(`<div class="targetline">
+              <span class="tname">${esc(c.name || ("cohort " + c.id))}</span>
+              <span class="note">#${esc(c.id)} · ${esc(c.members)} member${c.members === 1 ? "" : "s"} · owner ${esc(c.owner || "?")}</span>
+              <span style="margin-left:auto;display:flex;gap:.3rem;align-items:center">
+                ${active ? '<span class="pill status-ok">working cohort</span>'
+                         : '<button class="ghost small" type="button" data-a="use">make working</button>'}
+                <button class="ghost small" type="button" data-vok data-a="board">board</button>
+              </span></div>`);
+            const use = row.querySelector("[data-a=use]");
+            if (use) use.onclick = async () => {
+              try { await api("/api/cohort", { id: String(c.id) }); loadPipe(); }
+              catch (e) { alert(e.message); }
+            };
+            row.querySelector("[data-a=board]").onclick = async () => {
+              const pb = v.querySelector("#pboard");
+              pb.hidden = false; pb.textContent = "…";
+              try { const b = await api("/api/pipe-board?id=" + c.id);
+                pb.textContent = b.text || "(empty board)"; }
+              catch (e) { pb.textContent = e.message; }
+            };
+            return row;
+          }));
+        }
         const prefs = p.prefs || {};
         const pp = v.querySelector("#pprefs");
         pp.className = "";
@@ -879,10 +958,6 @@ async function dashboard() {
           box.textContent = (list && !list.length) ? "No contacts yet." : (r.text || "No contacts yet.");
         }
       }).catch(() => {});
-      api("/api/pipe-board").then(b => {
-        v.querySelector("#pboard").textContent =
-          b.cohort ? (b.text || "(empty board)") : "(no cohort set)";
-      }).catch(() => {});
     };
     const pgo3 = v.querySelector("#pgo3"), pidmsg = v.querySelector("#pidmsg");
     pgo3.onclick = async () => {
@@ -906,7 +981,6 @@ async function dashboard() {
       try {
         const owner = v.querySelector("#pown2").value.trim();
         if (owner) await api("/api/name", { owner: owner });
-        await api("/api/cohort", { id: v.querySelector("#pcid2").value.trim() });
         m.textContent = "Saved.";
         loadPipe();
       } catch (e) { m.textContent = e.message; }
@@ -920,6 +994,79 @@ async function dashboard() {
       } catch (e) { m.textContent = e.message; }
     };
   }
+
+  // ---- users (admin only) ----
+  let loadUsers = null;
+  if (isAdmin && v.querySelector("#ulist")) {
+    const ulist = v.querySelector("#ulist"), uerr = v.querySelector("#uerr");
+    const uErr = m => { uerr.textContent = m || ""; uerr.hidden = !m; };
+    loadUsers = async () => {
+      uErr("");
+      try {
+        const r = await api("/api/users");
+        ulist.className = "";
+        ulist.replaceChildren(...r.users.map(u => {
+          const badges = [
+            u.role === "admin" ? '<span class="pill status-ok">admin</span>' : '<span class="pill">viewer</span>',
+            u.unix ? '<span class="pill">ssh</span>' : "",
+            u.sudo ? '<span class="pill">doas</span>' : "",
+            u.terminal ? `<a class="pill" data-vok href="${location.protocol}//${location.hostname}:${u.term_port}/" target="_blank" rel="noopener">terminal :${u.term_port} ↗</a>` : "",
+            u.disabled ? '<span class="pill status-warn">disabled</span>' : "",
+            u.self ? '<span class="note">(you)</span>' : "",
+          ].join(" ");
+          const row = el(`<div class="targetline">
+            <span class="tname">${esc(u.name)}</span><span style="display:flex;gap:.3rem;align-items:center;flex-wrap:wrap">${badges}</span>
+            <span style="margin-left:auto;display:flex;gap:.25rem">
+              ${u.self ? "" : `<button class="ghost small" type="button" data-a="dis">${u.disabled ? "enable" : "disable"}</button>
+              <button class="ghost small" type="button" data-a="pw">reset password</button>
+              <button class="ghost small" type="button" data-a="del">remove</button>`}
+            </span></div>`);
+          const on = (a, fn) => { const b = row.querySelector(`[data-a=${a}]`); if (b) b.onclick = fn; };
+          on("dis", async () => {
+            try { await api("/api/users/set", { name: u.name, disabled: !u.disabled }); loadUsers(); }
+            catch (e) { uErr(e.message); }
+          });
+          on("pw", async () => {
+            const pw = prompt("New password for " + u.name + " (min 8 chars):");
+            if (!pw) return;
+            try { await api("/api/users/set", { name: u.name, password: pw }); uErr(""); alert("Password reset."); }
+            catch (e) { uErr(e.message); }
+          });
+          on("del", async () => {
+            if (!confirm("Remove " + u.name + "'s account?")) return;
+            const purge = u.unix ? confirm("Also delete their files in /work/home/" + u.name + "? Cancel keeps the files.") : false;
+            try { await api("/api/users/del", { name: u.name, purge_home: purge }); loadUsers(); }
+            catch (e) { uErr(e.message); }
+          });
+          return row;
+        }));
+      } catch (e) { ulist.className = "note"; ulist.textContent = e.message; }
+    };
+    v.querySelector("#uadd").onclick = async () => {
+      const m = v.querySelector("#umsg"); m.hidden = false; m.textContent = "creating…";
+      busy(v.querySelector("#uadd"), true);
+      try {
+        const r = await api("/api/users/add", {
+          name: v.querySelector("#uname").value.trim(),
+          password: v.querySelector("#upass").value,
+          role: v.querySelector("#urole").value,
+          unix: v.querySelector("#uunix").checked,
+          ssh_key: v.querySelector("#ukey").value.trim(),
+          terminal: v.querySelector("#uterm").checked,
+          term_pass: v.querySelector("#utpass").value,
+          sudo: v.querySelector("#usudo").checked,
+        });
+        m.textContent = "Created." +
+          (r.term_port ? " Terminal on port " + r.term_port + "." : "") +
+          (r.problems.length ? " (" + r.problems.join("; ") + ")" : "");
+        ["#uname", "#upass", "#ukey", "#utpass"].forEach(s => v.querySelector(s).value = "");
+        loadUsers();
+      } catch (e) { m.textContent = e.message; }
+      busy(v.querySelector("#uadd"), false);
+    };
+  }
+  // viewer affordance: grey out the controls the server will 403 anyway
+  if (!isAdmin) v.classList.add("viewer");
 
   // ---- files: /work explorer + mover ----
   let loadFiles = null;
@@ -1164,7 +1311,7 @@ async function dashboard() {
   // Views with live data register a poller (runs only while on screen) or a
   // lazy loader (runs on first visit).
   const POLLERS = { system: pollSystem, network: pollNetwork };
-  const LAZY = { files: () => loadFiles(""), pipe: loadPipe };
+  const LAZY = { files: () => loadFiles(""), pipe: loadPipe, users: loadUsers };
   const seen = {};
   let viewTimer = null;
   const views = v.querySelectorAll("[data-view]");

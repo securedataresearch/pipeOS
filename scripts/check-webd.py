@@ -32,6 +32,8 @@ webd.PROVISIONED = tmp + "/provisioned"
 webd.SESS_DIR = tmp + "/sessions"
 webd.BOOT_REPORT = tmp + "/boot-report"
 webd.STREAM_CONF = tmp + "/stream.conf"
+webd.USERS_CONF = tmp + "/users.json"
+webd.TERMINALS_CONF = tmp + "/terminals.conf"
 webd.ASSISTANT_CONF = tmp + "/assistant.conf"
 webd.SELFUPDATE_CONF = tmp + "/selfupdate.conf"
 webd.UPDATE_STAMP = tmp + "/selfupdate.applied"
@@ -236,6 +238,39 @@ with open(webd.STREAM_CONF) as f:
     assert "STREAM_BOOT='0'" in f.read()
 assert req("/api/stream")["boot"] is False
 ok("configure implies enable; boot opt-out round-trips")
+# users: multi-user login, roles, and the lockout guards
+req("/api/login", {"username": "ghost", "password": "hunter22hunter"}, expect=403)
+ok("unknown username refused with the same flat error")
+req("/api/users/add", {"name": "../x", "password": "hunter22hunter"}, expect=400)
+req("/api/users/add", {"name": "Bad Name", "password": "hunter22hunter"}, expect=400)
+req("/api/users/add", {"name": "root", "password": "hunter22hunter"}, expect=400)
+req("/api/users/add", {"name": "shorty", "password": "short"}, expect=400)
+req("/api/users/add", {"name": "sudoer", "password": "hunter22hunter", "sudo": True}, expect=400)
+ok("users/add refuses hostile names, short passwords, sudo without unix")
+r = req("/api/users/add", {"name": "peek", "password": "peekpassword", "role": "viewer"})
+assert r["ok"]
+assert "$6$" not in json.dumps(req("/api/users"))
+ok("viewer created; /api/users never leaks hashes")
+req("/api/users/del", {"name": "admin"}, expect=400)  # self-delete
+req("/api/users/set", {"name": "admin", "role": "viewer"}, expect=400)  # last admin
+ok("self-delete and last-admin demotion refused")
+admin_cookie = cookie["v"]
+cookie["v"] = None
+req("/api/login", {"username": "peek", "password": "peekpassword"})
+req("/api/status", expect=200)
+req("/api/services", {"stream": False}, expect=403)
+req("/api/users", expect=403)
+r = req("/api/password", {"current": "peekpassword", "new": "peekpassword2"})
+assert r["ok"]
+ok("viewer reads but cannot mutate; can change own password")
+cookie["v"] = admin_cookie
+req("/api/users/set", {"name": "peek", "disabled": True})
+saved_admin = cookie["v"]
+cookie["v"] = None
+req("/api/login", {"username": "peek", "password": "peekpassword2"}, expect=403)
+cookie["v"] = saved_admin
+req("/api/users/del", {"name": "peek"})
+ok("disable locks the account out; delete removes it")
 req("/api/logout", {})
 req("/api/status", expect=401)
 ok("logout revokes the session")

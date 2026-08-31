@@ -1,0 +1,121 @@
+#!/bin/sh
+# pipeos-user — create and manage the box's non-root Unix users. Root-only;
+# the web dashboard shells out here (argv, never a shell string) and the same
+# commands work over ssh.
+#
+#   pipeos-user add NAME          create NAME with home /work/home/NAME
+#   pipeos-user set-key NAME      install an ssh public key (stdin)
+#   pipeos-user set-hash NAME     set the shadow hash (stdin, $6$…) — needed
+#                                 for doas, which checks the user's own password
+#   pipeos-user grant-sudo NAME   add to wheel (doas policy: permit persist :wheel)
+#   pipeos-user revoke-sudo NAME  remove from wheel
+#   pipeos-user del NAME [--purge-home]
+#   pipeos-user list              name:uid of every login user (uid >= 1000)
+#
+# Design constraints, learned the hard way elsewhere in this repo:
+#   - busybox `adduser -D` writes '!' into the shadow field, and sshd refuses
+#     even PUBKEY auth for a '!'-locked account (40-build-apkovl.sh had the
+#     same bug for root). Accounts here get '*' — no password login, keys work.
+#   - /etc/shadow and /etc/passwd edits go through awk → temp file → atomic
+#     rename. Never sed -i: a truncated shadow is a full ssh lockout,
+#     root included.
+#   - Homes are real paths on /work (ext4): they survive a media reflash even
+#     though the accounts themselves (apkovl) do not. add re-adopts a
+#     surviving home's uid so a recreated user owns their old files, and
+#     /work/.pipeos/users.manifest records name:uid for that day.
+set -eu
+
+usage() { sed -n '4,12p' "$0" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || { echo "pipeos-user: root only" >&2; exit 1; }
+cmd=${1:-} name=${2:-}
+[ -n "$cmd" ] || usage
+if [ "$cmd" != list ]; then
+	[ -n "$name" ] || usage
+	echo "$name" | grep -qE '^[a-z][a-z0-9_-]{0,31}$' || {
+		echo "pipeos-user: bad name '$name' (a-z, digits, _ -, max 32)" >&2; exit 1; }
+fi
+
+HOMES=/work/home
+MANIFEST=/work/.pipeos/users.manifest
+
+shadow_set() { # $1=user $2=field2 value — atomic
+	awk -F: -v u="$1" -v h="$2" 'BEGIN{OFS=":"} $1==u{$2=h} {print}' /etc/shadow \
+		> /etc/shadow.new
+	chmod 600 /etc/shadow.new
+	mv /etc/shadow.new /etc/shadow
+}
+
+case "$cmd" in
+add)
+	mountpoint -q /work || { echo "pipeos-user: /work is not mounted — refusing" >&2; exit 1; }
+	id "$name" >/dev/null 2>&1 && { echo "pipeos-user: $name already exists" >&2; exit 1; }
+	mkdir -p "$HOMES"; chmod 755 "$HOMES"
+	UIDOPT=""
+	if [ -d "$HOMES/$name" ]; then
+		olduid=$(stat -c %u "$HOMES/$name")
+		[ "$olduid" -ge 1000 ] && UIDOPT="-u $olduid"
+	fi
+	# shellcheck disable=SC2086
+	adduser -D -s /bin/bash -h "$HOMES/$name" -G users $UIDOPT "$name"
+	shadow_set "$name" '*'
+	addgroup "$name" video 2>/dev/null || true   # /dev/dri for vaapi tools
+	mkdir -p "$HOMES/$name/.ssh"
+	chown -R "$name:users" "$HOMES/$name"
+	chmod 700 "$HOMES/$name" "$HOMES/$name/.ssh"
+	mkdir -p "$(dirname "$MANIFEST")"
+	grep -v "^$name:" "$MANIFEST" 2>/dev/null > "$MANIFEST.new" || true
+	printf '%s:%s\n' "$name" "$(id -u "$name")" >> "$MANIFEST.new"
+	mv "$MANIFEST.new" "$MANIFEST"
+	echo "pipeos-user: added $name (home $HOMES/$name, uid $(id -u "$name"))"
+	;;
+set-key)
+	id "$name" >/dev/null 2>&1 || { echo "pipeos-user: no such user $name" >&2; exit 1; }
+	key=$(cat)
+	echo "$key" | grep -qE '^(ssh-(ed25519|rsa)|ecdsa-) ' || {
+		echo "pipeos-user: that does not look like an ssh public key" >&2; exit 1; }
+	d="$HOMES/$name/.ssh"
+	mkdir -p "$d"
+	printf '%s\n' "$key" > "$d/authorized_keys"
+	chown -R "$name:users" "$d"
+	chmod 700 "$d"; chmod 600 "$d/authorized_keys"
+	echo "pipeos-user: key installed for $name"
+	;;
+set-hash)
+	id "$name" >/dev/null 2>&1 || { echo "pipeos-user: no such user $name" >&2; exit 1; }
+	hash=$(cat)
+	case "$hash" in '$6$'*) ;; *) echo "pipeos-user: expected a \$6\$ hash on stdin" >&2; exit 1 ;; esac
+	case "$hash" in *:*|*' '*|*"'"*) echo "pipeos-user: hash contains forbidden characters" >&2; exit 1 ;; esac
+	shadow_set "$name" "$hash"
+	echo "pipeos-user: password hash set for $name"
+	;;
+grant-sudo)
+	command -v doas >/dev/null 2>&1 || echo "pipeos-user: warning — doas is not installed on this image yet; wheel membership will matter after the next image update" >&2
+	addgroup "$name" wheel 2>/dev/null || true
+	echo "pipeos-user: $name may now doas (with their password)"
+	;;
+revoke-sudo)
+	delgroup "$name" wheel 2>/dev/null || true
+	echo "pipeos-user: $name removed from wheel"
+	;;
+del)
+	id "$name" >/dev/null 2>&1 || { echo "pipeos-user: no such user $name" >&2; exit 1; }
+	uid=$(id -u "$name")
+	[ "$uid" -ge 1000 ] || { echo "pipeos-user: refusing to delete system user $name (uid $uid)" >&2; exit 1; }
+	delgroup "$name" wheel 2>/dev/null || true
+	deluser "$name"
+	if [ "${3:-}" = --purge-home ]; then
+		rm -rf "${HOMES:?}/${name:?}"
+		echo "pipeos-user: deleted $name and purged $HOMES/$name"
+	else
+		echo "pipeos-user: deleted $name (home kept at $HOMES/$name)"
+	fi
+	grep -v "^$name:" "$MANIFEST" 2>/dev/null > "$MANIFEST.new" || true
+	mv "$MANIFEST.new" "$MANIFEST" 2>/dev/null || true
+	;;
+list)
+	awk -F: '$3 >= 1000 && $1 != "nobody" {print $1":"$3}' /etc/passwd
+	;;
+*)
+	usage
+	;;
+esac
