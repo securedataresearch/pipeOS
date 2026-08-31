@@ -218,6 +218,19 @@ button.small { padding: .3rem .65rem; font-size: .82rem; margin: 0; width: auto;
 .chatrow input { flex: 1; margin: 0; }
 .chatrow button { margin: 0; width: auto; }
 
+/* docs view */
+.docgrid { display: grid; grid-template-columns: minmax(170px, 220px) minmax(0, 1fr); gap: .9rem; align-items: start; }
+.doclist { padding: .6rem; display: flex; flex-direction: column; gap: 2px; position: sticky; top: 1rem; }
+.doclist a { display: block; text-decoration: none; color: var(--muted); font-weight: 500; font-size: .93rem; padding: .45rem .6rem; border-radius: 9px; }
+.doclist a:hover { background: var(--bg2); color: var(--ink); }
+.doclist a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.docbody { line-height: 1.6; }
+.docbody h2 { margin: 0 0 .6rem; }
+.docbody h3 { font-size: .95rem; margin: 1.1rem 0 .35rem; }
+.docbody p, .docbody li { font-size: .93rem; }
+.docbody ul, .docbody ol { margin: .2rem 0 .9rem; padding-left: 1.3rem; }
+.docbody code { background: var(--bg2); border: 1px solid var(--line); border-radius: 5px; padding: .05rem .3rem; font: 12.5px ui-monospace, "SF Mono", Menlo, monospace; }
+
 /* mobile: bottom tab bar — thumbs live at the bottom, not off-screen top */
 @media (max-width: 720px) {
   .app { flex-direction: column; }
@@ -231,6 +244,8 @@ button.small { padding: .3rem .65rem; font-size: .82rem; margin: 0; width: auto;
   .tile .val { font-size: 1.25rem; }
   .charts { grid-template-columns: 1fr; }
   .filegrid { grid-template-columns: 1fr; }
+  .docgrid { grid-template-columns: 1fr; }
+  .doclist { position: static; flex-direction: row; flex-wrap: wrap; }
   .frow .facts { opacity: 1; }
   .frow .fdate { display: none; }
   .viewhead h1 { font-size: 1.35rem; }
