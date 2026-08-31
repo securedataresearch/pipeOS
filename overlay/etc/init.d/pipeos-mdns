@@ -6,6 +6,11 @@ supervisor=supervise-daemon
 command=/usr/local/bin/pipeos-mdnsd
 respawn_delay=5
 respawn_max=0
+# UDP 5353 needs no privilege; drop root when the build-time account exists
+# (fresh images), fall back silently on older media.
+if getent passwd svc-mdns >/dev/null 2>&1; then
+	command_user="svc-mdns:svc-mdns"
+fi
 
 output_log=/work/logs/pipeos-mdns.log
 error_log=/work/logs/pipeos-mdns.log

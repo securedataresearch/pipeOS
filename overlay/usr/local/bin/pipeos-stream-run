@@ -84,7 +84,14 @@ if [ -z "$DESTS" ]; then
 fi
 
 export DISPLAY=":$DPY"
-export HOME=/root
+# De-rooted (svc-stream) runs get a writable HOME the init prepared; root
+# keeps /root. Chromium refuses to start without a writable ~/.config.
+if [ -w /work/cache/stream ]; then
+	export HOME=/work/cache/stream
+else
+	export HOME=/root
+fi
+export XDG_CONFIG_HOME="$HOME/.config" XDG_CACHE_HOME="$HOME/.cache"
 
 # Virtual framebuffer. Noise to /dev/null — ffmpeg's stderr is the signal the
 # health probe reads, and we don't want Xvfb/Chromium drowning it in the log.

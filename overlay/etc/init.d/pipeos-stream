@@ -33,6 +33,16 @@ depend() {
 	after chronyd
 }
 
+# Drop root when the build-time service account exists (fresh images have it;
+# a live box on older media falls back to root with a note, so a deploy can
+# never break a running stream). Chromium rendering arbitrary URLs is the
+# box's largest exposure — svc-stream is in group video for VAAPI.
+svc_user() {
+	if getent passwd svc-stream >/dev/null 2>&1; then
+		echo "--user svc-stream:svc-stream"
+	fi
+}
+
 start_pre() {
 	if [ ! -r "$CONF" ]; then
 		eerror "streaming is enabled but $CONF does not exist yet — configure it in the web UI"
@@ -42,6 +52,12 @@ start_pre() {
 	. "$CONF"
 	command -v ffmpeg >/dev/null 2>&1 || { eerror "ffmpeg is not installed on this image"; return 1; }
 	checkpath -d -m 0755 /work/logs || return 1
+	if [ -n "$(svc_user)" ]; then
+		# chromium needs a writable HOME/profile dir; stream-run picks this up
+		checkpath -d -m 0700 -o svc-stream:svc-stream /work/cache/stream || return 1
+	else
+		einfo "svc-stream account not on this media yet — streaming runs as root until the next image update"
+	fi
 
 	if [ "${STREAM_MODE:-media}" = browser ]; then
 		_has_target=0
@@ -65,11 +81,18 @@ start_pre() {
 }
 
 start() {
+	# Exported (set -a) so the supervised child inherits every STREAM_* var:
+	# stream.conf is mode 600 root, and a de-rooted pipeos-stream-run cannot
+	# source it itself — its own `. $CONF` silently skips when unreadable.
+	set -a
 	# shellcheck disable=SC1090
 	. "$CONF"
+	set +a
+	_user=$(svc_user)
 	if [ "${STREAM_MODE:-media}" = browser ]; then
 		ebegin "Starting browser restream ($STREAM_URL)"
-		supervise-daemon pipeos-stream --start \
+		# shellcheck disable=SC2086
+		supervise-daemon pipeos-stream --start $_user \
 			--stdout "$output_log" --stderr "$error_log" \
 			--respawn-delay "$respawn_delay" --respawn-max "$respawn_max" \
 			/usr/local/bin/pipeos-stream-run
@@ -80,7 +103,7 @@ start() {
 	_dst="${STREAM_DST%/}${STREAM_KEY:+/$STREAM_KEY}"
 	ebegin "Starting ffmpeg restream"
 	# shellcheck disable=SC2086
-	supervise-daemon pipeos-stream --start \
+	supervise-daemon pipeos-stream --start $_user \
 		--stdout "$output_log" --stderr "$error_log" \
 		--respawn-delay "$respawn_delay" --respawn-max "$respawn_max" \
 		/usr/bin/ffmpeg -- -hide_banner -loglevel warning \
