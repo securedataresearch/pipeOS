@@ -112,9 +112,7 @@ req("/api/login", {"password": "hunter22hunter"})
 req("/api/status", expect=200)
 ok("login grants a working session")
 req("/api/login", {"password": "hunter22hunter"})
-r = req("/api/logs?name=../../etc/shadow")
-if isinstance(r, dict) and "error" in str(r):
-    pass
+req("/api/logs?name=../../etc/shadow", expect=400)
 req("/api/logs?name=nope", expect=400)
 ok("logs endpoint refuses names off the allowlist")
 r = req("/api/logs?name=selfcheck")
