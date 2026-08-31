@@ -457,7 +457,7 @@ else
         if [ -f "$_ov_fh" ]; then
             _ov_fage=$(( ($(date +%s) - $(date -r "$_ov_fh" +%s 2>/dev/null || date +%s)) / 86400 ))
             [ "$_ov_fage" -gt 7 ] && \
-                warnn "overlay gap is measured against a checkout last fetched ${_ov_fage}d ago — the real gap can only be larger (fetch to re-measure; pipeOS#119)"
+                warnn "overlay gap is measured against a checkout last fetched ${_ov_fage}d ago — the real gap can only be larger (pull the checkout to re-measure; pipeOS#119)"
         fi
         _ov_n=$(git -C "$_ov_repo" rev-list --count "$_ov_c..$_ov_tip" 2>/dev/null || echo 0)
         if ! git -C "$_ov_repo" merge-base --is-ancestor "$_ov_c" "$_ov_tip" 2>/dev/null; then
