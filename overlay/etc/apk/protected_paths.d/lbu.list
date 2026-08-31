@@ -16,6 +16,7 @@
 +etc/init.d/pipeos-web
 +etc/init.d/pipeos-mdns
 +etc/init.d/pipeos-stream
++etc/init.d/pipeos-assistant
 +etc/init.d/pipeos-support
 +etc/pipeos/support.conf
 +etc/pipeos/support_key
@@ -25,6 +26,7 @@
 +etc/pipeos/web-admin.conf
 +etc/pipeos/services.conf
 +etc/pipeos/stream.conf
++etc/pipeos/assistant.conf
 # the Claude credential the listener/cohort-watch source (pipeOS#49 flagged it
 # as shared; here it is at least PERSISTED — before this line nothing kept it)
 +etc/pipeos/claude-auth.env

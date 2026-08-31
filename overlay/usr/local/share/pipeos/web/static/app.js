@@ -48,6 +48,7 @@ async function boot() {
 const SERVICES = [
   { key: "claude", name: "Claude assistant", desc: "The box runs a Claude agent you can put to work.", def: true },
   { key: "stream", name: "Streaming", desc: "Restream video with ffmpeg (configure after setup).", def: false },
+  { key: "assistant", name: "Assistant terminal", desc: "A browser terminal into the box's assistant (set a password below).", def: false },
   { key: "agy", name: "Antigravity", desc: "The agy coding agent (if installed on this image).", def: false },
   { key: "pipe", name: "pipe messaging", desc: "Talk to the box by DM from anywhere, via pipe.online.", def: false },
   { key: "support", name: "Vendor support access", desc: "Let your vendor connect to help. Off unless you switch it on.", def: false },
@@ -296,18 +297,52 @@ async function dashboard() {
     ${st.services.stream ? `
     <h2>Streaming</h2>
     <div class="card">
-      <label for="ssrc">Source (input URL or device)</label>
-      <input id="ssrc" type="text" placeholder="e.g. https://example.com/live or /dev/video0">
-      <label for="sdst">Destination</label>
-      <input id="sdst" type="text" placeholder="e.g. rtmp://a.rtmp.youtube.com/live2">
-      <label for="skey">Stream key</label>
+      <label for="smode">Mode</label>
+      <select id="smode">
+        <option value="media">Restream an existing video feed</option>
+        <option value="browser">Render a web page to video (browser)</option>
+      </select>
+      <div id="smedia">
+        <label for="ssrc">Source (input URL or device)</label>
+        <input id="ssrc" type="text" placeholder="e.g. https://example.com/live or /dev/video0">
+      </div>
+      <div id="sbrowser" hidden>
+        <label for="surl">Page URL to render</label>
+        <input id="surl" type="text" placeholder="e.g. https://basho.dev">
+        <label for="sres">Resolution</label>
+        <input id="sres" type="text" placeholder="1920x1080">
+        <label for="sfps">Frame rate</label>
+        <input id="sfps" type="text" placeholder="30">
+        <label class="note" style="display:flex;align-items:center;gap:.5rem;margin-top:.4rem">
+          <input id="svaapi" type="checkbox" style="width:auto"> Hardware encode on the Intel GPU (VAAPI)
+        </label>
+      </div>
+      <label for="sdst">Destination 1 — YouTube (rtmp)</label>
+      <input id="sdst" type="text" placeholder="rtmp://a.rtmp.youtube.com/live2">
+      <label for="skey">Stream key 1</label>
       <input id="skey" type="password" autocomplete="off" placeholder="leave blank to keep the saved key">
+      <label for="sdst2">Destination 2 — Twitch (optional)</label>
+      <input id="sdst2" type="text" placeholder="rtmp://live.twitch.tv/app">
+      <label for="skey2">Stream key 2</label>
+      <input id="skey2" type="password" autocomplete="off" placeholder="leave blank to keep the saved key">
       <label for="sargs">Extra ffmpeg args (optional)</label>
-      <input id="sargs" type="text" placeholder="default: -c copy -f flv">
+      <input id="sargs" type="text" placeholder="advanced — usually blank">
       <button id="ssave">Save & restart stream</button>
       <button id="slog" class="ghost">Show stream log</button>
       <p class="note" id="smsg" hidden></p>
       <pre class="report" id="slogbox" hidden></pre>
+    </div>` : ""}
+    ${st.services.assistant ? `
+    <h2>Assistant terminal</h2>
+    <div class="card">
+      <p class="note">A full terminal into this box's assistant, in your browser — the same session as the chat above.</p>
+      <label for="apass">Terminal password</label>
+      <input id="apass" type="password" autocomplete="off" placeholder="leave blank to keep the saved password">
+      <label for="aport">Port</label>
+      <input id="aport" type="text" placeholder="7681">
+      <button id="asave">Save & restart terminal</button>
+      <a id="aopen" class="ghost" href="#" target="_blank" rel="noopener" style="display:none">Open terminal ↗</a>
+      <p class="note" id="amsg" hidden></p>
     </div>` : ""}
     ${st.services.pipe ? `
     <h2>pipe</h2>
@@ -326,7 +361,7 @@ async function dashboard() {
     <h2>Logs</h2>
     <div class="card">
       <select id="logsel">
-        ${["selfcheck", "pipeos-web", "pipeos-mdns", "pipe-daemon", "pipebox-listener", "pipeos-stream", "selfupdate", "worksweep"].map(l => `<option>${l}</option>`).join("")}
+        ${["selfcheck", "pipeos-web", "pipeos-mdns", "pipe-daemon", "pipebox-listener", "pipeos-stream", "pipeos-assistant", "selfupdate", "worksweep"].map(l => `<option>${l}</option>`).join("")}
       </select>
       <button id="logview" class="ghost" style="margin-top:.4rem">View</button>
       <pre class="report" id="logbox" hidden></pre>
@@ -352,6 +387,7 @@ async function dashboard() {
   </div>`);
   v.querySelector("#logout").onclick = async () => { try { await api("/api/logout", {}); } catch (e) {} boot(); };
   v.querySelectorAll("input[type=checkbox]").forEach(c => {
+    if (!c.dataset.k) return;  // service toggles only — not e.g. the VAAPI box
     c.onchange = async () => {
       const serr = v.querySelector("#serr"); serr.hidden = true;
       const picked = {}; picked[c.dataset.k] = c.checked;
@@ -392,19 +428,37 @@ async function dashboard() {
   };
   const ssave = v.querySelector("#ssave");
   if (ssave) {
+    const smode = v.querySelector("#smode");
+    const applyMode = () => {
+      const browser = smode.value === "browser";
+      v.querySelector("#sbrowser").hidden = !browser;
+      v.querySelector("#smedia").hidden = browser;
+    };
+    smode.onchange = applyMode;
     api("/api/stream").then(s => {
-      v.querySelector("#ssrc").value = s.src; v.querySelector("#sdst").value = s.dst;
+      smode.value = s.mode || "media"; applyMode();
+      v.querySelector("#ssrc").value = s.src; v.querySelector("#surl").value = s.url || "";
+      v.querySelector("#sdst").value = s.dst; v.querySelector("#sdst2").value = s.dst2 || "";
+      v.querySelector("#sres").value = s.res || ""; v.querySelector("#sfps").value = s.fps || "";
+      v.querySelector("#svaapi").checked = !!s.vaapi;
       v.querySelector("#sargs").value = s.args;
       if (s.key_set) v.querySelector("#skey").placeholder = "(a key is saved — blank keeps it)";
+      if (s.key_set2) v.querySelector("#skey2").placeholder = "(a key is saved — blank keeps it)";
     }).catch(() => {});
     ssave.onclick = async () => {
       const msg = v.querySelector("#smsg"); msg.hidden = false; msg.textContent = "saving…";
       busy(ssave, true);
       try {
         const r = await api("/api/stream-config", {
-          src: v.querySelector("#ssrc").value, dst: v.querySelector("#sdst").value,
-          key: v.querySelector("#skey").value, args: v.querySelector("#sargs").value,
+          mode: smode.value,
+          src: v.querySelector("#ssrc").value, url: v.querySelector("#surl").value,
+          dst: v.querySelector("#sdst").value, key: v.querySelector("#skey").value,
+          dst2: v.querySelector("#sdst2").value, key2: v.querySelector("#skey2").value,
+          res: v.querySelector("#sres").value, fps: v.querySelector("#sfps").value,
+          vaapi: v.querySelector("#svaapi").checked,
+          args: v.querySelector("#sargs").value,
           keep_key: !v.querySelector("#skey").value,
+          keep_key2: !v.querySelector("#skey2").value,
         });
         msg.textContent = r.problems.length ? r.problems.join("; ") : "Saved — stream restarted.";
       } catch (e) { msg.textContent = e.message; }
@@ -413,6 +467,35 @@ async function dashboard() {
     v.querySelector("#slog").onclick = async () => {
       const box = v.querySelector("#slogbox"); box.hidden = false; box.textContent = "…";
       try { box.textContent = (await api("/api/stream-log")).text; } catch (e) { box.textContent = e.message; }
+    };
+  }
+  const asave = v.querySelector("#asave");
+  if (asave) {
+    const aopen = v.querySelector("#aopen");
+    const showOpen = (port) => {
+      aopen.href = location.protocol + "//" + location.hostname + ":" + (port || "7681") + "/";
+      aopen.style.display = "";
+    };
+    api("/api/assistant").then(a => {
+      v.querySelector("#aport").value = a.port || "";
+      if (a.pass_set) {
+        v.querySelector("#apass").placeholder = "(a password is saved — blank keeps it)";
+        showOpen(a.port);
+      }
+    }).catch(() => {});
+    asave.onclick = async () => {
+      const msg = v.querySelector("#amsg"); msg.hidden = false; msg.textContent = "saving…";
+      busy(asave, true);
+      try {
+        const r = await api("/api/assistant-config", {
+          password: v.querySelector("#apass").value,
+          port: v.querySelector("#aport").value,
+          keep_pass: !v.querySelector("#apass").value,
+        });
+        msg.textContent = r.problems.length ? r.problems.join("; ") : "Saved — terminal restarted.";
+        showOpen(v.querySelector("#aport").value);
+      } catch (e) { msg.textContent = e.message; }
+      busy(asave, false);
     };
   }
   const pcard = v.querySelector("#pipecard");

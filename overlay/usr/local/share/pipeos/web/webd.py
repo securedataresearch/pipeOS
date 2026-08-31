@@ -45,7 +45,7 @@ STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 SESSION_IDLE_S = 24 * 3600
 NICK_RE = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
-SVC_KEYS = ("pipe", "claude", "stream", "agy", "support")
+SVC_KEYS = ("pipe", "claude", "stream", "agy", "support", "assistant")
 
 
 def run(argv, timeout=60, input_text=None):
@@ -165,6 +165,8 @@ def daemons_for(svcs):
         out.append("pipeos-stream")
     if svcs["support"]:
         out.append("pipeos-support")
+    if svcs.get("assistant"):
+        out.append("pipeos-assistant")
     return out
 
 
@@ -173,7 +175,7 @@ def apply_services(svcs):
     daemon; returns a list of human-readable problems (empty == clean)."""
     problems = []
     want = set(daemons_for(svcs))
-    managed = ("pipe-daemon", "pipebox-listener", "pipeos-stream", "pipeos-support")
+    managed = ("pipe-daemon", "pipebox-listener", "pipeos-stream", "pipeos-support", "pipeos-assistant")
     for svc in managed:
         if svc in want:
             run(["rc-update", "add", svc, "default"])
@@ -185,6 +187,8 @@ def apply_services(svcs):
                     problems.append("streaming is enabled but not configured yet")
                 elif svc == "pipeos-support":
                     problems.append("support access is enabled but no relay is configured yet")
+                elif svc == "pipeos-assistant":
+                    problems.append("the assistant terminal is enabled but has no password yet")
                 else:
                     problems.append("%s failed to start: %s" % (svc, out.strip()[-200:]))
         else:
@@ -321,6 +325,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/logs": self.api_logs,
             "/api/stream": self.api_stream_get,
             "/api/stream-log": self.api_stream_log,
+            "/api/assistant": self.api_assistant_get,
             "/api/pipe": self.api_pipe_get,
             "/api/update": self.api_update_get,
         }
@@ -355,6 +360,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/reboot": self.api_reboot,
             "/api/repair-access": self.api_repair_access,
             "/api/stream-config": self.api_stream_set,
+            "/api/assistant-config": self.api_assistant_set,
             "/api/cohort": self.api_cohort,
             "/api/update-now": self.api_update_now,
         }
@@ -629,10 +635,12 @@ LOG_ALLOW = {
     "pipeos-web": "/work/logs/pipeos-web.log",
     "pipeos-mdns": "/work/logs/pipeos-mdns.log",
     "pipeos-stream": "/work/logs/pipeos-stream.log",
+    "pipeos-assistant": "/work/logs/pipeos-assistant.log",
     "selfupdate": "/work/logs/selfupdate.log",
     "worksweep": "/work/logs/worksweep.log",
 }
 STREAM_CONF = ETC + "/stream.conf"
+ASSISTANT_CONF = ETC + "/assistant.conf"
 SELFUPDATE_CONF = ETC + "/selfupdate.conf"
 UPDATE_STAMP = "/work/.pipeos/selfupdate.applied"
 
@@ -681,16 +689,27 @@ class PhaseB:
                         else "(no log yet — the service may not have run)"})
 
     def api_stream_get(self):
-        vals = read_conf_values(STREAM_CONF, ["STREAM_SRC", "STREAM_DST", "STREAM_ARGS", "STREAM_KEY"])
+        vals = read_conf_values(STREAM_CONF, [
+            "STREAM_MODE", "STREAM_SRC", "STREAM_URL", "STREAM_DST", "STREAM_KEY",
+            "STREAM_DST2", "STREAM_KEY2", "STREAM_RES", "STREAM_FPS", "STREAM_VAAPI", "STREAM_ARGS"])
         rc, _ = run(["rc-service", "pipeos-stream", "status"], timeout=15)
-        self.send(200, {"src": vals["STREAM_SRC"], "dst": vals["STREAM_DST"],
-                        "args": vals["STREAM_ARGS"], "key_set": bool(vals["STREAM_KEY"]),
-                        "running": rc == 0})
+        self.send(200, {
+            "mode": vals["STREAM_MODE"] or "media",
+            "src": vals["STREAM_SRC"], "url": vals["STREAM_URL"],
+            "dst": vals["STREAM_DST"], "key_set": bool(vals["STREAM_KEY"]),
+            "dst2": vals["STREAM_DST2"], "key_set2": bool(vals["STREAM_KEY2"]),
+            "res": vals["STREAM_RES"] or "1920x1080", "fps": vals["STREAM_FPS"] or "30",
+            "vaapi": vals["STREAM_VAAPI"] == "1", "args": vals["STREAM_ARGS"],
+            "running": rc == 0})
 
     def api_stream_set(self, body):
         fields = {}
-        for k, name in (("src", "STREAM_SRC"), ("dst", "STREAM_DST"),
-                        ("key", "STREAM_KEY"), ("args", "STREAM_ARGS")):
+        # (form field, conf var). STREAM_VAAPI (a checkbox) and STREAM_MODE are
+        # normalised below; every free-text field runs the injection guard.
+        for k, name in (("mode", "STREAM_MODE"), ("src", "STREAM_SRC"), ("url", "STREAM_URL"),
+                        ("dst", "STREAM_DST"), ("key", "STREAM_KEY"),
+                        ("dst2", "STREAM_DST2"), ("key2", "STREAM_KEY2"),
+                        ("res", "STREAM_RES"), ("fps", "STREAM_FPS"), ("args", "STREAM_ARGS")):
             v = (body.get(k) or "").strip()
             # the conf is shell-sourced by the init script: refuse anything
             # that could escape a single-quoted value rather than escaping it
@@ -699,8 +718,17 @@ class PhaseB:
             if len(v) > 500:
                 return self.err(400, "%s is too long" % k)
             fields[name] = v
-        if not fields["STREAM_KEY"] and body.get("keep_key"):
-            fields["STREAM_KEY"] = read_conf_values(STREAM_CONF, ["STREAM_KEY"])["STREAM_KEY"]
+        if fields["STREAM_MODE"] not in ("media", "browser"):
+            fields["STREAM_MODE"] = "media"
+        if fields["STREAM_RES"] and not re.match(r"^\d{2,5}x\d{2,5}$", fields["STREAM_RES"]):
+            return self.err(400, "resolution must look like 1920x1080")
+        if fields["STREAM_FPS"] and not re.match(r"^\d{1,3}$", fields["STREAM_FPS"]):
+            return self.err(400, "fps must be a number")
+        fields["STREAM_VAAPI"] = "1" if body.get("vaapi") else "0"
+        # preserve an existing key when its box is left blank
+        for name, keep in (("STREAM_KEY", "keep_key"), ("STREAM_KEY2", "keep_key2")):
+            if not fields[name] and body.get(keep):
+                fields[name] = read_conf_values(STREAM_CONF, [name])[name]
         write_private(STREAM_CONF, "".join(
             "%s='%s'\n" % (k, v) for k, v in fields.items()))
         problems = []
@@ -715,6 +743,45 @@ class PhaseB:
     def api_stream_log(self):
         self.send(200, {"text": tail_file(LOG_ALLOW["pipeos-stream"], 100)
                         or "(no stream log yet)"})
+
+    def api_assistant_get(self):
+        vals = read_conf_values(ASSISTANT_CONF, ["ASSISTANT_USER", "ASSISTANT_PORT", "ASSISTANT_PASS"])
+        rc, _ = run(["rc-service", "pipeos-assistant", "status"], timeout=15)
+        self.send(200, {"user": vals["ASSISTANT_USER"] or "admin",
+                        "port": vals["ASSISTANT_PORT"] or "7681",
+                        "pass_set": bool(vals["ASSISTANT_PASS"]),
+                        "running": rc == 0})
+
+    def api_assistant_set(self, body):
+        fields = {}
+        for k, name in (("user", "ASSISTANT_USER"), ("port", "ASSISTANT_PORT"),
+                        ("password", "ASSISTANT_PASS")):
+            v = (body.get(k) or "").strip()
+            # sourced by the init/wrapper: same single-quote guard as stream.conf
+            if any(c in v for c in "'\n\r\0"):
+                return self.err(400, "%s may not contain quotes or newlines" % k)
+            if len(v) > 200:
+                return self.err(400, "%s is too long" % k)
+            fields[name] = v
+        if not fields["ASSISTANT_USER"]:
+            fields["ASSISTANT_USER"] = "admin"
+        if fields["ASSISTANT_PORT"] and not re.match(r"^\d{2,5}$", fields["ASSISTANT_PORT"]):
+            return self.err(400, "port must be a number")
+        if not fields["ASSISTANT_PORT"]:
+            fields["ASSISTANT_PORT"] = "7681"
+        if not fields["ASSISTANT_PASS"] and body.get("keep_pass"):
+            fields["ASSISTANT_PASS"] = read_conf_values(ASSISTANT_CONF, ["ASSISTANT_PASS"])["ASSISTANT_PASS"]
+        if not fields["ASSISTANT_PASS"]:
+            return self.err(400, "set a password — the terminal is shell access and must not be served open")
+        write_private(ASSISTANT_CONF, "".join("%s='%s'\n" % (k, v) for k, v in fields.items()))
+        problems = []
+        if read_services().get("assistant"):
+            rc, out = run(["rc-service", "pipeos-assistant", "restart"], timeout=60)
+            if rc != 0:
+                problems.append("assistant terminal did not start: " + out.strip()[-200:])
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "problems": problems, "saved": saved,
+                        "save_detail": "" if saved else detail})
 
     def api_pipe_get(self):
         rc, out = run(["pipe", "status", "-o", "json"], timeout=20)

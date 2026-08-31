@@ -1,0 +1,56 @@
+#!/sbin/openrc-run
+# pipeos-assistant — a browser terminal into the box's assistant.
+#
+# ttyd serves an xterm.js terminal over HTTP on its own port; it runs
+# `tmux new -A -s assistant claude --continue`, so every browser client
+# attaches to the SAME persistent claude session — the same conversation and
+# /root/.claude memory the dashboard chat uses. Toggled from the web UI; NOT in
+# the image's default runlevel. Refuses to start until a password is set — the
+# terminal is shell access on the LAN and must never be served open.
+#
+# /etc/pipeos/assistant.conf (mode 600 — ASSISTANT_PASS is a secret):
+#   ASSISTANT_PASS=  terminal password (required)
+#   ASSISTANT_USER=  username (default "admin")
+#   ASSISTANT_PORT=  TCP port (default 7681)
+description="browser terminal into the box assistant (ttyd + tmux + claude)"
+
+supervisor=supervise-daemon
+respawn_delay=5
+respawn_max=0
+
+output_log=/work/logs/pipeos-assistant.log
+error_log=/work/logs/pipeos-assistant.log
+
+CONF=/etc/pipeos/assistant.conf
+
+depend() {
+	need net pipeos-workspace
+	after chronyd
+}
+
+start_pre() {
+	if [ ! -r "$CONF" ]; then
+		eerror "the assistant terminal is enabled but $CONF does not exist — set a password in the web UI"
+		return 1
+	fi
+	# shellcheck disable=SC1090
+	. "$CONF"
+	if [ -z "${ASSISTANT_PASS:-}" ]; then
+		eerror "the assistant terminal has no password (ASSISTANT_PASS empty in $CONF) — set one in the web UI"
+		return 1
+	fi
+	command -v ttyd >/dev/null 2>&1 || { eerror "ttyd is not installed on this image"; return 1; }
+	command -v tmux >/dev/null 2>&1 || { eerror "tmux is not installed on this image"; return 1; }
+	command -v claude >/dev/null 2>&1 || { eerror "claude is not installed on this image"; return 1; }
+	checkpath -d -m 0755 /work/logs || return 1
+	checkpath -d -m 0700 /work/pipebox/webchat || return 1
+}
+
+start() {
+	ebegin "Starting assistant terminal"
+	supervise-daemon pipeos-assistant --start \
+		--stdout "$output_log" --stderr "$error_log" \
+		--respawn-delay "$respawn_delay" --respawn-max "$respawn_max" \
+		/usr/local/bin/pipeos-assistant-run
+	eend $?
+}

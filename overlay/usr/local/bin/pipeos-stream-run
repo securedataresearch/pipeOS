@@ -1,0 +1,116 @@
+#!/bin/bash
+# pipeos-stream-run — browser-source capture for pipeos-stream's "browser" mode.
+#
+# Renders STREAM_URL in headless Chromium on a virtual X display and encodes the
+# framebuffer to one or two RTMP targets (e.g. YouTube + Twitch) with ffmpeg's
+# tee muxer. This exists because a page is not a media stream: `ffmpeg -i <url>`
+# can only copy an actual A/V feed, and basho.dev (the motivating case) is a JS
+# web app that has to be *rendered* to become video.
+#
+# Run under supervise-daemon (see /etc/init.d/pipeos-stream). It starts Xvfb,
+# Chromium and ffmpeg, then blocks on `wait -n` and returns the moment ANY of
+# them exits, tearing the set down together — so a dead renderer never leaves
+# ffmpeg pushing a frozen/black frame; supervise-daemon then respawns the whole
+# pipeline as a unit.
+#
+# Config (/etc/pipeos/stream.conf, shell-sourced, mode 600 — keys are secrets):
+#   STREAM_URL          page to render (browser mode)
+#   STREAM_DST/KEY      target 1 (e.g. rtmp://a.rtmp.youtube.com/live2 + key)
+#   STREAM_DST2/KEY2    target 2, optional (e.g. rtmp://live.twitch.tv/app + key)
+#   STREAM_RES          canvas + capture size, default 1920x1080
+#   STREAM_FPS          frame rate, default 30
+#   STREAM_VAAPI        1 = hardware H.264 on the iGPU, else software x264
+#   STREAM_CHROME_ARGS  extra Chromium flags (GL tuning at deploy, optional)
+#   STREAM_ARGS         extra ffmpeg args before the tee output, optional
+set -u
+
+CONF=/etc/pipeos/stream.conf
+# shellcheck disable=SC1090
+[ -r "$CONF" ] && . "$CONF"
+
+URL=${STREAM_URL:-}
+RES=${STREAM_RES:-1920x1080}
+FPS=${STREAM_FPS:-30}
+W=${RES%x*}
+H=${RES#*x}
+DPY=99
+
+if [ -z "$URL" ]; then
+	echo "pipeos-stream-run: STREAM_URL is empty — nothing to render" >&2
+	exit 1
+fi
+
+# Assemble the tee destination list from whichever targets are configured.
+leg() {
+	local base=$1 key=$2
+	[ -n "$base" ] || return 0
+	base=${base%/}
+	printf '[f=flv]%s' "${base}${key:+/$key}"
+}
+DESTS=""
+d1=$(leg "${STREAM_DST:-}" "${STREAM_KEY:-}") && [ -n "$d1" ] && DESTS="$d1"
+d2=$(leg "${STREAM_DST2:-}" "${STREAM_KEY2:-}") && [ -n "$d2" ] && DESTS="${DESTS:+$DESTS|}$d2"
+if [ -z "$DESTS" ]; then
+	echo "pipeos-stream-run: no STREAM_DST configured" >&2
+	exit 1
+fi
+
+export DISPLAY=":$DPY"
+export HOME=/root
+
+# Virtual framebuffer. Noise to /dev/null — ffmpeg's stderr is the signal the
+# health probe reads, and we don't want Xvfb/Chromium drowning it in the log.
+Xvfb ":$DPY" -screen 0 "${W}x${H}x24" -nolisten tcp >/dev/null 2>&1 &
+XPID=$!
+sleep 1
+
+# Headless Chromium, kiosk fullscreen. --no-sandbox is required running as root
+# on a minimal box; software GL keeps the GPU free for the encoder; a throwaway
+# incognito profile in tmpfs so nothing persists across respawns. GL flags are
+# the version-sensitive part — STREAM_CHROME_ARGS lets us tune at deploy.
+PROFILE=$(mktemp -d /tmp/pipeos-chromium.XXXXXX)
+# shellcheck disable=SC2086
+chromium \
+	--no-sandbox --kiosk --start-fullscreen --incognito \
+	--user-data-dir="$PROFILE" \
+	--window-size="${W},${H}" --window-position=0,0 \
+	--disable-dev-shm-usage --disable-gpu \
+	--autoplay-policy=no-user-gesture-required \
+	--noerrdialogs --hide-scrollbars --disable-infobars \
+	--disable-features=Translate,TranslateUI \
+	--check-for-update-interval=31536000 \
+	${STREAM_CHROME_ARGS:-} \
+	"$URL" >/dev/null 2>&1 &
+CPID=$!
+
+cleanup() { kill "$XPID" "$CPID" "${FPID:-}" 2>/dev/null; wait 2>/dev/null; rm -rf "$PROFILE"; }
+trap cleanup EXIT INT TERM
+
+# Let the page paint before we start pulling frames.
+sleep 8
+
+# Encoder: VAAPI on the iGPU when asked and present, else software x264 (a
+# 6-core box handles 1080p30 x264 veryfast fine). YouTube/Twitch both want a
+# ~2 s keyframe interval and reject a video-only feed, hence -g and anullsrc.
+GOP=$((FPS * 2))
+if [ "${STREAM_VAAPI:-0}" = 1 ] && [ -e /dev/dri/renderD128 ]; then
+	VENC=(-vaapi_device /dev/dri/renderD128 -vf format=nv12,hwupload
+		-c:v h264_vaapi -b:v 4500k -maxrate 4500k -bufsize 9000k -g "$GOP")
+else
+	VENC=(-c:v libx264 -preset veryfast -pix_fmt yuv420p
+		-b:v 4500k -maxrate 4500k -bufsize 9000k -g "$GOP")
+fi
+
+# shellcheck disable=SC2086
+ffmpeg -hide_banner -loglevel warning -stats -nostdin \
+	-f x11grab -framerate "$FPS" -video_size "$RES" -i ":$DPY" \
+	-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 \
+	"${VENC[@]}" \
+	-c:a aac -b:a 128k -ar 44100 \
+	${STREAM_ARGS:-} \
+	-f tee "$DESTS" &
+FPID=$!
+
+# Respawn as a set: fall through the instant any child (renderer OR encoder)
+# dies, so the trap cleans up and supervise-daemon restarts the whole pipeline.
+wait -n

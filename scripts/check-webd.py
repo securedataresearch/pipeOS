@@ -32,6 +32,7 @@ webd.PROVISIONED = tmp + "/provisioned"
 webd.SESS_DIR = tmp + "/sessions"
 webd.BOOT_REPORT = tmp + "/boot-report"
 webd.STREAM_CONF = tmp + "/stream.conf"
+webd.ASSISTANT_CONF = tmp + "/assistant.conf"
 webd.SELFUPDATE_CONF = tmp + "/selfupdate.conf"
 webd.UPDATE_STAMP = tmp + "/selfupdate.applied"
 webd.LOG_ALLOW = {k: tmp + "/" + k + ".log" for k in webd.LOG_ALLOW}
@@ -118,8 +119,47 @@ ok("logs endpoint refuses names off the allowlist")
 r = req("/api/logs?name=selfcheck")
 assert "text" in r
 ok("logs endpoint serves an allowlisted tail")
-req("/api/stream-config", {"src": "x'; rm -rf /", "dst": "d"}, expect=400)
-ok("stream config refuses quote injection into the sourced conf")
+# every free-text stream field is shell-sourced — each must refuse quote injection
+for bad in ("src", "url", "dst", "key", "dst2", "key2", "args"):
+    req("/api/stream-config", {bad: "x'; rm -rf /"}, expect=400)
+ok("stream config refuses quote injection on every field")
+req("/api/stream-config", {"mode": "browser", "res": "not-a-size"}, expect=400)
+req("/api/stream-config", {"mode": "browser", "fps": "abc"}, expect=400)
+ok("stream config validates resolution and fps")
+# positive round-trip: a browser-mode dual-target config persists; keys are write-only
+r = req("/api/stream-config", {
+    "mode": "browser", "url": "https://basho.dev",
+    "dst": "rtmp://a.rtmp.youtube.com/live2", "key": "yt-secret",
+    "dst2": "rtmp://live.twitch.tv/app", "key2": "tw-secret",
+    "res": "1920x1080", "fps": "30", "vaapi": True})
+assert r["ok"]
+g = req("/api/stream")
+assert g["mode"] == "browser" and g["url"] == "https://basho.dev", g
+assert g["dst2"] == "rtmp://live.twitch.tv/app" and g["res"] == "1920x1080", g
+assert g["key_set"] is True and g["key_set2"] is True and g["vaapi"] is True, g
+assert "key" not in g and "key2" not in g, "raw keys must never be returned"
+with open(webd.STREAM_CONF) as f:
+    conf = f.read()
+assert "STREAM_KEY='yt-secret'" in conf and "STREAM_KEY2='tw-secret'" in conf
+ok("stream config round-trips browser + dual-target and hides the keys")
+# a blank key with keep_key preserves what was saved
+req("/api/stream-config", {"mode": "browser", "url": "https://basho.dev",
+    "dst": "rtmp://a.rtmp.youtube.com/live2", "keep_key": True, "keep_key2": True})
+g2 = req("/api/stream")
+assert g2["key_set"] is True and g2["key_set2"] is True, g2
+ok("blank key with keep_key preserves the saved key")
+# assistant terminal: guards injection + port, and refuses an open terminal
+req("/api/assistant-config", {"password": "x'; rm -rf /"}, expect=400)
+req("/api/assistant-config", {"port": "notaport", "password": "p"}, expect=400)
+req("/api/assistant-config", {"user": "admin"}, expect=400)
+ok("assistant config guards injection/port and refuses a passwordless terminal")
+r = req("/api/assistant-config", {"password": "hunter2pass", "port": "7681"})
+assert r["ok"]
+a = req("/api/assistant")
+assert a["pass_set"] is True and a["port"] == "7681" and "password" not in a, a
+with open(webd.ASSISTANT_CONF) as f:
+    assert "ASSISTANT_PASS='hunter2pass'" in f.read()
+ok("assistant config round-trips and hides the password")
 r = req("/api/update")
 assert r["state"] in ("self-update disabled", "origin unreachable", "current", "update available", "unknown")
 ok("update endpoint reports a coherent state")
