@@ -27,6 +27,10 @@
 +etc/pipeos/services.conf
 +etc/pipeos/stream.conf
 +etc/pipeos/assistant.conf
+# the box's local CA + server cert (HTTPS). The CA is what the owner installs on
+# their devices to trust this box, so it MUST persist — regenerating it would
+# break every device that trusted the old one. Keys are mode 600.
++etc/pipeos/tls
 # the Claude credential the listener/cohort-watch source (pipeOS#49 flagged it
 # as shared; here it is at least PERSISTED — before this line nothing kept it)
 +etc/pipeos/claude-auth.env

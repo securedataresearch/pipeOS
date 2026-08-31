@@ -1,0 +1,62 @@
+#!/bin/sh
+# pipeos-tls-init — per-box local CA + server cert, so the dashboard can serve
+# HTTPS the owner's devices trust (a padlock, not a warning).
+#
+# Two certs live in /etc/pipeos/tls:
+#   ca.crt / ca.key      the box's own Certificate Authority. ca.crt is what the
+#                        owner installs once on each device (the dashboard hands
+#                        it over as a .crt / Apple .mobileconfig); after that,
+#                        every cert this CA signs is trusted → the checkmark.
+#   server.crt/.key      the cert webd actually serves, signed by the CA, with a
+#                        SAN for every name/IP the box answers to.
+#
+# The CA is generated ONCE and then persists (it is what devices trust). The
+# server cert is regenerated whenever the box's IP changes, so visiting by IP
+# stays valid on a DHCP lease change while the CA — and thus the trust — is
+# untouched.
+set -e
+
+TLS=/etc/pipeos/tls
+CA_KEY="$TLS/ca.key"; CA_CRT="$TLS/ca.crt"
+SRV_KEY="$TLS/server.key"; SRV_CRT="$TLS/server.crt"
+mkdir -p "$TLS"; chmod 700 "$TLS"
+
+HOST=$(hostname 2>/dev/null || echo pipeos)
+IP=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+
+# --- CA: generate once, keep forever (10 years) ---
+if [ ! -f "$CA_KEY" ] || [ ! -f "$CA_CRT" ]; then
+	openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+		-keyout "$CA_KEY" -out "$CA_CRT" \
+		-subj "/O=pipeOS/CN=pipeOS $HOST Local CA" \
+		-addext "basicConstraints=critical,CA:TRUE" \
+		-addext "keyUsage=critical,keyCertSign,cRLSign" >/dev/null 2>&1
+	chmod 600 "$CA_KEY"
+fi
+
+# --- server cert: (re)issue when missing or the IP SAN no longer matches ---
+want_san="DNS:$HOST,DNS:$HOST.local,DNS:pipeos.local,DNS:localhost,IP:127.0.0.1"
+[ -n "$IP" ] && want_san="$want_san,IP:$IP"
+
+need=0
+[ -f "$SRV_CRT" ] || need=1
+if [ "$need" = 0 ] && [ -n "$IP" ]; then
+	openssl x509 -in "$SRV_CRT" -noout -text 2>/dev/null | grep -q "IP Address:$IP" || need=1
+fi
+
+if [ "$need" = 1 ]; then
+	openssl req -newkey rsa:2048 -nodes -keyout "$SRV_KEY.new" -out "$TLS/server.csr" \
+		-subj "/O=pipeOS/CN=$HOST.local" >/dev/null 2>&1
+	openssl x509 -req -in "$TLS/server.csr" -CA "$CA_CRT" -CAkey "$CA_KEY" \
+		-CAcreateserial -days 825 -sha256 \
+		-extfile /dev/stdin -out "$SRV_CRT.new" >/dev/null 2>&1 <<EXT
+subjectAltName=$want_san
+extendedKeyUsage=serverAuth
+keyUsage=critical,digitalSignature,keyEncipherment
+EXT
+	mv "$SRV_KEY.new" "$SRV_KEY"; mv "$SRV_CRT.new" "$SRV_CRT"
+	chmod 600 "$SRV_KEY"
+	rm -f "$TLS/server.csr"
+fi
+
+echo "pipeos-tls-init: CA + server cert ready in $TLS (host=$HOST ip=${IP:-none})"

@@ -19,16 +19,20 @@ State files (all persisted via lbu.list + lines):
 Sessions live in /run/pipeos/web-sessions (tmpfs: a reboot logs everyone out).
 """
 
+import base64
 import hmac
+import html
 import json
 import os
 import re
 import secrets
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import threading
+import uuid
 import time
 import urllib.parse
 import urllib.request
@@ -40,6 +44,10 @@ SERVICES_CONF = ETC + "/services.conf"
 CLAUDE_AUTH = ETC + "/claude-auth.env"
 CARD = ETC + "/card.conf"
 PROVISIONED = ETC + "/provisioned"
+TLS_DIR = ETC + "/tls"
+CA_CRT = TLS_DIR + "/ca.crt"
+SRV_CRT = TLS_DIR + "/server.crt"
+SRV_KEY = TLS_DIR + "/server.key"
 SESS_DIR = "/run/pipeos/web-sessions"
 BOOT_REPORT = "/run/pipeos/boot-report"
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -55,6 +63,35 @@ SVC_KEYS = ("pipe", "claude", "stream", "agy", "support", "assistant")
 # claim-race serialization the single-threaded server used to give for free
 # (two browsers claiming an unclaimed box still resolve to one winner).
 MUTATE_LOCK = threading.Lock()
+
+# Apple .mobileconfig that installs the box CA as a trusted root. Filled by
+# serve_ca_mobileconfig; no literal braces in the body so str.format is safe.
+MOBILECONFIG_TMPL = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadType</key><string>com.apple.security.root</string>
+      <key>PayloadVersion</key><integer>1</integer>
+      <key>PayloadIdentifier</key><string>online.pipe.ca.{cuuid}</string>
+      <key>PayloadUUID</key><string>{cuuid}</string>
+      <key>PayloadDisplayName</key><string>pipeOS {host} CA</string>
+      <key>PayloadCertificateFileName</key><string>pipeos-ca.crt</string>
+      <key>PayloadContent</key>
+      <data>{cert_b64}</data>
+    </dict>
+  </array>
+  <key>PayloadType</key><string>Configuration</string>
+  <key>PayloadVersion</key><integer>1</integer>
+  <key>PayloadIdentifier</key><string>online.pipe.profile.{puuid}</string>
+  <key>PayloadUUID</key><string>{puuid}</string>
+  <key>PayloadDisplayName</key><string>pipeOS {host} — secure access</string>
+  <key>PayloadDescription</key><string>Trusts this pipeOS box so its dashboard shows a secure padlock.</string>
+</dict>
+</plist>
+"""
 
 
 def run(argv, timeout=60, input_text=None):
@@ -329,6 +366,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.serve_static(path[len("/static/"):])
         if path == "/api/state":
             return self.api_state()
+        # The CA root is public by design — the owner installs it to trust this
+        # box, so these are unauthenticated (downloading a public cert is safe).
+        if path == "/ca.crt":
+            return self.serve_ca_cert()
+        if path == "/pipeos-ca.mobileconfig":
+            return self.serve_ca_mobileconfig()
         readers = {
             "/api/status": self.api_status,
             "/api/logs": self.api_logs,
@@ -402,6 +445,41 @@ class Handler(BaseHTTPRequestHandler):
             ".svg": "image/svg+xml",
         }.get(os.path.splitext(name)[1], "application/octet-stream")
         self.send(200, data, ctype=ctype)
+
+    def _send_download(self, data, ctype, filename):
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Disposition", 'attachment; filename="%s"' % filename)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def serve_ca_cert(self):
+        try:
+            with open(CA_CRT, "rb") as f:
+                data = f.read()
+        except OSError:
+            return self.err(404, "no CA yet — HTTPS is not set up on this box")
+        self._send_download(data, "application/x-x509-ca-cert", "pipeos-ca.crt")
+
+    def serve_ca_mobileconfig(self):
+        # An Apple config profile that installs the CA as a trusted root in ~2
+        # taps. (iOS still requires the one-time "enable full trust" toggle in
+        # Settings › General › About › Certificate Trust — Apple does not let a
+        # profile grant root trust silently.)
+        try:
+            with open(CA_CRT) as f:
+                pem = f.read()
+        except OSError:
+            return self.err(404, "no CA yet — HTTPS is not set up on this box")
+        der_b64 = base64.b64encode(ssl.PEM_cert_to_DER_cert(pem)).decode()
+        host = socket.gethostname()
+        prof = MOBILECONFIG_TMPL.format(
+            cert_b64=der_b64, host=html.escape(host),
+            puuid=str(uuid.uuid4()).upper(), cuuid=str(uuid.uuid4()).upper())
+        self._send_download(prof.encode(), "application/x-apple-aspen-config",
+                            "pipeos-ca.mobileconfig")
 
     # -- API: unauthenticated surface (deliberately tiny) --
     def api_state(self):
@@ -884,10 +962,36 @@ for _n in dir(PhaseB):
         setattr(Handler, _n, getattr(PhaseB, _n))
 
 
+def start_https():
+    """Serve HTTPS on :443 in a background thread if the box CA + server cert
+    exist. HTTP on :80 keeps working regardless, so a TLS problem can never lock
+    the owner out of the wizard — HTTPS is strictly additive until they install
+    the CA and choose to use it. Best-effort: any failure just means no :443."""
+    try:
+        subprocess.run(["/usr/local/bin/pipeos-tls-init"], timeout=30,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+    if not (os.path.exists(SRV_CRT) and os.path.exists(SRV_KEY)):
+        return
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(SRV_CRT, SRV_KEY)
+        httpsd = ThreadingHTTPServer(("0.0.0.0", 443), Handler)
+        httpsd.daemon_threads = True
+        httpsd.socket = ctx.wrap_socket(httpsd.socket, server_side=True)
+    except Exception as e:
+        sys.stderr.write("pipeos-webd: HTTPS not started: %s\n" % e)
+        return
+    threading.Thread(target=httpsd.serve_forever, daemon=True).start()
+    sys.stderr.write("pipeos-webd listening on :443 (TLS)\n")
+
+
 def main():
     port = int(os.environ.get("PIPEOS_WEB_PORT", "80"))
     os.makedirs(SESS_DIR, mode=0o700, exist_ok=True)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    start_https()
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     srv.daemon_threads = True
     sys.stderr.write("pipeos-webd listening on :%d (claimed=%s)\n" % (port, claimed()))
