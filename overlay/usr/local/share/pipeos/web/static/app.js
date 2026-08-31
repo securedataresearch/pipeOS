@@ -246,6 +246,69 @@ function fmtUptime(s) {
   return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
 }
 
+function fmtBps(b) {
+  if (b == null) return "?";
+  if (b >= 1e6) return (b / 1e6).toFixed(1) + " Mb/s";
+  if (b >= 1e3) return (b / 1e3).toFixed(0) + " kb/s";
+  return Math.round(b) + " b/s";
+}
+
+function niceMax(v) {
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 2, 5, 10]) if (m * p >= v) return m * p;
+  return 10 * p;
+}
+
+/* Inline-SVG time-series chart: no libraries reach this box's LAN page.
+   series: [{data:[num|null], color:cssColor, fill:bool, label}]
+   opts: {t0, interval, unit ("%"|"bps"|""), ymax, ref (dotted hline)} */
+function chart(elm, series, opts) {
+  const W = 600, H = 150, PL = 44, PR = 8, PT = 8, PB = 18;
+  let ymax = opts.ymax || 0;
+  series.forEach(s => s.data.forEach(v => { if (v != null && v > ymax) ymax = v; }));
+  if (opts.ref && opts.ref > ymax) ymax = opts.ref;
+  ymax = ymax > 0 ? niceMax(ymax) : 1;
+  const n = Math.max(2, ...series.map(s => s.data.length));
+  const X = i => PL + i * (W - PL - PR) / (n - 1);
+  const Y = v => PT + (H - PT - PB) * (1 - Math.min(v, ymax) / ymax);
+  const fmtY = v => opts.unit === "bps" ? fmtBps(v)
+    : opts.unit === "%" ? v + "%"
+    : (v >= 100 ? Math.round(v) : +v.toFixed(1)) + (opts.unit || "");
+  const parts = [];
+  const yGrid = [1 / 3, 2 / 3].map(f =>
+    `<line x1="${PL}" y1="${Y(ymax * f)}" x2="${W - PR}" y2="${Y(ymax * f)}" class="grid"/>`).join("");
+  parts.push(yGrid);
+  if (opts.ref) parts.push(`<line x1="${PL}" y1="${Y(opts.ref)}" x2="${W - PR}" y2="${Y(opts.ref)}" class="refline"/>`);
+  for (const s of series) {
+    let line = "", area = "", open = false, x0 = null, xl = null;
+    s.data.forEach((v, i) => {
+      if (v == null) {
+        if (open && s.fill) area += ` L${xl},${Y(0)} L${x0},${Y(0)} Z`;
+        open = false; return;
+      }
+      const x = X(i), y = Y(v).toFixed(1);
+      if (!open) { line += ` M${x.toFixed(1)},${y}`; area += ` M${x.toFixed(1)},${y}`; x0 = x.toFixed(1); open = true; }
+      else { line += ` L${x.toFixed(1)},${y}`; area += ` L${x.toFixed(1)},${y}`; }
+      xl = x.toFixed(1);
+    });
+    if (open && s.fill) area += ` L${xl},${Y(0)} L${x0},${Y(0)} Z`;
+    if (s.fill) parts.push(`<path d="${area}" fill="${s.color}" opacity=".12" stroke="none"/>`);
+    parts.push(`<path d="${line}" fill="none" stroke="${s.color}" stroke-width="1.8" stroke-linejoin="round"/>`);
+  }
+  const t = s => { const d = new Date(s * 1000); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); };
+  const axis = opts.t0
+    ? `<text x="${PL}" y="${H - 4}" class="tick">${t(opts.t0)}</text>
+       <text x="${W - PR}" y="${H - 4}" class="tick" text-anchor="end">${t(opts.t0 + n * opts.interval)}</text>` : "";
+  const legend = series.length > 1 ? series.map(s =>
+    `<span class="lg"><i style="background:${s.color}"></i>${esc(s.label || "")}</span>`).join("") : "";
+  elm.innerHTML = `${legend ? `<div class="legend">${legend}</div>` : ""}
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="tschart">
+      <text x="${PL - 5}" y="${Y(ymax) + 4}" class="tick" text-anchor="end">${fmtY(ymax)}</text>
+      <text x="${PL - 5}" y="${Y(0) + 4}" class="tick" text-anchor="end">0</text>
+      ${parts.join("\n")}${axis}
+    </svg>`;
+}
+
 function verdictClass(report) {
   const m = /^verdict: (.*)$/m.exec(report || "");
   const v = m ? m[1] : "";
@@ -277,6 +340,8 @@ async function dashboard() {
     streaming: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4M19 4.9a10 10 0 0 1 0 14.2M5 19.1A10 10 0 0 1 5 4.9"/></svg>',
     assistant: '<svg viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.5 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 17 0z"/></svg>',
     services: '<svg viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>',
+    pipe: '<svg viewBox="0 0 24 24"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg>',
+    files: '<svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
     network: '<svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
     system: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="2" x2="9" y2="4"/><line x1="15" y1="2" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="22"/><line x1="15" y1="20" x2="15" y2="22"/><line x1="20" y1="9" x2="22" y2="9"/><line x1="20" y1="15" x2="22" y2="15"/><line x1="2" y1="9" x2="4" y2="9"/><line x1="2" y1="15" x2="4" y2="15"/></svg>',
   };
@@ -292,6 +357,8 @@ async function dashboard() {
         ${navItem("overview", "Overview")}
         ${showStream ? navItem("streaming", "Streaming") : ""}
         ${showAssist ? navItem("assistant", "Assistant") : ""}
+        ${navItem("files", "Files")}
+        ${st.services.pipe ? navItem("pipe", "pipe") : ""}
         ${navItem("services", "Services")}
         ${navItem("network", "Network")}
         ${navItem("system", "System")}
@@ -304,10 +371,13 @@ async function dashboard() {
     <main class="content">
       <section data-view="overview">
         <div class="viewhead"><h1>Overview</h1></div>
+        <div id="alerts"></div>
         <div class="stats">
           <div class="tile"><div class="k">Status</div><div class="val small"><span class="${vcls}">${esc(verdict)}</span></div></div>
           <div class="tile"><div class="k">Uptime</div><div class="val">${fmtUptime(st.uptime_s)}</div></div>
           <div class="tile"><div class="k">Disk</div><div class="val">${st.work_pct == null ? "?" : st.work_pct + "%"}</div><div class="note">${st.work_free_mb != null ? Math.round(st.work_free_mb / 1024) + " GB free" : "used"}</div></div>
+          <div class="tile"><div class="k">CPU load</div><div class="val" id="ovload">…</div><div class="note" id="ovloadn"></div></div>
+          <div class="tile"><div class="k">CPU temp</div><div class="val" id="ovtemp">…</div></div>
         </div>
         ${showStream ? `
         <div class="card">
@@ -386,27 +456,104 @@ async function dashboard() {
         </div>` : ""}
       </section>` : ""}
 
+      <section data-view="files" hidden>
+        <div class="viewhead"><h1>Files</h1></div>
+        <div class="filegrid${st.services.claude ? "" : " nochat"}">
+          <div class="card">
+            <div class="cardhead">
+              <div class="crumbs" id="crumbs"></div>
+              <span style="white-space:nowrap">
+                <button id="fmkdir" class="ghost small" type="button">new folder</button>
+                <button id="fupbtn" class="ghost small" type="button">upload</button>
+                <input id="fupin" type="file" multiple hidden>
+              </span>
+            </div>
+            <div id="fmovebar" class="movebar" hidden>
+              <span class="note" id="fmovemsg"></span>
+              <button id="fmovehere" class="small" type="button">move here</button>
+              <button id="fmovecancel" class="ghost small" type="button">cancel</button>
+            </div>
+            <div id="flist">loading…</div>
+            <p class="err" id="ferr" hidden></p>
+          </div>
+          ${st.services.claude ? `
+          <div class="card chatpane">
+            <div class="cardhead"><h2>Assistant</h2></div>
+            <div id="fchatlog" class="chatlog"></div>
+            <div class="chatrow">
+              <input id="fchatmsg" type="text" autocomplete="off" placeholder="Ask about these files…">
+              <button id="fchatgo" type="button">Send</button>
+            </div>
+            <p class="note" id="fchatnote" hidden></p>
+          </div>` : ""}
+        </div>
+      </section>
+
+      ${st.services.pipe ? `
+      <section data-view="pipe" hidden>
+        <div class="viewhead"><h1>pipe</h1></div>
+        <div class="card">
+          <div class="cardhead"><h2>Identity</h2><span class="pill" id="pauth">checking…</span></div>
+          <div class="stats">
+            <div class="tile"><div class="k">Nick</div><div class="val small" id="pnick">…</div></div>
+            <div class="tile"><div class="k">Owner</div><div class="val small" id="powner">…</div></div>
+            <div class="tile"><div class="k">Cohort</div><div class="val small" id="pcoh">…</div></div>
+          </div>
+          <div id="psignin" hidden>
+            <label for="pkey3">One-time key from <a href="https://pipe.online" target="_blank" rel="noopener">pipe.online</a></label>
+            <input id="pkey3" type="password" autocomplete="off">
+            <button id="pgo3" type="button">Sign in</button>
+          </div>
+          <button id="plogout" class="ghost" type="button" hidden>Sign out</button>
+          <p class="note" id="pidmsg" hidden></p>
+          <p class="note">The nick is the signed-in identity — to change it, sign out, then sign in with a key minted for the new nick.</p>
+        </div>
+        <div class="card">
+          <h2>Owner &amp; cohort</h2>
+          <label for="pown2">Owner nick (the box DMs this person)</label>
+          <input id="pown2" type="text">
+          <label for="pcid2">Cohort id (digits; blank for none)</label>
+          <input id="pcid2" type="text">
+          <button id="pocsave" type="button">Save</button>
+          <p class="note" id="pocmsg" hidden></p>
+          <details><summary class="note">Cohort board</summary><pre class="report" id="pboard">…</pre></details>
+        </div>
+        <div class="card">
+          <h2>Contacts</h2>
+          <div id="pcontacts" class="note">loading…</div>
+          <div class="chatrow">
+            <input id="pcadd" type="text" autocomplete="off" placeholder="nick">
+            <button id="pcaddgo" class="ghost" type="button">Add contact</button>
+          </div>
+          <p class="note" id="pcmsg3" hidden></p>
+        </div>
+        <div class="card">
+          <h2>Settings</h2>
+          <div id="pprefs" class="note">loading…</div>
+        </div>
+      </section>` : ""}
+
       <section data-view="services" hidden>
         <div class="viewhead"><h1>Services</h1></div>
         <div class="card">${rows}<p class="err" id="serr" hidden></p></div>
         ${st.services.pipe ? `
-        <div class="card" id="pipecard">
+        <div class="card">
           <h2>pipe messaging</h2>
-          <p class="note" id="pmsg">loading…</p>
-          <div id="pipesignin" hidden>
-            <label for="pkey2">One-time key from pipe.online</label>
-            <input id="pkey2" type="password" autocomplete="off">
-            <button id="pgo2">Sign in</button>
-          </div>
-          <label for="cid">Team board (cohort id, digits; blank to leave)</label>
-          <input id="cid" type="text">
-          <button id="cgo2" class="ghost">Set cohort</button>
-          <p class="note" id="cmsg2" hidden></p>
+          <p class="note">Sign-in, contacts and cohort moved to the <a href="#/pipe">pipe panel</a>.</p>
         </div>` : ""}
       </section>
 
       <section data-view="network" hidden>
         <div class="viewhead"><h1>Network</h1></div>
+        <div class="stats">
+          <div class="tile"><div class="k">Address</div><div class="val small" id="nip">…</div><div class="note" id="nif"></div></div>
+          <div class="tile"><div class="k">Down</div><div class="val small" id="nrx">…</div></div>
+          <div class="tile"><div class="k">Up</div><div class="val small" id="ntx">…</div></div>
+        </div>
+        <div class="card">
+          <div class="cardhead"><h2>Traffic</h2><span class="note" id="ntot"></span></div>
+          <div class="ch" id="ch-net"></div>
+        </div>
         <div class="card">
           <h2>Secure access (HTTPS)</h2>
           <p class="note" id="tlsnote">checking…</p>
@@ -431,6 +578,20 @@ async function dashboard() {
         <div class="stats" id="metrics">
           <div class="tile"><div class="k">Metrics</div><div class="val small">loading…</div></div>
         </div>
+        <div class="cardhead" style="margin:1.1rem 0 .7rem"><h2>History</h2>
+          <span id="spanbtns">
+            <button class="ghost small" type="button" data-mspan="1h">1h</button>
+            <button class="ghost small" type="button" data-mspan="6h">6h</button>
+            <button class="ghost small" type="button" data-mspan="24h">24h</button>
+          </span>
+        </div>
+        <div class="charts">
+          <div class="card"><div class="k">CPU load</div><div class="ch" id="ch-cpu"></div></div>
+          <div class="card"><div class="k">Memory</div><div class="ch" id="ch-mem"></div></div>
+          <div class="card"><div class="k">CPU temp</div><div class="ch" id="ch-temp"></div></div>
+          <div class="card"><div class="k">Disks</div><div class="ch" id="ch-disk"></div></div>
+        </div>
+        <p class="note">History lives in memory and starts over when the dashboard restarts.</p>
         <div class="card">
           <h2>Logs</h2>
           <select id="logsel">
@@ -476,26 +637,52 @@ async function dashboard() {
       }
     };
   });
-  const chatgo = v.querySelector("#chatgo");
-  if (chatgo) {
+  // one wiring for every chat surface (assistant view, files pane)
+  const wireChat = (goId, msgId, logId, noteId) => {
+    const go = v.querySelector(goId);
+    if (!go) return;
     const send = async () => {
-      const inp = v.querySelector("#chatmsg"), log = v.querySelector("#chatlog"), note = v.querySelector("#chatnote");
+      const inp = v.querySelector(msgId), log = v.querySelector(logId), note = v.querySelector(noteId);
       const msg = inp.value.trim();
       if (!msg) return;
       log.appendChild(el(`<p><strong>you:</strong> ${esc(msg)}</p>`));
-      inp.value = ""; busy(chatgo, true);
+      inp.value = ""; busy(go, true);
       note.hidden = false; note.textContent = "thinking…";
       try {
         const r = await api("/api/chat", { message: msg });
         log.appendChild(el(`<p><strong>${esc(st.nick || "box")}:</strong> ${esc(r.reply)}</p>`));
         note.hidden = true;
       } catch (e) { note.textContent = e.message; }
-      busy(chatgo, false);
+      busy(go, false);
       log.scrollTop = log.scrollHeight;
     };
-    chatgo.onclick = send;
-    v.querySelector("#chatmsg").addEventListener("keydown", e => { if (e.key === "Enter") send(); });
-  }
+    go.onclick = send;
+    v.querySelector(msgId).addEventListener("keydown", e => { if (e.key === "Enter") send(); });
+  };
+  wireChat("#chatgo", "#chatmsg", "#chatlog", "#chatnote");
+  wireChat("#fchatgo", "#fchatmsg", "#fchatlog", "#fchatnote");
+  // ---- overview: attention strip + live tiles ----
+  const alertItems = [];
+  const renderAlerts = () => {
+    const box = v.querySelector("#alerts");
+    box.innerHTML = alertItems.length
+      ? alertItems.map(([c, t]) => `<div class="alert ${c}">${esc(t)}</div>`).join("")
+      : `<div class="alert ok">All clear — nothing needs attention.</div>`;
+  };
+  const addAlert = (cls, text) => { alertItems.push([cls, text]); renderAlerts(); };
+  (st.boot_report || "").split("\n").forEach(l => {
+    if (/^CRITICAL:/.test(l)) addAlert("bad", l);
+    else if (/^warn:/.test(l)) addAlert("warn", l);
+  });
+  Object.entries(st.running).forEach(([k, ok]) => {
+    if (!ok) addAlert("bad", k + " is enabled but not running");
+  });
+  renderAlerts();
+  api("/api/metrics").then(m => {
+    v.querySelector("#ovload").textContent = m.load1 == null ? "?" : m.load1.toFixed(2);
+    v.querySelector("#ovloadn").textContent = m.ncpu ? m.ncpu + " cores" : "";
+    v.querySelector("#ovtemp").textContent = m.temp_c == null ? "—" : m.temp_c + "°C";
+  }).catch(() => {});
   v.querySelector("#save").onclick = async () => {
     const b = v.querySelector("#save"); busy(b, true);
     try { const r = await api("/api/save", {}); if (!r.ok) alert("Save failed:\n" + r.detail); }
@@ -631,27 +818,208 @@ async function dashboard() {
       busy(asave, false);
     };
   }
-  const pcard = v.querySelector("#pipecard");
-  if (pcard) {
-    api("/api/pipe").then(p => {
-      const msg = v.querySelector("#pmsg");
-      if (p.authed) msg.textContent = `Signed in as ${p.nick}. Owner: ${p.owner || "(unset)"}. Cohort: ${p.cohort || "(none)"}.`;
-      else { msg.textContent = "Not signed in — the box cannot send or receive DMs."; v.querySelector("#pipesignin").hidden = false; }
-      v.querySelector("#cid").value = p.cohort || "";
-    }).catch(() => {});
-    const pgo2 = v.querySelector("#pgo2");
-    pgo2.onclick = async () => {
-      busy(pgo2, true);
-      try { const r = await api("/api/pipe-key", { key: v.querySelector("#pkey2").value.trim() });
-        v.querySelector("#pmsg").textContent = "Signed in as " + r.nick + "."; v.querySelector("#pipesignin").hidden = true;
-      } catch (e) { v.querySelector("#pmsg").textContent = e.message; }
-      busy(pgo2, false);
+  // ---- pipe panel ----
+  let loadPipe = null;
+  if (st.services.pipe) {
+    const setT = (id, t) => { const e = v.querySelector(id); if (e) e.textContent = t; };
+    const PREF_DESC = {
+      dm_relay: "Relay DMs through the server when a peer is offline",
+      remember_login: "Stay signed in across reboots",
+      agent_events: "Announce agent activity as events",
     };
-    v.querySelector("#cgo2").onclick = async () => {
-      const m = v.querySelector("#cmsg2"); m.hidden = false; m.textContent = "…";
-      try { const r = await api("/api/cohort", { id: v.querySelector("#cid").value.trim() });
-        m.textContent = r.cohort ? "Cohort set to " + r.cohort + "." : "Cohort cleared.";
+    loadPipe = () => {
+      api("/api/pipe").then(p => {
+        setT("#pnick", p.nick || "—");
+        setT("#powner", p.owner || "—");
+        setT("#pcoh", p.cohort || "—");
+        const au = v.querySelector("#pauth");
+        au.textContent = p.authed ? "signed in" : "not signed in";
+        au.className = "pill " + (p.authed ? "status-ok" : "status-warn");
+        v.querySelector("#psignin").hidden = !!p.authed;
+        v.querySelector("#plogout").hidden = !p.authed;
+        if (document.activeElement !== v.querySelector("#pown2")) v.querySelector("#pown2").value = p.owner || "";
+        if (document.activeElement !== v.querySelector("#pcid2")) v.querySelector("#pcid2").value = p.cohort || "";
+        const prefs = p.prefs || {};
+        const pp = v.querySelector("#pprefs");
+        pp.className = "";
+        pp.innerHTML = Object.keys(PREF_DESC).map(k => `
+          <div class="row"><div><div class="name">${k}</div><div class="desc">${PREF_DESC[k]}</div></div>
+          <label class="switch"><input type="checkbox" data-pref="${k}" ${prefs[k] ? "checked" : ""}><span></span></label></div>`).join("");
+        pp.querySelectorAll("input[data-pref]").forEach(c => {
+          c.onchange = async () => {
+            try { await api("/api/pipe-set", { pref: c.dataset.pref, value: c.checked }); }
+            catch (e) { c.checked = !c.checked; alert(e.message); }
+          };
+        });
+      }).catch(() => {});
+      api("/api/pipe-contacts").then(r => {
+        const box = v.querySelector("#pcontacts");
+        const list = Array.isArray(r.contacts) ? r.contacts
+          : (r.contacts && Array.isArray(r.contacts.contacts) ? r.contacts.contacts : null);
+        if (list && list.length) {
+          box.className = "";
+          box.replaceChildren(...list.map(c => {
+            const nick = typeof c === "string" ? c : (c.nick || c.name || "?");
+            const trust = typeof c === "object" ? (c.trust || c.state || "") : "";
+            const row = el(`<div class="targetline"><span class="tname">${esc(nick)}</span><span class="note">${esc(trust)}</span><button class="ghost small" type="button" style="margin-left:auto">remove</button></div>`);
+            row.querySelector("button").onclick = async () => {
+              if (!confirm("Remove " + nick + " from contacts?")) return;
+              try { await api("/api/pipe-contact", { nick: nick, remove: true }); loadPipe(); }
+              catch (e) { alert(e.message); }
+            };
+            return row;
+          }));
+        } else {
+          box.className = "note";
+          box.textContent = (list && !list.length) ? "No contacts yet." : (r.text || "No contacts yet.");
+        }
+      }).catch(() => {});
+      api("/api/pipe-board").then(b => {
+        v.querySelector("#pboard").textContent =
+          b.cohort ? (b.text || "(empty board)") : "(no cohort set)";
+      }).catch(() => {});
+    };
+    const pgo3 = v.querySelector("#pgo3"), pidmsg = v.querySelector("#pidmsg");
+    pgo3.onclick = async () => {
+      pidmsg.hidden = false; pidmsg.textContent = "Signing in…"; busy(pgo3, true);
+      try {
+        const r = await api("/api/pipe-key", { key: v.querySelector("#pkey3").value.trim() });
+        pidmsg.textContent = "Signed in as " + r.nick + ".";
+        v.querySelector("#pkey3").value = "";
+        loadPipe();
+      } catch (e) { pidmsg.textContent = e.message; }
+      busy(pgo3, false);
+    };
+    v.querySelector("#plogout").onclick = async () => {
+      if (!confirm("Sign this box out of pipe? It stops sending and receiving DMs until signed in again.")) return;
+      pidmsg.hidden = false; pidmsg.textContent = "Signing out…";
+      try { await api("/api/pipe-logout", {}); pidmsg.textContent = "Signed out."; loadPipe(); }
+      catch (e) { pidmsg.textContent = e.message; }
+    };
+    v.querySelector("#pocsave").onclick = async () => {
+      const m = v.querySelector("#pocmsg"); m.hidden = false; m.textContent = "saving…";
+      try {
+        const owner = v.querySelector("#pown2").value.trim();
+        if (owner) await api("/api/name", { owner: owner });
+        await api("/api/cohort", { id: v.querySelector("#pcid2").value.trim() });
+        m.textContent = "Saved.";
+        loadPipe();
       } catch (e) { m.textContent = e.message; }
+    };
+    v.querySelector("#pcaddgo").onclick = async () => {
+      const m = v.querySelector("#pcmsg3"); m.hidden = false; m.textContent = "…";
+      try {
+        await api("/api/pipe-contact", { nick: v.querySelector("#pcadd").value.trim() });
+        m.hidden = true; v.querySelector("#pcadd").value = "";
+        loadPipe();
+      } catch (e) { m.textContent = e.message; }
+    };
+  }
+
+  // ---- files: /work explorer + mover ----
+  let loadFiles = null;
+  {
+    const flist = v.querySelector("#flist"), crumbs = v.querySelector("#crumbs"),
+      ferr = v.querySelector("#ferr"), movebar = v.querySelector("#fmovebar");
+    let cwd = "", moving = null;
+    const fileErr = m => { ferr.textContent = m || ""; ferr.hidden = !m; };
+    const fmtSize = n => n == null ? "" :
+      n >= (1 << 30) ? (n / (1 << 30)).toFixed(1) + " GB" :
+      n >= (1 << 20) ? (n / (1 << 20)).toFixed(1) + " MB" :
+      n >= 1024 ? Math.round(n / 1024) + " KB" : n + " B";
+    const fmtDate = t => {
+      const d = new Date(t * 1000);
+      return d.toLocaleDateString() + " " + String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    };
+    const syncMove = () => {
+      movebar.hidden = !moving;
+      if (moving) v.querySelector("#fmovemsg").textContent =
+        `Moving “${moving.name}” — open the destination folder, then`;
+    };
+    const frow = (f, isDir) => {
+      const p = (cwd ? cwd + "/" : "") + f.name;
+      const r = el(`<div class="frow">
+        <span class="fic">${isDir ? ICON.files : '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>'}</span>
+        <a class="fname" href="${isDir ? "#/files" : "/api/file-dl?path=" + encodeURIComponent(p)}">${esc(f.name)}</a>
+        <span class="fmeta">${fmtSize(f.size)}</span>
+        <span class="fmeta fdate">${fmtDate(f.mtime)}</span>
+        <span class="facts">
+          <button class="ghost small" type="button" data-a="move">move</button>
+          <button class="ghost small" type="button" data-a="ren">rename</button>
+          <button class="ghost small" type="button" data-a="del">delete</button>
+        </span></div>`);
+      if (isDir) r.querySelector(".fname").onclick = e => { e.preventDefault(); loadFiles(p); };
+      r.querySelector("[data-a=move]").onclick = () => { moving = { path: p, name: f.name }; syncMove(); };
+      r.querySelector("[data-a=ren]").onclick = async () => {
+        const nn = (prompt("Rename “" + f.name + "” to:", f.name) || "").trim();
+        if (!nn || nn === f.name) return;
+        if (nn.includes("/")) return fileErr("no slashes in names");
+        try { await api("/api/file-op", { op: "rename", path: p, dest: (cwd ? cwd + "/" : "") + nn }); loadFiles(cwd); }
+        catch (e) { fileErr(e.message); }
+      };
+      r.querySelector("[data-a=del]").onclick = async () => {
+        if (!confirm("Delete “" + f.name + "”" + (isDir ? " and everything inside it?" : "?"))) return;
+        try { await api("/api/file-op", { op: "delete", path: p, recursive: true }); loadFiles(cwd); }
+        catch (e) { fileErr(e.message); }
+      };
+      return r;
+    };
+    loadFiles = async (path) => {
+      fileErr("");
+      try {
+        const r = await api("/api/files?path=" + encodeURIComponent(path == null ? cwd : path));
+        cwd = r.path;
+        crumbs.replaceChildren();
+        let acc = "";
+        const mk = (label, target) => {
+          const a = el(`<a href="#/files">${esc(label)}</a>`);
+          a.onclick = e => { e.preventDefault(); loadFiles(target); };
+          crumbs.appendChild(a);
+        };
+        mk("work", "");
+        (cwd ? cwd.split("/") : []).forEach(seg => {
+          crumbs.appendChild(el(`<span class="sep">/</span>`));
+          acc = acc ? acc + "/" + seg : seg;
+          mk(seg, acc);
+        });
+        flist.replaceChildren();
+        r.dirs.forEach(d => flist.appendChild(frow(d, true)));
+        r.files.forEach(f => flist.appendChild(frow(f, false)));
+        if (!r.dirs.length && !r.files.length)
+          flist.appendChild(el(`<p class="note">Empty folder.</p>`));
+        if (r.truncated)
+          flist.appendChild(el(`<p class="note">…listing truncated at 2000 entries.</p>`));
+        syncMove();
+      } catch (e) { fileErr(e.message); }
+    };
+    v.querySelector("#fmovehere").onclick = async () => {
+      if (!moving) return;
+      try {
+        await api("/api/file-op", { op: "move", path: moving.path, dest: cwd });
+        moving = null; syncMove(); loadFiles(cwd);
+      } catch (e) { fileErr(e.message); }
+    };
+    v.querySelector("#fmovecancel").onclick = () => { moving = null; syncMove(); };
+    v.querySelector("#fmkdir").onclick = async () => {
+      const name = (prompt("New folder name:") || "").trim();
+      if (!name) return;
+      try { await api("/api/file-op", { op: "mkdir", path: cwd, name: name }); loadFiles(cwd); }
+      catch (e) { fileErr(e.message); }
+    };
+    const fupin = v.querySelector("#fupin");
+    v.querySelector("#fupbtn").onclick = () => fupin.click();
+    fupin.onchange = async () => {
+      for (const file of fupin.files) {
+        fileErr("uploading " + file.name + "…"); // reuse the line as progress
+        try {
+          const res = await fetch("/api/file-up?path=" + encodeURIComponent(cwd) +
+            "&name=" + encodeURIComponent(file.name), { method: "POST", body: file });
+          if (!res.ok) throw new Error((await res.json()).error || "upload failed");
+        } catch (e) { fileErr(e.message); fupin.value = ""; return; }
+      }
+      fupin.value = "";
+      fileErr("");
+      loadFiles(cwd);
     };
   }
   v.querySelector("#logview").onclick = async () => {
@@ -677,7 +1045,10 @@ async function dashboard() {
   }
   api("/api/update").then(u => {
     v.querySelector("#updstate").textContent = "updates: " + u.state + (u.applied ? ` (applied ${u.applied})` : "");
-    if (u.state === "update available") v.querySelector("#updnow").hidden = false;
+    if (u.state === "update available") {
+      v.querySelector("#updnow").hidden = false;
+      addAlert("warn", "A system update is available — install it from the System page.");
+    }
   }).catch(() => {});
   v.querySelector("#updnow").onclick = async () => {
     const b = v.querySelector("#updnow"); busy(b, true);
@@ -720,10 +1091,11 @@ async function dashboard() {
       msg.textContent = "Password changed.";
     } catch (e) { msg.textContent = e.message; }
   };
-  // ---- system metrics: poll every 5s, but only while the view is open ----
+  // ---- system metrics tiles + history charts ----
   const mbox = v.querySelector("#metrics");
-  let mtimer = null;
+  let lastNcpu = null, mspan = "1h";
   const renderMetrics = (m) => {
+    lastNcpu = m.ncpu || lastNcpu;
     const tile = (k, val, note) => `<div class="tile"><div class="k">${k}</div><div class="val">${val}</div>${note ? `<div class="note">${note}</div>` : ""}</div>`;
     const memUsed = (m.mem_total_mb != null && m.mem_avail_mb != null) ? m.mem_total_mb - m.mem_avail_mb : null;
     const memPct = (memUsed != null && m.mem_total_mb) ? Math.round(memUsed * 100 / m.mem_total_mb) : null;
@@ -737,12 +1109,59 @@ async function dashboard() {
       tile("Work disk", m.work_pct == null ? "?" : m.work_pct + "%",
         m.work_free_mb != null ? Math.round(m.work_free_mb / 1024) + " GB free" : "");
   };
-  const pollMetrics = async () => {
-    if (!mbox.isConnected) { clearInterval(mtimer); mtimer = null; return; }
+  const drawSysCharts = (h) => {
+    const o = { t0: h.t0, interval: h.interval_s };
+    chart(v.querySelector("#ch-cpu"), [{ data: h.cpu, color: "var(--accent)" }],
+      Object.assign({ ref: lastNcpu }, o));
+    chart(v.querySelector("#ch-mem"), [{ data: h.mem_pct, color: "var(--accent)", fill: true }],
+      Object.assign({ unit: "%", ymax: 100 }, o));
+    chart(v.querySelector("#ch-temp"), [{ data: h.temp, color: "var(--warn)" }],
+      Object.assign({ unit: "°" }, o));
+    chart(v.querySelector("#ch-disk"), [
+      { data: h.work_pct, color: "var(--accent)", label: "/work" },
+      { data: h.root_pct, color: "var(--warn)", label: "root (RAM)" },
+    ], Object.assign({ unit: "%", ymax: 100 }, o));
+  };
+  const pollSystem = async () => {
     try { renderMetrics(await api("/api/metrics")); }
     catch (e) { mbox.innerHTML = `<div class="tile"><div class="k">Metrics</div><div class="val small">${esc(e.message)}</div></div>`; }
+    try { drawSysCharts(await api("/api/metrics-history?span=" + mspan)); } catch (e) {}
+  };
+  v.querySelectorAll("[data-mspan]").forEach(b => {
+    if (b.dataset.mspan === mspan) b.classList.add("active");
+    b.onclick = () => {
+      mspan = b.dataset.mspan;
+      v.querySelectorAll("[data-mspan]").forEach(x => x.classList.toggle("active", x === b));
+      pollSystem();
+    };
+  });
+  // ---- network tiles + traffic chart ----
+  const pollNetwork = async () => {
+    try {
+      const m = await api("/api/metrics");
+      v.querySelector("#nip").textContent = m.ip || "?";
+      v.querySelector("#nif").textContent = m.iface || "";
+      v.querySelector("#nrx").textContent = fmtBps(m.rx_bps);
+      v.querySelector("#ntx").textContent = fmtBps(m.tx_bps);
+      const gb = b => b == null ? "?" : (b / 1073741824).toFixed(2) + " GB";
+      v.querySelector("#ntot").textContent =
+        "since boot: ↓ " + gb(m.rx_total) + " · ↑ " + gb(m.tx_total);
+    } catch (e) {}
+    try {
+      const h = await api("/api/metrics-history?span=1h");
+      chart(v.querySelector("#ch-net"), [
+        { data: h.rx_bps, color: "var(--accent)", label: "down", fill: true },
+        { data: h.tx_bps, color: "var(--ok)", label: "up" },
+      ], { t0: h.t0, interval: h.interval_s, unit: "bps" });
+    } catch (e) {}
   };
   // ---- view router: show one section at a time, driven by the URL hash ----
+  // Views with live data register a poller (runs only while on screen) or a
+  // lazy loader (runs on first visit).
+  const POLLERS = { system: pollSystem, network: pollNetwork };
+  const LAZY = { files: () => loadFiles(""), pipe: loadPipe };
+  const seen = {};
+  let viewTimer = null;
   const views = v.querySelectorAll("[data-view]");
   const navs = v.querySelectorAll("[data-nav]");
   const names = Array.from(views).map(s => s.dataset.view);
@@ -751,9 +1170,13 @@ async function dashboard() {
     views.forEach(s => { s.hidden = s.dataset.view !== name; });
     navs.forEach(a => a.classList.toggle("active", a.dataset.nav === name));
     const c = v.querySelector(".content"); if (c) c.scrollTop = 0;
-    if (name === "system") {
-      if (!mtimer) { pollMetrics(); mtimer = setInterval(pollMetrics, 5000); }
-    } else if (mtimer) { clearInterval(mtimer); mtimer = null; }
+    if (viewTimer) { clearInterval(viewTimer); viewTimer = null; }
+    const poll = POLLERS[name];
+    if (poll) {
+      poll();
+      viewTimer = setInterval(() => { v.isConnected ? poll() : clearInterval(viewTimer); }, 5000);
+    }
+    if (!seen[name] && LAZY[name]) { seen[name] = true; LAZY[name](); }
   };
   const route = () => show((location.hash.match(/^#\/(\w+)/) || [])[1] || names[0]);
   window.addEventListener("hashchange", route);

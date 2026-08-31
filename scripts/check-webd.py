@@ -172,6 +172,57 @@ ok("assistant config round-trips and hides the password")
 r = req("/api/update")
 assert r["state"] in ("self-update disabled", "origin unreachable", "current", "update available", "unknown")
 ok("update endpoint reports a coherent state")
+# metrics: live numbers and history series come back shaped, never 500
+m = req("/api/metrics")
+assert "load1" in m and "rx_total" in m
+h = req("/api/metrics-history?span=1h")
+assert all(k in h for k in ("interval_s", "cpu", "mem_pct", "rx_bps"))
+h = req("/api/metrics-history?span=bogus")  # unknown span falls back, not 500
+assert "cpu" in h
+ok("metrics + history endpoints answer with shaped series")
+# files: everything is jailed to FILES_ROOT (redirected into the tempdir here)
+webd.Handler.FILES_ROOT = tmp + "/work"
+os.makedirs(tmp + "/work/sub", exist_ok=True)
+with open(tmp + "/work/hello.txt", "w") as f:
+    f.write("hi")
+os.symlink("/etc", tmp + "/work/escape")
+req("/api/files?path=../../etc", expect=400)
+req("/api/files?path=escape", expect=400)
+req("/api/file-dl?path=../../etc/passwd", expect=400)
+req("/api/file-op", {"op": "delete", "path": "../hello"}, expect=400)
+ok("files endpoints refuse traversal and symlink escapes")
+r = req("/api/files?path=")
+assert [d["name"] for d in r["dirs"]] == ["sub"]
+assert "hello.txt" in [f["name"] for f in r["files"]]
+ok("files listing returns dirs and files")
+os.unlink(tmp + "/work/escape")
+req("/api/file-op", {"op": "mkdir", "path": "sub", "name": "nested"})
+req("/api/file-op", {"op": "mkdir", "path": "", "name": "../up"}, expect=400)
+req("/api/file-op", {"op": "move", "path": "hello.txt", "dest": "sub"})
+assert req("/api/files?path=sub")["files"][0]["name"] == "hello.txt"
+req("/api/file-op", {"op": "rename", "path": "sub/hello.txt", "dest": "sub/hi.txt"})
+req("/api/file-op", {"op": "delete", "path": "sub"}, expect=400)  # non-empty, no recursive
+req("/api/file-op", {"op": "delete", "path": "sub", "recursive": True})
+assert req("/api/files?path=")["dirs"] == []
+ok("file ops: mkdir/move/rename/delete with guards")
+raw = urllib.request.Request(base + "/api/file-up?path=&name=up.bin", data=b"x" * 100)
+raw.add_header("Cookie", "session=" + cookie["v"])
+raw.add_header("Origin", base)
+assert json.loads(urllib.request.urlopen(raw).read())["ok"]
+assert req("/api/files?path=")["files"][0]["size"] == 100
+raw = urllib.request.Request(base + "/api/file-up?path=&name=../evil", data=b"x")
+raw.add_header("Cookie", "session=" + cookie["v"])
+raw.add_header("Origin", base)
+try:
+    urllib.request.urlopen(raw)
+    assert False, "traversal upload accepted"
+except urllib.error.HTTPError as e:
+    assert e.code == 400
+ok("upload streams a raw body and refuses hostile names")
+# pipe: pref allowlist + nick validation (no daemon here, so only the guards)
+req("/api/pipe-set", {"pref": "evil_pref", "value": True}, expect=400)
+req("/api/pipe-contact", {"nick": "bad nick!"}, expect=400)
+ok("pipe endpoints validate pref names and nicks")
 req("/api/logout", {})
 req("/api/status", expect=401)
 ok("logout revokes the session")
