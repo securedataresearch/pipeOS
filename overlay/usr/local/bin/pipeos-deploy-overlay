@@ -71,7 +71,11 @@ root/.claude/CLAUDE.md"
 
 # Second gate. Anything whose overlay-relative path starts with one of these
 # is dropped even if the list above grows to include it by accident.
-NEVER="etc/pipeos root/.pipe"
+# 10-pipebox-env.sh is CARD-GENERATED on the box (pipebox-card OUTPUTS) even
+# though a template-ish copy lives in overlay/ — deploying it over the
+# generated file trips selfcheck's "hand-edited since generation" CRITICAL
+# (found on basho_box 2026-08-31, planted by deploy-box).
+NEVER="etc/pipeos root/.pipe etc/profile.d/10-pipebox-env.sh"
 
 say()  { echo "deploy-overlay: $*"; }
 die()  { echo "deploy-overlay: $*" >&2; log "ERROR $*"; exit 1; }

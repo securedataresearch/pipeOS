@@ -44,6 +44,12 @@ for p in $PATHS; do
 done
 [ -d "$stage/overlay" ] || { echo "nothing to ship (bad HEAD?)" >&2; exit 1; }
 
+# NEVER list (mirrors pipeos-deploy-overlay): per-box generated files must not
+# ride a deploy. 10-pipebox-env.sh is card-generated on the box even though a
+# copy lives in overlay/etc/profile.d — shipping it trips selfcheck's
+# "hand-edited since generation" CRITICAL (basho_box, 2026-08-31).
+rm -f "$stage/overlay/etc/profile.d/10-pipebox-env.sh"
+
 manifest=$(mktemp)
 (cd "$stage/overlay" && find . -type f | sed 's|^\./||' | sort | while read -r f; do
     sha256sum "$f" | sed 's|  \./|  |'
@@ -98,6 +104,10 @@ done
 # save covers files + stamp together, and verify has the last word.
 ssh "$HOST" '
 cat > /etc/pipeos/.overlay-stamp
+# keep the box checkout able to age the stamp (status/selfcheck compare the
+# stamped commit against origin/main — a stale checkout reports "commit not
+# in the local checkout" instead of an age)
+[ -d /work/repos/pipeOS/.git ] && git -C /work/repos/pipeOS fetch -q origin 2>/dev/null || true
 pipeos save >/dev/null 2>&1 || echo "WARNING: pipeos save failed — deploy is live in RAM only"
 pipeos verify 2>&1 | tail -1
 ' < "$stage/overlay-stamp"

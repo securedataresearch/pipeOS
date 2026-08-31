@@ -755,8 +755,9 @@ async function dashboard() {
   renderAlerts();
   if (st.services.pipe) api("/api/pipe").then(p => {
     if (!p.authed) return;
+    // both phrasings the boot report has used for a signed-out pipe
     for (let i = alertItems.length - 1; i >= 0; i--)
-      if (/unauthenticated/i.test(alertItems[i][1])) alertItems.splice(i, 1);
+      if (/unauthenticated|not signed in/i.test(alertItems[i][1])) alertItems.splice(i, 1);
     renderAlerts();
   }).catch(() => {});
   api("/api/metrics").then(m => {
@@ -1304,7 +1305,7 @@ async function dashboard() {
         if (!exts.length) {
           bstate.textContent = "no drive";
           bstate.className = "pill status-warn";
-          bnote.textContent = "Plug in an external drive and mount it above — one button then copies everything a restore needs (work disk + boot media).";
+          bnote.textContent = "Mount a spare disk above — a USB drive or an unused internal disk both work — and one button copies everything a restore needs (work disk + boot media). A spare disk can also become a pipeOS install target instead (flashed from an operator machine).";
           brow.hidden = true;
           return;
         }
