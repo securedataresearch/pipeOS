@@ -272,7 +272,15 @@ async function dashboard() {
     `<span class="pill">${esc(k)}: ${ok ? "up" : "down"}</span>`).join(" ");
   const showStream = !!st.services.stream;
   const showAssist = !!(st.services.claude || st.services.assistant);
-  const navItem = (id, label) => `<a data-nav="${id}" href="#/${id}"><span class="ic"></span>${label}</a>`;
+  const ICON = {
+    overview: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>',
+    streaming: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4M19 4.9a10 10 0 0 1 0 14.2M5 19.1A10 10 0 0 1 5 4.9"/></svg>',
+    assistant: '<svg viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.5 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 17 0z"/></svg>',
+    services: '<svg viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>',
+    network: '<svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+    system: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="2" x2="9" y2="4"/><line x1="15" y1="2" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="22"/><line x1="15" y1="20" x2="15" y2="22"/><line x1="20" y1="9" x2="22" y2="9"/><line x1="20" y1="15" x2="22" y2="15"/><line x1="2" y1="9" x2="4" y2="9"/><line x1="2" y1="15" x2="4" y2="15"/></svg>',
+  };
+  const navItem = (id, label) => `<a data-nav="${id}" href="#/${id}"><span class="ic">${ICON[id] || ""}</span>${label}</a>`;
   const v = el(`<div class="app">
     <aside class="sidenav">
       <div class="brand"><span class="dot"></span>pipeOS</div>
@@ -296,10 +304,20 @@ async function dashboard() {
     <main class="content">
       <section data-view="overview">
         <div class="viewhead"><h1>Overview</h1></div>
+        <div class="stats">
+          <div class="tile"><div class="k">Status</div><div class="val small"><span class="${vcls}">${esc(verdict)}</span></div></div>
+          <div class="tile"><div class="k">Uptime</div><div class="val">${fmtUptime(st.uptime_s)}</div></div>
+          <div class="tile"><div class="k">Disk</div><div class="val">${st.work_pct == null ? "?" : st.work_pct + "%"}</div><div class="note">${st.work_free_mb != null ? Math.round(st.work_free_mb / 1024) + " GB free" : "used"}</div></div>
+        </div>
+        ${showStream ? `
         <div class="card">
-          <p style="margin-top:0">Last boot: <span class="${vcls}">${esc(verdict)}</span></p>
+          <div class="cardhead"><h2>Streaming</h2><span class="onair off" id="ovair"><span class="blip"></span>checking…</span></div>
+          <div id="ovtargets" class="note">loading…</div>
+        </div>` : ""}
+        <div class="card">
+          <div class="cardhead"><h2>Services</h2></div>
           <div>${running}</div>
-          <details><summary class="note">Full boot report</summary>
+          <details style="margin-top:.6rem"><summary class="note">Full boot report</summary>
             <pre class="report">${esc(st.boot_report || "(none this boot)")}</pre></details>
         </div>
       </section>
@@ -393,13 +411,16 @@ async function dashboard() {
           <h2>Secure access (HTTPS)</h2>
           <p class="note" id="tlsnote">checking…</p>
           <a class="btn ghost" id="camobile" href="/pipeos-ca.mobileconfig">iPhone / iPad: install profile</a>
-          <a class="btn ghost" id="cadl" href="/ca.crt" download>Everyone else: download certificate</a>
+          <a class="btn ghost" id="cadl" href="/ca.crt" download>Mac / Windows / Android: download certificate</a>
+          <p class="note" style="margin-bottom:.2rem"><b>Linux:</b> one command — installs into the system store, Chrome, and Firefox:</p>
+          <pre class="report" id="lnxcmd" style="user-select:all;margin-top:0"></pre>
           <details><summary class="note">How to install it (once per device)</summary>
             <p class="note" style="line-height:1.5">
             <b>iPhone/iPad:</b> tap the profile above → Settings offers to install it → then Settings › General › About › Certificate Trust Settings → turn it on.<br>
             <b>Mac:</b> open the .crt → Keychain Access → double-click “pipeOS … CA” → Trust → “Always Trust”.<br>
             <b>Windows:</b> open the .crt → Install Certificate → Local Machine → Trusted Root Certification Authorities.<br>
             <b>Android:</b> Settings › Security › Encryption &amp; credentials › Install a certificate › CA certificate → pick the .crt.<br>
+            <b>Linux (manual):</b> paste the command above into a terminal; it needs sudo and, for the browsers, the certutil tool (package <code>libnss3-tools</code> or <code>nss-tools</code>).<br>
             Then reload over <span id="httpslink"></span> and you’ll see the padlock.</p>
           </details>
         </div>
@@ -407,6 +428,9 @@ async function dashboard() {
 
       <section data-view="system" hidden>
         <div class="viewhead"><h1>System</h1></div>
+        <div class="stats" id="metrics">
+          <div class="tile"><div class="k">Metrics</div><div class="val small">loading…</div></div>
+        </div>
         <div class="card">
           <h2>Logs</h2>
           <select id="logsel">
@@ -517,7 +541,34 @@ async function dashboard() {
       tbox.appendChild(row);
     };
     v.querySelector("#addtarget").onclick = () => addRow();
+    // Overview card: the same /api/stream answer drives the on-air badge.
+    const ovair = v.querySelector("#ovair"), ovtargets = v.querySelector("#ovtargets");
+    const renderOvStream = (s) => {
+      if (!ovair) return;
+      if (!s) {
+        ovair.className = "onair off";
+        ovair.innerHTML = '<span class="blip"></span>unknown';
+        ovtargets.textContent = "Could not read the stream status.";
+        return;
+      }
+      const live = !!s.running;
+      ovair.className = "onair " + (live ? "live" : "off");
+      ovair.innerHTML = '<span class="blip"></span>' + (live ? "ON AIR" : "off air");
+      const ts = (s.targets || []).filter(t => t.url || t.key_set || t.name);
+      if (!ts.length) {
+        ovtargets.className = "note";
+        ovtargets.innerHTML = 'No providers configured yet — set them up under <a href="#/streaming">Streaming</a>.';
+        return;
+      }
+      ovtargets.className = "";
+      ovtargets.replaceChildren(...ts.map(t => el(`<div class="targetline">
+        <span class="tdot ${live && t.on !== false ? "on" : "off"}"></span>
+        <span class="tname">${esc(t.name || "target")}</span>
+        ${t.on === false ? '<span class="note">off</span>' : ""}
+        <span class="turl">${esc(t.url || "")}</span></div>`)));
+    };
     api("/api/stream").then(s => {
+      renderOvStream(s);
       smode.value = s.mode || "media"; applyMode();
       v.querySelector("#ssrc").value = s.src; v.querySelector("#surl").value = s.url || "";
       v.querySelector("#sres").value = s.res || ""; v.querySelector("#sfps").value = s.fps || "";
@@ -527,7 +578,7 @@ async function dashboard() {
       const rows = (s.targets || []).filter(t => t.url || t.key_set || t.name);
       if (rows.length) rows.forEach(addRow);
       else { addRow({ name: "YouTube", url: PROVIDERS.YouTube, on: true }); addRow({ name: "Twitch", url: PROVIDERS.Twitch, on: true }); }
-    }).catch(() => {});
+    }).catch(() => { renderOvStream(null); });
     ssave.onclick = async () => {
       const msg = v.querySelector("#smsg"); msg.hidden = false; msg.textContent = "saving…";
       busy(ssave, true);
@@ -616,6 +667,7 @@ async function dashboard() {
     const link = v.querySelector("#httpslink");
     const a = el(`<a href="https://${host}/">https://${host}/</a>`);
     link.appendChild(a);
+    v.querySelector("#lnxcmd").textContent = `curl -s http://${host}/install-ca.sh | sudo sh`;
     if (location.protocol === "https:") {
       tlsnote.textContent = "✓ This connection is secure.";
       v.querySelector("#camobile").parentNode.querySelectorAll(".btn").forEach(b => b.classList.add("done"));
@@ -668,6 +720,28 @@ async function dashboard() {
       msg.textContent = "Password changed.";
     } catch (e) { msg.textContent = e.message; }
   };
+  // ---- system metrics: poll every 5s, but only while the view is open ----
+  const mbox = v.querySelector("#metrics");
+  let mtimer = null;
+  const renderMetrics = (m) => {
+    const tile = (k, val, note) => `<div class="tile"><div class="k">${k}</div><div class="val">${val}</div>${note ? `<div class="note">${note}</div>` : ""}</div>`;
+    const memUsed = (m.mem_total_mb != null && m.mem_avail_mb != null) ? m.mem_total_mb - m.mem_avail_mb : null;
+    const memPct = (memUsed != null && m.mem_total_mb) ? Math.round(memUsed * 100 / m.mem_total_mb) : null;
+    mbox.innerHTML =
+      tile("CPU load", m.load1 == null ? "?" : m.load1.toFixed(2),
+        (m.ncpu ? m.ncpu + " cores" : "") + (m.load5 != null ? " · 5m " + m.load5.toFixed(2) : "")) +
+      tile("Memory", memPct == null ? "?" : memPct + "%",
+        memUsed != null ? (memUsed / 1024).toFixed(1) + " / " + (m.mem_total_mb / 1024).toFixed(1) + " GB" : "") +
+      tile("CPU temp", m.temp_c == null ? "—" : m.temp_c + "°C", m.temp_c == null ? "no sensor" : "") +
+      tile("RAM disk /", m.root_pct == null ? "?" : m.root_pct + "%", "root fs lives in RAM") +
+      tile("Work disk", m.work_pct == null ? "?" : m.work_pct + "%",
+        m.work_free_mb != null ? Math.round(m.work_free_mb / 1024) + " GB free" : "");
+  };
+  const pollMetrics = async () => {
+    if (!mbox.isConnected) { clearInterval(mtimer); mtimer = null; return; }
+    try { renderMetrics(await api("/api/metrics")); }
+    catch (e) { mbox.innerHTML = `<div class="tile"><div class="k">Metrics</div><div class="val small">${esc(e.message)}</div></div>`; }
+  };
   // ---- view router: show one section at a time, driven by the URL hash ----
   const views = v.querySelectorAll("[data-view]");
   const navs = v.querySelectorAll("[data-nav]");
@@ -677,6 +751,9 @@ async function dashboard() {
     views.forEach(s => { s.hidden = s.dataset.view !== name; });
     navs.forEach(a => a.classList.toggle("active", a.dataset.nav === name));
     const c = v.querySelector(".content"); if (c) c.scrollTop = 0;
+    if (name === "system") {
+      if (!mtimer) { pollMetrics(); mtimer = setInterval(pollMetrics, 5000); }
+    } else if (mtimer) { clearInterval(mtimer); mtimer = null; }
   };
   const route = () => show((location.hash.match(/^#\/(\w+)/) || [])[1] || names[0]);
   window.addEventListener("hashchange", route);

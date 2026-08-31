@@ -20,6 +20,7 @@ Sessions live in /run/pipeos/web-sessions (tmpfs: a reboot logs everyone out).
 """
 
 import base64
+import glob
 import hmac
 import html
 import json
@@ -95,6 +96,64 @@ MOBILECONFIG_TMPL = """<?xml version="1.0" encoding="UTF-8"?>
   <key>PayloadDescription</key><string>Trusts this pipeOS box so its dashboard shows a secure padlock.</string>
 </dict>
 </plist>
+"""
+
+
+# Linux CA installer, served at /install-ca.sh with @PEM@/@HOST@ filled in
+# (str.replace, not format — the shell body is full of braces and dollars).
+# One pasted command covers the system trust store AND the browser NSS stores,
+# because Chrome and Firefox on Linux ignore the system store entirely.
+CA_INSTALLER_TMPL = r"""#!/bin/sh
+# pipeOS CA installer (Linux) — trust the box "@HOST@" for HTTPS.
+# Usage:  curl -s http://@HOST@.local/install-ca.sh | sudo sh
+set -e
+if [ "$(id -u)" != 0 ]; then
+	echo "needs root — run:  curl -s http://@HOST@.local/install-ca.sh | sudo sh" >&2
+	exit 1
+fi
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+cat > "$tmp" <<'PEM'
+@PEM@
+PEM
+chmod 644 "$tmp"
+
+# --- system trust store (curl, package managers, most CLI tools) ---
+if [ -d /usr/local/share/ca-certificates ] && command -v update-ca-certificates >/dev/null 2>&1; then
+	# Debian / Ubuntu / Alpine
+	cp "$tmp" /usr/local/share/ca-certificates/pipeos-ca-@HOST@.crt
+	update-ca-certificates >/dev/null
+	echo "installed: system trust store (update-ca-certificates)"
+elif [ -d /etc/pki/ca-trust/source/anchors ]; then
+	# Fedora / RHEL
+	cp "$tmp" /etc/pki/ca-trust/source/anchors/pipeos-ca-@HOST@.crt
+	update-ca-trust extract
+	echo "installed: system trust store (update-ca-trust)"
+elif [ -d /etc/ca-certificates/trust-source/anchors ]; then
+	# Arch
+	cp "$tmp" /etc/ca-certificates/trust-source/anchors/pipeos-ca-@HOST@.crt
+	trust extract-compat
+	echo "installed: system trust store (trust extract-compat)"
+else
+	echo "warning: no known system trust store on this distro — browsers may still work below" >&2
+fi
+
+# --- browser NSS stores: Chrome/Chromium (~/.pki/nssdb) + every Firefox profile ---
+u="${SUDO_USER:-}"
+if [ -n "$u" ] && [ "$u" != root ] && command -v certutil >/dev/null 2>&1; then
+	home=$(getent passwd "$u" | cut -d: -f6)
+	if [ ! -f "$home/.pki/nssdb/cert9.db" ]; then
+		su -s /bin/sh "$u" -c "mkdir -p '$home/.pki/nssdb' && certutil -d sql:'$home/.pki/nssdb' -N --empty-password" 2>/dev/null || true
+	fi
+	for db in "$home/.pki/nssdb" "$home"/.mozilla/firefox/*/ "$home"/snap/firefox/common/.mozilla/firefox/*/; do
+		[ -f "$db/cert9.db" ] || continue
+		su -s /bin/sh "$u" -c "certutil -A -d sql:'$db' -t C,, -n 'pipeOS @HOST@ CA' -i '$tmp'" 2>/dev/null \
+			&& echo "installed: browser store $db"
+	done
+elif [ -n "$u" ] && [ "$u" != root ]; then
+	echo "note: certutil not found (package: libnss3-tools / nss-tools) — Chrome and Firefox keep their own trust store; install it and re-run, or import /ca.crt in the browser's certificate settings." >&2
+fi
+echo "done — reload https://@HOST@.local/ and look for the padlock (restart the browser if it was open)."
 """
 
 
@@ -304,6 +363,53 @@ def uptime_disk():
     return up, pct, free_mb
 
 
+def system_metrics():
+    """Cheap /proc + /sys reads for the System page. Everything is optional —
+    a missing sensor reports None rather than failing the whole call."""
+    m = {"load1": None, "load5": None, "load15": None, "ncpu": None,
+         "mem_total_mb": None, "mem_avail_mb": None,
+         "root_pct": None, "temp_c": None}
+    try:
+        with open("/proc/loadavg") as f:
+            l1, l5, l15 = f.read().split()[:3]
+        m["load1"], m["load5"], m["load15"] = float(l1), float(l5), float(l15)
+    except (OSError, ValueError):
+        pass
+    try:
+        m["ncpu"] = os.cpu_count()
+    except OSError:
+        pass
+    try:
+        fields = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, _, v = line.partition(":")
+                fields[k] = v
+        m["mem_total_mb"] = int(fields["MemTotal"].split()[0]) // 1024
+        m["mem_avail_mb"] = int(fields["MemAvailable"].split()[0]) // 1024
+    except (OSError, KeyError, ValueError, IndexError):
+        pass
+    # root is tmpfs — its fill level is RAM the overlay is eating
+    rc, out = run(["df", "-k", "/"], timeout=10)
+    if rc == 0 and len(out.splitlines()) >= 2:
+        try:
+            m["root_pct"] = int(out.splitlines()[1].split()[4].rstrip("%"))
+        except (IndexError, ValueError):
+            pass
+    best = None
+    for zone in sorted(glob.glob("/sys/class/thermal/thermal_zone*/temp")):
+        try:
+            with open(zone) as f:
+                t = int(f.read().strip()) / 1000.0
+        except (OSError, ValueError):
+            continue
+        if 0 < t < 150 and (best is None or t > best):
+            best = t  # hottest plausible zone ≈ the CPU package
+    if best is not None:
+        m["temp_c"] = round(best, 1)
+    return m
+
+
 # ---- HTTP ------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
@@ -376,8 +482,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.serve_ca_cert()
         if path == "/pipeos-ca.mobileconfig":
             return self.serve_ca_mobileconfig()
+        if path == "/install-ca.sh":
+            return self.serve_ca_installer()
         readers = {
             "/api/status": self.api_status,
+            "/api/metrics": self.api_metrics,
             "/api/logs": self.api_logs,
             "/api/stream": self.api_stream_get,
             "/api/stream-log": self.api_stream_log,
@@ -485,6 +594,20 @@ class Handler(BaseHTTPRequestHandler):
         self._send_download(prof.encode(), "application/x-apple-aspen-config",
                             "pipeos-ca.mobileconfig")
 
+    def serve_ca_installer(self):
+        # Same public-by-design stance as /ca.crt: the script only contains the
+        # public certificate. Served over plain HTTP so there is no -k
+        # bootstrap problem before the CA is trusted.
+        try:
+            with open(CA_CRT) as f:
+                pem = f.read().strip()
+        except OSError:
+            return self.err(404, "no CA yet — HTTPS is not set up on this box")
+        body = (CA_INSTALLER_TMPL
+                .replace("@PEM@", pem)
+                .replace("@HOST@", socket.gethostname()))
+        self.send(200, body.encode(), ctype="text/x-shellscript")
+
     # -- API: unauthenticated surface (deliberately tiny) --
     def api_state(self):
         self.send(200, {
@@ -546,6 +669,12 @@ class Handler(BaseHTTPRequestHandler):
             "running": running,
             "boot_report": boot_report(),
         })
+
+    def api_metrics(self):
+        up, pct, free_mb = uptime_disk()
+        m = system_metrics()
+        m.update({"uptime_s": up, "work_pct": pct, "work_free_mb": free_mb})
+        self.send(200, m)
 
     def api_name(self, body):
         nick = (body.get("nick") or "").strip()
