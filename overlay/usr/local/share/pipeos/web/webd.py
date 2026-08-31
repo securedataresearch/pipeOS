@@ -566,6 +566,10 @@ def primary_ip():
 # The only pipe preferences the dashboard may flip (pipe set's own settable set)
 PIPE_PREFS = ("dm_relay", "remember_login", "agent_events")
 
+# Assistant backends the box may ship: claude-code, hermes-agent, antigravity.
+# The id doubles as the binary name; a backend is offered only when installed.
+ASSISTANT_BACKENDS = ("claude", "hermes", "agy")
+
 # ---- disks -----------------------------------------------------------------
 # Inventory straight from /sys/block + busybox blkid (no lsblk on the image).
 # A disk is PROTECTED — untouchable by every disk-op — when any part of it is
@@ -1644,30 +1648,40 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(400, "say something (under 8000 characters)")
         svcs = read_services()
         if not svcs["claude"]:
-            return self.err(400, "the Claude service is switched off")
+            return self.err(400, "the assistant service is switched off")
+        backend = read_conf_values(ASSISTANT_CONF, ["ASSISTANT_BACKEND"])["ASSISTANT_BACKEND"] or "claude"
         env = dict(os.environ, HOME="/root")
-        try:
-            with open(CLAUDE_AUTH) as f:
-                m = re.search(r"CLAUDE_CODE_OAUTH_TOKEN=(\S+)", f.read())
-            if m:
-                env["CLAUDE_CODE_OAUTH_TOKEN"] = m.group(1)
-        except OSError:
-            pass
         os.makedirs("/work/pipebox/webchat", exist_ok=True)
-        argv = ["claude", "-p", "--settings", "/etc/pipeos/pipebox-settings.json"]
-        if os.path.exists("/work/pipebox/webchat/.started"):
-            argv.append("--continue")
+        stdin = None
+        if backend == "hermes":
+            # -z = one-shot; a named --continue session keeps one conversation
+            argv = ["hermes", "-z", msg, "--continue", "webchat"]
+        elif backend == "agy":
+            return self.err(400, "antigravity has no dashboard chat wiring yet — use the terminal")
+        else:
+            backend = "claude"
+            try:
+                with open(CLAUDE_AUTH) as f:
+                    m = re.search(r"CLAUDE_CODE_OAUTH_TOKEN=(\S+)", f.read())
+                if m:
+                    env["CLAUDE_CODE_OAUTH_TOKEN"] = m.group(1)
+            except OSError:
+                pass
+            argv = ["claude", "-p", "--settings", "/etc/pipeos/pipebox-settings.json"]
+            if os.path.exists("/work/pipebox/webchat/.started"):
+                argv.append("--continue")
+            stdin = msg
         try:
             p = subprocess.run(
-                argv, input=msg, capture_output=True, text=True,
+                argv, input=stdin, capture_output=True, text=True,
                 timeout=180, env=env, cwd="/work/pipebox/webchat",
             )
         except subprocess.TimeoutExpired:
-            return self.err(504, "Claude took longer than 3 minutes — try again")
+            return self.err(504, "the assistant took longer than 3 minutes — try again")
         except FileNotFoundError:
-            return self.err(500, "claude is not installed on this image")
+            return self.err(500, "%s is not installed on this image" % backend)
         if p.returncode != 0:
-            return self.err(502, "Claude errored: " + (p.stderr or p.stdout or "")[-300:].strip())
+            return self.err(502, "%s errored: %s" % (backend, (p.stderr or p.stdout or "")[-300:].strip()))
         with open("/work/pipebox/webchat/.started", "a"):
             pass
         self.send(200, {"reply": (p.stdout or "").strip()})
@@ -1886,15 +1900,29 @@ class PhaseB:
                         or "(no stream log yet)"})
 
     def api_assistant_get(self):
-        vals = read_conf_values(ASSISTANT_CONF, ["ASSISTANT_USER", "ASSISTANT_PORT", "ASSISTANT_PASS"])
+        vals = read_conf_values(ASSISTANT_CONF, ["ASSISTANT_USER", "ASSISTANT_PORT",
+                                                "ASSISTANT_PASS", "ASSISTANT_BACKEND"])
         rc, _ = run(["rc-service", "pipeos-assistant", "status"], timeout=15)
         self.send(200, {"user": vals["ASSISTANT_USER"] or "admin",
                         "port": vals["ASSISTANT_PORT"] or "7681",
                         "pass_set": bool(vals["ASSISTANT_PASS"]),
+                        "backend": vals["ASSISTANT_BACKEND"] or "claude",
+                        "backends": [{"id": b, "installed": shutil.which(b) is not None}
+                                     for b in ASSISTANT_BACKENDS],
                         "running": rc == 0})
 
     def api_assistant_set(self, body):
         fields = {}
+        backend = (body.get("backend") or "").strip()
+        if backend:
+            if backend not in ASSISTANT_BACKENDS:
+                return self.err(400, "backend must be one of: " + ", ".join(ASSISTANT_BACKENDS))
+            if shutil.which(backend) is None:
+                return self.err(400, "%s is not installed on this image" % backend)
+            fields["ASSISTANT_BACKEND"] = backend
+        else:
+            fields["ASSISTANT_BACKEND"] = read_conf_values(
+                ASSISTANT_CONF, ["ASSISTANT_BACKEND"])["ASSISTANT_BACKEND"] or "claude"
         for k, name in (("user", "ASSISTANT_USER"), ("port", "ASSISTANT_PORT"),
                         ("password", "ASSISTANT_PASS")):
             v = (body.get(k) or "").strip()
@@ -1904,15 +1932,19 @@ class PhaseB:
             if len(v) > 200:
                 return self.err(400, "%s is too long" % k)
             fields[name] = v
+        # a partial update (e.g. a backend flip) must not clobber saved values
+        prev = read_conf_values(ASSISTANT_CONF, ["ASSISTANT_USER", "ASSISTANT_PORT"])
         if not fields["ASSISTANT_USER"]:
-            fields["ASSISTANT_USER"] = "admin"
+            fields["ASSISTANT_USER"] = prev["ASSISTANT_USER"] or "admin"
         if fields["ASSISTANT_PORT"] and not re.match(r"^\d{2,5}$", fields["ASSISTANT_PORT"]):
             return self.err(400, "port must be a number")
         if not fields["ASSISTANT_PORT"]:
-            fields["ASSISTANT_PORT"] = "7681"
+            fields["ASSISTANT_PORT"] = prev["ASSISTANT_PORT"] or "7681"
         if not fields["ASSISTANT_PASS"] and body.get("keep_pass"):
             fields["ASSISTANT_PASS"] = read_conf_values(ASSISTANT_CONF, ["ASSISTANT_PASS"])["ASSISTANT_PASS"]
-        if not fields["ASSISTANT_PASS"]:
+        if not fields["ASSISTANT_PASS"] and not (backend and body.get("keep_pass")):
+            # backend-only flips on a not-yet-configured terminal are fine;
+            # anything that would SERVE a terminal still demands a password
             return self.err(400, "set a password — the terminal is shell access and must not be served open")
         write_private(ASSISTANT_CONF, "".join("%s='%s'\n" % (k, v) for k, v in fields.items()))
         problems = []

@@ -168,6 +168,17 @@ r = req("/api/assistant-config", {"password": "hunter2pass", "port": "7681"})
 assert r["ok"]
 a = req("/api/assistant")
 assert a["pass_set"] is True and a["port"] == "7681" and "password" not in a, a
+# backend selection: allowlisted, install-checked, and a backend-only flip
+# keeps the saved password and port
+req("/api/assistant-config", {"backend": "skynet"}, expect=400)
+req("/api/assistant-config", {"backend": "agy"}, expect=400)  # not installed here
+assert a["backend"] == "claude" and any(b["id"] == "hermes" for b in a["backends"])
+if any(b["id"] == "hermes" and b["installed"] for b in a["backends"]):
+    req("/api/assistant-config", {"backend": "hermes", "keep_pass": True})
+    a2 = req("/api/assistant")
+    assert a2["backend"] == "hermes" and a2["pass_set"] is True and a2["port"] == "7681", a2
+    req("/api/assistant-config", {"backend": "claude", "keep_pass": True})
+ok("assistant backend allowlist + lossless backend-only flips")
 with open(webd.ASSISTANT_CONF) as f:
     assert "ASSISTANT_PASS='hunter2pass'" in f.read()
 ok("assistant config round-trips and hides the password")

@@ -46,7 +46,7 @@ async function boot() {
 /* ---------- wizard ---------- */
 
 const SERVICES = [
-  { key: "claude", name: "Claude assistant", desc: "The box runs a Claude agent you can put to work.", def: true },
+  { key: "claude", name: "AI assistant", desc: "The box runs an agent you can put to work (Claude, Hermes, or Antigravity — pick under Assistant).", def: true },
   { key: "stream", name: "Streaming", desc: "Restream video with ffmpeg (configure after setup).", def: false },
   { key: "assistant", name: "Assistant terminal", desc: "A browser terminal into the box's assistant (set a password below).", def: false },
   { key: "agy", name: "Antigravity", desc: "The agy coding agent (if installed on this image).", def: false },
@@ -445,6 +445,12 @@ async function dashboard() {
       ${showAssist ? `
       <section data-view="assistant" hidden>
         <div class="viewhead"><h1>Assistant</h1></div>
+        <div class="card">
+          <div class="cardhead"><h2>Backend</h2><span class="pill" id="abcur">…</span></div>
+          <p class="note">Which assistant the chat and the terminal run. The box can ship Claude, Hermes, and Antigravity.</p>
+          <div id="abchoices" class="note">loading…</div>
+          <p class="note" id="abmsg" hidden></p>
+        </div>
         ${st.services.claude ? `
         <div class="card">
           <h2>Ask the box</h2>
@@ -846,6 +852,37 @@ async function dashboard() {
       const box = v.querySelector("#slogbox"); box.hidden = false; box.textContent = "…";
       try { box.textContent = (await api("/api/stream-log")).text; } catch (e) { box.textContent = e.message; }
     };
+  }
+  // assistant backend picker (shown whenever the assistant view exists)
+  if (v.querySelector("#abchoices")) {
+    const BNAMES = { claude: "Claude", hermes: "Hermes", agy: "Antigravity" };
+    const loadBackends = () => api("/api/assistant").then(a => {
+      const cur = v.querySelector("#abcur"), box = v.querySelector("#abchoices");
+      cur.textContent = BNAMES[a.backend] || a.backend;
+      cur.className = "pill status-ok";
+      box.className = "";
+      box.replaceChildren(...(a.backends || []).map(b => {
+        const row = el(`<div class="targetline">
+          <span class="tname">${esc(BNAMES[b.id] || b.id)}</span>
+          <span class="note">${b.installed ? "" : "not installed on this image"}</span>
+          <span style="margin-left:auto">${b.id === a.backend
+            ? '<span class="pill status-ok">active</span>'
+            : (b.installed ? '<button class="ghost small" type="button">use</button>' : "")}</span>
+        </div>`);
+        const btn = row.querySelector("button");
+        if (btn) btn.onclick = async () => {
+          const m = v.querySelector("#abmsg"); m.hidden = false; m.textContent = "switching…";
+          try {
+            const r = await api("/api/assistant-config", { backend: b.id, keep_pass: true });
+            m.textContent = "Now using " + (BNAMES[b.id] || b.id) + "." +
+              (r.problems && r.problems.length ? " (" + r.problems.join("; ") + ")" : "");
+            loadBackends();
+          } catch (e) { m.textContent = e.message; }
+        };
+        return row;
+      }));
+    }).catch(() => {});
+    loadBackends();
   }
   const asave = v.querySelector("#asave");
   if (asave) {
