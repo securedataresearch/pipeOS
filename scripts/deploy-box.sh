@@ -68,7 +68,15 @@ fi
     cat "$manifest"
 } > "$stage/overlay-stamp"
 
-tar -C "$stage/overlay" -cf "$stage/payload.tar" .
+# --owner=0/--group=0 or the box's sshd dies: this tar is built by an
+# unprivileged user, and without the override its directory entries carry
+# that uid — extracting as root then chowns /, /root, /etc and /usr to a
+# LAN workstation's user id, and sshd's StrictModes refuses root's key with
+# "bad ownership or modes for directory /root". That was pipeOS#148: six
+# lockouts, four power cycles, one long night — the deploy tool was the
+# ghost. (40-build-apkovl.sh does the same dance for the same reason.)
+tar -C "$stage/overlay" --numeric-owner --owner=0 --group=0 \
+    -cf "$stage/payload.tar" .
 # One remote transaction: extract, stamp, restart the web surface (its code
 # just changed; supervised services keep the old inode otherwise — the same
 # reason deploy-overlay restarts things), save, verify. pipe-daemon and the
