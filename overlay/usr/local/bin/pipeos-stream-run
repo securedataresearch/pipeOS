@@ -72,6 +72,7 @@ PROFILE=$(mktemp -d /tmp/pipeos-chromium.XXXXXX)
 # shellcheck disable=SC2086
 chromium \
 	--no-sandbox --kiosk --start-fullscreen --incognito \
+	--no-first-run --no-default-browser-check \
 	--user-data-dir="$PROFILE" \
 	--window-size="${W},${H}" --window-position=0,0 \
 	--disable-dev-shm-usage --disable-gpu \
