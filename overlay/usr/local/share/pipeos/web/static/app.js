@@ -268,50 +268,47 @@ function niceMax(v) {
    series: [{data:[num|null], color:cssColor, fill:bool, label}]
    opts: {t0, interval, unit ("%"|"bps"|""), ymax, ref (dotted hline)} */
 function chart(elm, series, opts) {
-  const W = 600, H = 150, PL = 44, PR = 8, PT = 8, PB = 18;
+  // Labels live in HTML around the SVG, not inside it: the SVG stretches
+  // (preserveAspectRatio none), which distorts and clips <text>. The plot
+  // itself is full-bleed; grid lines carry the scale, HTML carries the words.
+  const W = 600, H = 130;
   let ymax = opts.ymax || 0;
   series.forEach(s => s.data.forEach(v => { if (v != null && v > ymax) ymax = v; }));
   if (opts.ref && opts.ref > ymax) ymax = opts.ref;
   ymax = ymax > 0 ? niceMax(ymax) : 1;
   const n = Math.max(2, ...series.map(s => s.data.length));
-  const X = i => PL + i * (W - PL - PR) / (n - 1);
-  const Y = v => PT + (H - PT - PB) * (1 - Math.min(v, ymax) / ymax);
+  const X = i => i * W / (n - 1);
+  const Y = v => H * (1 - Math.min(v, ymax) / ymax);
   const fmtY = v => opts.unit === "bps" ? fmtBps(v)
     : opts.unit === "%" ? v + "%"
     : (v >= 100 ? Math.round(v) : +v.toFixed(1)) + (opts.unit || "");
   const parts = [];
-  const yGrid = [1 / 3, 2 / 3].map(f =>
-    `<line x1="${PL}" y1="${Y(ymax * f)}" x2="${W - PR}" y2="${Y(ymax * f)}" class="grid"/>`).join("");
-  parts.push(yGrid);
-  if (opts.ref) parts.push(`<line x1="${PL}" y1="${Y(opts.ref)}" x2="${W - PR}" y2="${Y(opts.ref)}" class="refline"/>`);
+  parts.push([1 / 3, 2 / 3].map(f =>
+    `<line x1="0" y1="${Y(ymax * f).toFixed(1)}" x2="${W}" y2="${Y(ymax * f).toFixed(1)}" class="grid"/>`).join(""));
+  if (opts.ref) parts.push(`<line x1="0" y1="${Y(opts.ref).toFixed(1)}" x2="${W}" y2="${Y(opts.ref).toFixed(1)}" class="refline"/>`);
   for (const s of series) {
     let line = "", area = "", open = false, x0 = null, xl = null;
     s.data.forEach((v, i) => {
       if (v == null) {
-        if (open && s.fill) area += ` L${xl},${Y(0)} L${x0},${Y(0)} Z`;
+        if (open && s.fill) area += ` L${xl},${H} L${x0},${H} Z`;
         open = false; return;
       }
-      const x = X(i), y = Y(v).toFixed(1);
-      if (!open) { line += ` M${x.toFixed(1)},${y}`; area += ` M${x.toFixed(1)},${y}`; x0 = x.toFixed(1); open = true; }
-      else { line += ` L${x.toFixed(1)},${y}`; area += ` L${x.toFixed(1)},${y}`; }
-      xl = x.toFixed(1);
+      const x = X(i).toFixed(1), y = Y(v).toFixed(1);
+      if (!open) { line += ` M${x},${y}`; area += ` M${x},${y}`; x0 = x; open = true; }
+      else { line += ` L${x},${y}`; area += ` L${x},${y}`; }
+      xl = x;
     });
-    if (open && s.fill) area += ` L${xl},${Y(0)} L${x0},${Y(0)} Z`;
+    if (open && s.fill) area += ` L${xl},${H} L${x0},${H} Z`;
     if (s.fill) parts.push(`<path d="${area}" fill="${s.color}" opacity=".12" stroke="none"/>`);
-    parts.push(`<path d="${line}" fill="none" stroke="${s.color}" stroke-width="1.8" stroke-linejoin="round"/>`);
+    parts.push(`<path d="${line}" fill="none" stroke="${s.color}" stroke-width="1.8" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`);
   }
   const t = s => { const d = new Date(s * 1000); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); };
-  const axis = opts.t0
-    ? `<text x="${PL}" y="${H - 4}" class="tick">${t(opts.t0)}</text>
-       <text x="${W - PR}" y="${H - 4}" class="tick" text-anchor="end">${t(opts.t0 + n * opts.interval)}</text>` : "";
   const legend = series.length > 1 ? series.map(s =>
     `<span class="lg"><i style="background:${s.color}"></i>${esc(s.label || "")}</span>`).join("") : "";
-  elm.innerHTML = `${legend ? `<div class="legend">${legend}</div>` : ""}
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="tschart">
-      <text x="${PL - 5}" y="${Y(ymax) + 4}" class="tick" text-anchor="end">${fmtY(ymax)}</text>
-      <text x="${PL - 5}" y="${Y(0) + 4}" class="tick" text-anchor="end">0</text>
-      ${parts.join("\n")}${axis}
-    </svg>`;
+  elm.innerHTML = `
+    <div class="chhead"><span class="chy">${fmtY(ymax)}</span>${legend ? `<span class="legend">${legend}</span>` : ""}</div>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="tschart">${parts.join("\n")}</svg>
+    <div class="chfoot">${opts.t0 ? `<span>${t(opts.t0)}</span><span>${t(opts.t0 + n * opts.interval)}</span>` : ""}</div>`;
 }
 
 function verdictClass(report) {
@@ -382,7 +379,7 @@ async function dashboard() {
         <div class="viewhead"><h1>Overview</h1></div>
         <div id="alerts"></div>
         <div class="stats">
-          <div class="tile"><div class="k">Status</div><div class="val small"><span class="${vcls}">${esc(verdict)}</span></div></div>
+          <div class="tile"><div class="k">Last boot</div><div class="val small"><span class="${vcls}">${esc(verdict)}</span></div></div>
           <div class="tile"><div class="k">Uptime</div><div class="val">${fmtUptime(st.uptime_s)}</div></div>
           <div class="tile"><div class="k">Disk</div><div class="val">${st.work_pct == null ? "?" : st.work_pct + "%"}</div><div class="note">${st.work_free_mb != null ? Math.round(st.work_free_mb / 1024) + " GB free" : "used"}</div></div>
           <div class="tile"><div class="k">CPU load</div><div class="val" id="ovload">…</div><div class="note" id="ovloadn"></div></div>
@@ -509,6 +506,15 @@ async function dashboard() {
           <div class="cardhead"><h2>Disks</h2><button id="dreload" class="ghost small" type="button" data-vok>refresh</button></div>
           <div id="dlist" class="note">loading…</div>
           <p class="err" id="derr" hidden></p>
+        </div>
+        <div class="card" style="margin-top:.9rem">
+          <div class="cardhead"><h2>Backup</h2><span class="pill" id="bstate">checking…</span></div>
+          <p class="note" id="bnote">…</p>
+          <div class="chatrow" id="brow" hidden>
+            <select id="bdest" style="margin:0"></select>
+            <button id="bgo" type="button">Back up now</button>
+          </div>
+          <p class="note" id="bmsg" hidden></p>
         </div>
       </section>
 
@@ -732,14 +738,27 @@ async function dashboard() {
       : `<div class="alert ok">All clear — nothing needs attention.</div>`;
   };
   const addAlert = (cls, text) => { alertItems.push([cls, text]); renderAlerts(); };
+  // Boot-report lines are a snapshot from BOOT — anything we can verify live
+  // must not be parroted stale. Service-down lines are skipped entirely (the
+  // live st.running rows below cover them either way), and the pipe-auth
+  // line is re-checked against /api/pipe.
+  const liveSvcs = Object.keys(st.running);
   (st.boot_report || "").split("\n").forEach(l => {
-    if (/^CRITICAL:/.test(l)) addAlert("bad", l);
-    else if (/^warn:/.test(l)) addAlert("warn", l);
+    if (/^CRITICAL:/.test(l)) {
+      if (liveSvcs.some(k => l.includes(k))) return;
+      addAlert("bad", "at boot — " + l);
+    } else if (/^warn:/.test(l)) addAlert("warn", "at boot — " + l);
   });
   Object.entries(st.running).forEach(([k, ok]) => {
     if (!ok) addAlert("bad", k + " is enabled but not running");
   });
   renderAlerts();
+  if (st.services.pipe) api("/api/pipe").then(p => {
+    if (!p.authed) return;
+    for (let i = alertItems.length - 1; i >= 0; i--)
+      if (/unauthenticated/i.test(alertItems[i][1])) alertItems.splice(i, 1);
+    renderAlerts();
+  }).catch(() => {});
   api("/api/metrics").then(m => {
     v.querySelector("#ovload").textContent = m.load1 == null ? "?" : m.load1.toFixed(2);
     v.querySelector("#ovloadn").textContent = m.ncpu ? m.ncpu + " cores" : "";
@@ -1238,12 +1257,12 @@ async function dashboard() {
               </span></div>`);
             const on = (a, fn) => { const b = row.querySelector(`[data-a=${a}]`); if (b) b.onclick = fn; };
             on("mount", async () => {
-              try { const x = await api("/api/disk-op", { op: "mount", dev: p.dev }); loadDisks(); loadFiles(x.root); }
+              try { const x = await api("/api/disk-op", { op: "mount", dev: p.dev }); loadFiles._disks(); loadFiles(x.root); }
               catch (e) { dErr(e.message); }
             });
             on("open", () => loadFiles("ext/" + p.dev));
             on("umount", async () => {
-              try { await api("/api/disk-op", { op: "unmount", dev: p.dev }); loadDisks(); loadFiles(""); }
+              try { await api("/api/disk-op", { op: "unmount", dev: p.dev }); loadFiles._disks(); loadFiles(""); }
               catch (e) { dErr(e.message); }
             });
             on("fmt", async () => {
@@ -1262,7 +1281,58 @@ async function dashboard() {
       } catch (e) { dlist.className = "note"; dlist.textContent = e.message; }
     };
     v.querySelector("#dreload").onclick = loadDisks;
-    loadFiles._disks = loadDisks;
+    // ---- backup card: the work disk + boot media onto an external, mirrored ----
+    const bstate = v.querySelector("#bstate"), bnote = v.querySelector("#bnote"),
+      brow = v.querySelector("#brow"), bdest = v.querySelector("#bdest"),
+      bmsg = v.querySelector("#bmsg");
+    let btimer = null;
+    const agoDays = ts => Math.floor((Date.now() / 1000 - ts) / 86400);
+    const loadBackup = async () => {
+      try {
+        const b = await api("/api/backup");
+        const exts = b.exts || [];
+        if (b.running) {
+          bstate.textContent = "backing up…";
+          bstate.className = "pill status-warn";
+          bnote.textContent = "Copying the work disk and boot media to " + esc(b.dest) + " — you can keep using the box.";
+          brow.hidden = true;
+          if (!btimer) btimer = setInterval(() => { if (v.isConnected) loadBackup(); else clearInterval(btimer); }, 4000);
+          return;
+        }
+        if (btimer) { clearInterval(btimer); btimer = null; }
+        if (b.ok === false) { bmsg.hidden = false; bmsg.textContent = "Last backup failed: " + b.detail; }
+        if (!exts.length) {
+          bstate.textContent = "no drive";
+          bstate.className = "pill status-warn";
+          bnote.textContent = "Plug in an external drive and mount it above — one button then copies everything a restore needs (work disk + boot media).";
+          brow.hidden = true;
+          return;
+        }
+        const newest = exts.reduce((a, e) => (e.last || 0) > (a || 0) ? e.last : a, 0);
+        if (newest) {
+          const d = agoDays(newest);
+          const stale = d >= 30;
+          bstate.textContent = d === 0 ? "backed up today" : "backed up " + d + "d ago";
+          bstate.className = "pill " + (stale ? "status-warn" : "status-ok");
+          bnote.textContent = stale
+            ? "It has been a while — the backup mirrors in place, so re-running only copies what changed."
+            : "Backups mirror in place: re-running only copies what changed.";
+        } else {
+          bstate.textContent = "never backed up";
+          bstate.className = "pill status-bad";
+          bnote.textContent = "This box has never been backed up. One button copies the work disk and boot media to the external — do it now, future-you says thanks.";
+        }
+        brow.hidden = false;
+        bdest.replaceChildren(...exts.map(e =>
+          el(`<option value="${esc(e.root)}">${esc(e.root.slice(4))}${e.last ? " (last: " + agoDays(e.last) + "d ago)" : ""}</option>`)));
+      } catch (e) { bstate.textContent = "?"; bnote.textContent = e.message; }
+    };
+    v.querySelector("#bgo").onclick = async () => {
+      bmsg.hidden = true;
+      try { await api("/api/backup", { dest: bdest.value }); loadBackup(); }
+      catch (e) { bmsg.hidden = false; bmsg.textContent = e.message; }
+    };
+    loadFiles._disks = () => { loadDisks(); loadBackup(); };
     v.querySelector("#fmovehere").onclick = async () => {
       if (!moving) return;
       try {

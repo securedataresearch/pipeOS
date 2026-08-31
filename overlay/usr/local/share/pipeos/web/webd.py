@@ -674,6 +674,41 @@ def disk_inventory():
     return disks
 
 
+# ---- backup ----------------------------------------------------------------
+# One button copies what a restore needs: the work disk (bulk data) and the
+# boot media (apkovl + repos) onto a mounted external, file-level via rsync
+# into pipeos-backup/<nick>/{work,boot-media}. --delete keeps it a true
+# mirror, safe because the target dir belongs wholly to this backup.
+
+BACKUP_SRCS = (("/work/", "work"), ("/media/usb/", "boot-media"))
+BACKUP = {"running": False, "dest": "", "started": 0, "ok": None, "detail": ""}
+BACKUP_LOCK = threading.Lock()
+
+
+def backup_worker(destroot, nick):
+    dst = os.path.join(destroot, "pipeos-backup", nick)
+    ok, detail = True, ""
+    try:
+        os.makedirs(dst, exist_ok=True)
+        for src, name in BACKUP_SRCS:
+            if not os.path.isdir(src):
+                continue
+            rc, out = run(["rsync", "-a", "--delete",
+                           "--exclude", "/lost+found", "--exclude", "/cache",
+                           src, os.path.join(dst, name) + "/"],
+                          timeout=6 * 3600)
+            if rc != 0:
+                ok, detail = False, "%s: %s" % (name, out.strip()[-300:])
+                break
+        if ok:
+            with open(os.path.join(dst, ".last"), "w") as f:
+                f.write(str(int(time.time())))
+    except OSError as e:
+        ok, detail = False, str(e)
+    with BACKUP_LOCK:
+        BACKUP.update({"running": False, "ok": ok, "detail": detail})
+
+
 def dev_protected(sub):
     """True unless `sub` (a partition or disk name) sits on a disk the
     inventory calls safe."""
@@ -839,6 +874,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/files": self.api_files,
             "/api/file-dl": self.api_file_dl,
             "/api/disks": self.api_disks,
+            "/api/backup": self.api_backup_get,
             "/api/logs": self.api_logs,
             "/api/stream": self.api_stream_get,
             "/api/stream-log": self.api_stream_log,
@@ -899,6 +935,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/pipe-contact": self.api_pipe_contact,
             "/api/file-op": self.api_file_op,
             "/api/disk-op": self.api_disk_op,
+            "/api/backup": self.api_backup,
             "/api/pipe-set": self.api_pipe_set,
             "/api/pipe-logout": self.api_pipe_logout,
             "/api/password": self.api_password,
@@ -1267,6 +1304,40 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_disks(self):
         self.send(200, {"disks": disk_inventory(), "ext_base": FILES_EXT_BASE})
+
+    def api_backup_get(self):
+        nick = card_get("NICK") or socket.gethostname()
+        exts = []
+        for key, base in self._file_roots().items():
+            if not key.startswith("ext/"):
+                continue
+            last = None
+            try:
+                with open(os.path.join(base, "pipeos-backup", nick, ".last")) as f:
+                    last = int(f.read().strip())
+            except (OSError, ValueError):
+                pass
+            exts.append({"root": key, "last": last})
+        with BACKUP_LOCK:
+            state = dict(BACKUP)
+        state["exts"] = exts
+        self.send(200, state)
+
+    def api_backup(self, body):
+        dest = (body.get("dest") or "").strip()
+        if not dest.startswith("ext/"):
+            return self.err(400, "pick a mounted external drive")
+        base = self._file_roots().get(dest)
+        if base is None:
+            return self.err(400, "that drive is not mounted")
+        with BACKUP_LOCK:
+            if BACKUP["running"]:
+                return self.err(400, "a backup is already running")
+            BACKUP.update({"running": True, "dest": dest,
+                           "started": int(time.time()), "ok": None, "detail": ""})
+        nick = card_get("NICK") or socket.gethostname()
+        threading.Thread(target=backup_worker, args=(base, nick), daemon=True).start()
+        self.send(200, {"ok": True, "started": True})
 
     def api_disk_op(self, body):
         op = body.get("op")
