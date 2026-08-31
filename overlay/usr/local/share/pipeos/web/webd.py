@@ -302,11 +302,18 @@ def valid_session(tok):
         os.utime(path)
     except OSError:
         return None
+    # Pre-multi-user session files hold a bare timestamp — which json.loads
+    # parses SUCCESSFULLY (as an int), so "is it a dict" is the real test,
+    # not "does it parse". The int case crashed every request that carried an
+    # old cookie (found live on basho_box: the owner's browser got a
+    # connection reset on /api/state while cookie-less curl looked healthy).
     try:
         j = json.loads(body)
-        return {"user": j.get("user") or "admin", "role": j.get("role") or "admin"}
     except ValueError:
+        j = None
+    if not isinstance(j, dict):
         return {"user": "admin", "role": "admin"}
+    return {"user": j.get("user") or "admin", "role": j.get("role") or "admin"}
 
 
 def drop_user_sessions(name):
