@@ -421,6 +421,9 @@ async function dashboard() {
           <button id="addtarget" class="ghost" type="button" style="margin-bottom:.6rem">+ Add a provider</button>
           <label for="sbitrate">Bitrate (per target)</label>
           <input id="sbitrate" type="text" placeholder="3500k">
+          <label class="note" style="display:flex;align-items:center;gap:.5rem;margin-top:.4rem">
+            <input id="sboot" type="checkbox" style="width:auto" checked> Start streaming automatically at boot
+          </label>
           <label for="sargs">Extra ffmpeg args (optional)</label>
           <input id="sargs" type="text" placeholder="advanced — usually blank">
           <button id="ssave">Save & restart stream</button>
@@ -760,6 +763,7 @@ async function dashboard() {
       v.querySelector("#ssrc").value = s.src; v.querySelector("#surl").value = s.url || "";
       v.querySelector("#sres").value = s.res || ""; v.querySelector("#sfps").value = s.fps || "";
       v.querySelector("#sbitrate").value = s.bitrate || ""; v.querySelector("#svaapi").checked = !!s.vaapi;
+      v.querySelector("#sboot").checked = s.boot !== false;
       v.querySelector("#sargs").value = s.args;
       tbox.textContent = "";
       const rows = (s.targets || []).filter(t => t.url || t.key_set || t.name);
@@ -777,6 +781,7 @@ async function dashboard() {
           res: v.querySelector("#sres").value, fps: v.querySelector("#sfps").value,
           bitrate: v.querySelector("#sbitrate").value,
           vaapi: v.querySelector("#svaapi").checked,
+          boot: v.querySelector("#sboot").checked,
           args: v.querySelector("#sargs").value,
           targets,
         });

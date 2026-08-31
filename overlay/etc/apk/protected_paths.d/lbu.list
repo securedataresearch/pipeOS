@@ -18,6 +18,9 @@
 +etc/init.d/pipeos-stream
 +etc/init.d/pipeos-assistant
 +etc/init.d/pipeos-support
+# boot reconciler for services.conf — custom /etc/local.d file, same apk-audit
+# blind spot as the init scripts above
++etc/local.d/pipeos-services.start
 +etc/pipeos/support.conf
 +etc/pipeos/support_key
 +etc/pipeos/support_key.pub

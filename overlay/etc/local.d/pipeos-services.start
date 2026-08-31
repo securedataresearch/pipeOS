@@ -1,0 +1,47 @@
+#!/bin/sh
+# pipeos-services.start — boot reconciler: make the enabled-services record
+# (/etc/pipeos/services.conf) actually govern what runs after a reboot.
+#
+# Before this, the ONLY thing that resumed an opted-in service at boot was the
+# runlevel symlink rc-update wrote when the dashboard toggle was flipped. Miss
+# the save that carries that symlink into the apkovl and the opt-in survived
+# in services.conf while the service silently did not start — selfcheck warned
+# about exactly this drift ("enabled in services.conf but not in the default
+# runlevel") but fixed nothing. Now services.conf is the source of truth and
+# the runlevel is derived state, re-derived every boot.
+#
+# Streaming has an owner-facing opt-out on top: STREAM_BOOT=0 in stream.conf
+# means "keep the config, but do not start streaming by itself at boot".
+#
+# Starts are fired in the background so a slow service cannot hold up boot;
+# the disabled arm only removes the runlevel symlink and deliberately does NOT
+# stop anything — a service someone started by hand is theirs to stop.
+
+CONF=/etc/pipeos/services.conf
+[ -r "$CONF" ] || exit 0
+# shellcheck disable=SC1090
+. "$CONF" 2>/dev/null
+
+want=""
+[ "${SERVICE_PIPE:-}" = on ] && want="$want pipe-daemon"
+[ "${SERVICE_PIPE:-}" = on ] && [ "${SERVICE_CLAUDE:-}" = on ] && want="$want pipebox-listener"
+if [ "${SERVICE_STREAM:-}" = on ]; then
+	# read STREAM_BOOT in a subshell so stream.conf's vars don't leak here
+	boot=$( [ -r /etc/pipeos/stream.conf ] && . /etc/pipeos/stream.conf 2>/dev/null; echo "${STREAM_BOOT:-1}" )
+	[ "$boot" != 0 ] && want="$want pipeos-stream"
+fi
+[ "${SERVICE_SUPPORT:-}" = on ] && want="$want pipeos-support"
+[ "${SERVICE_ASSISTANT:-}" = on ] && want="$want pipeos-assistant"
+
+for svc in pipe-daemon pipebox-listener pipeos-stream pipeos-support pipeos-assistant; do
+	case " $want " in
+	*" $svc "*)
+		rc-update -q add "$svc" default 2>/dev/null
+		rc-service "$svc" status >/dev/null 2>&1 || rc-service "$svc" start >/dev/null 2>&1 &
+		;;
+	*)
+		rc-update -q del "$svc" default 2>/dev/null
+		;;
+	esac
+done
+exit 0
