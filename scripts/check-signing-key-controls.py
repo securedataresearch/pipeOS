@@ -22,10 +22,10 @@ PROBE = os.path.join(HERE, "check-signing-key.py")
 orig = open(P).read()
 cfg_orig = open(CFG).read()
 
-CENSUS_SCOPE = ('KEY_STORES="$ABUILD_DIR $SIGNING_KEY_DIR $OUT/keys '
-                '${SIGNING_KEY_DIR_ALT:-}"')
+CENSUS_SCOPE = ('KEY_STORES=("$ABUILD_DIR" "$SIGNING_KEY_DIR" "$OUT/keys" '
+                '"${SIGNING_KEY_DIR_ALT[@]}")')
 RESTORE_LOOP = ('    for d in "$SIGNING_KEY_DIR" "$OUT/keys" '
-                '${SIGNING_KEY_DIR_ALT:-}; do')
+                '"${SIGNING_KEY_DIR_ALT[@]}"; do')
 PAIR_OPEN = """else
     # Not fatal: openssl is not a build dependency today and refusing to build"""
 CONF_LINE = """        sudo sh -c "printf 'PACKAGER_PRIVKEY=\\"/home/builder/.abuild/%s\\"\\n' '$priv' > '$ABUILD_DIR/abuild.conf'\""""
@@ -61,7 +61,10 @@ controls = [
     # The reviewed-but-wrong version: census only reaches the stores we might
     # RESTORE from, never the chroot we back up FROM.
     ("A: census skips the chroot (the state pipeOS#92 shipped for review)",
-     lambda s: s.replace(CENSUS_SCOPE, 'KEY_STORES="$SIGNING_KEY_DIR $OUT/keys"')),
+     # array form (pipeOS#111): a string here would collapse into one unusable
+     # word under the "${KEY_STORES[@]}" loop and blind the census entirely,
+     # making this indistinguishable from I.
+     lambda s: s.replace(CENSUS_SCOPE, 'KEY_STORES=("$SIGNING_KEY_DIR" "$OUT/keys")')),
 
     # A key on disk that abuild does not know about signs with nothing.
     ("B: abuild.conf is never written",
@@ -98,7 +101,7 @@ controls = [
     # narrower and quieter failure, two stores disagreeing and nothing looking.
     ("I: census skips the passed-over store (box3's blocker on pipeOS#92)",
      lambda s: s.replace(CENSUS_SCOPE,
-                         'KEY_STORES="$ABUILD_DIR $SIGNING_KEY_DIR $OUT/keys"')),
+                         'KEY_STORES=("$ABUILD_DIR" "$SIGNING_KEY_DIR" "$OUT/keys")')),
 
     # The other half, and the loud one: the census sees the store, so a
     # disagreement is still caught, but a key that lives ONLY there is never
@@ -127,8 +130,9 @@ cfg_controls = [
     # upstream of I and J together: 10-mk-chroot.sh can census and restore over
     # a store all it likes, but it cannot name one nobody told it about.
     ("L: config.sh does not export the passed-over candidate",
-     lambda s: re.sub(r'^SIGNING_KEY_DIR_ALT=\nfor _cand in .*?^unset _cand$',
-                      "SIGNING_KEY_DIR_ALT=", s, flags=re.S | re.M)),
+     # array form since pipeOS#111
+     lambda s: re.sub(r'^SIGNING_KEY_DIR_ALT=\(\)\nfor _cand in .*?^unset _cand$',
+                      "SIGNING_KEY_DIR_ALT=()", s, flags=re.S | re.M)),
 ]
 
 rc = 0

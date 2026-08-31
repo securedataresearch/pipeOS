@@ -127,6 +127,19 @@ jobs:
       - name: the agent run budget comes from the card, not from a hardcode
         run: python3 scripts/check-agent-timeout.py
 
+      - name: gh-notify controls and the signing-key census probes hold
+        run: |
+          # pipeOS#109: these ran only by hand before, including the rows over
+          # the fleet's root of trust. (check-gh-notify.py itself is rotted
+          # against the #88 rewrite and consciously excluded — see
+          # check-ci-coverage.py's KNOWN_UNGATED.)
+          python3 scripts/check-gh-notify-controls.py
+          python3 scripts/check-signing-key.py
+          python3 scripts/check-signing-key-controls.py
+
+      - name: every probe in scripts/ is wired into CI or excused by name
+        run: python3 scripts/check-ci-coverage.py
+
       - name: derived files are not hand-editable without detection
         run: |
           set -eu

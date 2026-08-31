@@ -60,10 +60,11 @@ sudo cp /etc/resolv.conf "$CHROOT/etc/resolv.conf"
 ABUILD_DIR="$CHROOT/home/builder/.abuild"
 # $SIGNING_KEY_DIR_ALT is the candidate config.sh did NOT pick — see the comment
 # there. It is in the census for the same reason $ABUILD_DIR is: the store this
-# run does not read from is exactly where a wrong-key surprise waits. Word
-# splitting is deliberate; it can name more than one path, and every consumer
-# below already iterates the list.
-KEY_STORES="$ABUILD_DIR $SIGNING_KEY_DIR $OUT/keys ${SIGNING_KEY_DIR_ALT:-}"
+# run does not read from is exactly where a wrong-key surprise waits.
+# An ARRAY end to end (pipeOS#111): the old space-joined string split a $HOME
+# containing a space into nonexistent paths, and the census went quiet exactly
+# where the wrong-key refusal was needed.
+KEY_STORES=("$ABUILD_DIR" "$SIGNING_KEY_DIR" "$OUT/keys" "${SIGNING_KEY_DIR_ALT[@]}")
 
 # Census first, over EVERY store, before we either read a key or write one.
 # Guarding only the store we happen to restore from is not enough: a builder
@@ -76,7 +77,7 @@ KEY_STORES="$ABUILD_DIR $SIGNING_KEY_DIR $OUT/keys ${SIGNING_KEY_DIR_ALT:-}"
 #
 # `set -e` is on: every test here has to sit in a condition, or a store that
 # simply does not exist yet takes the whole build down.
-key_files=$(for d in $KEY_STORES; do
+key_files=$(for d in "${KEY_STORES[@]}"; do
     ls "$d"/*.rsa 2>/dev/null || true
 done)
 key_names=$(printf '%s\n' "$key_files" \
@@ -85,7 +86,7 @@ n_keys=$(printf '%s\n' "$key_names" | grep -c . || true)
 if [ "$n_keys" -gt 1 ]; then
     echo "$n_keys different abuild private keys across the key stores —" >&2
     echo "refusing to guess which one signs the fleet:" >&2
-    for d in $KEY_STORES; do
+    for d in "${KEY_STORES[@]}"; do
         ls -l "$d"/*.rsa 2>/dev/null >&2 || true
     done
     echo "keep exactly one, put it in $SIGNING_KEY_DIR, and remove the others" >&2
@@ -121,7 +122,7 @@ elif [ "$n_keys" -eq 1 ]; then
     if [ "$n_material" -gt 1 ]; then
         echo "the key stores hold $n_material DIFFERENT keys under one name" >&2
         echo "($key_names) — refusing to guess which one signs the fleet:" >&2
-        for d in $KEY_STORES; do
+        for d in "${KEY_STORES[@]}"; do
             ls "$d"/*.rsa >/dev/null 2>&1 && "$_keysum" "$d"/*.rsa >&2 || true
         done
         echo "one of these is the key the flashed sticks already trust and the" >&2
@@ -150,8 +151,7 @@ if ! ls "$ABUILD_DIR"/*.rsa >/dev/null 2>&1; then
     # backup at the bottom then copies it into $SIGNING_KEY_DIR with `cp -n`,
     # which is how a store that lost the tier test migrates to the winner
     # instead of being orphaned. (box3 on #92)
-    # shellcheck disable=SC2086  # deliberate split: ALT may name several paths
-    for d in "$SIGNING_KEY_DIR" "$OUT/keys" ${SIGNING_KEY_DIR_ALT:-}; do
+    for d in "$SIGNING_KEY_DIR" "$OUT/keys" "${SIGNING_KEY_DIR_ALT[@]}"; do
         if [ -z "$key_src" ] && ls "$d"/*.rsa >/dev/null 2>&1; then
             key_src="$d"
         fi
@@ -174,7 +174,7 @@ if ! ls "$ABUILD_DIR"/*.rsa >/dev/null 2>&1; then
         sudo chroot "$CHROOT" /bin/sh -lc 'chown -R builder:builder /home/builder/.abuild'
     else
         echo "==> no signing key in any store — generating a new one"
-        echo "    (searched: $SIGNING_KEY_DIR $OUT/keys ${SIGNING_KEY_DIR_ALT:-})"
+        echo "    (searched: $SIGNING_KEY_DIR $OUT/keys ${SIGNING_KEY_DIR_ALT[*]})"
         echo "    (every previously flashed stick will reject packages signed by it)"
         sudo chroot "$CHROOT" /bin/sh -lc 'su - builder -c "abuild-keygen -a -n"'
     fi
@@ -200,7 +200,10 @@ elif [ ! -f "$priv_file.pub" ]; then
     echo "for the sticks to trust; restore both halves or remove the private" >&2
     exit 1
 elif command -v openssl >/dev/null 2>&1; then
-    if sudo sh -c "openssl rsa -in '$priv_file' -pubout 2>/dev/null" \
+    # `openssl pkey`, not `openssl rsa` (pipeOS#108): the pair check must not
+    # assume the key's algorithm — pkey derives the public half of whatever
+    # the private key actually is, and the byte-compare below is the measure.
+    if sudo sh -c "openssl pkey -in '$priv_file' -pubout 2>/dev/null" \
         | cmp -s - "$priv_file.pub"; then
         echo "==> signing key pair verified: $(basename "$priv_file") derives its .pub"
     else
@@ -208,7 +211,7 @@ elif command -v openssl >/dev/null 2>&1; then
         ls -l "$priv_file" "$priv_file.pub" >&2
         echo "the repo index would be signed by one key and the sticks would" >&2
         echo "trust another. Restore both halves from one backup, or delete" >&2
-        echo "the .pub and re-derive it: openssl rsa -in KEY -pubout > KEY.pub" >&2
+        echo "the .pub and re-derive it: openssl pkey -in KEY -pubout > KEY.pub" >&2
         exit 1
     fi
 else

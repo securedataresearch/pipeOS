@@ -28,6 +28,20 @@ for dir in "$@"; do
     elif apk adbdump "$idx" > "$tmpd/raw" 2>/dev/null && [ -s "$tmpd/raw" ]; then
         awk '/^ *- name: /{n=$3} /^ *version: /{if(n!=""){print n"-"$2".apk"; n=""}}' \
             "$tmpd/raw" | sort -u > "$tmpd/indexed"
+    elif ! command -v apk >/dev/null 2>&1 \
+      && [ -x "$(dirname "$0")/chroot-run.sh" ] \
+      && _rr=$(cd "$(dirname "$0")/.." && pwd) \
+      && _aidx=$(cd "$(dirname "$idx")" && pwd)/$(basename "$idx") \
+      && [ "${_aidx#"$_rr"/}" != "$_aidx" ] \
+      && "$(dirname "$0")/chroot-run.sh" "apk adbdump '/pipeOS/${_aidx#"$_rr"/}'" > "$tmpd/raw" 2>/dev/null \
+      && [ -s "$tmpd/raw" ]; then
+        # ADB index on a HOST with no apk (a dev workstation): read it through
+        # the build chroot, which mounts the repo at /pipeOS (pipeOS#150 made
+        # the extra repo ADB at build time, so the build host hits this). On a
+        # box apk exists and the branch above already answered; the shipped
+        # copy of this file carries the branch inert.
+        awk '/^ *- name: /{n=$3} /^ *version: /{if(n!=""){print n"-"$2".apk"; n=""}}' \
+            "$tmpd/raw" | sort -u > "$tmpd/indexed"
     else
         echo "verify-repo: $dir: cannot parse index (neither apk-2 tar nor ADB)" >&2
         rc=1; rm -rf "$tmpd"

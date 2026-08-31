@@ -55,7 +55,7 @@ note() { printf '      %s\n' "$*"; }
 NICK= ROLE= OWNER_NICK= FOREMAN_NICK= COHORT_ID= GH_OWNER= MAC=
 TOOLCHAIN= REPOS= PIPE_CAPS=
 DISK_WARN_PCT= DISK_CRIT_PCT=
-GC_INTERVAL_HOURS=
+GC_INTERVAL_HOURS= WORKSWEEP_PCT=
 OVERLAY_CRIT_DAYS=
 AGENT_TIMEOUT_MIN=
 CLEAN_AFTER_RUN=
@@ -102,7 +102,7 @@ read_card() {
             NICK|ROLE|OWNER_NICK|FOREMAN_NICK|COHORT_ID|GH_OWNER|MAC) ;;
             TOOLCHAIN|REPOS|PIPE_CAPS) ;;
             DISK_WARN_PCT|DISK_CRIT_PCT) ;;
-            GC_INTERVAL_HOURS|OVERLAY_CRIT_DAYS) ;;
+            GC_INTERVAL_HOURS|OVERLAY_CRIT_DAYS|WORKSWEEP_PCT) ;;
             AGENT_TIMEOUT_MIN) ;;
             CLEAN_AFTER_RUN) ;;
             *) die "unknown card key: $key" ;;
@@ -150,7 +150,7 @@ read_card() {
             # pipeOS#41 / #101 / #97: digits-only, octal-aware, one arm for
             # every numeric key — a split here is how the octal guard got
             # shadowed once already during a merge.
-            DISK_WARN_PCT|DISK_CRIT_PCT|GC_INTERVAL_HOURS|OVERLAY_CRIT_DAYS|AGENT_TIMEOUT_MIN|CLEAN_AFTER_RUN)
+            DISK_WARN_PCT|DISK_CRIT_PCT|GC_INTERVAL_HOURS|OVERLAY_CRIT_DAYS|AGENT_TIMEOUT_MIN|CLEAN_AFTER_RUN|WORKSWEEP_PCT)
                 case "$val" in
                     '') ;;
                     *[!0-9]*) die "card value for $key must be a plain integer: $val" ;;
@@ -207,6 +207,13 @@ read_card() {
     if [ -n "$GC_INTERVAL_HOURS" ]; then
         [ "$GC_INTERVAL_HOURS" -ge 1 ] 2>/dev/null && [ "$GC_INTERVAL_HOURS" -le 168 ] 2>/dev/null || \
             die "GC_INTERVAL_HOURS must be 1-168: $GC_INTERVAL_HOURS"
+    fi
+
+    # pipeOS#110: the weekly sweep's trigger threshold, per box. Same 1-99
+    # rule as the disk thresholds it exists to stay below.
+    if [ -n "$WORKSWEEP_PCT" ]; then
+        [ "$WORKSWEEP_PCT" -ge 1 ] 2>/dev/null && [ "$WORKSWEEP_PCT" -le 99 ] 2>/dev/null || \
+            die "WORKSWEEP_PCT must be 1-99: $WORKSWEEP_PCT"
     fi
 
     # pipeOS#97: how many days an undeployed overlay commit may sit before
@@ -313,8 +320,10 @@ Your ROLE is **BUILD** — the write lane.
   reach for a side-channel remote.
 - You land other roles' completed work unchanged — `git am` or a byte-identical
   transfer that preserves authorship. Their commit, your push.
-- You never merge your own PRs. Two TEST verdicts plus green CI, and the
-  Foreman merges.
+- You self-merge on fully satisfied gates (R13): two verdicts from non-author
+  technical boxes (cross-BUILD allowed; crypto/entitlement paths need box0
+  plus one more — R18) plus green CI, then one-line board note per merge.
+  First misuse revokes.
 - Branch per issue. Fix with new commits. `--force-with-lease` only to remove
   something that must not stay published, and disclose it in the same post.
 - You may decline work; you must not take it. Assignment comes from the
@@ -472,6 +481,7 @@ s|@@REPOS@@|$REPOS|g
 s|@@DISK_WARN_PCT@@|$DISK_WARN_PCT|g
 s|@@DISK_CRIT_PCT@@|$DISK_CRIT_PCT|g
 s|@@GC_INTERVAL_HOURS@@|$GC_INTERVAL_HOURS|g
+s|@@WORKSWEEP_PCT@@|$WORKSWEEP_PCT|g
 s|@@OVERLAY_CRIT_DAYS@@|$OVERLAY_CRIT_DAYS|g
 s|@@AGENT_TIMEOUT_MIN@@|$AGENT_TIMEOUT_MIN|g
 s|@@CLEAN_AFTER_RUN@@|$CLEAN_AFTER_RUN|g
@@ -683,8 +693,8 @@ cmd_show() {
     read_card "$CARD"
     echo "card:        $CARD (sha256:$CARD_SHA)"
     for k in NICK ROLE OWNER_NICK FOREMAN_NICK COHORT_ID GH_OWNER MAC \
-             DISK_WARN_PCT DISK_CRIT_PCT GC_INTERVAL_HOURS OVERLAY_CRIT_DAYS \
-             AGENT_TIMEOUT_MIN CLEAN_AFTER_RUN; do
+             DISK_WARN_PCT DISK_CRIT_PCT GC_INTERVAL_HOURS WORKSWEEP_PCT \
+             OVERLAY_CRIT_DAYS AGENT_TIMEOUT_MIN CLEAN_AFTER_RUN; do
         eval "v=\$$k"
         printf '%-12s %s\n' "$k:" "${v:-<unset>}"
     done
