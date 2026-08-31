@@ -193,7 +193,17 @@ for svc in $want_svcs; do
     elif rc-service "$svc" start >/dev/null 2>&1; then
         fixed "$svc was down; started it"
     else
-        crit "$svc down and would not start"
+        # These are opt-in and refuse to start until configured (a password, a
+        # relay, stream targets). "Enabled but not set up yet" is a WARN, not a
+        # box-down CRITICAL — it matches how the wizard's apply_services treats
+        # the same refusal. A genuinely broken one still surfaces (as a warn),
+        # and pipeos-stream's frame-flow probe below catches configured-but-black.
+        case "$svc" in
+            pipeos-support|pipeos-stream|pipeos-assistant)
+                warnn "$svc is enabled but not configured yet — set it up in the web UI, or turn it off" ;;
+            *)
+                crit "$svc down and would not start" ;;
+        esac
     fi
 done
 
@@ -236,10 +246,18 @@ if [ "$SERVICE_PIPE" = on ]; then
     if [ "$auth_ok" = "true" ]; then
         :
     elif [ -n "$authj" ]; then
+        # Distinguish "never signed in yet" (a fine, common state — the owner
+        # just has not run `pipe login`, and may never use pipe) from a real
+        # auth FAILURE (a revoked/rejected token, which silently drops inbound
+        # mail — pipe#641). Only the latter is CRITICAL; the former is a nudge.
         aerr=$(echo "$authj" | jq -r '.status.auth_error // empty' 2>/dev/null)
-        crit "pipe daemon unauthenticated${aerr:+ ($aerr)}"
+        if [ -n "$aerr" ]; then
+            crit "pipe daemon auth failed ($aerr)"
+        else
+            warnn "pipe is enabled but not signed in yet — run 'pipe login' to use it, or turn pipe off"
+        fi
     else
-        crit "pipe status did not answer (daemon down or still signing in)"
+        warnn "pipe status did not answer (daemon down or still signing in)"
     fi
 fi
 
