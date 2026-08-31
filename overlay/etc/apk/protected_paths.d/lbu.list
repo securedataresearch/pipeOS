@@ -21,6 +21,11 @@
 # boot reconciler for services.conf — custom /etc/local.d file, same apk-audit
 # blind spot as the init scripts above
 +etc/local.d/pipeos-services.start
+# users: per-user browser terminals + the dashboard's user records + doas policy
++etc/init.d/pipeos-terminals
++etc/pipeos/users.json
++etc/pipeos/terminals.conf
++etc/doas.d/pipeos.conf
 +etc/pipeos/support.conf
 +etc/pipeos/support_key
 +etc/pipeos/support_key.pub

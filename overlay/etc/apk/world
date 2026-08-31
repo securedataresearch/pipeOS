@@ -13,6 +13,7 @@ curl
 dbus
 diffutils
 dmidecode
+doas
 e2fsprogs
 ethtool
 ffmpeg
