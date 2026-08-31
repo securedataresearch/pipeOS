@@ -499,6 +499,11 @@ async function dashboard() {
             <p class="note" id="fchatnote" hidden></p>
           </div>` : ""}
         </div>
+        <div class="card" style="margin-top:.9rem">
+          <div class="cardhead"><h2>Disks</h2><button id="dreload" class="ghost small" type="button" data-vok>refresh</button></div>
+          <div id="dlist" class="note">loading…</div>
+          <p class="err" id="derr" hidden></p>
+        </div>
       </section>
 
       ${st.services.pipe ? `
@@ -1116,34 +1121,111 @@ async function dashboard() {
       };
       return r;
     };
+    const rootLabel = key => key === "work" ? "work disk"
+      : key.startsWith("ext/") ? key.slice(4) + " (external)" : key;
+    const drow = (key) => {
+      const r = el(`<div class="frow">
+        <span class="fic"><svg viewBox="0 0 24 24"><path d="M22 12H2"/><path d="M5.5 5h13l3.5 7v5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-5z"/><line x1="6" y1="16" x2="6.01" y2="16"/><line x1="10" y1="16" x2="10.01" y2="16"/></svg></span>
+        <a class="fname" href="#/files">${esc(rootLabel(key))}</a>
+        <span class="fmeta">drive</span></div>`);
+      r.querySelector(".fname").onclick = e => { e.preventDefault(); loadFiles(key); };
+      return r;
+    };
     loadFiles = async (path) => {
       fileErr("");
       try {
         const r = await api("/api/files?path=" + encodeURIComponent(path == null ? cwd : path));
         cwd = r.path;
+        // breadcrumbs: the drive is one crumb ("work" or "ext/<dev>"), then dirs
         crumbs.replaceChildren();
-        let acc = "";
         const mk = (label, target) => {
           const a = el(`<a href="#/files">${esc(label)}</a>`);
           a.onclick = e => { e.preventDefault(); loadFiles(target); };
           crumbs.appendChild(a);
         };
-        mk("work", "");
-        (cwd ? cwd.split("/") : []).forEach(seg => {
+        mk("drives", "");
+        if (cwd) {
+          const segs = cwd.split("/");
+          const rootN = segs[0] === "ext" ? 2 : 1;
+          let acc = segs.slice(0, rootN).join("/");
           crumbs.appendChild(el(`<span class="sep">/</span>`));
-          acc = acc ? acc + "/" + seg : seg;
-          mk(seg, acc);
-        });
+          mk(rootLabel(acc), acc);
+          segs.slice(rootN).forEach(seg => {
+            crumbs.appendChild(el(`<span class="sep">/</span>`));
+            acc += "/" + seg;
+            mk(seg, acc);
+          });
+        }
         flist.replaceChildren();
-        r.dirs.forEach(d => flist.appendChild(frow(d, true)));
-        r.files.forEach(f => flist.appendChild(frow(f, false)));
-        if (!r.dirs.length && !r.files.length)
-          flist.appendChild(el(`<p class="note">Empty folder.</p>`));
+        if (r.roots) {
+          r.dirs.forEach(d => flist.appendChild(drow(d.name)));
+        } else {
+          r.dirs.forEach(d => flist.appendChild(frow(d, true)));
+          r.files.forEach(f => flist.appendChild(frow(f, false)));
+          if (!r.dirs.length && !r.files.length)
+            flist.appendChild(el(`<p class="note">Empty folder.</p>`));
+        }
         if (r.truncated)
           flist.appendChild(el(`<p class="note">…listing truncated at 2000 entries.</p>`));
+        v.querySelector("#fmkdir").disabled = v.querySelector("#fupbtn").disabled = !!r.roots;
         syncMove();
       } catch (e) { fileErr(e.message); }
     };
+    // ---- disks card ----
+    const dlist = v.querySelector("#dlist"), derr = v.querySelector("#derr");
+    const dErr = m => { derr.textContent = m || ""; derr.hidden = !m; };
+    const loadDisks = async () => {
+      dErr("");
+      try {
+        const r = await api("/api/disks");
+        dlist.className = "";
+        dlist.replaceChildren(...r.disks.map(d => {
+          const head = el(`<div class="frow" style="font-weight:600">
+            <span class="fname">${esc(d.model || d.dev)} <span class="note">/dev/${esc(d.dev)}</span></span>
+            <span class="fmeta">${(d.size / 1e9).toFixed(0)} GB${d.removable ? " · removable" : ""}</span>
+            ${d.protected ? '<span class="pill status-warn">system</span>' : ""}</div>`);
+          const wrap = el(`<div style="margin-bottom:.6rem"></div>`);
+          wrap.appendChild(head);
+          d.parts.forEach(p => {
+            const mounted = !!p.mount;
+            const ext = p.mount && p.mount.startsWith(r.ext_base);
+            const row = el(`<div class="frow" style="padding-left:1.4rem">
+              <span class="fname">${esc(p.dev)}${p.label ? " · " + esc(p.label) : ""}${p.fstype ? ` <span class="note">${esc(p.fstype)}</span>` : ""}</span>
+              <span class="fmeta">${(p.size / 1e9).toFixed(1)} GB</span>
+              <span class="fmeta">${mounted ? esc(p.mount) : "not mounted"}</span>
+              <span class="facts" style="opacity:1">
+                ${d.protected ? "" : `
+                  ${!mounted && p.fstype ? '<button class="ghost small" type="button" data-a="mount">mount</button>' : ""}
+                  ${ext ? '<button class="ghost small" type="button" data-a="open">open</button><button class="ghost small" type="button" data-a="umount">unmount</button>' : ""}
+                  ${!mounted ? '<button class="ghost small" type="button" data-a="fmt">format</button>' : ""}`}
+              </span></div>`);
+            const on = (a, fn) => { const b = row.querySelector(`[data-a=${a}]`); if (b) b.onclick = fn; };
+            on("mount", async () => {
+              try { const x = await api("/api/disk-op", { op: "mount", dev: p.dev }); loadDisks(); loadFiles(x.root); }
+              catch (e) { dErr(e.message); }
+            });
+            on("open", () => loadFiles("ext/" + p.dev));
+            on("umount", async () => {
+              try { await api("/api/disk-op", { op: "unmount", dev: p.dev }); loadDisks(); loadFiles(""); }
+              catch (e) { dErr(e.message); }
+            });
+            on("fmt", async () => {
+              const t = prompt("This ERASES " + p.dev + " completely (new ext4 filesystem).\nType the device name to confirm:");
+              if (t !== p.dev) return;
+              const label = (prompt("Volume label (optional):") || "").trim();
+              dErr("formatting " + p.dev + "…");
+              try { await api("/api/disk-op", { op: "format", dev: p.dev, label: label }); dErr(""); loadDisks(); }
+              catch (e) { dErr(e.message); }
+            });
+            wrap.appendChild(row);
+          });
+          return wrap;
+        }));
+        if (!r.disks.length) { dlist.className = "note"; dlist.textContent = "No disks found."; }
+      } catch (e) { dlist.className = "note"; dlist.textContent = e.message; }
+    };
+    v.querySelector("#dreload").onclick = loadDisks;
+    loadFiles._disks = loadDisks;
     v.querySelector("#fmovehere").onclick = async () => {
       if (!moving) return;
       try {
@@ -1311,7 +1393,7 @@ async function dashboard() {
   // Views with live data register a poller (runs only while on screen) or a
   // lazy loader (runs on first visit).
   const POLLERS = { system: pollSystem, network: pollNetwork };
-  const LAZY = { files: () => loadFiles(""), pipe: loadPipe, users: loadUsers };
+  const LAZY = { files: () => { loadFiles(""); loadFiles._disks(); }, pipe: loadPipe, users: loadUsers };
   const seen = {};
   let viewTimer = null;
   const views = v.querySelectorAll("[data-view]");

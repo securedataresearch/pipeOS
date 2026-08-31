@@ -559,6 +559,113 @@ def primary_ip():
 # The only pipe preferences the dashboard may flip (pipe set's own settable set)
 PIPE_PREFS = ("dm_relay", "remember_login", "agent_events")
 
+# ---- disks -----------------------------------------------------------------
+# Inventory straight from /sys/block + busybox blkid (no lsblk on the image).
+# A disk is PROTECTED — untouchable by every disk-op — when any part of it is
+# the boot media (LABEL=PIPEOS), the work disk (LABEL=PIPEWORK), or mounted at
+# a system path. Externals mount under /media/ext/<dev> and appear as extra
+# roots in the file explorer.
+
+FILES_WORK = "/work"
+FILES_EXT_BASE = "/media/ext"
+PROTECTED_LABELS = ("PIPEOS", "PIPEWORK")
+PROTECTED_MOUNTS = ("/", "/work", "/media/usb")
+DEV_RE = re.compile(r"^[a-z][a-z0-9]{1,31}$")
+
+
+def blkid_all():
+    """dev -> {label, fstype, uuid} for every device blkid knows."""
+    out = {}
+    rc, text = run(["blkid"], timeout=15)
+    if rc != 0:
+        return out
+    for line in text.splitlines():
+        dev, _, rest = line.partition(":")
+        if not dev.startswith("/dev/"):
+            continue
+        d = {}
+        for m in re.finditer(r'(\w+)="([^"]*)"', rest):
+            d[m.group(1).lower()] = m.group(2)
+        out[dev] = {"label": d.get("label", ""), "fstype": d.get("type", ""),
+                    "uuid": d.get("uuid", "")}
+    return out
+
+
+def mounts_by_dev():
+    out = {}
+    try:
+        with open("/proc/mounts") as f:
+            for line in f:
+                dev, mp = line.split()[:2]
+                if dev.startswith("/dev/"):
+                    out[os.path.realpath(dev)] = mp.replace("\\040", " ")
+    except OSError:
+        pass
+    return out
+
+
+def _sysread(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def disk_inventory():
+    ids = blkid_all()
+    mounts = mounts_by_dev()
+    disks = []
+    try:
+        names = sorted(os.listdir("/sys/block"))
+    except OSError:
+        return disks
+    for name in names:
+        if name.startswith(("loop", "ram", "zram", "dm-")):
+            continue
+        base = "/sys/block/" + name
+        try:
+            size = int(_sysread(base + "/size") or 0) * 512
+        except ValueError:
+            size = 0
+        if size == 0:
+            continue
+        model = _sysread(base + "/device/model")
+        removable = _sysread(base + "/removable") == "1"
+        rows = []
+        for sub in sorted(os.listdir(base)):
+            if sub.startswith(name) and os.path.isdir(base + "/" + sub):
+                rows.append(sub)
+        if not rows:
+            rows = [name]  # partitionless disk: the fs lives on the device
+        parts, protected = [], False
+        for sub in rows:
+            dev = "/dev/" + sub
+            info = ids.get(dev, {})
+            mp = mounts.get(os.path.realpath(dev), "")
+            try:
+                psize = int(_sysread("/sys/class/block/%s/size" % sub) or 0) * 512
+            except ValueError:
+                psize = 0
+            if info.get("label") in PROTECTED_LABELS or mp in PROTECTED_MOUNTS:
+                protected = True
+            parts.append({"dev": sub, "size": psize,
+                          "fstype": info.get("fstype", ""),
+                          "label": info.get("label", ""), "mount": mp})
+        disks.append({"dev": name, "size": size, "model": model,
+                      "removable": removable, "protected": protected,
+                      "parts": parts})
+    return disks
+
+
+def dev_protected(sub):
+    """True unless `sub` (a partition or disk name) sits on a disk the
+    inventory calls safe."""
+    for d in disk_inventory():
+        if d["dev"] == sub or any(p["dev"] == sub for p in d["parts"]):
+            return d["protected"]
+    return True  # unknown device = protected
+
 # ---- metrics history: one sample every SAMPLE_S, 24h ring -------------------
 
 SAMPLE_S = 10
@@ -715,6 +822,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/metrics-history": self.api_metrics_history,
             "/api/files": self.api_files,
             "/api/file-dl": self.api_file_dl,
+            "/api/disks": self.api_disks,
             "/api/logs": self.api_logs,
             "/api/stream": self.api_stream_get,
             "/api/stream-log": self.api_stream_log,
@@ -774,6 +882,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/pipe-key": self.api_pipe_key,
             "/api/pipe-contact": self.api_pipe_contact,
             "/api/file-op": self.api_file_op,
+            "/api/disk-op": self.api_disk_op,
             "/api/pipe-set": self.api_pipe_set,
             "/api/pipe-logout": self.api_pipe_logout,
             "/api/password": self.api_password,
@@ -940,28 +1049,68 @@ class Handler(BaseHTTPRequestHandler):
             "boot_report": boot_report(),
         })
 
-    # -- files: a /work-only explorer. Everything else on the box is either
-    # regenerated tmpfs or the agent's identity — not the owner's to shuffle.
-    FILES_ROOT = "/work"
+    # -- files: an explorer over /work plus any mounted external drive.
+    # Everything else on the box is either regenerated tmpfs or the agent's
+    # identity — not the owner's to shuffle. Paths are root-prefixed:
+    # "work/…" or "ext/<dev>/…"; "" is the virtual root listing the drives.
+
+    def _file_roots(self):
+        roots = {"work": FILES_WORK}
+        try:
+            for name in os.listdir(FILES_EXT_BASE):
+                p = os.path.join(FILES_EXT_BASE, name)
+                if os.path.ismount(p):
+                    roots["ext/" + name] = p
+        except OSError:
+            pass
+        return roots
 
     def _files_path(self, rel):
-        """Resolve a user-supplied relative path inside FILES_ROOT or raise
-        ValueError. Symlinks may not escape the root."""
-        rel = (rel or "").strip().lstrip("/")
+        """Resolve a root-prefixed path, or return None for the virtual root.
+        Raises ValueError on escape attempts and unknown roots."""
+        rel = (rel or "").strip().strip("/")
         if "\0" in rel:
             raise ValueError("bad path")
-        p = os.path.realpath(os.path.join(self.FILES_ROOT, rel))
-        root = os.path.realpath(self.FILES_ROOT)
-        if p != root and not p.startswith(root + "/"):
-            raise ValueError("path escapes /work")
+        if not rel:
+            return None
+        parts = rel.split("/")
+        if parts[0] == "work":
+            key, rest = "work", parts[1:]
+        elif parts[0] == "ext" and len(parts) >= 2:
+            key, rest = "ext/" + parts[1], parts[2:]
+        else:
+            raise ValueError("unknown drive")
+        base = self._file_roots().get(key)
+        if base is None:
+            raise ValueError("that drive is not mounted")
+        p = os.path.realpath(os.path.join(base, *rest))
+        rb = os.path.realpath(base)
+        if p != rb and not p.startswith(rb + "/"):
+            raise ValueError("path escapes the drive")
         return p
+
+    def _files_rel(self, p):
+        """Absolute path back to its root-prefixed form."""
+        for key, base in self._file_roots().items():
+            rb = os.path.realpath(base)
+            if p == rb:
+                return key
+            if p.startswith(rb + "/"):
+                return key + "/" + os.path.relpath(p, rb)
+        return ""
 
     def api_files(self):
         q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        raw = (q.get("path") or [""])[0]
         try:
-            p = self._files_path((q.get("path") or [""])[0])
+            p = self._files_path(raw)
         except ValueError as e:
             return self.err(400, str(e))
+        if p is None:
+            # virtual root: one folder per drive
+            dirs = [{"name": key, "mtime": 0} for key in sorted(self._file_roots())]
+            return self.send(200, {"path": "", "dirs": dirs, "files": [],
+                                   "truncated": False, "roots": True})
         if not os.path.isdir(p):
             return self.err(404, "no such folder")
         dirs, files = [], []
@@ -982,8 +1131,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(500, "cannot read folder: %s" % e)
         dirs.sort(key=lambda d: d["name"])
         files.sort(key=lambda f: f["name"])
-        rel = os.path.relpath(p, os.path.realpath(self.FILES_ROOT))
-        self.send(200, {"path": "" if rel == "." else rel,
+        self.send(200, {"path": self._files_rel(p),
                         "dirs": dirs[:2000], "files": files[:2000],
                         "truncated": len(dirs) > 2000 or len(files) > 2000})
 
@@ -993,8 +1141,11 @@ class Handler(BaseHTTPRequestHandler):
             p = self._files_path(body.get("path"))
         except ValueError as e:
             return self.err(400, str(e))
-        if os.path.realpath(p) == os.path.realpath(self.FILES_ROOT) and op != "mkdir":
-            return self.err(400, "not on /work itself")
+        if p is None:
+            return self.err(400, "pick a drive first")
+        root_paths = {os.path.realpath(b) for b in self._file_roots().values()}
+        if os.path.realpath(p) in root_paths and op != "mkdir":
+            return self.err(400, "not on a drive's top level itself")
         try:
             if op == "mkdir":
                 name = (body.get("name") or "").strip()
@@ -1003,11 +1154,18 @@ class Handler(BaseHTTPRequestHandler):
                 os.makedirs(os.path.join(p, name), exist_ok=False)
             elif op in ("move", "rename"):
                 dest = self._files_path(body.get("dest"))
+                if dest is None:
+                    return self.err(400, "pick a destination drive first")
                 if os.path.isdir(dest):
                     dest = os.path.join(dest, os.path.basename(p))
                 if os.path.exists(dest):
                     return self.err(400, "destination already exists")
-                os.rename(p, dest)
+                try:
+                    os.rename(p, dest)
+                except OSError as e:
+                    if e.errno != 18:  # EXDEV: across drives — copy+delete
+                        raise
+                    shutil.move(p, dest)
             elif op == "delete":
                 if os.path.isdir(p):
                     if os.listdir(p) and not body.get("recursive"):
@@ -1090,6 +1248,60 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             return self.err(500, str(e))
         self.send(200, {"ok": True, "name": name, "size": n})
+
+    def api_disks(self):
+        self.send(200, {"disks": disk_inventory(), "ext_base": FILES_EXT_BASE})
+
+    def api_disk_op(self, body):
+        op = body.get("op")
+        dev = (body.get("dev") or "").strip()
+        if not DEV_RE.fullmatch(dev) or not os.path.exists("/sys/class/block/" + dev):
+            return self.err(400, "no such device")
+        if dev_protected(dev):
+            return self.err(400, "that device belongs to the system (boot media or work disk) — refusing")
+        node = "/dev/" + dev
+        mp = os.path.join(FILES_EXT_BASE, dev)
+        if op == "mount":
+            if mounts_by_dev().get(os.path.realpath(node)):
+                return self.err(400, "already mounted")
+            try:
+                os.makedirs(mp, exist_ok=True)
+            except OSError as e:
+                return self.err(500, str(e))
+            rc, out = run(["mount", "-o", "noexec,nosuid,nodev", node, mp], timeout=30)
+            if rc != 0:
+                try:
+                    os.rmdir(mp)
+                except OSError:
+                    pass
+                return self.err(500, "mount failed: " + out.strip()[-200:])
+            self.send(200, {"ok": True, "mount": mp, "root": "ext/" + dev})
+        elif op == "unmount":
+            if not os.path.ismount(mp):
+                return self.err(400, "not mounted here")
+            rc, out = run(["umount", mp], timeout=30)
+            if rc != 0:
+                return self.err(500, "unmount failed (files in use?): " + out.strip()[-200:])
+            try:
+                os.rmdir(mp)
+            except OSError:
+                pass
+            self.send(200, {"ok": True})
+        elif op == "format":
+            label = (body.get("label") or "").strip()
+            if label and not re.fullmatch(r"[A-Za-z0-9_-]{1,16}", label):
+                return self.err(400, "label: letters, digits, _ -, max 16")
+            if mounts_by_dev().get(os.path.realpath(node)) or os.path.ismount(mp):
+                return self.err(400, "unmount it first")
+            args = ["mkfs.ext4", "-F"]
+            if label:
+                args += ["-L", label]
+            rc, out = run(args + [node], timeout=600)
+            if rc != 0:
+                return self.err(500, "format failed: " + out.strip()[-200:])
+            self.send(200, {"ok": True})
+        else:
+            self.err(400, "op must be mount, unmount or format")
 
     def api_metrics(self):
         up, pct, free_mb = uptime_disk()
