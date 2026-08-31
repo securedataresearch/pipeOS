@@ -297,6 +297,9 @@ async function dashboard() {
     <div class="card">
       <button id="save" style="margin-top:0">Save state to boot media now</button>
       <p class="note">The box also saves automatically every 15 minutes.</p>
+      <button id="repair" class="ghost">Repair remote access</button>
+      <button id="reboot" class="ghost">Reboot the box</button>
+      <p class="note" id="mmsg" hidden></p>
       <details><summary class="note">Change admin password</summary>
         <label for="cur">Current password</label><input id="cur" type="password">
         <label for="new">New password</label><input id="new" type="password" minlength="8">
@@ -344,6 +347,24 @@ async function dashboard() {
     try { const r = await api("/api/save", {}); if (!r.ok) alert("Save failed:\n" + r.detail); }
     catch (e) { alert(e.message); }
     busy(b, false);
+  };
+  v.querySelector("#repair").onclick = async () => {
+    const msg = v.querySelector("#mmsg"); msg.hidden = false; msg.textContent = "repairing…";
+    try {
+      const r = await api("/api/repair-access", {});
+      msg.textContent = r.actions.join("; ") + ".";
+    } catch (e) { msg.textContent = e.message; }
+  };
+  v.querySelector("#reboot").onclick = async () => {
+    if (!confirm("Reboot the box? It restores its last saved state and is back in about a minute.")) return;
+    const msg = v.querySelector("#mmsg"); msg.hidden = false;
+    try {
+      await api("/api/reboot", {});
+      msg.textContent = "Rebooting — this page will reconnect when the box is back.";
+      setTimeout(() => { const t = setInterval(async () => {
+        try { await api("/api/state"); clearInterval(t); location.reload(); } catch (e) {}
+      }, 5000); }, 20000);
+    } catch (e) { msg.textContent = e.message; }
   };
   v.querySelector("#chpw").onclick = async () => {
     const msg = v.querySelector("#pwmsg"); msg.hidden = false; msg.textContent = "…";

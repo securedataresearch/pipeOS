@@ -341,6 +341,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/password": self.api_password,
             "/api/save": self.api_save,
             "/api/chat": self.api_chat,
+            "/api/reboot": self.api_reboot,
+            "/api/repair-access": self.api_repair_access,
         }
         fn = handlers.get(path)
         if fn is None:
@@ -565,6 +567,43 @@ class Handler(BaseHTTPRequestHandler):
         with open("/work/pipebox/webchat/.started", "a"):
             pass
         self.send(200, {"reply": (p.stdout or "").strip()})
+
+    def api_reboot(self, _body):
+        """The recovery lever basho0's ssh lockout proved missing (pipeOS#148):
+        on a diskless box a clean reboot IS a restore to last-saved state, and
+        before this the only path to one on a shell-less box was the power
+        button. Answer first, then reboot — the browser deserves its 200."""
+        subprocess.Popen(
+            ["sh", "-c", "sleep 2; reboot"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self.send(200, {"ok": True, "note": "rebooting — the box is back in about a minute"})
+
+    def api_repair_access(self, _body):
+        """Cheaper than a reboot when only remote access is wedged: put the
+        key back if it vanished (the #148 failure), bounce sshd (clears any
+        in-process auth state), and say what was done."""
+        actions = []
+        try:
+            if (not os.path.getsize("/root/.ssh/authorized_keys")
+                    if os.path.exists("/root/.ssh/authorized_keys") else True):
+                raise OSError
+        except OSError:
+            if os.path.exists("/work/.authorized_keys.backup"):
+                os.makedirs("/root/.ssh", mode=0o700, exist_ok=True)
+                rc, _ = run(["cp", "/work/.authorized_keys.backup",
+                             "/root/.ssh/authorized_keys"])
+                if rc == 0:
+                    os.chmod("/root/.ssh/authorized_keys", 0o600)
+                    actions.append("restored authorized_keys from the /work backup")
+                else:
+                    actions.append("authorized_keys is missing and the backup would not restore")
+            else:
+                actions.append("authorized_keys is missing and no backup exists")
+        rc, out = run(["rc-service", "sshd", "restart"], timeout=60)
+        actions.append("restarted sshd" if rc == 0
+                       else "sshd restart FAILED: " + out.strip()[-150:])
+        self.send(200, {"ok": True, "actions": actions})
 
 
 def main():
