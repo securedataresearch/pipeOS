@@ -382,7 +382,11 @@ async function dashboard() {
     </aside>
     <main class="content">
       <section data-view="overview">
-        <div class="viewhead"><h1>Overview</h1></div>
+        <div class="viewhead" style="display:flex;align-items:center;justify-content:space-between;gap:1rem">
+          <h1>Overview</h1>
+          <span><span class="note" id="rechecknote"></span>
+          <button id="recheck" class="ghost small" type="button" data-vok>re-check now</button></span>
+        </div>
         <div id="alerts"></div>
         <div class="stats">
           <div class="tile"><div class="k">Last boot</div><div class="val small"><span class="${vcls}">${esc(verdict)}</span></div></div>
@@ -494,8 +498,10 @@ async function dashboard() {
               <button id="fmovehere" class="small" type="button">move here</button>
               <button id="fmovecancel" class="ghost small" type="button">cancel</button>
             </div>
-            <div id="flist">loading…</div>
             <p class="err" id="ferr" hidden></p>
+            <p class="note" id="fprog" hidden></p>
+            <div id="flist">loading…</div>
+            <p class="note" style="margin-bottom:0">Drop files anywhere on this card to upload; drag a row onto a folder to move it.</p>
           </div>
           ${st.services.claude ? `
           <div class="card chatpane">
@@ -736,36 +742,53 @@ async function dashboard() {
   wireChat("#chatgo", "#chatmsg", "#chatlog", "#chatnote");
   wireChat("#fchatgo", "#fchatmsg", "#fchatlog", "#fchatnote");
   // ---- overview: attention strip + live tiles ----
-  const alertItems = [];
+  // The strip renders from a report + live state; "re-check now" swaps in a
+  // fresh read-only selfcheck run, because the boot report is a snapshot of
+  // boot and healed findings linger there until the next reboot.
+  const alertItems = [], extraAlerts = [];
   const renderAlerts = () => {
     const box = v.querySelector("#alerts");
-    box.innerHTML = alertItems.length
-      ? alertItems.map(([c, t]) => `<div class="alert ${c}">${esc(t)}</div>`).join("")
+    const all = alertItems.concat(extraAlerts);
+    box.innerHTML = all.length
+      ? all.map(([c, t]) => `<div class="alert ${c}">${esc(t)}</div>`).join("")
       : `<div class="alert ok">All clear — nothing needs attention.</div>`;
   };
-  const addAlert = (cls, text) => { alertItems.push([cls, text]); renderAlerts(); };
-  // Boot-report lines are a snapshot from BOOT — anything we can verify live
-  // must not be parroted stale. Service-down lines are skipped entirely (the
-  // live st.running rows below cover them either way), and the pipe-auth
-  // line is re-checked against /api/pipe.
-  const liveSvcs = Object.keys(st.running);
-  (st.boot_report || "").split("\n").forEach(l => {
-    if (/^CRITICAL:/.test(l)) {
-      if (liveSvcs.some(k => l.includes(k))) return;
-      addAlert("bad", "at boot — " + l);
-    } else if (/^warn:/.test(l)) addAlert("warn", "at boot — " + l);
-  });
-  Object.entries(st.running).forEach(([k, ok]) => {
-    if (!ok) addAlert("bad", k + " is enabled but not running");
-  });
-  renderAlerts();
-  if (st.services.pipe) api("/api/pipe").then(p => {
-    if (!p.authed) return;
-    // both phrasings the boot report has used for a signed-out pipe
-    for (let i = alertItems.length - 1; i >= 0; i--)
-      if (/unauthenticated|not signed in/i.test(alertItems[i][1])) alertItems.splice(i, 1);
+  const addAlert = (cls, text) => { extraAlerts.push([cls, text]); renderAlerts(); };
+  const buildAlerts = (report, label) => {
+    alertItems.length = 0;
+    // Anything we can verify live must not be parroted stale: service-down
+    // lines defer to the live running map; the pipe sign-in line is
+    // re-checked against /api/pipe below.
+    const liveSvcs = Object.keys(st.running);
+    (report || "").split("\n").forEach(l => {
+      if (/^CRITICAL:/.test(l)) {
+        if (liveSvcs.some(k => l.includes(k))) return;
+        alertItems.push(["bad", label + l]);
+      } else if (/^warn:|^would fix:/.test(l)) alertItems.push(["warn", label + l]);
+    });
+    Object.entries(st.running).forEach(([k, ok]) => {
+      if (!ok) alertItems.push(["bad", k + " is enabled but not running"]);
+    });
     renderAlerts();
-  }).catch(() => {});
+    if (st.services.pipe) api("/api/pipe").then(p => {
+      if (!p.authed) return;
+      for (let i = alertItems.length - 1; i >= 0; i--)
+        if (/unauthenticated|not signed in/i.test(alertItems[i][1])) alertItems.splice(i, 1);
+      renderAlerts();
+    }).catch(() => {});
+  };
+  buildAlerts(st.boot_report, "at boot — ");
+  v.querySelector("#recheck").onclick = async () => {
+    const b = v.querySelector("#recheck"), n = v.querySelector("#rechecknote");
+    busy(b, true); n.textContent = "checking (up to a minute)…";
+    try {
+      const [h, s2] = await Promise.all([api("/api/health"), api("/api/status")]);
+      st.running = s2.running;
+      buildAlerts(h.text, "");
+      n.textContent = "checked just now" + (h.verdict ? " — " + h.verdict : "");
+    } catch (e) { n.textContent = e.message; }
+    busy(b, false);
+  };
   api("/api/metrics").then(m => {
     v.querySelector("#ovload").textContent = m.load1 == null ? "?" : m.load1.toFixed(2);
     v.querySelector("#ovloadn").textContent = m.ncpu ? m.ncpu + " cores" : "";
@@ -1156,19 +1179,52 @@ async function dashboard() {
       if (moving) v.querySelector("#fmovemsg").textContent =
         `Moving “${moving.name}” — open the destination folder, then`;
     };
+    const doMove = async (srcPath, destPath) => {
+      try {
+        await api("/api/file-op", { op: "move", path: srcPath, dest: destPath });
+        moving = null; syncMove(); loadFiles(cwd);
+      } catch (e) {
+        // surface it where the user is looking — the bottom-of-list err was
+        // invisible, which read as "the button does nothing"
+        moving = moving || { name: srcPath.split("/").pop(), path: srcPath };
+        movebar.hidden = false;
+        v.querySelector("#fmovemsg").textContent = "✗ " + e.message + " — pick another folder, or";
+      }
+    };
     const frow = (f, isDir) => {
       const p = (cwd ? cwd + "/" : "") + f.name;
-      const r = el(`<div class="frow">
+      const r = el(`<div class="frow" draggable="true">
         <span class="fic">${isDir ? ICON.files : '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>'}</span>
         <a class="fname" href="${isDir ? "#/files" : "/api/file-dl?path=" + encodeURIComponent(p)}">${esc(f.name)}</a>
         <span class="fmeta">${fmtSize(f.size)}</span>
         <span class="fmeta fdate">${fmtDate(f.mtime)}</span>
         <span class="facts">
+          ${isDir ? `<a class="ghost small btn" data-vok href="/api/file-tar?path=${encodeURIComponent(p)}">download</a>` : ""}
           <button class="ghost small" type="button" data-a="move">move</button>
           <button class="ghost small" type="button" data-a="ren">rename</button>
           <button class="ghost small" type="button" data-a="del">delete</button>
         </span></div>`);
       if (isDir) r.querySelector(".fname").onclick = e => { e.preventDefault(); loadFiles(p); };
+      // drag a row onto a folder row to move it there
+      r.addEventListener("dragstart", e => {
+        e.dataTransfer.setData("text/pipeos-path", p);
+        e.dataTransfer.effectAllowed = "move";
+      });
+      if (isDir) {
+        r.addEventListener("dragover", e => {
+          if (e.dataTransfer.types.includes("text/pipeos-path")) {
+            e.preventDefault(); e.dataTransfer.dropEffect = "move"; r.classList.add("dropover");
+          }
+        });
+        r.addEventListener("dragleave", () => r.classList.remove("dropover"));
+        r.addEventListener("drop", e => {
+          r.classList.remove("dropover");
+          const src = e.dataTransfer.getData("text/pipeos-path");
+          if (!src || src === p || p.startsWith(src + "/")) return;
+          e.preventDefault(); e.stopPropagation();
+          doMove(src, p);
+        });
+      }
       r.querySelector("[data-a=move]").onclick = () => { moving = { path: p, name: f.name }; syncMove(); };
       r.querySelector("[data-a=ren]").onclick = async () => {
         const nn = (prompt("Rename “" + f.name + "” to:", f.name) || "").trim();
@@ -1340,13 +1396,7 @@ async function dashboard() {
       catch (e) { bmsg.hidden = false; bmsg.textContent = e.message; }
     };
     loadFiles._disks = () => { loadDisks(); loadBackup(); };
-    v.querySelector("#fmovehere").onclick = async () => {
-      if (!moving) return;
-      try {
-        await api("/api/file-op", { op: "move", path: moving.path, dest: cwd });
-        moving = null; syncMove(); loadFiles(cwd);
-      } catch (e) { fileErr(e.message); }
-    };
+    v.querySelector("#fmovehere").onclick = () => { if (moving) doMove(moving.path, cwd); };
     v.querySelector("#fmovecancel").onclick = () => { moving = null; syncMove(); };
     v.querySelector("#fmkdir").onclick = async () => {
       const name = (prompt("New folder name:") || "").trim();
@@ -1354,21 +1404,55 @@ async function dashboard() {
       try { await api("/api/file-op", { op: "mkdir", path: cwd, name: name }); loadFiles(cwd); }
       catch (e) { fileErr(e.message); }
     };
-    const fupin = v.querySelector("#fupin");
-    v.querySelector("#fupbtn").onclick = () => fupin.click();
-    fupin.onchange = async () => {
-      for (const file of fupin.files) {
-        fileErr("uploading " + file.name + "…"); // reuse the line as progress
-        try {
-          const res = await fetch("/api/file-up?path=" + encodeURIComponent(cwd) +
-            "&name=" + encodeURIComponent(file.name), { method: "POST", body: file });
-          if (!res.ok) throw new Error((await res.json()).error || "upload failed");
-        } catch (e) { fileErr(e.message); fupin.value = ""; return; }
-      }
-      fupin.value = "";
-      fileErr("");
+    // uploads: XHR for real progress; shared by the button and drag-and-drop
+    const fprog = v.querySelector("#fprog");
+    const uploadOne = file => new Promise((res, rej) => {
+      const x = new XMLHttpRequest();
+      x.open("POST", "/api/file-up?path=" + encodeURIComponent(cwd) +
+        "&name=" + encodeURIComponent(file.name));
+      x.upload.onprogress = e => {
+        if (e.lengthComputable)
+          fprog.textContent = "uploading " + file.name + " — " + Math.round(e.loaded * 100 / e.total) + "%";
+      };
+      x.onload = () => {
+        if (x.status === 200) return res();
+        let msg = "upload failed";
+        try { msg = JSON.parse(x.responseText).error || msg; } catch (e2) {}
+        rej(new Error(msg));
+      };
+      x.onerror = () => rej(new Error("upload failed — connection dropped"));
+      x.send(file);
+    });
+    const uploadMany = async (files) => {
+      if (!cwd) return fileErr("open a drive first, then drop the files");
+      fileErr(""); fprog.hidden = false;
+      try {
+        for (const f of files) await uploadOne(f);
+        fprog.textContent = files.length + (files.length === 1 ? " file" : " files") + " uploaded.";
+        setTimeout(() => { fprog.hidden = true; }, 4000);
+      } catch (e) { fprog.hidden = true; fileErr(e.message); }
       loadFiles(cwd);
     };
+    const fupin = v.querySelector("#fupin");
+    v.querySelector("#fupbtn").onclick = () => fupin.click();
+    fupin.onchange = () => { const fs = [...fupin.files]; fupin.value = ""; if (fs.length) uploadMany(fs); };
+    // drop files from the desktop anywhere on the card
+    const fcard = flist.closest(".card");
+    fcard.addEventListener("dragover", e => {
+      if (e.dataTransfer && [...e.dataTransfer.types].includes("Files")) {
+        e.preventDefault(); fcard.classList.add("droptarget");
+      }
+    });
+    fcard.addEventListener("dragleave", e => {
+      if (!fcard.contains(e.relatedTarget)) fcard.classList.remove("droptarget");
+    });
+    fcard.addEventListener("drop", e => {
+      fcard.classList.remove("droptarget");
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+        e.preventDefault();
+        uploadMany([...e.dataTransfer.files]);
+      }
+    });
   }
   v.querySelector("#logview").onclick = async () => {
     const box = v.querySelector("#logbox"); box.hidden = false; box.textContent = "…";

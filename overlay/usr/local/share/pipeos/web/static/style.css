@@ -208,8 +208,11 @@ button.small { padding: .3rem .65rem; font-size: .82rem; margin: 0; width: auto;
 .frow .fic { width: 16px; height: 16px; flex: none; color: var(--muted); }
 .frow .fname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .frow .fmeta { color: var(--faint); font-size: .8rem; white-space: nowrap; }
-.frow .facts { display: flex; gap: .25rem; opacity: 0; transition: opacity .12s; }
+.frow .facts { display: flex; gap: .25rem; opacity: 0; transition: opacity .12s; align-items: center; }
 .frow:hover .facts, .frow:focus-within .facts { opacity: 1; }
+.frow .facts a.btn { padding: .3rem .65rem; font-size: .82rem; margin: 0; width: auto; text-decoration: none; }
+.frow.dropover { background: var(--accent-soft); border-radius: 6px; }
+.card.droptarget { outline: 2px dashed var(--accent); outline-offset: -6px; }
 .chatpane .chatlog { max-height: 22rem; min-height: 8rem; overflow-y: auto; font-size: .92rem; }
 .chatrow { display: flex; gap: .5rem; align-items: center; margin-top: .5rem; }
 .chatrow input { flex: 1; margin: 0; }
