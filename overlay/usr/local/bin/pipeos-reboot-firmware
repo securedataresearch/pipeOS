@@ -1,0 +1,35 @@
+#!/bin/sh
+# pipeos-reboot-firmware — arm the "boot into UEFI setup (BIOS)" indication.
+#
+# On a headless appliance nobody can reach the keyboard to hit Del/F2 at POST,
+# so this sets the standard UEFI "boot to firmware UI" indication — the same
+# mechanism `systemctl reboot --firmware-setup` and Windows use, done by hand
+# because this box has neither systemd nor efibootmgr. It only ARMS the flag and
+# exits 0; the caller reboots (so the web request can be answered first). It
+# refuses (nonzero, nothing armed) when the firmware does not advertise support,
+# so the operator is never surprised by a plain reboot that ignored the request.
+set -e
+
+GUID=8be4df61-93ca-11d2-aa0d-00e098032b8c
+EV=/sys/firmware/efi/efivars
+VAR="$EV/OsIndications-$GUID"
+SUP="$EV/OsIndicationsSupported-$GUID"
+
+[ -d "$EV" ] || { echo "not a UEFI boot (no efivars) — cannot enter firmware setup"; exit 1; }
+[ -e "$SUP" ] || { echo "firmware does not expose OsIndicationsSupported — boot-to-setup unavailable"; exit 1; }
+
+# The variable payload is a 4-byte attribute header followed by a uint64. Bit 0
+# (EFI_OS_INDICATIONS_BOOT_TO_FW_UI) of the SUPPORTED value must be set.
+supbit=$(dd if="$SUP" bs=1 skip=4 count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
+if [ -z "$supbit" ] || [ "$((supbit & 1))" -ne 1 ]; then
+	echo "this firmware does not support boot-to-setup on reboot"
+	exit 1
+fi
+
+# Write OsIndications = attrs(NV|BS|RT = 0x07) + uint64 little-endian, bit 0 set.
+# efivars files are immutable by default; clear it first (ignored if unsupported).
+chattr -i "$VAR" 2>/dev/null || true
+printf '\007\000\000\000\001\000\000\000\000\000\000\000' > "$VAR" \
+	|| { echo "could not set OsIndications (firmware or permissions refused)"; exit 1; }
+
+echo "firmware-setup armed"

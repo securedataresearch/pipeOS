@@ -48,6 +48,7 @@ async function boot() {
 const SERVICES = [
   { key: "claude", name: "Claude assistant", desc: "The box runs a Claude agent you can put to work.", def: true },
   { key: "stream", name: "Streaming", desc: "Restream video with ffmpeg (configure after setup).", def: false },
+  { key: "assistant", name: "Assistant terminal", desc: "A browser terminal into the box's assistant (set a password below).", def: false },
   { key: "agy", name: "Antigravity", desc: "The agy coding agent (if installed on this image).", def: false },
   { key: "pipe", name: "pipe messaging", desc: "Talk to the box by DM from anywhere, via pipe.online.", def: false },
   { key: "support", name: "Vendor support access", desc: "Let your vendor connect to help. Off unless you switch it on.", def: false },
@@ -269,89 +270,200 @@ async function dashboard() {
     </div>`).join("");
   const running = Object.entries(st.running).map(([k, ok]) =>
     `<span class="pill">${esc(k)}: ${ok ? "up" : "down"}</span>`).join(" ");
-  const v = el(`<div>
-    <div class="topbar">
-      <div><h1>${esc(st.nick || st.hostname)}</h1>
-        <span class="note">up ${fmtUptime(st.uptime_s)} · disk ${st.work_pct == null ? "?" : st.work_pct + "% used"}${st.work_free_mb != null ? " (" + Math.round(st.work_free_mb / 1024) + " GB free)" : ""}</span>
+  const showStream = !!st.services.stream;
+  const showAssist = !!(st.services.claude || st.services.assistant);
+  const ICON = {
+    overview: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>',
+    streaming: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4M19 4.9a10 10 0 0 1 0 14.2M5 19.1A10 10 0 0 1 5 4.9"/></svg>',
+    assistant: '<svg viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.5 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 17 0z"/></svg>',
+    services: '<svg viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>',
+    network: '<svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+    system: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="2" x2="9" y2="4"/><line x1="15" y1="2" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="22"/><line x1="15" y1="20" x2="15" y2="22"/><line x1="20" y1="9" x2="22" y2="9"/><line x1="20" y1="15" x2="22" y2="15"/><line x1="2" y1="9" x2="4" y2="9"/><line x1="2" y1="15" x2="4" y2="15"/></svg>',
+  };
+  const navItem = (id, label) => `<a data-nav="${id}" href="#/${id}"><span class="ic">${ICON[id] || ""}</span>${label}</a>`;
+  const v = el(`<div class="app">
+    <aside class="sidenav">
+      <div class="brand"><span class="dot"></span>pipeOS</div>
+      <div class="boxid">
+        <div class="boxname">${esc(st.nick || st.hostname)}</div>
+        <span class="${vcls}">${esc(verdict)}</span>
       </div>
-      <button id="logout" class="ghost">Sign out</button>
-    </div>
-    <div class="card">
-      <p style="margin-top:0">Last boot: <span class="${vcls}">${esc(verdict)}</span></p>
-      <details><summary class="note">Full boot report</summary>
-        <pre class="report">${esc(st.boot_report || "(none this boot)")}</pre></details>
-    </div>
-    ${st.services.claude ? `
-    <h2>Ask the box</h2>
-    <div class="card">
-      <div id="chatlog" style="max-height:16rem;overflow-y:auto"></div>
-      <label for="chatmsg">Message</label>
-      <input id="chatmsg" type="text" autocomplete="off" placeholder="Ask your assistant anything">
-      <button id="chatgo">Send</button>
-      <p class="note" id="chatnote" hidden></p>
-    </div>` : ""}
-    <h2>Services</h2>
-    <div class="card">${rows}<p class="err" id="serr" hidden></p></div>
-    <p>${running}</p>
-    ${st.services.stream ? `
-    <h2>Streaming</h2>
-    <div class="card">
-      <label for="ssrc">Source (input URL or device)</label>
-      <input id="ssrc" type="text" placeholder="e.g. https://example.com/live or /dev/video0">
-      <label for="sdst">Destination</label>
-      <input id="sdst" type="text" placeholder="e.g. rtmp://a.rtmp.youtube.com/live2">
-      <label for="skey">Stream key</label>
-      <input id="skey" type="password" autocomplete="off" placeholder="leave blank to keep the saved key">
-      <label for="sargs">Extra ffmpeg args (optional)</label>
-      <input id="sargs" type="text" placeholder="default: -c copy -f flv">
-      <button id="ssave">Save & restart stream</button>
-      <button id="slog" class="ghost">Show stream log</button>
-      <p class="note" id="smsg" hidden></p>
-      <pre class="report" id="slogbox" hidden></pre>
-    </div>` : ""}
-    ${st.services.pipe ? `
-    <h2>pipe</h2>
-    <div class="card" id="pipecard">
-      <p class="note" id="pmsg">loading…</p>
-      <div id="pipesignin" hidden>
-        <label for="pkey2">One-time key from pipe.online</label>
-        <input id="pkey2" type="password" autocomplete="off">
-        <button id="pgo2">Sign in</button>
+      <nav>
+        ${navItem("overview", "Overview")}
+        ${showStream ? navItem("streaming", "Streaming") : ""}
+        ${showAssist ? navItem("assistant", "Assistant") : ""}
+        ${navItem("services", "Services")}
+        ${navItem("network", "Network")}
+        ${navItem("system", "System")}
+      </nav>
+      <div class="navfoot">
+        <span class="note">up ${fmtUptime(st.uptime_s)} · ${st.work_pct == null ? "disk ?" : st.work_pct + "% disk"}${st.work_free_mb != null ? " · " + Math.round(st.work_free_mb / 1024) + " GB free" : ""}</span>
+        <button id="logout" class="ghost">Sign out</button>
       </div>
-      <label for="cid">Team board (cohort id, digits; blank to leave)</label>
-      <input id="cid" type="text">
-      <button id="cgo2" class="ghost">Set cohort</button>
-      <p class="note" id="cmsg2" hidden></p>
-    </div>` : ""}
-    <h2>Logs</h2>
-    <div class="card">
-      <select id="logsel">
-        ${["selfcheck", "pipeos-web", "pipeos-mdns", "pipe-daemon", "pipebox-listener", "pipeos-stream", "selfupdate", "worksweep"].map(l => `<option>${l}</option>`).join("")}
-      </select>
-      <button id="logview" class="ghost" style="margin-top:.4rem">View</button>
-      <pre class="report" id="logbox" hidden></pre>
-    </div>
-    <h2>Maintenance</h2>
-    <div class="card">
-      <button id="save" style="margin-top:0">Save state to boot media now</button>
-      <p class="note">The box also saves automatically every 15 minutes.</p>
-      <button id="repair" class="ghost">Repair remote access</button>
-      <button id="reboot" class="ghost">Reboot the box</button>
-      <p class="note" id="mmsg" hidden></p>
-      <div id="updrow" style="margin-top:1rem">
-        <span class="pill" id="updstate">updates: checking…</span>
-        <button id="updnow" class="ghost" hidden>Update now</button>
-      </div>
-      <details><summary class="note">Change admin password</summary>
-        <label for="cur">Current password</label><input id="cur" type="password">
-        <label for="new">New password</label><input id="new" type="password" minlength="8">
-        <button id="chpw">Change password</button>
-        <p class="note" id="pwmsg" hidden></p>
-      </details>
-    </div>
+    </aside>
+    <main class="content">
+      <section data-view="overview">
+        <div class="viewhead"><h1>Overview</h1></div>
+        <div class="stats">
+          <div class="tile"><div class="k">Status</div><div class="val small"><span class="${vcls}">${esc(verdict)}</span></div></div>
+          <div class="tile"><div class="k">Uptime</div><div class="val">${fmtUptime(st.uptime_s)}</div></div>
+          <div class="tile"><div class="k">Disk</div><div class="val">${st.work_pct == null ? "?" : st.work_pct + "%"}</div><div class="note">${st.work_free_mb != null ? Math.round(st.work_free_mb / 1024) + " GB free" : "used"}</div></div>
+        </div>
+        ${showStream ? `
+        <div class="card">
+          <div class="cardhead"><h2>Streaming</h2><span class="onair off" id="ovair"><span class="blip"></span>checking…</span></div>
+          <div id="ovtargets" class="note">loading…</div>
+        </div>` : ""}
+        <div class="card">
+          <div class="cardhead"><h2>Services</h2></div>
+          <div>${running}</div>
+          <details style="margin-top:.6rem"><summary class="note">Full boot report</summary>
+            <pre class="report">${esc(st.boot_report || "(none this boot)")}</pre></details>
+        </div>
+      </section>
+
+      ${showStream ? `
+      <section data-view="streaming" hidden>
+        <div class="viewhead"><h1>Streaming</h1></div>
+        <div class="card">
+          <label for="smode">Mode</label>
+          <select id="smode">
+            <option value="media">Restream an existing video feed</option>
+            <option value="browser">Render a web page to video (browser)</option>
+          </select>
+          <div id="smedia">
+            <label for="ssrc">Source (input URL or device)</label>
+            <input id="ssrc" type="text" placeholder="e.g. https://example.com/live or /dev/video0">
+          </div>
+          <div id="sbrowser" hidden>
+            <label for="surl">Page URL to render</label>
+            <input id="surl" type="text" placeholder="e.g. https://basho.dev">
+            <label for="sres">Resolution</label>
+            <input id="sres" type="text" placeholder="1920x1080">
+            <label for="sfps">Frame rate</label>
+            <input id="sfps" type="text" placeholder="30">
+            <label class="note" style="display:flex;align-items:center;gap:.5rem;margin-top:.4rem">
+              <input id="svaapi" type="checkbox" style="width:auto"> Hardware encode on the Intel GPU (VAAPI)
+            </label>
+          </div>
+          <label>Providers</label>
+          <div id="targets"></div>
+          <button id="addtarget" class="ghost" type="button" style="margin-bottom:.6rem">+ Add a provider</button>
+          <label for="sbitrate">Bitrate (per target)</label>
+          <input id="sbitrate" type="text" placeholder="3500k">
+          <label for="sargs">Extra ffmpeg args (optional)</label>
+          <input id="sargs" type="text" placeholder="advanced — usually blank">
+          <button id="ssave">Save & restart stream</button>
+          <button id="slog" class="ghost">Show stream log</button>
+          <p class="note" id="smsg" hidden></p>
+          <pre class="report" id="slogbox" hidden></pre>
+        </div>
+      </section>` : ""}
+
+      ${showAssist ? `
+      <section data-view="assistant" hidden>
+        <div class="viewhead"><h1>Assistant</h1></div>
+        ${st.services.claude ? `
+        <div class="card">
+          <h2>Ask the box</h2>
+          <div id="chatlog" style="max-height:16rem;overflow-y:auto"></div>
+          <label for="chatmsg">Message</label>
+          <input id="chatmsg" type="text" autocomplete="off" placeholder="Ask your assistant anything">
+          <button id="chatgo">Send</button>
+          <p class="note" id="chatnote" hidden></p>
+        </div>` : ""}
+        ${st.services.assistant ? `
+        <div class="card">
+          <h2>Terminal</h2>
+          <p class="note">A full terminal into this box's assistant, in your browser — the same session as the chat.</p>
+          <label for="apass">Terminal password</label>
+          <input id="apass" type="password" autocomplete="off" placeholder="leave blank to keep the saved password">
+          <label for="aport">Port</label>
+          <input id="aport" type="text" placeholder="7681">
+          <button id="asave">Save & restart terminal</button>
+          <a id="aopen" class="btn ghost" href="#" target="_blank" rel="noopener" style="display:none">Open terminal ↗</a>
+          <p class="note" id="amsg" hidden></p>
+        </div>` : ""}
+      </section>` : ""}
+
+      <section data-view="services" hidden>
+        <div class="viewhead"><h1>Services</h1></div>
+        <div class="card">${rows}<p class="err" id="serr" hidden></p></div>
+        ${st.services.pipe ? `
+        <div class="card" id="pipecard">
+          <h2>pipe messaging</h2>
+          <p class="note" id="pmsg">loading…</p>
+          <div id="pipesignin" hidden>
+            <label for="pkey2">One-time key from pipe.online</label>
+            <input id="pkey2" type="password" autocomplete="off">
+            <button id="pgo2">Sign in</button>
+          </div>
+          <label for="cid">Team board (cohort id, digits; blank to leave)</label>
+          <input id="cid" type="text">
+          <button id="cgo2" class="ghost">Set cohort</button>
+          <p class="note" id="cmsg2" hidden></p>
+        </div>` : ""}
+      </section>
+
+      <section data-view="network" hidden>
+        <div class="viewhead"><h1>Network</h1></div>
+        <div class="card">
+          <h2>Secure access (HTTPS)</h2>
+          <p class="note" id="tlsnote">checking…</p>
+          <a class="btn ghost" id="camobile" href="/pipeos-ca.mobileconfig">iPhone / iPad: install profile</a>
+          <a class="btn ghost" id="cadl" href="/ca.crt" download>Mac / Windows / Android: download certificate</a>
+          <p class="note" style="margin-bottom:.2rem"><b>Linux:</b> one command — installs into the system store, Chrome, and Firefox:</p>
+          <pre class="report" id="lnxcmd" style="user-select:all;margin-top:0"></pre>
+          <details><summary class="note">How to install it (once per device)</summary>
+            <p class="note" style="line-height:1.5">
+            <b>iPhone/iPad:</b> tap the profile above → Settings offers to install it → then Settings › General › About › Certificate Trust Settings → turn it on.<br>
+            <b>Mac:</b> open the .crt → Keychain Access → double-click “pipeOS … CA” → Trust → “Always Trust”.<br>
+            <b>Windows:</b> open the .crt → Install Certificate → Local Machine → Trusted Root Certification Authorities.<br>
+            <b>Android:</b> Settings › Security › Encryption &amp; credentials › Install a certificate › CA certificate → pick the .crt.<br>
+            <b>Linux (manual):</b> paste the command above into a terminal; it needs sudo and, for the browsers, the certutil tool (package <code>libnss3-tools</code> or <code>nss-tools</code>).<br>
+            Then reload over <span id="httpslink"></span> and you’ll see the padlock.</p>
+          </details>
+        </div>
+      </section>
+
+      <section data-view="system" hidden>
+        <div class="viewhead"><h1>System</h1></div>
+        <div class="stats" id="metrics">
+          <div class="tile"><div class="k">Metrics</div><div class="val small">loading…</div></div>
+        </div>
+        <div class="card">
+          <h2>Logs</h2>
+          <select id="logsel">
+            ${["selfcheck", "pipeos-web", "pipeos-mdns", "pipe-daemon", "pipebox-listener", "pipeos-stream", "pipeos-assistant", "selfupdate", "worksweep"].map(l => `<option>${l}</option>`).join("")}
+          </select>
+          <button id="logview" class="ghost" style="margin-top:.4rem">View</button>
+          <pre class="report" id="logbox" hidden></pre>
+        </div>
+        <div class="card">
+          <h2>Maintenance</h2>
+          <button id="save" style="margin-top:0">Save state to boot media now</button>
+          <p class="note">The box also saves automatically every 15 minutes.</p>
+          <button id="repair" class="ghost">Repair remote access</button>
+          <button id="reboot" class="ghost">Reboot the box</button>
+          <button id="rebootfw" class="ghost">Reboot into BIOS</button>
+          <p class="note" id="mmsg" hidden></p>
+          <div id="updrow" style="margin-top:1rem">
+            <span class="pill" id="updstate">updates: checking…</span>
+            <button id="updnow" class="ghost" hidden>Update now</button>
+          </div>
+          <details><summary class="note">Change admin password</summary>
+            <label for="cur">Current password</label><input id="cur" type="password">
+            <label for="new">New password</label><input id="new" type="password" minlength="8">
+            <button id="chpw">Change password</button>
+            <p class="note" id="pwmsg" hidden></p>
+          </details>
+        </div>
+      </section>
+    </main>
   </div>`);
   v.querySelector("#logout").onclick = async () => { try { await api("/api/logout", {}); } catch (e) {} boot(); };
   v.querySelectorAll("input[type=checkbox]").forEach(c => {
+    if (!c.dataset.k) return;  // service toggles only — not e.g. the VAAPI box
     c.onchange = async () => {
       const serr = v.querySelector("#serr"); serr.hidden = true;
       const picked = {}; picked[c.dataset.k] = c.checked;
@@ -392,19 +504,94 @@ async function dashboard() {
   };
   const ssave = v.querySelector("#ssave");
   if (ssave) {
+    const smode = v.querySelector("#smode");
+    const applyMode = () => {
+      const browser = smode.value === "browser";
+      v.querySelector("#sbrowser").hidden = !browser;
+      v.querySelector("#smedia").hidden = browser;
+    };
+    smode.onchange = applyMode;
+    const PROVIDERS = {
+      YouTube: "rtmp://a.rtmp.youtube.com/live2",
+      Twitch: "rtmp://live.twitch.tv/app",
+      Kick: "rtmps://fa723fc1b171.global-contribute.live-video.net/app",
+      Facebook: "rtmps://live-api-s.facebook.com:443/rtmp/",
+      Custom: "",
+    };
+    const tbox = v.querySelector("#targets");
+    // Render one provider row. `t` is {name,url,on,key_set} from the server.
+    const addRow = (t) => {
+      if (tbox.children.length >= 4) return;
+      t = t || { name: "Custom", url: "", on: true, key_set: false };
+      const row = el(`<div class="surface" style="padding:.6rem;margin-bottom:.5rem;display:grid;gap:.35rem"></div>`);
+      const provsel = el(`<select></select>`);
+      for (const name of Object.keys(PROVIDERS)) {
+        const o = el(`<option>${name}</option>`); if (t.name === name) o.selected = true; provsel.appendChild(o);
+      }
+      const url = el(`<input type="text" placeholder="rtmp://…" class="well">`); url.value = t.url || (PROVIDERS[t.name] || "");
+      const key = el(`<input type="password" autocomplete="off" class="well" placeholder="${t.key_set ? "(saved — blank keeps it)" : "stream key"}">`);
+      const onwrap = el(`<label class="note" style="display:flex;align-items:center;gap:.4rem"></label>`);
+      const on = el(`<input type="checkbox" style="width:auto">`); on.checked = t.on !== false;
+      onwrap.appendChild(on); onwrap.appendChild(document.createTextNode(" stream to this"));
+      const rm = el(`<button class="ghost" type="button" style="justify-self:start">remove</button>`);
+      provsel.onchange = () => { const u = PROVIDERS[provsel.value]; if (u || provsel.value !== "Custom") url.value = u; };
+      rm.onclick = () => row.remove();
+      row.appendChild(provsel); row.appendChild(url); row.appendChild(key); row.appendChild(onwrap); row.appendChild(rm);
+      row._get = () => ({ name: provsel.value, url: url.value, key: key.value, on: on.checked, keep_key: !key.value });
+      tbox.appendChild(row);
+    };
+    v.querySelector("#addtarget").onclick = () => addRow();
+    // Overview card: the same /api/stream answer drives the on-air badge.
+    const ovair = v.querySelector("#ovair"), ovtargets = v.querySelector("#ovtargets");
+    const renderOvStream = (s) => {
+      if (!ovair) return;
+      if (!s) {
+        ovair.className = "onair off";
+        ovair.innerHTML = '<span class="blip"></span>unknown';
+        ovtargets.textContent = "Could not read the stream status.";
+        return;
+      }
+      const live = !!s.running;
+      ovair.className = "onair " + (live ? "live" : "off");
+      ovair.innerHTML = '<span class="blip"></span>' + (live ? "ON AIR" : "off air");
+      const ts = (s.targets || []).filter(t => t.url || t.key_set || t.name);
+      if (!ts.length) {
+        ovtargets.className = "note";
+        ovtargets.innerHTML = 'No providers configured yet — set them up under <a href="#/streaming">Streaming</a>.';
+        return;
+      }
+      ovtargets.className = "";
+      ovtargets.replaceChildren(...ts.map(t => el(`<div class="targetline">
+        <span class="tdot ${live && t.on !== false ? "on" : "off"}"></span>
+        <span class="tname">${esc(t.name || "target")}</span>
+        ${t.on === false ? '<span class="note">off</span>' : ""}
+        <span class="turl">${esc(t.url || "")}</span></div>`)));
+    };
     api("/api/stream").then(s => {
-      v.querySelector("#ssrc").value = s.src; v.querySelector("#sdst").value = s.dst;
+      renderOvStream(s);
+      smode.value = s.mode || "media"; applyMode();
+      v.querySelector("#ssrc").value = s.src; v.querySelector("#surl").value = s.url || "";
+      v.querySelector("#sres").value = s.res || ""; v.querySelector("#sfps").value = s.fps || "";
+      v.querySelector("#sbitrate").value = s.bitrate || ""; v.querySelector("#svaapi").checked = !!s.vaapi;
       v.querySelector("#sargs").value = s.args;
-      if (s.key_set) v.querySelector("#skey").placeholder = "(a key is saved — blank keeps it)";
-    }).catch(() => {});
+      tbox.textContent = "";
+      const rows = (s.targets || []).filter(t => t.url || t.key_set || t.name);
+      if (rows.length) rows.forEach(addRow);
+      else { addRow({ name: "YouTube", url: PROVIDERS.YouTube, on: true }); addRow({ name: "Twitch", url: PROVIDERS.Twitch, on: true }); }
+    }).catch(() => { renderOvStream(null); });
     ssave.onclick = async () => {
       const msg = v.querySelector("#smsg"); msg.hidden = false; msg.textContent = "saving…";
       busy(ssave, true);
       try {
+        const targets = Array.from(tbox.children).map(r => r._get());
         const r = await api("/api/stream-config", {
-          src: v.querySelector("#ssrc").value, dst: v.querySelector("#sdst").value,
-          key: v.querySelector("#skey").value, args: v.querySelector("#sargs").value,
-          keep_key: !v.querySelector("#skey").value,
+          mode: smode.value,
+          src: v.querySelector("#ssrc").value, url: v.querySelector("#surl").value,
+          res: v.querySelector("#sres").value, fps: v.querySelector("#sfps").value,
+          bitrate: v.querySelector("#sbitrate").value,
+          vaapi: v.querySelector("#svaapi").checked,
+          args: v.querySelector("#sargs").value,
+          targets,
         });
         msg.textContent = r.problems.length ? r.problems.join("; ") : "Saved — stream restarted.";
       } catch (e) { msg.textContent = e.message; }
@@ -413,6 +600,35 @@ async function dashboard() {
     v.querySelector("#slog").onclick = async () => {
       const box = v.querySelector("#slogbox"); box.hidden = false; box.textContent = "…";
       try { box.textContent = (await api("/api/stream-log")).text; } catch (e) { box.textContent = e.message; }
+    };
+  }
+  const asave = v.querySelector("#asave");
+  if (asave) {
+    const aopen = v.querySelector("#aopen");
+    const showOpen = (port) => {
+      aopen.href = location.protocol + "//" + location.hostname + ":" + (port || "7681") + "/";
+      aopen.style.display = "";
+    };
+    api("/api/assistant").then(a => {
+      v.querySelector("#aport").value = a.port || "";
+      if (a.pass_set) {
+        v.querySelector("#apass").placeholder = "(a password is saved — blank keeps it)";
+        showOpen(a.port);
+      }
+    }).catch(() => {});
+    asave.onclick = async () => {
+      const msg = v.querySelector("#amsg"); msg.hidden = false; msg.textContent = "saving…";
+      busy(asave, true);
+      try {
+        const r = await api("/api/assistant-config", {
+          password: v.querySelector("#apass").value,
+          port: v.querySelector("#aport").value,
+          keep_pass: !v.querySelector("#apass").value,
+        });
+        msg.textContent = r.problems.length ? r.problems.join("; ") : "Saved — terminal restarted.";
+        showOpen(v.querySelector("#aport").value);
+      } catch (e) { msg.textContent = e.message; }
+      busy(asave, false);
     };
   }
   const pcard = v.querySelector("#pipecard");
@@ -445,6 +661,20 @@ async function dashboard() {
       box.textContent = (await r.json()).text;
     } catch (e) { box.textContent = e.message; }
   };
+  {
+    const tlsnote = v.querySelector("#tlsnote");
+    const host = location.hostname;
+    const link = v.querySelector("#httpslink");
+    const a = el(`<a href="https://${host}/">https://${host}/</a>`);
+    link.appendChild(a);
+    v.querySelector("#lnxcmd").textContent = `curl -s http://${host}/install-ca.sh | sudo sh`;
+    if (location.protocol === "https:") {
+      tlsnote.textContent = "✓ This connection is secure.";
+      v.querySelector("#camobile").parentNode.querySelectorAll(".btn").forEach(b => b.classList.add("done"));
+    } else {
+      tlsnote.textContent = "Install this box’s certificate once per device to get a secure padlock — no more browser warnings. Pick your device below.";
+    }
+  }
   api("/api/update").then(u => {
     v.querySelector("#updstate").textContent = "updates: " + u.state + (u.applied ? ` (applied ${u.applied})` : "");
     if (u.state === "update available") v.querySelector("#updnow").hidden = false;
@@ -475,6 +705,14 @@ async function dashboard() {
       }, 5000); }, 20000);
     } catch (e) { msg.textContent = e.message; }
   };
+  v.querySelector("#rebootfw").onclick = async () => {
+    if (!confirm("Reboot into the BIOS/UEFI setup? Connect a monitor + keyboard to the box first — it will stop at the firmware screen, not boot pipeOS.")) return;
+    const msg = v.querySelector("#mmsg"); msg.hidden = false; msg.textContent = "arming firmware setup…";
+    try {
+      const r = await api("/api/reboot-firmware", {});
+      msg.textContent = r.note || "Rebooting into firmware setup.";
+    } catch (e) { msg.textContent = e.message; }
+  };
   v.querySelector("#chpw").onclick = async () => {
     const msg = v.querySelector("#pwmsg"); msg.hidden = false; msg.textContent = "…";
     try {
@@ -482,6 +720,44 @@ async function dashboard() {
       msg.textContent = "Password changed.";
     } catch (e) { msg.textContent = e.message; }
   };
+  // ---- system metrics: poll every 5s, but only while the view is open ----
+  const mbox = v.querySelector("#metrics");
+  let mtimer = null;
+  const renderMetrics = (m) => {
+    const tile = (k, val, note) => `<div class="tile"><div class="k">${k}</div><div class="val">${val}</div>${note ? `<div class="note">${note}</div>` : ""}</div>`;
+    const memUsed = (m.mem_total_mb != null && m.mem_avail_mb != null) ? m.mem_total_mb - m.mem_avail_mb : null;
+    const memPct = (memUsed != null && m.mem_total_mb) ? Math.round(memUsed * 100 / m.mem_total_mb) : null;
+    mbox.innerHTML =
+      tile("CPU load", m.load1 == null ? "?" : m.load1.toFixed(2),
+        (m.ncpu ? m.ncpu + " cores" : "") + (m.load5 != null ? " · 5m " + m.load5.toFixed(2) : "")) +
+      tile("Memory", memPct == null ? "?" : memPct + "%",
+        memUsed != null ? (memUsed / 1024).toFixed(1) + " / " + (m.mem_total_mb / 1024).toFixed(1) + " GB" : "") +
+      tile("CPU temp", m.temp_c == null ? "—" : m.temp_c + "°C", m.temp_c == null ? "no sensor" : "") +
+      tile("RAM disk /", m.root_pct == null ? "?" : m.root_pct + "%", "root fs lives in RAM") +
+      tile("Work disk", m.work_pct == null ? "?" : m.work_pct + "%",
+        m.work_free_mb != null ? Math.round(m.work_free_mb / 1024) + " GB free" : "");
+  };
+  const pollMetrics = async () => {
+    if (!mbox.isConnected) { clearInterval(mtimer); mtimer = null; return; }
+    try { renderMetrics(await api("/api/metrics")); }
+    catch (e) { mbox.innerHTML = `<div class="tile"><div class="k">Metrics</div><div class="val small">${esc(e.message)}</div></div>`; }
+  };
+  // ---- view router: show one section at a time, driven by the URL hash ----
+  const views = v.querySelectorAll("[data-view]");
+  const navs = v.querySelectorAll("[data-nav]");
+  const names = Array.from(views).map(s => s.dataset.view);
+  const show = (name) => {
+    if (!names.includes(name)) name = names[0];
+    views.forEach(s => { s.hidden = s.dataset.view !== name; });
+    navs.forEach(a => a.classList.toggle("active", a.dataset.nav === name));
+    const c = v.querySelector(".content"); if (c) c.scrollTop = 0;
+    if (name === "system") {
+      if (!mtimer) { pollMetrics(); mtimer = setInterval(pollMetrics, 5000); }
+    } else if (mtimer) { clearInterval(mtimer); mtimer = null; }
+  };
+  const route = () => show((location.hash.match(/^#\/(\w+)/) || [])[1] || names[0]);
+  window.addEventListener("hashchange", route);
+  route();
   app.replaceChildren(v);
 }
 

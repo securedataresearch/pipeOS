@@ -19,19 +19,25 @@ State files (all persisted via lbu.list + lines):
 Sessions live in /run/pipeos/web-sessions (tmpfs: a reboot logs everyone out).
 """
 
+import base64
+import glob
 import hmac
+import html
 import json
 import os
 import re
 import secrets
 import signal
 import socket
+import ssl
 import subprocess
 import sys
+import threading
+import uuid
 import time
 import urllib.parse
 import urllib.request
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 ETC = "/etc/pipeos"
 ADMIN_CONF = ETC + "/web-admin.conf"
@@ -39,13 +45,116 @@ SERVICES_CONF = ETC + "/services.conf"
 CLAUDE_AUTH = ETC + "/claude-auth.env"
 CARD = ETC + "/card.conf"
 PROVISIONED = ETC + "/provisioned"
+TLS_DIR = ETC + "/tls"
+CA_CRT = TLS_DIR + "/ca.crt"
+SRV_CRT = TLS_DIR + "/server.crt"
+SRV_KEY = TLS_DIR + "/server.key"
 SESS_DIR = "/run/pipeos/web-sessions"
 BOOT_REPORT = "/run/pipeos/boot-report"
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 SESSION_IDLE_S = 24 * 3600
 NICK_RE = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
-SVC_KEYS = ("pipe", "claude", "stream", "agy", "support")
+SVC_KEYS = ("pipe", "claude", "stream", "agy", "support", "assistant")
+
+# How many stream targets (providers) the dashboard manages. Each is a slot in
+# stream.conf: STREAM_T{N}_URL / _KEY / _ON / _NAME.
+STREAM_MAX_TARGETS = 4
+
+# The server is threaded (ThreadingHTTPServer) so a slow request — a service
+# start, an update, a save — never blocks the dashboard from loading: that
+# single-threaded stall was the "the box isn't coming up" symptom. Reads run
+# concurrently; every state-mutating POST takes this lock, which preserves the
+# claim-race serialization the single-threaded server used to give for free
+# (two browsers claiming an unclaimed box still resolve to one winner).
+MUTATE_LOCK = threading.Lock()
+
+# Apple .mobileconfig that installs the box CA as a trusted root. Filled by
+# serve_ca_mobileconfig; no literal braces in the body so str.format is safe.
+MOBILECONFIG_TMPL = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadType</key><string>com.apple.security.root</string>
+      <key>PayloadVersion</key><integer>1</integer>
+      <key>PayloadIdentifier</key><string>online.pipe.ca.{cuuid}</string>
+      <key>PayloadUUID</key><string>{cuuid}</string>
+      <key>PayloadDisplayName</key><string>pipeOS {host} CA</string>
+      <key>PayloadCertificateFileName</key><string>pipeos-ca.crt</string>
+      <key>PayloadContent</key>
+      <data>{cert_b64}</data>
+    </dict>
+  </array>
+  <key>PayloadType</key><string>Configuration</string>
+  <key>PayloadVersion</key><integer>1</integer>
+  <key>PayloadIdentifier</key><string>online.pipe.profile.{puuid}</string>
+  <key>PayloadUUID</key><string>{puuid}</string>
+  <key>PayloadDisplayName</key><string>pipeOS {host} — secure access</string>
+  <key>PayloadDescription</key><string>Trusts this pipeOS box so its dashboard shows a secure padlock.</string>
+</dict>
+</plist>
+"""
+
+
+# Linux CA installer, served at /install-ca.sh with @PEM@/@HOST@ filled in
+# (str.replace, not format — the shell body is full of braces and dollars).
+# One pasted command covers the system trust store AND the browser NSS stores,
+# because Chrome and Firefox on Linux ignore the system store entirely.
+CA_INSTALLER_TMPL = r"""#!/bin/sh
+# pipeOS CA installer (Linux) — trust the box "@HOST@" for HTTPS.
+# Usage:  curl -s http://@HOST@.local/install-ca.sh | sudo sh
+set -e
+if [ "$(id -u)" != 0 ]; then
+	echo "needs root — run:  curl -s http://@HOST@.local/install-ca.sh | sudo sh" >&2
+	exit 1
+fi
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+cat > "$tmp" <<'PEM'
+@PEM@
+PEM
+chmod 644 "$tmp"
+
+# --- system trust store (curl, package managers, most CLI tools) ---
+if [ -d /usr/local/share/ca-certificates ] && command -v update-ca-certificates >/dev/null 2>&1; then
+	# Debian / Ubuntu / Alpine
+	cp "$tmp" /usr/local/share/ca-certificates/pipeos-ca-@HOST@.crt
+	update-ca-certificates >/dev/null
+	echo "installed: system trust store (update-ca-certificates)"
+elif [ -d /etc/pki/ca-trust/source/anchors ]; then
+	# Fedora / RHEL
+	cp "$tmp" /etc/pki/ca-trust/source/anchors/pipeos-ca-@HOST@.crt
+	update-ca-trust extract
+	echo "installed: system trust store (update-ca-trust)"
+elif [ -d /etc/ca-certificates/trust-source/anchors ]; then
+	# Arch
+	cp "$tmp" /etc/ca-certificates/trust-source/anchors/pipeos-ca-@HOST@.crt
+	trust extract-compat
+	echo "installed: system trust store (trust extract-compat)"
+else
+	echo "warning: no known system trust store on this distro — browsers may still work below" >&2
+fi
+
+# --- browser NSS stores: Chrome/Chromium (~/.pki/nssdb) + every Firefox profile ---
+u="${SUDO_USER:-}"
+if [ -n "$u" ] && [ "$u" != root ] && command -v certutil >/dev/null 2>&1; then
+	home=$(getent passwd "$u" | cut -d: -f6)
+	if [ ! -f "$home/.pki/nssdb/cert9.db" ]; then
+		su -s /bin/sh "$u" -c "mkdir -p '$home/.pki/nssdb' && certutil -d sql:'$home/.pki/nssdb' -N --empty-password" 2>/dev/null || true
+	fi
+	for db in "$home/.pki/nssdb" "$home"/.mozilla/firefox/*/ "$home"/snap/firefox/common/.mozilla/firefox/*/; do
+		[ -f "$db/cert9.db" ] || continue
+		su -s /bin/sh "$u" -c "certutil -A -d sql:'$db' -t C,, -n 'pipeOS @HOST@ CA' -i '$tmp'" 2>/dev/null \
+			&& echo "installed: browser store $db"
+	done
+elif [ -n "$u" ] && [ "$u" != root ]; then
+	echo "note: certutil not found (package: libnss3-tools / nss-tools) — Chrome and Firefox keep their own trust store; install it and re-run, or import /ca.crt in the browser's certificate settings." >&2
+fi
+echo "done — reload https://@HOST@.local/ and look for the padlock (restart the browser if it was open)."
+"""
 
 
 def run(argv, timeout=60, input_text=None):
@@ -165,6 +274,8 @@ def daemons_for(svcs):
         out.append("pipeos-stream")
     if svcs["support"]:
         out.append("pipeos-support")
+    if svcs.get("assistant"):
+        out.append("pipeos-assistant")
     return out
 
 
@@ -173,7 +284,7 @@ def apply_services(svcs):
     daemon; returns a list of human-readable problems (empty == clean)."""
     problems = []
     want = set(daemons_for(svcs))
-    managed = ("pipe-daemon", "pipebox-listener", "pipeos-stream", "pipeos-support")
+    managed = ("pipe-daemon", "pipebox-listener", "pipeos-stream", "pipeos-support", "pipeos-assistant")
     for svc in managed:
         if svc in want:
             run(["rc-update", "add", svc, "default"])
@@ -185,6 +296,8 @@ def apply_services(svcs):
                     problems.append("streaming is enabled but not configured yet")
                 elif svc == "pipeos-support":
                     problems.append("support access is enabled but no relay is configured yet")
+                elif svc == "pipeos-assistant":
+                    problems.append("the assistant terminal is enabled but has no password yet")
                 else:
                     problems.append("%s failed to start: %s" % (svc, out.strip()[-200:]))
         else:
@@ -248,6 +361,53 @@ def uptime_disk():
         except (IndexError, ValueError):
             pass
     return up, pct, free_mb
+
+
+def system_metrics():
+    """Cheap /proc + /sys reads for the System page. Everything is optional —
+    a missing sensor reports None rather than failing the whole call."""
+    m = {"load1": None, "load5": None, "load15": None, "ncpu": None,
+         "mem_total_mb": None, "mem_avail_mb": None,
+         "root_pct": None, "temp_c": None}
+    try:
+        with open("/proc/loadavg") as f:
+            l1, l5, l15 = f.read().split()[:3]
+        m["load1"], m["load5"], m["load15"] = float(l1), float(l5), float(l15)
+    except (OSError, ValueError):
+        pass
+    try:
+        m["ncpu"] = os.cpu_count()
+    except OSError:
+        pass
+    try:
+        fields = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, _, v = line.partition(":")
+                fields[k] = v
+        m["mem_total_mb"] = int(fields["MemTotal"].split()[0]) // 1024
+        m["mem_avail_mb"] = int(fields["MemAvailable"].split()[0]) // 1024
+    except (OSError, KeyError, ValueError, IndexError):
+        pass
+    # root is tmpfs — its fill level is RAM the overlay is eating
+    rc, out = run(["df", "-k", "/"], timeout=10)
+    if rc == 0 and len(out.splitlines()) >= 2:
+        try:
+            m["root_pct"] = int(out.splitlines()[1].split()[4].rstrip("%"))
+        except (IndexError, ValueError):
+            pass
+    best = None
+    for zone in sorted(glob.glob("/sys/class/thermal/thermal_zone*/temp")):
+        try:
+            with open(zone) as f:
+                t = int(f.read().strip()) / 1000.0
+        except (OSError, ValueError):
+            continue
+        if 0 < t < 150 and (best is None or t > best):
+            best = t  # hottest plausible zone ≈ the CPU package
+    if best is not None:
+        m["temp_c"] = round(best, 1)
+    return m
 
 
 # ---- HTTP ------------------------------------------------------------------
@@ -316,11 +476,21 @@ class Handler(BaseHTTPRequestHandler):
             return self.serve_static(path[len("/static/"):])
         if path == "/api/state":
             return self.api_state()
+        # The CA root is public by design — the owner installs it to trust this
+        # box, so these are unauthenticated (downloading a public cert is safe).
+        if path == "/ca.crt":
+            return self.serve_ca_cert()
+        if path == "/pipeos-ca.mobileconfig":
+            return self.serve_ca_mobileconfig()
+        if path == "/install-ca.sh":
+            return self.serve_ca_installer()
         readers = {
             "/api/status": self.api_status,
+            "/api/metrics": self.api_metrics,
             "/api/logs": self.api_logs,
             "/api/stream": self.api_stream_get,
             "/api/stream-log": self.api_stream_log,
+            "/api/assistant": self.api_assistant_get,
             "/api/pipe": self.api_pipe_get,
             "/api/update": self.api_update_get,
         }
@@ -332,6 +502,13 @@ class Handler(BaseHTTPRequestHandler):
         self.err(404, "no such page")
 
     def do_POST(self):
+        # Every mutation serializes on MUTATE_LOCK; GET readers are not held, so
+        # the dashboard still loads while a slow POST runs. The lock also keeps
+        # the claim race single-winner now that the server is threaded.
+        with MUTATE_LOCK:
+            self._do_post_locked()
+
+    def _do_post_locked(self):
         if not self.same_origin():
             return self.err(403, "cross-origin request refused")
         path = self.path.split("?")[0]
@@ -353,8 +530,10 @@ class Handler(BaseHTTPRequestHandler):
             "/api/save": self.api_save,
             "/api/chat": self.api_chat,
             "/api/reboot": self.api_reboot,
+            "/api/reboot-firmware": self.api_reboot_firmware,
             "/api/repair-access": self.api_repair_access,
             "/api/stream-config": self.api_stream_set,
+            "/api/assistant-config": self.api_assistant_set,
             "/api/cohort": self.api_cohort,
             "/api/update-now": self.api_update_now,
         }
@@ -379,6 +558,55 @@ class Handler(BaseHTTPRequestHandler):
             ".svg": "image/svg+xml",
         }.get(os.path.splitext(name)[1], "application/octet-stream")
         self.send(200, data, ctype=ctype)
+
+    def _send_download(self, data, ctype, filename):
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Disposition", 'attachment; filename="%s"' % filename)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def serve_ca_cert(self):
+        try:
+            with open(CA_CRT, "rb") as f:
+                data = f.read()
+        except OSError:
+            return self.err(404, "no CA yet — HTTPS is not set up on this box")
+        self._send_download(data, "application/x-x509-ca-cert", "pipeos-ca.crt")
+
+    def serve_ca_mobileconfig(self):
+        # An Apple config profile that installs the CA as a trusted root in ~2
+        # taps. (iOS still requires the one-time "enable full trust" toggle in
+        # Settings › General › About › Certificate Trust — Apple does not let a
+        # profile grant root trust silently.)
+        try:
+            with open(CA_CRT) as f:
+                pem = f.read()
+        except OSError:
+            return self.err(404, "no CA yet — HTTPS is not set up on this box")
+        der_b64 = base64.b64encode(ssl.PEM_cert_to_DER_cert(pem)).decode()
+        host = socket.gethostname()
+        prof = MOBILECONFIG_TMPL.format(
+            cert_b64=der_b64, host=html.escape(host),
+            puuid=str(uuid.uuid4()).upper(), cuuid=str(uuid.uuid4()).upper())
+        self._send_download(prof.encode(), "application/x-apple-aspen-config",
+                            "pipeos-ca.mobileconfig")
+
+    def serve_ca_installer(self):
+        # Same public-by-design stance as /ca.crt: the script only contains the
+        # public certificate. Served over plain HTTP so there is no -k
+        # bootstrap problem before the CA is trusted.
+        try:
+            with open(CA_CRT) as f:
+                pem = f.read().strip()
+        except OSError:
+            return self.err(404, "no CA yet — HTTPS is not set up on this box")
+        body = (CA_INSTALLER_TMPL
+                .replace("@PEM@", pem)
+                .replace("@HOST@", socket.gethostname()))
+        self.send(200, body.encode(), ctype="text/x-shellscript")
 
     # -- API: unauthenticated surface (deliberately tiny) --
     def api_state(self):
@@ -441,6 +669,12 @@ class Handler(BaseHTTPRequestHandler):
             "running": running,
             "boot_report": boot_report(),
         })
+
+    def api_metrics(self):
+        up, pct, free_mb = uptime_disk()
+        m = system_metrics()
+        m.update({"uptime_s": up, "work_pct": pct, "work_free_mb": free_mb})
+        self.send(200, m)
 
     def api_name(self, body):
         nick = (body.get("nick") or "").strip()
@@ -593,6 +827,21 @@ class Handler(BaseHTTPRequestHandler):
         )
         self.send(200, {"ok": True, "note": "rebooting — the box is back in about a minute"})
 
+    def api_reboot_firmware(self, _body):
+        """Reboot into the UEFI setup (BIOS). On a headless box nobody can hit
+        the POST key, so the wizard sets the firmware-setup indication instead.
+        Check support first and only reboot on success, so a firmware that does
+        not support it reports back cleanly rather than doing a plain reboot."""
+        rc, out = run(["/usr/local/bin/pipeos-reboot-firmware"], timeout=15)
+        if rc != 0:
+            return self.err(400, out.strip()[-200:] or "could not enter firmware setup")
+        # Armed the indication; answer first, then reboot (as api_reboot does).
+        subprocess.Popen(
+            ["sh", "-c", "sleep 2; reboot"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self.send(200, {"ok": True, "note": "rebooting into firmware setup — connect a display to the box"})
+
     def api_repair_access(self, _body):
         """Cheaper than a reboot when only remote access is wedged: put the
         key back if it vanished (the #148 failure), bounce sshd (clears any
@@ -629,10 +878,12 @@ LOG_ALLOW = {
     "pipeos-web": "/work/logs/pipeos-web.log",
     "pipeos-mdns": "/work/logs/pipeos-mdns.log",
     "pipeos-stream": "/work/logs/pipeos-stream.log",
+    "pipeos-assistant": "/work/logs/pipeos-assistant.log",
     "selfupdate": "/work/logs/selfupdate.log",
     "worksweep": "/work/logs/worksweep.log",
 }
 STREAM_CONF = ETC + "/stream.conf"
+ASSISTANT_CONF = ETC + "/assistant.conf"
 SELFUPDATE_CONF = ETC + "/selfupdate.conf"
 UPDATE_STAMP = "/work/.pipeos/selfupdate.applied"
 
@@ -681,26 +932,70 @@ class PhaseB:
                         else "(no log yet — the service may not have run)"})
 
     def api_stream_get(self):
-        vals = read_conf_values(STREAM_CONF, ["STREAM_SRC", "STREAM_DST", "STREAM_ARGS", "STREAM_KEY"])
+        base = ["STREAM_MODE", "STREAM_SRC", "STREAM_URL", "STREAM_RES",
+                "STREAM_FPS", "STREAM_VAAPI", "STREAM_BITRATE", "STREAM_ARGS"]
+        tk = []
+        for n in range(1, STREAM_MAX_TARGETS + 1):
+            tk += ["STREAM_T%d_URL" % n, "STREAM_T%d_KEY" % n,
+                   "STREAM_T%d_ON" % n, "STREAM_T%d_NAME" % n]
+        vals = read_conf_values(STREAM_CONF, base + tk)
+        targets = [{
+            "name": vals["STREAM_T%d_NAME" % n],
+            "url": vals["STREAM_T%d_URL" % n],
+            "on": vals["STREAM_T%d_ON" % n] == "1",
+            "key_set": bool(vals["STREAM_T%d_KEY" % n]),
+        } for n in range(1, STREAM_MAX_TARGETS + 1)]
         rc, _ = run(["rc-service", "pipeos-stream", "status"], timeout=15)
-        self.send(200, {"src": vals["STREAM_SRC"], "dst": vals["STREAM_DST"],
-                        "args": vals["STREAM_ARGS"], "key_set": bool(vals["STREAM_KEY"]),
-                        "running": rc == 0})
+        self.send(200, {
+            "mode": vals["STREAM_MODE"] or "media",
+            "src": vals["STREAM_SRC"], "url": vals["STREAM_URL"],
+            "res": vals["STREAM_RES"] or "1920x1080", "fps": vals["STREAM_FPS"] or "30",
+            "vaapi": vals["STREAM_VAAPI"] == "1", "bitrate": vals["STREAM_BITRATE"] or "3500k",
+            "args": vals["STREAM_ARGS"], "targets": targets, "running": rc == 0})
 
     def api_stream_set(self, body):
-        fields = {}
-        for k, name in (("src", "STREAM_SRC"), ("dst", "STREAM_DST"),
-                        ("key", "STREAM_KEY"), ("args", "STREAM_ARGS")):
-            v = (body.get(k) or "").strip()
-            # the conf is shell-sourced by the init script: refuse anything
-            # that could escape a single-quoted value rather than escaping it
+        # Everything written here is shell-sourced by the wrapper, so every
+        # free-text value runs the single-quote injection guard.
+        def guard(v, label):
+            v = (v or "").strip()
             if any(c in v for c in "'\n\r\0"):
-                return self.err(400, "%s may not contain quotes or newlines" % k)
+                raise ValueError("%s may not contain quotes or newlines" % label)
             if len(v) > 500:
-                return self.err(400, "%s is too long" % k)
-            fields[name] = v
-        if not fields["STREAM_KEY"] and body.get("keep_key"):
-            fields["STREAM_KEY"] = read_conf_values(STREAM_CONF, ["STREAM_KEY"])["STREAM_KEY"]
+                raise ValueError("%s is too long" % label)
+            return v
+        fields = {}
+        try:
+            for k, name in (("mode", "STREAM_MODE"), ("src", "STREAM_SRC"),
+                            ("url", "STREAM_URL"), ("res", "STREAM_RES"),
+                            ("fps", "STREAM_FPS"), ("bitrate", "STREAM_BITRATE"),
+                            ("args", "STREAM_ARGS")):
+                fields[name] = guard(body.get(k), k)
+            targets = body.get("targets") or []
+            if not isinstance(targets, list):
+                return self.err(400, "targets must be a list")
+            existing = read_conf_values(STREAM_CONF,
+                ["STREAM_T%d_KEY" % n for n in range(1, STREAM_MAX_TARGETS + 1)])
+            for i in range(STREAM_MAX_TARGETS):
+                n = i + 1
+                t = targets[i] if i < len(targets) and isinstance(targets[i], dict) else {}
+                key = guard(t.get("key"), "target %d key" % n)
+                if not key and t.get("keep_key"):
+                    key = existing["STREAM_T%d_KEY" % n]
+                fields["STREAM_T%d_URL" % n] = guard(t.get("url"), "target %d url" % n)
+                fields["STREAM_T%d_NAME" % n] = guard(t.get("name"), "target %d name" % n)
+                fields["STREAM_T%d_KEY" % n] = key
+                fields["STREAM_T%d_ON" % n] = "1" if t.get("on") else "0"
+        except ValueError as e:
+            return self.err(400, str(e))
+        if fields["STREAM_MODE"] not in ("media", "browser"):
+            fields["STREAM_MODE"] = "media"
+        if fields["STREAM_RES"] and not re.match(r"^\d{2,5}x\d{2,5}$", fields["STREAM_RES"]):
+            return self.err(400, "resolution must look like 1920x1080")
+        if fields["STREAM_FPS"] and not re.match(r"^\d{1,3}$", fields["STREAM_FPS"]):
+            return self.err(400, "fps must be a number")
+        if fields["STREAM_BITRATE"] and not re.match(r"^\d{2,6}k?$", fields["STREAM_BITRATE"]):
+            return self.err(400, "bitrate must look like 3500k")
+        fields["STREAM_VAAPI"] = "1" if body.get("vaapi") else "0"
         write_private(STREAM_CONF, "".join(
             "%s='%s'\n" % (k, v) for k, v in fields.items()))
         problems = []
@@ -715,6 +1010,45 @@ class PhaseB:
     def api_stream_log(self):
         self.send(200, {"text": tail_file(LOG_ALLOW["pipeos-stream"], 100)
                         or "(no stream log yet)"})
+
+    def api_assistant_get(self):
+        vals = read_conf_values(ASSISTANT_CONF, ["ASSISTANT_USER", "ASSISTANT_PORT", "ASSISTANT_PASS"])
+        rc, _ = run(["rc-service", "pipeos-assistant", "status"], timeout=15)
+        self.send(200, {"user": vals["ASSISTANT_USER"] or "admin",
+                        "port": vals["ASSISTANT_PORT"] or "7681",
+                        "pass_set": bool(vals["ASSISTANT_PASS"]),
+                        "running": rc == 0})
+
+    def api_assistant_set(self, body):
+        fields = {}
+        for k, name in (("user", "ASSISTANT_USER"), ("port", "ASSISTANT_PORT"),
+                        ("password", "ASSISTANT_PASS")):
+            v = (body.get(k) or "").strip()
+            # sourced by the init/wrapper: same single-quote guard as stream.conf
+            if any(c in v for c in "'\n\r\0"):
+                return self.err(400, "%s may not contain quotes or newlines" % k)
+            if len(v) > 200:
+                return self.err(400, "%s is too long" % k)
+            fields[name] = v
+        if not fields["ASSISTANT_USER"]:
+            fields["ASSISTANT_USER"] = "admin"
+        if fields["ASSISTANT_PORT"] and not re.match(r"^\d{2,5}$", fields["ASSISTANT_PORT"]):
+            return self.err(400, "port must be a number")
+        if not fields["ASSISTANT_PORT"]:
+            fields["ASSISTANT_PORT"] = "7681"
+        if not fields["ASSISTANT_PASS"] and body.get("keep_pass"):
+            fields["ASSISTANT_PASS"] = read_conf_values(ASSISTANT_CONF, ["ASSISTANT_PASS"])["ASSISTANT_PASS"]
+        if not fields["ASSISTANT_PASS"]:
+            return self.err(400, "set a password — the terminal is shell access and must not be served open")
+        write_private(ASSISTANT_CONF, "".join("%s='%s'\n" % (k, v) for k, v in fields.items()))
+        problems = []
+        if read_services().get("assistant"):
+            rc, out = run(["rc-service", "pipeos-assistant", "restart"], timeout=60)
+            if rc != 0:
+                problems.append("assistant terminal did not start: " + out.strip()[-200:])
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "problems": problems, "saved": saved,
+                        "save_detail": "" if saved else detail})
 
     def api_pipe_get(self):
         rc, out = run(["pipe", "status", "-o", "json"], timeout=20)
@@ -785,11 +1119,38 @@ for _n in dir(PhaseB):
         setattr(Handler, _n, getattr(PhaseB, _n))
 
 
+def start_https():
+    """Serve HTTPS on :443 in a background thread if the box CA + server cert
+    exist. HTTP on :80 keeps working regardless, so a TLS problem can never lock
+    the owner out of the wizard — HTTPS is strictly additive until they install
+    the CA and choose to use it. Best-effort: any failure just means no :443."""
+    try:
+        subprocess.run(["/usr/local/bin/pipeos-tls-init"], timeout=30,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+    if not (os.path.exists(SRV_CRT) and os.path.exists(SRV_KEY)):
+        return
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(SRV_CRT, SRV_KEY)
+        httpsd = ThreadingHTTPServer(("0.0.0.0", 443), Handler)
+        httpsd.daemon_threads = True
+        httpsd.socket = ctx.wrap_socket(httpsd.socket, server_side=True)
+    except Exception as e:
+        sys.stderr.write("pipeos-webd: HTTPS not started: %s\n" % e)
+        return
+    threading.Thread(target=httpsd.serve_forever, daemon=True).start()
+    sys.stderr.write("pipeos-webd listening on :443 (TLS)\n")
+
+
 def main():
     port = int(os.environ.get("PIPEOS_WEB_PORT", "80"))
     os.makedirs(SESS_DIR, mode=0o700, exist_ok=True)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    srv = HTTPServer(("0.0.0.0", port), Handler)
+    start_https()
+    srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    srv.daemon_threads = True
     sys.stderr.write("pipeos-webd listening on :%d (claimed=%s)\n" % (port, claimed()))
     srv.serve_forever()
 

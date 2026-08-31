@@ -41,6 +41,18 @@ if [ "${free_kb:-0}" -lt 204800 ]; then
     exit 1
 fi
 
+# Garbage-collect before we persist, so the box's storage stays lean on EVERY
+# save rather than only on the weekly sweep (operator request: "GC before every
+# persist so the drive stays healthy all the time"). We reuse the bounded,
+# allowlist-based worksweep — it only ever reclaims rebuildable build output on
+# /work, never source — and never let a slow or failing sweep block the save it
+# precedes: a save that does not happen is far worse than a sweep that is
+# skipped this round.
+if [ -x /etc/periodic/weekly/pipeos-worksweep ]; then
+    timeout 120 /etc/periodic/weekly/pipeos-worksweep >/dev/null 2>&1 \
+        || logger -s -t pipeos-save "pre-save worksweep skipped (nonzero or timed out; continuing)"
+fi
+
 tmp=/tmp/.pipeos-save.$$
 trap 'rm -f "$tmp"' EXIT
 

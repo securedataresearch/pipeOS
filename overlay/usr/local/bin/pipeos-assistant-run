@@ -1,0 +1,43 @@
+#!/bin/bash
+# pipeos-assistant-run — launch the ttyd browser terminal for pipeos-assistant.
+#
+# Serves an xterm.js terminal that attaches to a shared tmux session running
+# `claude --continue` in the dashboard-chat working dir, so the browser terminal
+# and the dashboard's chat are the same assistant (same conversation, same
+# /root/.claude memory). Run under supervise-daemon (see the init script).
+#
+# NOTE: ttyd takes the password on its argv, so it is visible in `ps` to a root
+# user on the box — acceptable on a single-owner appliance (root already owns
+# the box), and the password never leaves the box. Config is /etc/pipeos/
+# assistant.conf (mode 600); the OAuth token comes from claude-auth.env.
+set -u
+
+CONF=/etc/pipeos/assistant.conf
+AUTH=/etc/pipeos/claude-auth.env
+SETTINGS=/etc/pipeos/pipebox-settings.json
+WORKDIR=/work/pipebox/webchat
+
+# shellcheck disable=SC1090
+[ -r "$CONF" ] && . "$CONF"
+# shellcheck disable=SC1090
+[ -r "$AUTH" ] && . "$AUTH" && export CLAUDE_CODE_OAUTH_TOKEN
+
+export HOME=/root
+mkdir -p "$WORKDIR" 2>/dev/null
+cd "$WORKDIR" 2>/dev/null || cd /root || exit 1
+
+USER=${ASSISTANT_USER:-admin}
+PORT=${ASSISTANT_PORT:-7681}
+if [ -z "${ASSISTANT_PASS:-}" ]; then
+	echo "pipeos-assistant-run: ASSISTANT_PASS is empty — refusing to serve an open terminal" >&2
+	exit 1
+fi
+
+# --writable so the client can type; one shared tmux session (`-A` attach-or-
+# create) so every browser sees the same claude. Resuming --continue in this
+# cwd lands on the same conversation the dashboard chat uses.
+exec ttyd --writable --interface 0.0.0.0 --port "$PORT" \
+	--credential "${USER}:${ASSISTANT_PASS}" \
+	-t "titleFixed=$(hostname 2>/dev/null || echo pipeos) assistant" \
+	-t 'theme={"background":"#131417"}' \
+	tmux new -A -s assistant "claude --continue --settings $SETTINGS"

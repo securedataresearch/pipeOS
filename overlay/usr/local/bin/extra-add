@@ -33,7 +33,20 @@ else
     rm -f /media/usb/.rwtest
 fi
 
+# Prime the CDN index into apk's cache FIRST. apk-tools 3 does not download a
+# remote repo's APKINDEX on demand during `fetch` — it only reads a cached one
+# (it warns "opening from cache … No such file" and then resolves nothing but
+# already-known deps, so the NAMED packages silently never land). Our
+# /etc/apk/repositories is local-only by design, so nothing ever cached the
+# mirror. `apk update` against the same repos populates that cache. Without this
+# line extra-add fetched the dependency closure but none of the top-level
+# packages, and every install failed with "no such package" — the bug that made
+# in-place package adds impossible and pushed toward a reflash.
+# shellcheck disable=SC2086
+apk update $repos >/dev/null 2>&1 || true
+
 # fetch closure; name deps explicitly if fetch -R skips already-installed ones
+# shellcheck disable=SC2086
 apk fetch --recursive --arch x86_64 -o "$EXTRA" $repos "$@"
 
 # apk 3.x resolves each package from <repo>/<pkg-arch>/, so noarch packages

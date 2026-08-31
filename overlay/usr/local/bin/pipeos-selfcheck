@@ -159,7 +159,7 @@ fi
 # DEGRADED forever (the old hardcoded pair did exactly that). A box with no
 # services.conf predates the wizard: that is a fleet box, and the legacy
 # assumption (pipe on) is the safe reading for it.
-SERVICE_PIPE=on SERVICE_CLAUDE=on SERVICE_STREAM=off SERVICE_AGY=off SERVICE_SUPPORT=off
+SERVICE_PIPE=on SERVICE_CLAUDE=on SERVICE_STREAM=off SERVICE_AGY=off SERVICE_SUPPORT=off SERVICE_ASSISTANT=off
 # shellcheck disable=SC1091
 [ -r /etc/pipeos/services.conf ] && . /etc/pipeos/services.conf 2>/dev/null
 want_svcs="pipeos-web pipeos-mdns"
@@ -168,6 +168,7 @@ want_svcs="pipeos-web pipeos-mdns"
 [ "$SERVICE_PIPE" = on ] && [ "$SERVICE_CLAUDE" = on ] && want_svcs="$want_svcs pipebox-listener"
 [ "$SERVICE_STREAM" = on ] && want_svcs="$want_svcs pipeos-stream"
 [ "${SERVICE_SUPPORT:-off}" = on ] && want_svcs="$want_svcs pipeos-support"
+[ "${SERVICE_ASSISTANT:-off}" = on ] && want_svcs="$want_svcs pipeos-assistant"
 # Declared vs enforced: the wizard mirrors services.conf into rc-update, and
 # the two drifting apart is exactly the hand-maintained-state failure this
 # repo keeps refinding. Observe-only — the wizard owns the mirror.
@@ -192,9 +193,38 @@ for svc in $want_svcs; do
     elif rc-service "$svc" start >/dev/null 2>&1; then
         fixed "$svc was down; started it"
     else
-        crit "$svc down and would not start"
+        # These are opt-in and refuse to start until configured (a password, a
+        # relay, stream targets). "Enabled but not set up yet" is a WARN, not a
+        # box-down CRITICAL — it matches how the wizard's apply_services treats
+        # the same refusal. A genuinely broken one still surfaces (as a warn),
+        # and pipeos-stream's frame-flow probe below catches configured-but-black.
+        case "$svc" in
+            pipeos-support|pipeos-stream|pipeos-assistant)
+                warnn "$svc is enabled but not configured yet — set it up in the web UI, or turn it off" ;;
+            *)
+                crit "$svc down and would not start" ;;
+        esac
     fi
 done
+
+# ---- 3a-stream. Frame-flow: rc-service only proves the process is up, but
+# ffmpeg can be alive-and-black — RTMP handshake looping, or the renderer dead
+# while the encoder keeps pushing a frozen frame. For a 24/7 broadcast that is
+# the failure that matters, and it is invisible to the liveness loop above.
+# Conservative: warn only when the log shows errors AND no frame progress, so a
+# healthy stream (an ffmpeg `frame=` stats line present) stays quiet.
+if [ "$SERVICE_STREAM" = on ] && rc-service pipeos-stream status >/dev/null 2>&1; then
+    _slog=/work/logs/pipeos-stream.log
+    if [ -r "$_slog" ]; then
+        _stail=$(tail -n 40 "$_slog" 2>/dev/null)
+        if printf '%s\n' "$_stail" | grep -q "frame="; then
+            :  # frames are flowing — healthy
+        else
+            _serrs=$(printf '%s\n' "$_stail" | grep -ciE "invalid data|connection refused|failed to|broken pipe|error opening|end of file|rtmp.*(error|closed)")
+            [ "${_serrs:-0}" -ge 2 ] && warnn "pipeos-stream is up but its log shows errors and no frame progress — the broadcast may be black (open the stream log in the web UI)"
+        fi
+    fi
+fi
 
 # ---- 3b. auth: a live daemon with a revoked token is not healthy. Per
 # pipe#641 it silently destroys every inbound sealed message, and it is
@@ -216,10 +246,18 @@ if [ "$SERVICE_PIPE" = on ]; then
     if [ "$auth_ok" = "true" ]; then
         :
     elif [ -n "$authj" ]; then
+        # Distinguish "never signed in yet" (a fine, common state — the owner
+        # just has not run `pipe login`, and may never use pipe) from a real
+        # auth FAILURE (a revoked/rejected token, which silently drops inbound
+        # mail — pipe#641). Only the latter is CRITICAL; the former is a nudge.
         aerr=$(echo "$authj" | jq -r '.status.auth_error // empty' 2>/dev/null)
-        crit "pipe daemon unauthenticated${aerr:+ ($aerr)}"
+        if [ -n "$aerr" ]; then
+            crit "pipe daemon auth failed ($aerr)"
+        else
+            warnn "pipe is enabled but not signed in yet — run 'pipe login' to use it, or turn pipe off"
+        fi
     else
-        crit "pipe status did not answer (daemon down or still signing in)"
+        warnn "pipe status did not answer (daemon down or still signing in)"
     fi
 fi
 
