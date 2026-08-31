@@ -10,9 +10,13 @@ so there is ONE path per operation, in the repo, not improvised each time.
 | `serials.txt` | — | box → USB-stick serial map; the flash guard. Update when a stick is replaced. |
 
 Related, already in the tree:
-- `overlay/usr/local/bin/pipeos-selfupdate` — a box updates itself from a remote
-  publisher (`UPDATE_URL`). The publisher is the build box serving
-  `out/repo/pipeos` over HTTP (`pipeos-repo-httpd`).
+- `overlay/usr/local/bin/pipeos-selfupdate` — a box updates itself from a
+  remote publisher. The canonical origin is this repo's GitHub Releases
+  (`UPDATE_RELEASE_URL`, published by `make release`); `UPDATE_URL` remains
+  for a dev origin (e.g. a build box serving `out/repo/pipeos` with
+  `busybox httpd`). There is no `pipeos-repo-httpd` tool and never was
+  (pipeOS#149) — an earlier revision of this file named it as if it existed.
+- `scripts/deploy-box.sh` — push a committed overlay to a checkout-less box.
 - `overlay/usr/local/bin/pipebox-card` — generate a box's identity from its card
   (`docs/cards/<box>.card`); the durable provisioning path (#650).
 - `docs/fleet-update-runbook.md`, `docs/self-update.md`, `docs/model-cards.md`.
