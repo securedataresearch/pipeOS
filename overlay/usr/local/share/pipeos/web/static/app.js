@@ -317,14 +317,11 @@ async function dashboard() {
           <input id="svaapi" type="checkbox" style="width:auto"> Hardware encode on the Intel GPU (VAAPI)
         </label>
       </div>
-      <label for="sdst">Destination 1 — YouTube (rtmp)</label>
-      <input id="sdst" type="text" placeholder="rtmp://a.rtmp.youtube.com/live2">
-      <label for="skey">Stream key 1</label>
-      <input id="skey" type="password" autocomplete="off" placeholder="leave blank to keep the saved key">
-      <label for="sdst2">Destination 2 — Twitch (optional)</label>
-      <input id="sdst2" type="text" placeholder="rtmp://live.twitch.tv/app">
-      <label for="skey2">Stream key 2</label>
-      <input id="skey2" type="password" autocomplete="off" placeholder="leave blank to keep the saved key">
+      <label>Providers</label>
+      <div id="targets"></div>
+      <button id="addtarget" class="ghost" type="button" style="margin-bottom:.6rem">+ Add a provider</button>
+      <label for="sbitrate">Bitrate (per target)</label>
+      <input id="sbitrate" type="text" placeholder="3500k">
       <label for="sargs">Extra ffmpeg args (optional)</label>
       <input id="sargs" type="text" placeholder="advanced — usually blank">
       <button id="ssave">Save & restart stream</button>
@@ -450,30 +447,60 @@ async function dashboard() {
       v.querySelector("#smedia").hidden = browser;
     };
     smode.onchange = applyMode;
+    const PROVIDERS = {
+      YouTube: "rtmp://a.rtmp.youtube.com/live2",
+      Twitch: "rtmp://live.twitch.tv/app",
+      Kick: "rtmps://fa723fc1b171.global-contribute.live-video.net/app",
+      Facebook: "rtmps://live-api-s.facebook.com:443/rtmp/",
+      Custom: "",
+    };
+    const tbox = v.querySelector("#targets");
+    // Render one provider row. `t` is {name,url,on,key_set} from the server.
+    const addRow = (t) => {
+      if (tbox.children.length >= 4) return;
+      t = t || { name: "Custom", url: "", on: true, key_set: false };
+      const row = el(`<div class="surface" style="padding:.6rem;margin-bottom:.5rem;display:grid;gap:.35rem"></div>`);
+      const provsel = el(`<select></select>`);
+      for (const name of Object.keys(PROVIDERS)) {
+        const o = el(`<option>${name}</option>`); if (t.name === name) o.selected = true; provsel.appendChild(o);
+      }
+      const url = el(`<input type="text" placeholder="rtmp://…" class="well">`); url.value = t.url || (PROVIDERS[t.name] || "");
+      const key = el(`<input type="password" autocomplete="off" class="well" placeholder="${t.key_set ? "(saved — blank keeps it)" : "stream key"}">`);
+      const onwrap = el(`<label class="note" style="display:flex;align-items:center;gap:.4rem"></label>`);
+      const on = el(`<input type="checkbox" style="width:auto">`); on.checked = t.on !== false;
+      onwrap.appendChild(on); onwrap.appendChild(document.createTextNode(" stream to this"));
+      const rm = el(`<button class="ghost" type="button" style="justify-self:start">remove</button>`);
+      provsel.onchange = () => { const u = PROVIDERS[provsel.value]; if (u || provsel.value !== "Custom") url.value = u; };
+      rm.onclick = () => row.remove();
+      row.appendChild(provsel); row.appendChild(url); row.appendChild(key); row.appendChild(onwrap); row.appendChild(rm);
+      row._get = () => ({ name: provsel.value, url: url.value, key: key.value, on: on.checked, keep_key: !key.value });
+      tbox.appendChild(row);
+    };
+    v.querySelector("#addtarget").onclick = () => addRow();
     api("/api/stream").then(s => {
       smode.value = s.mode || "media"; applyMode();
       v.querySelector("#ssrc").value = s.src; v.querySelector("#surl").value = s.url || "";
-      v.querySelector("#sdst").value = s.dst; v.querySelector("#sdst2").value = s.dst2 || "";
       v.querySelector("#sres").value = s.res || ""; v.querySelector("#sfps").value = s.fps || "";
-      v.querySelector("#svaapi").checked = !!s.vaapi;
+      v.querySelector("#sbitrate").value = s.bitrate || ""; v.querySelector("#svaapi").checked = !!s.vaapi;
       v.querySelector("#sargs").value = s.args;
-      if (s.key_set) v.querySelector("#skey").placeholder = "(a key is saved — blank keeps it)";
-      if (s.key_set2) v.querySelector("#skey2").placeholder = "(a key is saved — blank keeps it)";
+      tbox.textContent = "";
+      const rows = (s.targets || []).filter(t => t.url || t.key_set || t.name);
+      if (rows.length) rows.forEach(addRow);
+      else { addRow({ name: "YouTube", url: PROVIDERS.YouTube, on: true }); addRow({ name: "Twitch", url: PROVIDERS.Twitch, on: true }); }
     }).catch(() => {});
     ssave.onclick = async () => {
       const msg = v.querySelector("#smsg"); msg.hidden = false; msg.textContent = "saving…";
       busy(ssave, true);
       try {
+        const targets = Array.from(tbox.children).map(r => r._get());
         const r = await api("/api/stream-config", {
           mode: smode.value,
           src: v.querySelector("#ssrc").value, url: v.querySelector("#surl").value,
-          dst: v.querySelector("#sdst").value, key: v.querySelector("#skey").value,
-          dst2: v.querySelector("#sdst2").value, key2: v.querySelector("#skey2").value,
           res: v.querySelector("#sres").value, fps: v.querySelector("#sfps").value,
+          bitrate: v.querySelector("#sbitrate").value,
           vaapi: v.querySelector("#svaapi").checked,
           args: v.querySelector("#sargs").value,
-          keep_key: !v.querySelector("#skey").value,
-          keep_key2: !v.querySelector("#skey2").value,
+          targets,
         });
         msg.textContent = r.problems.length ? r.problems.join("; ") : "Saved — stream restarted.";
       } catch (e) { msg.textContent = e.message; }

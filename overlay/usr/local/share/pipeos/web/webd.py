@@ -56,6 +56,10 @@ SESSION_IDLE_S = 24 * 3600
 NICK_RE = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
 SVC_KEYS = ("pipe", "claude", "stream", "agy", "support", "assistant")
 
+# How many stream targets (providers) the dashboard manages. Each is a slot in
+# stream.conf: STREAM_T{N}_URL / _KEY / _ON / _NAME.
+STREAM_MAX_TARGETS = 4
+
 # The server is threaded (ThreadingHTTPServer) so a slow request — a service
 # start, an update, a save — never blocks the dashboard from loading: that
 # single-threaded stall was the "the box isn't coming up" symptom. Reads run
@@ -799,46 +803,70 @@ class PhaseB:
                         else "(no log yet — the service may not have run)"})
 
     def api_stream_get(self):
-        vals = read_conf_values(STREAM_CONF, [
-            "STREAM_MODE", "STREAM_SRC", "STREAM_URL", "STREAM_DST", "STREAM_KEY",
-            "STREAM_DST2", "STREAM_KEY2", "STREAM_RES", "STREAM_FPS", "STREAM_VAAPI", "STREAM_ARGS"])
+        base = ["STREAM_MODE", "STREAM_SRC", "STREAM_URL", "STREAM_RES",
+                "STREAM_FPS", "STREAM_VAAPI", "STREAM_BITRATE", "STREAM_ARGS"]
+        tk = []
+        for n in range(1, STREAM_MAX_TARGETS + 1):
+            tk += ["STREAM_T%d_URL" % n, "STREAM_T%d_KEY" % n,
+                   "STREAM_T%d_ON" % n, "STREAM_T%d_NAME" % n]
+        vals = read_conf_values(STREAM_CONF, base + tk)
+        targets = [{
+            "name": vals["STREAM_T%d_NAME" % n],
+            "url": vals["STREAM_T%d_URL" % n],
+            "on": vals["STREAM_T%d_ON" % n] == "1",
+            "key_set": bool(vals["STREAM_T%d_KEY" % n]),
+        } for n in range(1, STREAM_MAX_TARGETS + 1)]
         rc, _ = run(["rc-service", "pipeos-stream", "status"], timeout=15)
         self.send(200, {
             "mode": vals["STREAM_MODE"] or "media",
             "src": vals["STREAM_SRC"], "url": vals["STREAM_URL"],
-            "dst": vals["STREAM_DST"], "key_set": bool(vals["STREAM_KEY"]),
-            "dst2": vals["STREAM_DST2"], "key_set2": bool(vals["STREAM_KEY2"]),
             "res": vals["STREAM_RES"] or "1920x1080", "fps": vals["STREAM_FPS"] or "30",
-            "vaapi": vals["STREAM_VAAPI"] == "1", "args": vals["STREAM_ARGS"],
-            "running": rc == 0})
+            "vaapi": vals["STREAM_VAAPI"] == "1", "bitrate": vals["STREAM_BITRATE"] or "3500k",
+            "args": vals["STREAM_ARGS"], "targets": targets, "running": rc == 0})
 
     def api_stream_set(self, body):
-        fields = {}
-        # (form field, conf var). STREAM_VAAPI (a checkbox) and STREAM_MODE are
-        # normalised below; every free-text field runs the injection guard.
-        for k, name in (("mode", "STREAM_MODE"), ("src", "STREAM_SRC"), ("url", "STREAM_URL"),
-                        ("dst", "STREAM_DST"), ("key", "STREAM_KEY"),
-                        ("dst2", "STREAM_DST2"), ("key2", "STREAM_KEY2"),
-                        ("res", "STREAM_RES"), ("fps", "STREAM_FPS"), ("args", "STREAM_ARGS")):
-            v = (body.get(k) or "").strip()
-            # the conf is shell-sourced by the init script: refuse anything
-            # that could escape a single-quoted value rather than escaping it
+        # Everything written here is shell-sourced by the wrapper, so every
+        # free-text value runs the single-quote injection guard.
+        def guard(v, label):
+            v = (v or "").strip()
             if any(c in v for c in "'\n\r\0"):
-                return self.err(400, "%s may not contain quotes or newlines" % k)
+                raise ValueError("%s may not contain quotes or newlines" % label)
             if len(v) > 500:
-                return self.err(400, "%s is too long" % k)
-            fields[name] = v
+                raise ValueError("%s is too long" % label)
+            return v
+        fields = {}
+        try:
+            for k, name in (("mode", "STREAM_MODE"), ("src", "STREAM_SRC"),
+                            ("url", "STREAM_URL"), ("res", "STREAM_RES"),
+                            ("fps", "STREAM_FPS"), ("bitrate", "STREAM_BITRATE"),
+                            ("args", "STREAM_ARGS")):
+                fields[name] = guard(body.get(k), k)
+            targets = body.get("targets") or []
+            if not isinstance(targets, list):
+                return self.err(400, "targets must be a list")
+            existing = read_conf_values(STREAM_CONF,
+                ["STREAM_T%d_KEY" % n for n in range(1, STREAM_MAX_TARGETS + 1)])
+            for i in range(STREAM_MAX_TARGETS):
+                n = i + 1
+                t = targets[i] if i < len(targets) and isinstance(targets[i], dict) else {}
+                key = guard(t.get("key"), "target %d key" % n)
+                if not key and t.get("keep_key"):
+                    key = existing["STREAM_T%d_KEY" % n]
+                fields["STREAM_T%d_URL" % n] = guard(t.get("url"), "target %d url" % n)
+                fields["STREAM_T%d_NAME" % n] = guard(t.get("name"), "target %d name" % n)
+                fields["STREAM_T%d_KEY" % n] = key
+                fields["STREAM_T%d_ON" % n] = "1" if t.get("on") else "0"
+        except ValueError as e:
+            return self.err(400, str(e))
         if fields["STREAM_MODE"] not in ("media", "browser"):
             fields["STREAM_MODE"] = "media"
         if fields["STREAM_RES"] and not re.match(r"^\d{2,5}x\d{2,5}$", fields["STREAM_RES"]):
             return self.err(400, "resolution must look like 1920x1080")
         if fields["STREAM_FPS"] and not re.match(r"^\d{1,3}$", fields["STREAM_FPS"]):
             return self.err(400, "fps must be a number")
+        if fields["STREAM_BITRATE"] and not re.match(r"^\d{2,6}k?$", fields["STREAM_BITRATE"]):
+            return self.err(400, "bitrate must look like 3500k")
         fields["STREAM_VAAPI"] = "1" if body.get("vaapi") else "0"
-        # preserve an existing key when its box is left blank
-        for name, keep in (("STREAM_KEY", "keep_key"), ("STREAM_KEY2", "keep_key2")):
-            if not fields[name] and body.get(keep):
-                fields[name] = read_conf_values(STREAM_CONF, [name])[name]
         write_private(STREAM_CONF, "".join(
             "%s='%s'\n" % (k, v) for k, v in fields.items()))
         problems = []

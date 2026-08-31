@@ -40,18 +40,30 @@ if [ -z "$URL" ]; then
 	exit 1
 fi
 
-# Assemble the tee destination list from whichever targets are configured.
-leg() {
-	local base=$1 key=$2
-	[ -n "$base" ] || return 0
-	base=${base%/}
-	printf '[f=flv]%s' "${base}${key:+/$key}"
-}
+# Assemble the tee destination list from the managed provider slots. Each slot
+# N (1..STREAM_MAX_TARGETS) is STREAM_T{N}_URL / STREAM_T{N}_KEY / STREAM_T{N}_ON
+# — the dashboard writes these from a provider list (YouTube, Twitch, …). A slot
+# streams only when it is ON and has a URL. onfail=ignore + use_fifo (below)
+# keep one target's hiccup from stuttering the others.
 DESTS=""
-d1=$(leg "${STREAM_DST:-}" "${STREAM_KEY:-}") && [ -n "$d1" ] && DESTS="$d1"
-d2=$(leg "${STREAM_DST2:-}" "${STREAM_KEY2:-}") && [ -n "$d2" ] && DESTS="${DESTS:+$DESTS|}$d2"
+i=1
+while [ "$i" -le "${STREAM_MAX_TARGETS:-4}" ]; do
+	eval "on=\${STREAM_T${i}_ON:-}"
+	eval "url=\${STREAM_T${i}_URL:-}"
+	eval "key=\${STREAM_T${i}_KEY:-}"
+	if [ "$on" = 1 ] && [ -n "$url" ]; then
+		url=${url%/}
+		DESTS="${DESTS:+$DESTS|}[f=flv:onfail=ignore]${url}${key:+/$key}"
+	fi
+	i=$((i + 1))
+done
+# Back-compat: honour the old single/dual DST fields if no slot is set.
+if [ -z "$DESTS" ] && [ -n "${STREAM_DST:-}" ]; then
+	DESTS="[f=flv:onfail=ignore]${STREAM_DST%/}${STREAM_KEY:+/$STREAM_KEY}"
+	[ -n "${STREAM_DST2:-}" ] && DESTS="$DESTS|[f=flv:onfail=ignore]${STREAM_DST2%/}${STREAM_KEY2:+/$STREAM_KEY2}"
+fi
 if [ -z "$DESTS" ]; then
-	echo "pipeos-stream-run: no STREAM_DST configured" >&2
+	echo "pipeos-stream-run: no enabled stream targets configured" >&2
 	exit 1
 fi
 
@@ -90,26 +102,34 @@ trap cleanup EXIT INT TERM
 # Let the page paint before we start pulling frames.
 sleep 8
 
-# Encoder: VAAPI on the iGPU when asked and present, else software x264 (a
-# 6-core box handles 1080p30 x264 veryfast fine). YouTube/Twitch both want a
-# ~2 s keyframe interval and reject a video-only feed, hence -g and anullsrc.
+# Encoder + delivery, tuned for a smooth multi-target live stream (validated
+# on basho0). Key choices, all of which fought visible choppiness:
+#   - CBR, no B-frames, keyframe every ~2 s: what YouTube/Twitch want, low latency.
+#   - -fps_mode cfr + a big thread_queue: kills x11grab's dup/drop jitter.
+#   - tee -use_fifo 1 + onfail=ignore (per slot): each target gets its own FIFO,
+#     so one platform buffering can't stutter the others.
+#   - default ~3.5 Mbps: two targets = ~7 Mbps up, kind to a home uplink; text
+#     streams clean at that. STREAM_BITRATE overrides.
+# anullsrc adds the silent audio track both platforms require.
 GOP=$((FPS * 2))
+BR="${STREAM_BITRATE:-3500k}"
 if [ "${STREAM_VAAPI:-0}" = 1 ] && [ -e /dev/dri/renderD128 ]; then
 	VENC=(-vaapi_device /dev/dri/renderD128 -vf format=nv12,hwupload
-		-c:v h264_vaapi -b:v 4500k -maxrate 4500k -bufsize 9000k -g "$GOP")
+		-c:v h264_vaapi -rc_mode CBR -b:v "$BR" -maxrate "$BR" -bufsize "$BR" -g "$GOP" -keyint_min "$GOP" -bf 0)
 else
-	VENC=(-c:v libx264 -preset veryfast -pix_fmt yuv420p
-		-b:v 4500k -maxrate 4500k -bufsize 9000k -g "$GOP")
+	VENC=(-c:v libx264 -preset veryfast -pix_fmt yuv420p -bf 0
+		-b:v "$BR" -maxrate "$BR" -bufsize "$BR" -g "$GOP" -keyint_min "$GOP")
 fi
 
 # shellcheck disable=SC2086
 ffmpeg -hide_banner -loglevel warning -stats -nostdin \
-	-f x11grab -framerate "$FPS" -video_size "$RES" -i ":$DPY" \
+	-thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate "$FPS" -video_size "$RES" -i ":$DPY" \
 	-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 \
+	-map 0:v -map 1:a -fps_mode cfr \
 	"${VENC[@]}" \
 	-c:a aac -b:a 128k -ar 44100 \
 	${STREAM_ARGS:-} \
-	-f tee "$DESTS" &
+	-f tee -use_fifo 1 "$DESTS" &
 FPID=$!
 
 # Respawn as a set: fall through the instant any child (renderer OR encoder)

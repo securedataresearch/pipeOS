@@ -44,8 +44,14 @@ start_pre() {
 	checkpath -d -m 0755 /work/logs || return 1
 
 	if [ "${STREAM_MODE:-media}" = browser ]; then
-		if [ -z "${STREAM_URL:-}" ] || [ -z "${STREAM_DST:-}" ]; then
-			eerror "browser stream not configured (STREAM_URL/STREAM_DST empty in $CONF) — fill it in from the web UI"
+		_has_target=0
+		for _n in 1 2 3 4; do
+			eval "_u=\${STREAM_T${_n}_URL:-}"; eval "_o=\${STREAM_T${_n}_ON:-}"
+			[ "$_o" = 1 ] && [ -n "$_u" ] && _has_target=1
+		done
+		[ -n "${STREAM_DST:-}" ] && _has_target=1   # back-compat with old fields
+		if [ -z "${STREAM_URL:-}" ] || [ "$_has_target" = 0 ]; then
+			eerror "browser stream not configured (need a page URL and at least one enabled target) — fill it in from the web UI"
 			return 1
 		fi
 		command -v chromium >/dev/null 2>&1 || { eerror "chromium is not installed on this image"; return 1; }
