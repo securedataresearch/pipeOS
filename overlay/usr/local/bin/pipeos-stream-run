@@ -61,27 +61,54 @@ resolve4() {
 	*) printf '%s' "$1" ;;
 	esac
 }
-DESTS=""
+# Each enabled slot may carry its own bitrate (STREAM_T{N}_BR, default
+# STREAM_BITRATE). Targets sharing a bitrate share ONE encode (teed); each
+# distinct bitrate gets its own encoder branch off a frame split — this is
+# what lets Twitch take 6000k while YouTube's re-encoder gets a fat 9000k
+# master from the same capture, without a second capture or process.
+BRDEF="${STREAM_BITRATE:-3500k}"
+T_DEST=""  # newline-separated "bitrate<TAB>[f=flv]url/key" rows
 i=1
 while [ "$i" -le "${STREAM_MAX_TARGETS:-4}" ]; do
 	eval "on=\${STREAM_T${i}_ON:-}"
 	eval "url=\${STREAM_T${i}_URL:-}"
 	eval "key=\${STREAM_T${i}_KEY:-}"
+	eval "br=\${STREAM_T${i}_BR:-}"
 	if [ "$on" = 1 ] && [ -n "$url" ]; then
 		url=$(resolve4 "${url%/}")
-		DESTS="${DESTS:+$DESTS|}[f=flv]${url}${key:+/$key}"
+		T_DEST="${T_DEST}${br:-$BRDEF}	[f=flv]${url}${key:+/$key}
+"
 	fi
 	i=$((i + 1))
 done
 # Back-compat: honour the old single/dual DST fields if no slot is set.
-if [ -z "$DESTS" ] && [ -n "${STREAM_DST:-}" ]; then
-	DESTS="[f=flv]${STREAM_DST%/}${STREAM_KEY:+/$STREAM_KEY}"
-	[ -n "${STREAM_DST2:-}" ] && DESTS="$DESTS|[f=flv]${STREAM_DST2%/}${STREAM_KEY2:+/$STREAM_KEY2}"
+if [ -z "$T_DEST" ] && [ -n "${STREAM_DST:-}" ]; then
+	T_DEST="$BRDEF	[f=flv]${STREAM_DST%/}${STREAM_KEY:+/$STREAM_KEY}
+"
+	[ -n "${STREAM_DST2:-}" ] && T_DEST="${T_DEST}$BRDEF	[f=flv]${STREAM_DST2%/}${STREAM_KEY2:+/$STREAM_KEY2}
+"
 fi
-if [ -z "$DESTS" ]; then
+if [ -z "$T_DEST" ]; then
 	echo "pipeos-stream-run: no enabled stream targets configured" >&2
 	exit 1
 fi
+# distinct bitrates, first-seen order, and each one's teed dest list
+# (BR_GROUPS, not GROUPS — bash reserves GROUPS for the user's gids and
+# silently ignores assignments to it; cost one very confused dry run)
+BR_GROUPS=()
+while IFS='	' read -r br dest; do
+	[ -n "$br" ] || continue
+	found=""
+	for g in "${BR_GROUPS[@]:-}"; do [ "$g" = "$br" ] && found=1; done
+	[ -z "$found" ] && BR_GROUPS+=("$br")
+done <<< "$T_DEST"
+dests_for() {
+	out=""
+	while IFS='	' read -r br dest; do
+		[ "$br" = "$1" ] && out="${out:+$out|}$dest"
+	done <<< "$T_DEST"
+	printf '%s' "$out"
+}
 
 export DISPLAY=":$DPY"
 # De-rooted (svc-stream) runs get a writable HOME the init prepared; root
@@ -140,26 +167,58 @@ sleep 8
 #     streams clean at that. STREAM_BITRATE overrides.
 # anullsrc adds the silent audio track both platforms require.
 GOP=$((FPS * 2))
-BR="${STREAM_BITRATE:-3500k}"
-if [ "${STREAM_VAAPI:-0}" = 1 ] && [ -e /dev/dri/renderD128 ]; then
-	VENC=(-vaapi_device /dev/dri/renderD128 -vf format=nv12,hwupload
-		-c:v h264_vaapi -rc_mode CBR -b:v "$BR" -maxrate "$BR" -bufsize "$BR" -g "$GOP" -keyint_min "$GOP" -bf 0)
+NG=${#BR_GROUPS[@]}
+FIFO_OPTS="queue_size=1024:attempt_recovery=1:drop_pkts_on_overflow=1:recovery_wait_time=2:max_recovery_attempts=0"
+USE_VAAPI=0
+[ "${STREAM_VAAPI:-0}" = 1 ] && [ -e /dev/dri/renderD128 ] && USE_VAAPI=1
+
+venc_for() { # $1 = bitrate → prints encoder args (space-separated, no spaces inside args)
+	if [ "$USE_VAAPI" = 1 ]; then
+		printf '%s' "-c:v h264_vaapi -rc_mode CBR -b:v $1 -maxrate $1 -bufsize $1 -g $GOP -keyint_min $GOP -bf 0"
+	else
+		printf '%s' "-c:v libx264 -preset veryfast -pix_fmt yuv420p -bf 0 -b:v $1 -maxrate $1 -bufsize $1 -g $GOP -keyint_min $GOP"
+	fi
+}
+
+CMD=(ffmpeg -hide_banner -loglevel warning -stats -nostdin)
+[ "$USE_VAAPI" = 1 ] && CMD+=(-vaapi_device /dev/dri/renderD128)
+CMD+=(-thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate "$FPS" -video_size "$RES" -i ":$DPY"
+	-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100)
+
+if [ "$NG" -eq 1 ]; then
+	# one bitrate: the original single-encode tee, unchanged in shape
+	[ "$USE_VAAPI" = 1 ] && CMD+=(-vf format=nv12,hwupload)
+	# shellcheck disable=SC2046,SC2086
+	CMD+=(-map 0:v -map 1:a -fps_mode cfr $(venc_for "${BR_GROUPS[0]}")
+		-c:a aac -b:a 128k -ar 44100 ${STREAM_ARGS:-}
+		-f tee -use_fifo 1 -fifo_options "$FIFO_OPTS" "$(dests_for "${BR_GROUPS[0]}")")
 else
-	VENC=(-c:v libx264 -preset veryfast -pix_fmt yuv420p -bf 0
-		-b:v "$BR" -maxrate "$BR" -bufsize "$BR" -g "$GOP" -keyint_min "$GOP")
+	# split the captured frames once, encode each bitrate group on its own
+	# branch, and give every group its own tee (so per-leg fifo isolation is
+	# kept). STREAM_ARGS is single-encode-only and skipped here on purpose.
+	FC="[0:v]split=$NG"
+	g=0; while [ "$g" -lt "$NG" ]; do FC="${FC}[s$g]"; g=$((g + 1)); done
+	g=0; while [ "$g" -lt "$NG" ]; do
+		if [ "$USE_VAAPI" = 1 ]; then
+			FC="$FC;[s$g]format=nv12,hwupload[v$g]"
+		else
+			FC="$FC;[s$g]null[v$g]"
+		fi
+		g=$((g + 1))
+	done
+	CMD+=(-filter_complex "$FC")
+	g=0
+	for br in "${BR_GROUPS[@]}"; do
+		# shellcheck disable=SC2046
+		CMD+=(-map "[v$g]" -map 1:a -fps_mode:v cfr $(venc_for "$br")
+			-c:a aac -b:a 128k -ar 44100
+			-f tee -use_fifo 1 -fifo_options "$FIFO_OPTS" "$(dests_for "$br")")
+		g=$((g + 1))
+	done
+	echo "pipeos-stream-run: $NG encoder branches (${BR_GROUPS[*]})" >&2
 fi
 
-# shellcheck disable=SC2086
-ffmpeg -hide_banner -loglevel warning -stats -nostdin \
-	-thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate "$FPS" -video_size "$RES" -i ":$DPY" \
-	-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 \
-	-map 0:v -map 1:a -fps_mode cfr \
-	"${VENC[@]}" \
-	-c:a aac -b:a 128k -ar 44100 \
-	${STREAM_ARGS:-} \
-	-f tee -use_fifo 1 \
-	-fifo_options "queue_size=1024:attempt_recovery=1:drop_pkts_on_overflow=1:recovery_wait_time=2:max_recovery_attempts=0" \
-	"$DESTS" &
+"${CMD[@]}" &
 FPID=$!
 
 # Respawn as a set: fall through the instant any child (renderer OR encoder)

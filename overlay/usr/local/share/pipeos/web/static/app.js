@@ -435,8 +435,9 @@ async function dashboard() {
           <label>Providers</label>
           <div id="targets"></div>
           <button id="addtarget" class="ghost" type="button" style="margin-bottom:.6rem">+ Add a provider</button>
-          <label for="sbitrate">Bitrate (per target)</label>
+          <label for="sbitrate">Default bitrate (providers without their own)</label>
           <input id="sbitrate" type="text" placeholder="3500k">
+          <p class="note">Providers with different bitrates get their own encoder from the same capture — e.g. Twitch at 6000k (its cap) while YouTube's re-encoder gets a 9000k master.</p>
           <label class="note" style="display:flex;align-items:center;gap:.5rem;margin-top:.4rem">
             <input id="sboot" type="checkbox" style="width:auto" checked> Start streaming automatically at boot
           </label>
@@ -828,14 +829,15 @@ async function dashboard() {
       }
       const url = el(`<input type="text" placeholder="rtmp://…" class="well">`); url.value = t.url || (PROVIDERS[t.name] || "");
       const key = el(`<input type="password" autocomplete="off" class="well" placeholder="${t.key_set ? "(saved — blank keeps it)" : "stream key"}">`);
+      const br = el(`<input type="text" class="well" placeholder="bitrate (blank = the default below) — e.g. 9000k for YouTube, 6000k for Twitch">`); br.value = t.br || "";
       const onwrap = el(`<label class="note" style="display:flex;align-items:center;gap:.4rem"></label>`);
       const on = el(`<input type="checkbox" style="width:auto">`); on.checked = t.on !== false;
       onwrap.appendChild(on); onwrap.appendChild(document.createTextNode(" stream to this"));
       const rm = el(`<button class="ghost" type="button" style="justify-self:start">remove</button>`);
       provsel.onchange = () => { const u = PROVIDERS[provsel.value]; if (u || provsel.value !== "Custom") url.value = u; };
       rm.onclick = () => row.remove();
-      row.appendChild(provsel); row.appendChild(url); row.appendChild(key); row.appendChild(onwrap); row.appendChild(rm);
-      row._get = () => ({ name: provsel.value, url: url.value, key: key.value, on: on.checked, keep_key: !key.value });
+      row.appendChild(provsel); row.appendChild(url); row.appendChild(key); row.appendChild(br); row.appendChild(onwrap); row.appendChild(rm);
+      row._get = () => ({ name: provsel.value, url: url.value, key: key.value, br: br.value.trim(), on: on.checked, keep_key: !key.value });
       tbox.appendChild(row);
     };
     v.querySelector("#addtarget").onclick = () => addRow();

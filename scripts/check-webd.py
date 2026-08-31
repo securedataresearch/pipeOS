@@ -127,6 +127,7 @@ for bad in ("src", "url", "args", "bitrate"):
 # and inside a provider target (url/key/name)
 req("/api/stream-config", {"targets": [{"url": "x'; rm -rf /"}]}, expect=400)
 req("/api/stream-config", {"targets": [{"key": "k'; rm -rf /"}]}, expect=400)
+req("/api/stream-config", {"targets": [{"br": "loud"}]}, expect=400)
 ok("stream config refuses quote injection on every field, targets included")
 req("/api/stream-config", {"mode": "browser", "res": "not-a-size"}, expect=400)
 req("/api/stream-config", {"mode": "browser", "fps": "abc"}, expect=400)
@@ -137,7 +138,7 @@ r = req("/api/stream-config", {
     "mode": "browser", "url": "https://basho.dev", "res": "1920x1080", "fps": "30",
     "vaapi": True, "bitrate": "3500k",
     "targets": [
-        {"name": "YouTube", "url": "rtmp://a.rtmp.youtube.com/live2", "key": "yt-secret", "on": True},
+        {"name": "YouTube", "url": "rtmp://a.rtmp.youtube.com/live2", "key": "yt-secret", "on": True, "br": "9000k"},
         {"name": "Twitch", "url": "rtmp://live.twitch.tv/app", "key": "tw-secret", "on": True},
     ]})
 assert r["ok"]
@@ -146,6 +147,7 @@ assert g["mode"] == "browser" and g["url"] == "https://basho.dev" and g["vaapi"]
 assert len(g["targets"]) == webd.STREAM_MAX_TARGETS, g
 t1, t2 = g["targets"][0], g["targets"][1]
 assert t1["name"] == "YouTube" and t1["url"] == "rtmp://a.rtmp.youtube.com/live2" and t1["on"] is True, t1
+assert t1["br"] == "9000k" and t2["br"] == "", (t1, t2)  # per-target bitrate round-trips
 assert t1["key_set"] is True and t2["key_set"] is True, g["targets"]
 assert all("key" not in t for t in g["targets"]), "raw keys must never be returned"
 with open(webd.STREAM_CONF) as f:

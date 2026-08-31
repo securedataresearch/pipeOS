@@ -1923,12 +1923,14 @@ class PhaseB:
         tk = []
         for n in range(1, STREAM_MAX_TARGETS + 1):
             tk += ["STREAM_T%d_URL" % n, "STREAM_T%d_KEY" % n,
-                   "STREAM_T%d_ON" % n, "STREAM_T%d_NAME" % n]
+                   "STREAM_T%d_ON" % n, "STREAM_T%d_NAME" % n,
+                   "STREAM_T%d_BR" % n]
         vals = read_conf_values(STREAM_CONF, base + tk)
         targets = [{
             "name": vals["STREAM_T%d_NAME" % n],
             "url": vals["STREAM_T%d_URL" % n],
             "on": vals["STREAM_T%d_ON" % n] == "1",
+            "br": vals["STREAM_T%d_BR" % n],
             "key_set": bool(vals["STREAM_T%d_KEY" % n]),
         } for n in range(1, STREAM_MAX_TARGETS + 1)]
         rc, _ = run(["rc-service", "pipeos-stream", "status"], timeout=15)
@@ -1968,10 +1970,14 @@ class PhaseB:
                 key = guard(t.get("key"), "target %d key" % n)
                 if not key and t.get("keep_key"):
                     key = existing["STREAM_T%d_KEY" % n]
+                br = guard(t.get("br"), "target %d bitrate" % n)
+                if br and not re.match(r"^\d{2,6}k?$", br):
+                    return self.err(400, "target %d bitrate must look like 6000k" % n)
                 fields["STREAM_T%d_URL" % n] = guard(t.get("url"), "target %d url" % n)
                 fields["STREAM_T%d_NAME" % n] = guard(t.get("name"), "target %d name" % n)
                 fields["STREAM_T%d_KEY" % n] = key
                 fields["STREAM_T%d_ON" % n] = "1" if t.get("on") else "0"
+                fields["STREAM_T%d_BR" % n] = br
         except ValueError as e:
             return self.err(400, str(e))
         if fields["STREAM_MODE"] not in ("media", "browser"):
