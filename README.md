@@ -1,8 +1,17 @@
 # pipeOS
 
-Diskless Alpine Linux (x86_64) that runs entirely from RAM, with **claude**
-(Claude Code), **hermes** (hermes-agent), and **pipe** preinstalled. Built for
-headless ThinkCentre-class boxes with NVMe; developed and tested in qemu.
+Turn any spare x86_64 box into a browser-managed AI agent appliance.
+pipeOS is diskless Alpine Linux that runs entirely from RAM — flash it,
+boot it, open **http://pipeos.local/**, claim it, and pick what it does:
+a Claude assistant, a streaming box, pipe messaging, or all of it. Every
+boot is a clean restore of the last saved state; updates are silent,
+verified, and self-rolling-back; recovery is two buttons on a web page.
+
+**Fastest start**: grab `pipeos-usb.img.xz` from
+[Releases](../../releases/latest) (or [pipe.online/downloads](https://pipe.online/downloads)),
+verify, `dd`, boot. Full walkthrough — including building your own image
+and running a fleet on your own keys — in
+[docs/build-your-own.md](docs/build-your-own.md).
 
 - The NVMe holds only boot media, an apkovl overlay, a local apk repo, and an
   apk cache. The live system is tmpfs — the disk is never a root filesystem.

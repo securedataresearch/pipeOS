@@ -1,0 +1,26 @@
+name: Build problem
+description: Building the image from this repo failed or misbehaved
+labels: [product]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What failed
+      description: The command you ran and the last ~30 lines of its output.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Build host
+      placeholder: e.g. Debian 13, Fedora 42, Arch — and how you installed deps
+  - type: checkboxes
+    id: steps
+    attributes:
+      label: Which steps succeeded before the failure?
+      options:
+        - label: scripts/00-host-setup.sh
+        - label: make chroot
+        - label: make apks
+        - label: make image / usb

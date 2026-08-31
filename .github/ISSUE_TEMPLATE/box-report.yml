@@ -1,0 +1,31 @@
+name: Box problem report
+description: Something is wrong on a running pipeOS box
+labels: [product]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what the box did instead.
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Boot report
+      description: >
+        From the dashboard (the "Full boot report" dropdown), or over ssh:
+        `cat /run/pipeos/boot-report`. Paste it whole.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Image / overlay version
+      description: >
+        The release tag you flashed, and (if you can) the `commit` line from
+        `/etc/pipeos/.overlay-stamp`.
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      placeholder: e.g. ThinkCentre M920q, USB stick boot
