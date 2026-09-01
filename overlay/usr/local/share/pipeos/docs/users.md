@@ -6,6 +6,9 @@ more dashboard accounts under **Users**.
 ## Roles
 
 - **admin** — full control: services, streaming, files, users, saves.
+- **user** — everything a viewer sees, plus the file explorer works:
+  upload, download, move, rename and delete under `/work` and any shared
+  drive. The role for someone who drops files on the box without running it.
 - **viewer** — sees every page, changes nothing except their own password.
   The server refuses viewer mutations; the greyed-out controls in the
   dashboard are the affordance, not the enforcement.
