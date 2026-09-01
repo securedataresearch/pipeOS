@@ -39,6 +39,16 @@ webd.SELFUPDATE_CONF = tmp + "/selfupdate.conf"
 webd.NAS_CONF = tmp + "/nas.conf"
 webd.MOUNTS_CONF = tmp + "/mounts.conf"
 webd.UPDATE_STAMP = tmp + "/selfupdate.applied"
+webd.BACKUP_STATE = tmp + "/backup.state"
+# the copying is pipeos-backup's (check-backup.py has its rows); here a stub
+# stands in, records its argv, and lands what the card looks for
+webd.BACKUP_BIN = tmp + "/backup-stub"
+with open(webd.BACKUP_BIN, "w") as f:
+    f.write("#!/bin/sh\nprintf '%s\\n' \"$@\" >> " + tmp + "/backup.argv\n"
+            "for d; do :; done\nn=$(hostname)\nmkdir -p \"$d/pipeos-backup/$n/work\"\n"
+            "echo precious > \"$d/pipeos-backup/$n/work/data.txt\"\n"
+            "date +%s > \"$d/pipeos-backup/$n/.last\"\necho step=done > " + tmp + "/backup.state\n")
+os.chmod(webd.BACKUP_BIN, 0o755)
 webd.LOG_ALLOW = {k: tmp + "/" + k + ".log" for k in webd.LOG_ALLOW}
 with open(webd.CARD, "w") as f:
     f.write("NICK=\nROLE=GENERIC\nOWNER_NICK=\n")
@@ -261,10 +271,7 @@ ok("disk inventory lists; protected/system devices refuse every op")
 req("/api/backup", {"dest": "work"}, expect=400)
 req("/api/backup", {"dest": "ext/ghost"}, expect=400)
 os.makedirs(tmp + "/ext/sdx1", exist_ok=True)
-os.makedirs(tmp + "/srcwork/sub", exist_ok=True)
-with open(tmp + "/srcwork/data.txt", "w") as f:
-    f.write("precious")
-webd.BACKUP_SRCS = ((tmp + "/srcwork/", "work"),)
+req("/api/backup", {"dest": "ext/sdx1", "scope": "nope"}, expect=400)
 _real_ismount = webd.os.path.ismount
 webd.os.path.ismount = lambda p: p.startswith(tmp + "/ext/") or _real_ismount(p)
 r = req("/api/backup", {"dest": "ext/sdx1"})
@@ -282,8 +289,17 @@ for root, dirs, files in os.walk(tmp + "/ext/sdx1/pipeos-backup"):
         found = True
 assert found, "backup did not copy the source file"
 assert b["exts"][0]["last"] is not None
+assert b["step"] == "done", b
+# the identity-only scope reaches the binary as its flag
+r = req("/api/backup", {"dest": "ext/sdx1", "scope": "identity"})
+assert r["started"]
+for _ in range(100):
+    if not req("/api/backup")["running"]:
+        break
+    _sel.select([], [], [], 0.1)
+assert "--identity-only" in open(tmp + "/backup.argv").read()
 webd.os.path.ismount = _real_ismount
-ok("backup validates dest and mirrors sources onto the external")
+ok("backup validates dest and scope, runs pipeos-backup, and reads its step and stamp")
 raw = urllib.request.Request(base + "/api/file-up?path=work&name=up.bin", data=b"x" * 100)
 raw.add_header("Cookie", "session=" + cookie["v"])
 raw.add_header("Origin", base)
@@ -399,6 +415,7 @@ req("/api/users", expect=403)
 req("/api/file-op", {"op": "mkdir", "path": "work", "name": "nope"}, expect=403)
 req("/api/nas", {"shares": []}, expect=403)
 req("/api/nas-password", {"name": "peek", "password": "whatever12"}, expect=403)
+req("/api/backup", {"dest": "ext/sdx1"}, expect=403)
 r = req("/api/password", {"current": "peekpassword", "new": "peekpassword2"})
 assert r["ok"]
 assert req("/api/docs")["pages"], "viewer must be able to read the docs"
@@ -416,7 +433,8 @@ req("/api/services", {"stream": False}, expect=403)
 req("/api/nas", {"shares": []}, expect=403)
 req("/api/users", expect=403)
 req("/api/name", {"hostname": "nope"}, expect=403)
-ok("role user: file-op allowed; services/nas/users/name refused")
+req("/api/backup", {"dest": "ext/sdx1"}, expect=403)
+ok("role user: file-op allowed; services/nas/users/name/backup refused")
 cookie["v"] = saved_admin2
 req("/api/users/del", {"name": "mover"})
 

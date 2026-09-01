@@ -1,0 +1,207 @@
+#!/bin/sh
+# pipeos-backup — this box's identity, and its data, onto a second disk.
+#
+#   pipeos backup DEST [--identity-only] [--passphrase-file F]
+#
+# DEST is a mounted external (the dashboard mounts them under /media/ext).
+# What lands under DEST/pipeos-backup/<nick>/:
+#   identity/pipeos.apkovl.tar.gz   a fresh `lbu package` — THE identity:
+#                                   every path in lbu.list plus /etc (pipe
+#                                   keys, ssh, tokens, users, the box's
+#                                   config). It is what a boot restores and
+#                                   what `pipeos flash restore-identity`
+#                                   consumes. The previous one is kept as
+#                                   pipeos.apkovl.prev.tar.gz.
+#   identity/pipe/{identity,credentials}.dat   plain copies of the pipe keys,
+#                                   so a human can find them without untarring
+#   identity/MANIFEST               what this is, from which box, when, sha256
+#   work/                           /work mirrored (rsync), minus caches and
+#                                   rebuildable build output
+#   boot-media/                     /media/usb mirrored (apks, kernel — a
+#                                   restore without network), unless
+#                                   --identity-only
+#
+# Whoever holds the disk holds the keys: the bundle is plaintext by default,
+# because a passphrase the owner forgets is a lost identity, which is worse.
+# --passphrase-file F wraps the bundle with openssl (aes-256-cbc, pbkdf2) and
+# writes no plaintext key copies. An ext4 disk keeps file modes (the
+# dashboard's format button makes one); on FAT everything is world-readable.
+#
+# One implementation for both surfaces: the dashboard's Backup card runs this
+# binary (webd.py BACKUP_BIN). Operator/owner verb — hard-banned for the
+# box's agent like every media writer (pipebox-settings.json deny list).
+#
+# Seams for the probe (scripts/check-backup.py), never set in production:
+# PIPEOS_BACKUP_ROOT prefixes every absolute path this reads; PIPEOS_BACKUP_LBU
+# replaces `lbu package`; PIPEOS_BACKUP_MOUNTS replaces /proc/mounts;
+# PIPEOS_BACKUP_RSYNC replaces rsync.
+
+set -u
+
+R=${PIPEOS_BACKUP_ROOT:-}
+ETC=$R/etc/pipeos
+PIPEDIR=$R/root/.pipe
+MEDIA=$R/media/usb
+WORK=$R/work
+RUN=$R/run/pipeos
+LOCK=$R/run/pipeos-save.lock
+STATE=$RUN/backup.state
+MOUNTS=${PIPEOS_BACKUP_MOUNTS:-/proc/mounts}
+LBU=${PIPEOS_BACKUP_LBU:-lbu package}
+RSYNC=${PIPEOS_BACKUP_RSYNC:-rsync}
+
+DEST=""
+IDENTITY_ONLY=no
+PASSFILE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --identity-only) IDENTITY_ONLY=yes ;;
+        --passphrase-file) shift; PASSFILE=${1:-} ;;
+        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+        -*) echo "pipeos-backup: unknown option $1" >&2; exit 2 ;;
+        *) DEST=$1 ;;
+    esac
+    shift
+done
+[ -n "$DEST" ] || { echo "usage: pipeos backup DEST [--identity-only] [--passphrase-file F]" >&2; exit 2; }
+DEST=${DEST%/}
+
+say()   { echo "pipeos-backup: $*"; }
+state() { mkdir -p "$RUN" 2>/dev/null; printf 'step=%s\nok=%s\ndetail=%s\n' "$1" "${2:-}" "${3:-}" > "$STATE" 2>/dev/null; }
+die()   { say "$*" >&2; state failed no "$*"; exit 1; }
+
+# ---- the same lock every media mutator takes: `lbu package` reads the
+# live tree, and a save landing mid-package would ship half a state.
+take_save_lock() {
+    exec 9> "$LOCK"
+    _i=0
+    until flock -n 9; do
+        _i=$((_i+1))
+        [ "$_i" -ge 60 ] && die "save lock held for 60s; giving up"
+        sleep 1
+    done
+}
+
+# ---- the destination must be a mountpoint (a directory on the RAM root is
+# not a backup); its filesystem decides what rsync may preserve.
+dest_fs() {
+    awk -v d="$1" '$2 == d { fs = $3 } END { print fs }' "$MOUNTS"
+}
+
+box_nick() {
+    _n=$(sed -n 's/^NICK=//p' "$ETC/card.conf" 2>/dev/null | head -1 | tr -d '"')
+    [ -n "$_n" ] || _n=$(hostname 2>/dev/null)
+    echo "${_n:-pipeos}"
+}
+
+# ---- a fresh apkovl, integrity-checked exactly as pipeos-save checks its
+# candidate: a corrupt bundle is worse than none, because it is trusted.
+package_identity() {
+    [ -f "$ETC/provisioned" ] || die "this box is not claimed yet — there is no identity to back up"
+    [ -f "$ETC/rollback-pending" ] && die "a rollback is staged — reboot to apply it, then back up what booted"
+    $LBU "$1" >/dev/null 2>&1 || die "lbu package failed"
+    if ! gzip -t "$1" 2>/dev/null || ! tar -tzf "$1" >/dev/null 2>&1; then
+        die "candidate apkovl failed integrity check"
+    fi
+}
+
+write_manifest() {
+    _dir=$1; _bundle=$2; _enc=$3
+    {
+        echo "pipeos identity backup"
+        echo "hostname=$(hostname 2>/dev/null)"
+        echo "nick=$(box_nick)"
+        echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "bundle=$(basename "$_bundle")"
+        echo "bundle_sha256=$(sha256sum "$_bundle" | cut -d' ' -f1)"
+        echo "bundle_bytes=$(wc -c < "$_bundle")"
+        echo "encrypted=$_enc"
+        echo "overlay_commit=$(sed -n 's/^commit //p' "$ETC/.overlay-stamp" 2>/dev/null | head -1)"
+        echo "image=$(sed -n 's/^built=//p' "$MEDIA/pipeos-image.txt" 2>/dev/null | head -1)"
+        echo "world_count=$(tar -xzOf "$_bundle" etc/apk/world 2>/dev/null | grep -c .)"
+        echo "restore=pipeos flash restore-identity <bundle>   # stages it as the next boot's apkovl"
+        echo "warning=whoever holds this disk holds this box's keys"
+    } > "$_dir/MANIFEST"
+}
+
+# ---- canonical never absent: write .new, keep the previous, one rename.
+store_identity() {
+    _dir=$1; _tmp=$2
+    mkdir -p "$_dir" || die "cannot create $_dir"
+    if [ -n "$PASSFILE" ]; then
+        [ -r "$PASSFILE" ] || die "passphrase file not readable: $PASSFILE"
+        _out=$_dir/pipeos.apkovl.tar.gz.enc
+        openssl enc -aes-256-cbc -pbkdf2 -salt -in "$_tmp" -out "$_out.new" -pass "file:$PASSFILE" 2>/dev/null \
+            || die "encryption failed"
+        rm -f "$_dir/pipeos.apkovl.tar.gz" "$_dir/pipeos.apkovl.prev.tar.gz"   # no plaintext beside a sealed one
+        rm -rf "$_dir/pipe"
+        _enc=1
+    else
+        _out=$_dir/pipeos.apkovl.tar.gz
+        cp "$_tmp" "$_out.new" || die "write to $_dir failed"
+        _enc=0
+    fi
+    sync
+    [ -f "$_out" ] && { cp "$_out" "${_out%.tar.gz*}.prev.tar.gz${_out##*.tar.gz}" 2>/dev/null || true; }
+    mv "$_out.new" "$_out" || die "cannot install the bundle"
+    if [ "$_enc" = 0 ]; then
+        mkdir -p "$_dir/pipe"
+        for _f in identity.dat credentials.dat; do
+            [ -f "$PIPEDIR/$_f" ] && cp "$PIPEDIR/$_f" "$_dir/pipe/$_f"
+        done
+        chmod -R go-rwx "$_dir/pipe" 2>/dev/null || true
+    fi
+    write_manifest "$_dir" "$_out" "$_enc"
+    chmod 600 "$_out" 2>/dev/null || true
+    sync
+    say "identity: $_out ($(wc -c < "$_out") bytes, encrypted=$_enc)"
+}
+
+# ---- rsync flags by destination filesystem: ext4 keeps everything; FAT
+# cannot hold ownership, modes or symlinks, so ask it for what it can do.
+rsync_flags() {
+    case "$1" in
+        vfat|msdos|exfat|fat*) echo "-rtL --no-perms --no-owner --no-group --modify-window=2 --delete" ;;
+        *) echo "-a --delete" ;;
+    esac
+}
+
+mirror() {   # SRC DSTDIR NAME FS
+    [ -d "$1" ] || { say "$3: $1 absent, skipped"; return 0; }
+    mkdir -p "$2" || die "cannot create $2"
+    # shellcheck disable=SC2046  # the flag string is a word list on purpose
+    $RSYNC $(rsync_flags "$4") --exclude /lost+found --exclude /cache --exclude '/repos/*/out' \
+        "$1/" "$2/" >/dev/null 2>"$RUN/backup.rsync.err" \
+        || die "$3: rsync failed: $(tail -c 300 "$RUN/backup.rsync.err" 2>/dev/null)"
+    say "$3: mirrored to $2"
+}
+
+# ---- run ------------------------------------------------------------------
+mkdir -p "$RUN" 2>/dev/null
+FS=$(dest_fs "$DEST")
+[ -n "$FS" ] || die "$DEST is not a mounted disk — mount an external first"
+case "$FS" in
+    vfat|msdos|exfat|fat*) say "NOTE: $DEST is $FS — file modes are not kept; anyone with the disk can read the keys" ;;
+esac
+
+NICK=$(box_nick)
+ROOT=$DEST/pipeos-backup/$NICK
+take_save_lock
+
+state identity
+TMP=$RUN/.backup-apkovl.$$
+trap 'rm -f "$TMP"' EXIT
+package_identity "$TMP"
+store_identity "$ROOT/identity" "$TMP"
+
+if [ "$IDENTITY_ONLY" = no ]; then
+    state work
+    mirror "$WORK" "$ROOT/work" work "$FS"
+    state media
+    mirror "$MEDIA" "$ROOT/boot-media" boot-media "$FS"
+fi
+
+date +%s > "$ROOT/.last"
+sync
+state done yes "$ROOT"
+say "done: $ROOT"

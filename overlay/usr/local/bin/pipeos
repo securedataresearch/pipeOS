@@ -15,6 +15,7 @@
 #   pipeos save                commit state now (guarded, atomic)
 #   pipeos rollback [TS|known-good]  stage an older apkovl for next boot
 #   pipeos sync-media          push freshly built pipeos repo -> media
+#   pipeos backup DEST [--identity-only]   identity bundle + /work onto a mounted external
 #   pipeos deploy-overlay      install a repo commit's overlay onto this box
 #
 # Read-only verbs (status/verify/diff/snapshot) are open to the resident
@@ -370,6 +371,7 @@ case "$1" in
     save)        exec /usr/local/bin/pipeos-save ;;
     rollback)    shift; cmd_rollback "$@" ;;
     sync-media)  shift; exec /usr/local/bin/pipeos-sync-media "$@" ;;
+    backup)      shift; exec /usr/local/bin/pipeos-backup "$@" ;;
     deploy-overlay) shift; exec /usr/local/bin/pipeos-deploy-overlay "$@" ;;
     selfupdate)  shift; exec /usr/local/bin/pipeos-selfupdate "$@" ;;
     *)
