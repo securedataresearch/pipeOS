@@ -126,6 +126,7 @@ def run_5cc(repo, stamp_text, crit_days=3, base_ref="origin/main"):
         open(stamp, "w").write(stamp_text)
     prelude = (
         'warnn() { echo "WARN: $*"; }\n'
+        'noten() { echo "NOTE: $*"; }\n'
         'crit() { echo "CRIT: $*"; }\n'
         'critstate() { echo "CRITSTATE: $*"; }\n'
         'PIPEOS_REPO=%s\nPIPEOS_BASE_REF=%s\nOVERLAY_CRIT_DAYS=%d\n'
@@ -192,14 +193,17 @@ git(R, "update-ref", "refs/remotes/origin/main", c_tip)
 # what gates known-good promotion in section 6 — whose own rule is that a
 # finding which does not make the state bad must not freeze known-good.
 out = run_5cc(R, stamp_for(c_old), crit_days=3)
-check("5 a stale overlay is CRITICAL but not the kind that gates promotion",
-      "CRITSTATE:" in out and "CRIT:" not in out.replace("CRITSTATE:", ""),
+# 2026-09-01: an operator note, not a critical — the owner cannot act on
+# overlay age and was being frightened by it; what still matters is that it
+# is never a `crit`, the kind that gates promotion.
+check("5 a stale overlay is an operator note, never the kind that gates promotion",
+      "NOTE:" in out and "overlay is stale" in out and "CRIT" not in out,
       repr(out))
 
 # ── 6. under the threshold it is a warning ───────────────────────────────
 out = run_5cc(R, stamp_for(c_mid), crit_days=30)
-check("6 under OVERLAY_CRIT_DAYS it warns rather than escalating",
-      out.startswith("WARN:") and "overlay is behind" in out, repr(out))
+check("6 under OVERLAY_CRIT_DAYS it is a note that says behind, not stale",
+      out.startswith("NOTE:") and "overlay is behind" in out, repr(out))
 
 # ── 7. current: silent ───────────────────────────────────────────────────
 out = run_5cc(R, stamp_for(c_tip))
@@ -208,7 +212,7 @@ check("7 a current box reports nothing from 5cc", out == "", repr(out))
 # ── 8. no stamp is a finding, not a pass ─────────────────────────────────
 out = run_5cc(R, None)
 check("8 a box with no deploy record is reported, not passed",
-      "WARN:" in out and "hand-copied" in out, repr(out))
+      "NOTE:" in out and "hand-copied" in out, repr(out))
 
 # ── 9. the unmerged state, through selfcheck too ─────────────────────────
 # Same defect, second consumer. A fix applied in one file and not the other is

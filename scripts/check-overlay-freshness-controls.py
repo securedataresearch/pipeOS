@@ -35,10 +35,10 @@ BREAKS = [
      '        if ! git -C "$_ov_repo" merge-base --is-ancestor "$_ov_c" "$_ov_tip" 2>/dev/null; then',
      '        if false; then'),
     ("C  selfcheck: a stale overlay gates known-good promotion again", SELFCHECK,
-     '                critstate "overlay is stale:',
+     '                noten "overlay is stale:',
      '                crit "overlay is stale:'),
     ("D  selfcheck: no deploy record reads as a pass", SELFCHECK,
-     '        warnn "no overlay deploy record',
+     '        noten "no overlay deploy record',
      '        : "no overlay deploy record'),
 ]
 
