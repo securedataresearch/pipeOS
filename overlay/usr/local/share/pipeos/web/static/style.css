@@ -267,3 +267,29 @@ button.small { padding: .3rem .65rem; font-size: .82rem; margin: 0; width: auto;
   .frow .fdate { display: none; }
   .viewhead h1 { font-size: 1.35rem; }
 }
+
+/* ── copy, two ways (copy.js — kept in step with pipe.online's) ───────── */
+pre.has-copy { position: relative; padding-right: 64px; }
+.copy-btn {
+  position: absolute; top: 8px; right: 8px;
+  font: 600 10.5px/1 inherit;
+  font-family: inherit;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 5px 8px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--dim);
+  cursor: pointer; user-select: none; opacity: 0.75;
+}
+pre:hover .copy-btn, .copy-btn:focus-visible { opacity: 1; }
+.copy-btn:hover { color: var(--fg); border-color: var(--accent); }
+.copy-btn.done { color: var(--ok); border-color: var(--ok); }
+.copy-tick {
+  position: absolute; z-index: 80;
+  font: 600 10.5px/1 inherit;
+  font-family: inherit;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 5px 8px; border-radius: 6px;
+  border: 1px solid var(--ok); background: var(--panel); color: var(--ok);
+  pointer-events: none; user-select: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+@media (hover: none) { .copy-btn { opacity: 1; } }
