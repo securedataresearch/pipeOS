@@ -501,7 +501,20 @@ def proc_metrics():
     cheap enough for a 10s sampler. A missing sensor reports None rather
     than failing the whole call."""
     m = {"load1": None, "load5": None, "load15": None, "ncpu": None,
-         "mem_total_mb": None, "mem_avail_mb": None, "temp_c": None}
+         "mem_total_mb": None, "mem_avail_mb": None, "temp_c": None,
+         "cpu_busy": None, "cpu_total": None}
+    # /proc/stat's aggregate cpu line, as jiffies. Utilisation is the delta
+    # between two samples (busy/total), computed where two samples exist —
+    # the sampler's ring and the /api/metrics tail — never here.
+    try:
+        with open("/proc/stat") as f:
+            parts = f.readline().split()
+        if parts and parts[0] == "cpu":
+            j = [int(x) for x in parts[1:]]
+            idle = j[3] + (j[4] if len(j) > 4 else 0)   # idle + iowait
+            m["cpu_total"], m["cpu_busy"] = sum(j), sum(j) - idle
+    except (OSError, ValueError, IndexError):
+        pass
     try:
         with open("/proc/loadavg") as f:
             l1, l5, l15 = f.read().split()[:3]
@@ -832,6 +845,7 @@ def metrics_sampler():
             with METRICS_LOCK:
                 METRICS_HIST.append({
                     "t": int(time.time()), "load1": p["load1"], "mem": mem,
+                    "cpu_busy": p["cpu_busy"], "cpu_total": p["cpu_total"],
                     "temp": p["temp_c"], "rx": rx, "tx": tx,
                     "work_pct": slow["work_pct"], "root_pct": slow["root_pct"],
                 })
@@ -839,6 +853,20 @@ def metrics_sampler():
             pass  # a bad sample must never kill the sampler
         tick += 1
         time.sleep(SAMPLE_S)
+
+
+def cpu_pct_between(a, b):
+    """Utilisation over the interval from sample a to sample b, as a whole
+    percent; None when either side lacks jiffies or the counters went
+    backwards (a reboot's worth of history in the ring)."""
+    try:
+        db = b["cpu_busy"] - a["cpu_busy"]
+        dt = b["cpu_total"] - a["cpu_total"]
+    except (KeyError, TypeError):
+        return None
+    if dt <= 0 or db < 0:
+        return None
+    return round(min(100.0, db * 100.0 / dt))
 
 
 def _bucket(vals, how):
@@ -857,7 +885,7 @@ def metrics_history(span_s):
     with METRICS_LOCK:
         rows = [r for r in METRICS_HIST if r["t"] >= cut]
     # rates first, on the raw samples
-    rates = []
+    rates, pcts = [], []
     for i, r in enumerate(rows):
         bps = (None, None)
         if i and r["rx"] is not None and rows[i - 1]["rx"] is not None:
@@ -865,13 +893,15 @@ def metrics_history(span_s):
             bps = (max(0, r["rx"] - rows[i - 1]["rx"]) * 8 // dt,
                    max(0, r["tx"] - rows[i - 1]["tx"]) * 8 // dt)
         rates.append(bps)
+        pcts.append(cpu_pct_between(rows[i - 1], r) if i else None)
     k = max(1, (len(rows) + 359) // 360)
     out = {"interval_s": k * SAMPLE_S, "t0": rows[0]["t"] if rows else None,
-           "cpu": [], "mem_pct": [], "temp": [], "rx_bps": [], "tx_bps": [],
-           "work_pct": [], "root_pct": []}
+           "cpu": [], "cpu_pct": [], "mem_pct": [], "temp": [], "rx_bps": [],
+           "tx_bps": [], "work_pct": [], "root_pct": []}
     for i in range(0, len(rows), k):
-        b, rb = rows[i:i + k], rates[i:i + k]
+        b, rb, pb = rows[i:i + k], rates[i:i + k], pcts[i:i + k]
         out["cpu"].append(_bucket([r["load1"] for r in b], "max"))
+        out["cpu_pct"].append(_bucket(pb, "avg"))
         out["mem_pct"].append(_bucket([r["mem"] for r in b], "avg"))
         out["temp"].append(_bucket([r["temp"] for r in b], "max"))
         out["rx_bps"].append(_bucket([r[0] for r in rb], "avg"))
@@ -1735,6 +1765,7 @@ class Handler(BaseHTTPRequestHandler):
                   "rx_bps": None, "tx_bps": None})
         with METRICS_LOCK:
             tail = list(METRICS_HIST)[-2:]
+        m["cpu_pct"] = cpu_pct_between(tail[0], tail[1]) if len(tail) == 2 else None
         if len(tail) == 2 and tail[1]["rx"] is not None and tail[0]["rx"] is not None:
             dt = max(1, tail[1]["t"] - tail[0]["t"])
             m["rx_bps"] = max(0, tail[1]["rx"] - tail[0]["rx"]) * 8 // dt

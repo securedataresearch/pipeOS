@@ -366,6 +366,14 @@ function chart(elm, series, opts) {
     <div class="chfoot">${opts.t0 ? `<span>${t(opts.t0)}</span><span>${t(opts.t0 + n * opts.interval)}</span>` : ""}</div>`;
 }
 
+// "load 0.42 · 4 cores" — the fine print under a CPU percent.
+function cpuNote(m) {
+  const bits = [];
+  if (m.load1 != null) bits.push("load " + m.load1.toFixed(2));
+  if (m.ncpu) bits.push(m.ncpu + " cores");
+  return bits.join(" · ");
+}
+
 // The verdict as the owner should read it: one calm phrase. The selfcheck's
 // own wording (counts, "DEGRADED", operator notes) stays in the collapsed
 // output for whoever wants it.
@@ -451,7 +459,7 @@ async function dashboard() {
           <div class="tile"><div class="k">Last boot</div><div class="val small"><span class="${vcls}">${esc(verdict)}</span></div></div>
           <div class="tile"><div class="k">Uptime</div><div class="val">${fmtUptime(st.uptime_s)}</div></div>
           <div class="tile"><div class="k">Disk</div><div class="val">${st.work_pct == null ? "?" : st.work_pct + "%"}</div><div class="note">${st.work_free_mb != null ? Math.round(st.work_free_mb / 1024) + " GB free" : "used"}</div></div>
-          <div class="tile"><div class="k">CPU load</div><div class="val" id="ovload">…</div><div class="note" id="ovloadn"></div></div>
+          <div class="tile"><div class="k">CPU</div><div class="val" id="ovload">…</div><div class="note" id="ovloadn"></div></div>
           <div class="tile"><div class="k">CPU temp</div><div class="val" id="ovtemp">…</div></div>
         </div>
         ${showStream ? `
@@ -888,8 +896,11 @@ async function dashboard() {
     busy(b, false);
   };
   api("/api/metrics").then(m => {
-    v.querySelector("#ovload").textContent = m.load1 == null ? "?" : m.load1.toFixed(2);
-    v.querySelector("#ovloadn").textContent = m.ncpu ? m.ncpu + " cores" : "";
+    // Utilisation is the headline (Sam: the load number alone says nothing
+    // to an owner); load and cores are the fine print. Until the sampler has
+    // two ticks the percent is unknown and the load stands in.
+    v.querySelector("#ovload").textContent = m.cpu_pct != null ? m.cpu_pct + "%" : (m.load1 == null ? "?" : m.load1.toFixed(2));
+    v.querySelector("#ovloadn").textContent = cpuNote(m);
     v.querySelector("#ovtemp").textContent = m.temp_c == null ? "—" : m.temp_c + "°C";
   }).catch(() => {});
   v.querySelector("#save").onclick = async () => {
@@ -1732,8 +1743,8 @@ async function dashboard() {
     const memUsed = (m.mem_total_mb != null && m.mem_avail_mb != null) ? m.mem_total_mb - m.mem_avail_mb : null;
     const memPct = (memUsed != null && m.mem_total_mb) ? Math.round(memUsed * 100 / m.mem_total_mb) : null;
     mbox.innerHTML =
-      tile("CPU load", m.load1 == null ? "?" : m.load1.toFixed(2),
-        (m.ncpu ? m.ncpu + " cores" : "") + (m.load5 != null ? " · 5m " + m.load5.toFixed(2) : "")) +
+      tile("CPU", m.cpu_pct != null ? m.cpu_pct + "%" : (m.load1 == null ? "?" : m.load1.toFixed(2)),
+        cpuNote(m) + (m.load5 != null ? " · 5m " + m.load5.toFixed(2) : "")) +
       tile("Memory", memPct == null ? "?" : memPct + "%",
         memUsed != null ? (memUsed / 1024).toFixed(1) + " / " + (m.mem_total_mb / 1024).toFixed(1) + " GB" : "") +
       tile("CPU temp", m.temp_c == null ? "—" : m.temp_c + "°C", m.temp_c == null ? "no sensor" : "") +
