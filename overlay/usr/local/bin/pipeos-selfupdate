@@ -168,8 +168,12 @@ fi
 [ -x "$VERIFY" ] || die "missing $VERIFY (is /work/repos/pipeOS present?)"
 "$VERIFY" "$stage" || die "fetched repo failed verification — not touching media"
 
-# publish into the tree sync-media reads from
+# publish into the tree sync-media reads from — CLEARED first: a package
+# the new release dropped would otherwise ride along unindexed forever
+# (antigravity's ghost apks did exactly that on basho_box, 2026-09-01,
+# the same night the release stopped carrying them).
 mkdir -p "$SRC_REPO"
+rm -f "$SRC_REPO"/*.apk
 cp "$stage"/*.apk "$stage/APKINDEX.tar.gz" "$SRC_REPO/"
 
 # ---- 4. persistence guarantee: identity survives the coming save ------------
