@@ -713,38 +713,38 @@ def disk_inventory():
 
 
 # ---- backup ----------------------------------------------------------------
-# One button copies what a restore needs: the work disk (bulk data) and the
-# boot media (apkovl + repos) onto a mounted external, file-level via rsync
-# into pipeos-backup/<nick>/{work,boot-media}. --delete keeps it a true
-# mirror, safe because the target dir belongs wholly to this backup.
+# One button copies what a restore needs onto a mounted external: the
+# identity bundle (a fresh apkovl — keys, tokens, config), the work disk and
+# the boot media, into pipeos-backup/<nick>/{identity,work,boot-media}. The
+# copying itself is /usr/local/bin/pipeos-backup — one implementation for
+# the dashboard and the `pipeos backup` verb (#180) — and this is only the
+# thread that runs it and the state the card polls.
 
-BACKUP_SRCS = (("/work/", "work"), ("/media/usb/", "boot-media"))
+BACKUP_BIN = "/usr/local/bin/pipeos-backup"
+BACKUP_STATE = "/run/pipeos/backup.state"
 BACKUP = {"running": False, "dest": "", "started": 0, "ok": None, "detail": ""}
 BACKUP_LOCK = threading.Lock()
 
 
-def backup_worker(destroot, nick):
-    dst = os.path.join(destroot, "pipeos-backup", nick)
-    ok, detail = True, ""
-    try:
-        os.makedirs(dst, exist_ok=True)
-        for src, name in BACKUP_SRCS:
-            if not os.path.isdir(src):
-                continue
-            rc, out = run(["rsync", "-a", "--delete",
-                           "--exclude", "/lost+found", "--exclude", "/cache",
-                           src, os.path.join(dst, name) + "/"],
-                          timeout=6 * 3600)
-            if rc != 0:
-                ok, detail = False, "%s: %s" % (name, out.strip()[-300:])
-                break
-        if ok:
-            with open(os.path.join(dst, ".last"), "w") as f:
-                f.write(str(int(time.time())))
-    except OSError as e:
-        ok, detail = False, str(e)
+def backup_worker(destroot, scope):
+    argv = [BACKUP_BIN] + (["--identity-only"] if scope == "identity" else []) + [destroot]
+    rc, out = run(argv, timeout=6 * 3600)
+    ok = rc == 0
+    detail = "" if ok else out.strip()[-300:]
     with BACKUP_LOCK:
         BACKUP.update({"running": False, "ok": ok, "detail": detail})
+
+
+def backup_step():
+    """The step pipeos-backup is on (identity|work|media|done|failed), or ""."""
+    try:
+        with open(BACKUP_STATE) as f:
+            for line in f:
+                if line.startswith("step="):
+                    return line[5:].strip()
+    except OSError:
+        pass
+    return ""
 
 
 def dev_protected(sub):
@@ -1398,16 +1398,22 @@ class Handler(BaseHTTPRequestHandler):
         for key, base in self._file_roots().items():
             if not key.startswith("ext/"):
                 continue
-            last = None
+            last, identity_last = None, None
             try:
                 with open(os.path.join(base, "pipeos-backup", nick, ".last")) as f:
                     last = int(f.read().strip())
             except (OSError, ValueError):
                 pass
-            exts.append({"root": key, "last": last})
+            try:
+                identity_last = int(os.path.getmtime(os.path.join(
+                    base, "pipeos-backup", nick, "identity", "MANIFEST")))
+            except OSError:
+                pass
+            exts.append({"root": key, "last": last, "identity_last": identity_last})
         with BACKUP_LOCK:
             state = dict(BACKUP)
         state["exts"] = exts
+        state["step"] = backup_step()
         self.send(200, state)
 
     def api_backup(self, body):
@@ -1417,13 +1423,15 @@ class Handler(BaseHTTPRequestHandler):
         base = self._file_roots().get(dest)
         if base is None:
             return self.err(400, "that drive is not mounted")
+        scope = body.get("scope") or "full"
+        if scope not in ("full", "identity"):
+            return self.err(400, "scope is full or identity")
         with BACKUP_LOCK:
             if BACKUP["running"]:
                 return self.err(400, "a backup is already running")
             BACKUP.update({"running": True, "dest": dest,
                            "started": int(time.time()), "ok": None, "detail": ""})
-        nick = card_get("NICK") or socket.gethostname()
-        threading.Thread(target=backup_worker, args=(base, nick), daemon=True).start()
+        threading.Thread(target=backup_worker, args=(base, scope), daemon=True).start()
         self.send(200, {"ok": True, "started": True})
 
     def api_disk_op(self, body):

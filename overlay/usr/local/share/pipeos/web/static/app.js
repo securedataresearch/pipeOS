@@ -1457,7 +1457,7 @@ async function dashboard() {
         } else {
           bstate.textContent = "never backed up";
           bstate.className = "pill status-bad";
-          bnote.textContent = "This box has never been backed up. One button copies the work disk and boot media to the external — do it now, future-you says thanks.";
+          bnote.textContent = "This box has never been backed up. One button copies its identity (keys, tokens, settings), the work disk and the boot media to the external — do it now, future-you says thanks.";
         }
         brow.hidden = false;
         bdest.replaceChildren(...exts.map(e =>

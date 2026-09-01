@@ -99,6 +99,14 @@ jobs:
           python3 scripts/check-overlay-freshness.py
           python3 scripts/check-overlay-freshness-controls.py
 
+      # #180. pipeos-backup is the one implementation behind the dashboard's
+      # Backup card and the `pipeos backup` verb: identity bundle, /work, boot
+      # media. Its refusals and its stamp-only-on-success rule are the rows.
+      - name: pipeos-backup lands the identity and refuses what it must
+        run: |
+          python3 scripts/check-backup.py
+          python3 scripts/check-backup-controls.py
+
       # pipeOS#134. The product image is one artifact for every business, so
       # the two things that used to be baked or fleet-scoped now have gates:
       # the box derives its own NICK at setup, and fleet machinery (the work
