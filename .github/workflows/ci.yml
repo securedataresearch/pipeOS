@@ -107,6 +107,14 @@ jobs:
           python3 scripts/check-backup.py
           python3 scripts/check-backup-controls.py
 
+      # #181. pipeos-flash rewrites the boot partition of a RUNNING box; the
+      # guards (geometry, merge provenance, write bounds, the fenced seams)
+      # are the difference between an update and a brick.
+      - name: pipeos-flash guards its geometry, merge, and write bounds
+        run: |
+          python3 scripts/check-flash.py
+          python3 scripts/check-flash-controls.py
+
       # pipeOS#134. The product image is one artifact for every business, so
       # the two things that used to be baked or fleet-scoped now have gates:
       # the box derives its own NICK at setup, and fleet machinery (the work

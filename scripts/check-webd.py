@@ -49,6 +49,18 @@ with open(webd.BACKUP_BIN, "w") as f:
             "echo precious > \"$d/pipeos-backup/$n/work/data.txt\"\n"
             "date +%s > \"$d/pipeos-backup/$n/.last\"\necho step=done > " + tmp + "/backup.state\n")
 os.chmod(webd.BACKUP_BIN, 0o755)
+webd.FLASH_STATE = tmp + "/flash.state"
+webd.FLASH_PROGRESS = tmp + "/flash.progress"
+webd.FLASH_APPLIED = tmp + "/flash.applied"
+webd.FLASH_IMAGE_TXT = tmp + "/pipeos-image.txt"
+with open(webd.FLASH_IMAGE_TXT, "w") as f:
+    f.write("variant=usb\nbuilt=2026-09-01T00:00:00Z\ncommit=abc\n")
+# the flashing is pipeos-flash's (check-flash.py has its rows); a stub
+# records the argv and reports done
+webd.FLASH_BIN = tmp + "/flash-stub"
+with open(webd.FLASH_BIN, "w") as f:
+    f.write("#!/bin/sh\necho step=done > " + tmp + "/flash.state\n")
+os.chmod(webd.FLASH_BIN, 0o755)
 webd.LOG_ALLOW = {k: tmp + "/" + k + ".log" for k in webd.LOG_ALLOW}
 with open(webd.CARD, "w") as f:
     f.write("NICK=\nROLE=GENERIC\nOWNER_NICK=\n")
@@ -300,6 +312,21 @@ for _ in range(100):
 assert "--identity-only" in open(tmp + "/backup.argv").read()
 webd.os.path.ismount = _real_ismount
 ok("backup validates dest and scope, runs pipeos-backup, and reads its step and stamp")
+# flash: the GET shape, the server-side typed confirmation, the busy gate
+f = req("/api/flash")
+assert f["image"]["variant"] == "usb" and f["running"] is False, f
+req("/api/flash", {"mode": "stick"}, expect=400)          # not built yet
+req("/api/flash", {"mode": "inplace", "confirm": "wrong"}, expect=400)
+import socket as _sock
+r = req("/api/flash", {"mode": "inplace", "confirm": _sock.gethostname()})
+assert r["started"]
+for _ in range(100):
+    if not req("/api/flash")["running"]:
+        break
+    _sel.select([], [], [], 0.1)
+f = req("/api/flash")
+assert f["ok"] is True and f["step"] == "done", f
+ok("flash: GET is shaped; confirm is checked server-side; the worker runs and reports done")
 raw = urllib.request.Request(base + "/api/file-up?path=work&name=up.bin", data=b"x" * 100)
 raw.add_header("Cookie", "session=" + cookie["v"])
 raw.add_header("Origin", base)
@@ -416,6 +443,7 @@ req("/api/file-op", {"op": "mkdir", "path": "work", "name": "nope"}, expect=403)
 req("/api/nas", {"shares": []}, expect=403)
 req("/api/nas-password", {"name": "peek", "password": "whatever12"}, expect=403)
 req("/api/backup", {"dest": "ext/sdx1"}, expect=403)
+req("/api/flash", {"mode": "inplace", "confirm": "x"}, expect=403)
 r = req("/api/password", {"current": "peekpassword", "new": "peekpassword2"})
 assert r["ok"]
 assert req("/api/docs")["pages"], "viewer must be able to read the docs"
@@ -434,7 +462,8 @@ req("/api/nas", {"shares": []}, expect=403)
 req("/api/users", expect=403)
 req("/api/name", {"hostname": "nope"}, expect=403)
 req("/api/backup", {"dest": "ext/sdx1"}, expect=403)
-ok("role user: file-op allowed; services/nas/users/name/backup refused")
+req("/api/flash", {"mode": "inplace", "confirm": "x"}, expect=403)
+ok("role user: file-op allowed; services/nas/users/name/backup/flash refused")
 cookie["v"] = saved_admin2
 req("/api/users/del", {"name": "mover"})
 

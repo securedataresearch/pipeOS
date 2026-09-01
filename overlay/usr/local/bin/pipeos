@@ -16,6 +16,7 @@
 #   pipeos rollback [TS|known-good]  stage an older apkovl for next boot
 #   pipeos sync-media          push freshly built pipeos repo -> media
 #   pipeos backup DEST [--identity-only]   identity bundle + /work onto a mounted external
+#   pipeos flash check|fetch|apply     a new released image onto the boot media, in place
 #   pipeos deploy-overlay      install a repo commit's overlay onto this box
 #
 # Read-only verbs (status/verify/diff/snapshot) are open to the resident
@@ -345,7 +346,10 @@ cmd_rollback() {
             sed 's|.*pipeos\.\([0-9]*\)\.tar\.gz|  pipeos rollback \1|'
         return 0
     fi
-    src=$(snapshot_path "$1")
+    case "$1" in
+        /*) src=$1 ;;   # an identity bundle (pipeos backup / pipeos flash) by path
+        *)  src=$(snapshot_path "$1") ;;
+    esac
     [ -f "$src" ] || { echo "no such snapshot: $src" >&2; return 1; }
     tar -tzf "$src" >/dev/null 2>&1 || { echo "snapshot unreadable — refusing" >&2; return 1; }
 
@@ -372,6 +376,7 @@ case "$1" in
     rollback)    shift; cmd_rollback "$@" ;;
     sync-media)  shift; exec /usr/local/bin/pipeos-sync-media "$@" ;;
     backup)      shift; exec /usr/local/bin/pipeos-backup "$@" ;;
+    flash)       shift; exec /usr/local/bin/pipeos-flash "$@" ;;
     deploy-overlay) shift; exec /usr/local/bin/pipeos-deploy-overlay "$@" ;;
     selfupdate)  shift; exec /usr/local/bin/pipeos-selfupdate "$@" ;;
     *)
