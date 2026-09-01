@@ -1,0 +1,16 @@
+#!/bin/sh
+# pipeos-checkout-refresh — keep the overlay-age measurement honest.
+#
+# selfcheck ages the deployed overlay against the LOCAL checkout's
+# origin/main, and deliberately never fetches (it runs at boot, before the
+# network — check-overlay-freshness.py row 11). So the measurement is only
+# as fresh as the last fetch, and a commit merged five minutes after it was
+# deployed read "never merged" until someone pulled by hand (basho_box,
+# 2026-09-01, pipeOS#176). This is that someone: once a day, network up,
+# bounded, silent when offline or when there is no checkout to refresh.
+
+# same default + override as selfcheck reads
+REPO=${PIPEOS_REPO:-/work/repos/pipeOS}
+[ -d "$REPO/.git" ] || exit 0
+timeout 60 git -C "$REPO" fetch -q origin main >/dev/null 2>&1 || true
+exit 0

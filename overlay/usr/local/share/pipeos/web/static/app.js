@@ -404,7 +404,8 @@ async function dashboard() {
     users: '<svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
     docs: '<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
   };
-  const isAdmin = st.role !== "viewer";
+  const role = st.role || "admin";
+  const isAdmin = role === "admin";
   const navItem = (id, label) => `<a data-nav="${id}" href="#/${id}"><span class="ic">${ICON[id] || ""}</span>${label}</a>`;
   const v = el(`<div class="app">
     <aside class="sidenav">
@@ -536,7 +537,7 @@ async function dashboard() {
       <section data-view="files" hidden>
         <div class="viewhead"><h1>Files</h1></div>
         <div class="filegrid${st.services.claude ? "" : " nochat"}">
-          <div class="card">
+          <div class="card" data-userok>
             <div class="cardhead">
               <div class="crumbs" id="crumbs"></div>
               <span style="white-space:nowrap">
@@ -676,6 +677,7 @@ async function dashboard() {
           <input id="upass" type="password" autocomplete="new-password" minlength="8">
           <label for="urole">Role</label>
           <select id="urole">
+            <option value="user">user — browses and transfers files, changes nothing else</option>
             <option value="viewer">viewer — sees the dashboard, changes nothing</option>
             <option value="admin">admin — full control of this dashboard</option>
           </select>
@@ -1180,7 +1182,7 @@ async function dashboard() {
         ulist.className = "";
         ulist.replaceChildren(...r.users.map(u => {
           const badges = [
-            u.role === "admin" ? '<span class="pill status-ok">admin</span>' : '<span class="pill">viewer</span>',
+            u.role === "admin" ? '<span class="pill status-ok">admin</span>' : '<span class="pill">' + esc(u.role || "viewer") + '</span>',
             u.unix ? '<span class="pill">ssh</span>' : "",
             u.sudo ? '<span class="pill">doas</span>' : "",
             u.terminal ? `<a class="pill" data-vok href="${location.protocol}//${location.hostname}:${u.term_port}/" target="_blank" rel="noopener">terminal :${u.term_port} ↗</a>` : "",
@@ -1238,8 +1240,9 @@ async function dashboard() {
       busy(v.querySelector("#uadd"), false);
     };
   }
-  // viewer affordance: grey out the controls the server will 403 anyway
-  if (!isAdmin) v.classList.add("viewer");
+  // role affordance: grey out the controls the server will 403 anyway.
+  // "viewer" inerts everything; "user" keeps the file explorer live.
+  if (!isAdmin) v.classList.add(role);
 
   // ---- files: /work explorer + mover ----
   let loadFiles = null;

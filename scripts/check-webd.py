@@ -396,13 +396,30 @@ req("/api/login", {"username": "peek", "password": "peekpassword"})
 req("/api/status", expect=200)
 req("/api/services", {"stream": False}, expect=403)
 req("/api/users", expect=403)
+req("/api/file-op", {"op": "mkdir", "path": "work", "name": "nope"}, expect=403)
 req("/api/nas", {"shares": []}, expect=403)
 req("/api/nas-password", {"name": "peek", "password": "whatever12"}, expect=403)
 r = req("/api/password", {"current": "peekpassword", "new": "peekpassword2"})
 assert r["ok"]
 assert req("/api/docs")["pages"], "viewer must be able to read the docs"
 ok("viewer reads but cannot mutate; can change own password")
+# role "user": files move, nothing else does
 cookie["v"] = admin_cookie
+r = req("/api/users/add", {"name": "mover", "password": "moverpassword", "role": "user"})
+assert r["ok"]
+saved_admin2 = cookie["v"]
+cookie["v"] = None
+req("/api/login", {"username": "mover", "password": "moverpassword"})
+r = req("/api/file-op", {"op": "mkdir", "path": "work", "name": "dropbox"})
+assert r["ok"]
+req("/api/services", {"stream": False}, expect=403)
+req("/api/nas", {"shares": []}, expect=403)
+req("/api/users", expect=403)
+req("/api/name", {"hostname": "nope"}, expect=403)
+ok("role user: file-op allowed; services/nas/users/name refused")
+cookie["v"] = saved_admin2
+req("/api/users/del", {"name": "mover"})
+
 req("/api/users/set", {"name": "peek", "disabled": True})
 saved_admin = cookie["v"]
 cookie["v"] = None

@@ -174,6 +174,16 @@ details summary { cursor: pointer; }
 .app.viewer select:not([data-vok]):not(#logsel),
 .app.viewer textarea { pointer-events: none; opacity: .45; }
 .app.viewer #logsel, .app.viewer #logview { pointer-events: auto; opacity: 1; }
+/* role "user": everything a viewer gets, plus a live file explorer — the
+   [data-userok] card is the one surface whose controls stay warm. The
+   server enforces (file-op/file-up only); this is the affordance. */
+.app.user button:not([data-vok]),
+.app.user .switch,
+.app.user input:not([data-vok]),
+.app.user select:not([data-vok]):not(#logsel),
+.app.user textarea { pointer-events: none; opacity: .45; }
+.app.user #logsel, .app.user #logview { pointer-events: auto; opacity: 1; }
+.app.user [data-userok] :is(button, input, select, textarea) { pointer-events: auto; opacity: 1; }
 
 /* alerts strip (overview) */
 .alert { display: flex; align-items: center; gap: .5rem; padding: .55rem .8rem; border-radius: var(--radius); margin-bottom: .5rem; font-size: .92rem; border: 1px solid var(--line); background: var(--card); }

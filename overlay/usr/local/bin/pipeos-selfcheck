@@ -280,6 +280,13 @@ if [ "$SERVICE_PIPE" = on ]; then
         aerr=$(echo "$authj" | jq -r '.status.auth_error // empty' 2>/dev/null)
         if [ -n "$aerr" ]; then
             crit "pipe daemon auth failed ($aerr)"
+        elif [ -s /root/.pipe/credentials.dat ]; then
+            # Credentials exist on disk: this box HAS signed in — the boot
+            # window just closed before the relay handshake finished (seen
+            # live on basho_box: the report said "not signed in yet" while
+            # `pipe status` answered authenticated:true minutes later).
+            # Slow is a note, not a nudge to re-run login.
+            warnn "pipe is signed in but the relay connection was still coming up at check time"
         else
             warnn "pipe is enabled but not signed in yet — run 'pipe login' to use it, or turn pipe off"
         fi
@@ -526,7 +533,9 @@ else
         fi
         _ov_n=$(git -C "$_ov_repo" rev-list --count "$_ov_c..$_ov_tip" 2>/dev/null || echo 0)
         if ! git -C "$_ov_repo" merge-base --is-ancestor "$_ov_c" "$_ov_tip" 2>/dev/null; then
-            warnn "deployed overlay commit $(echo "$_ov_c" | cut -c1-12) is NOT on $_ov_ref — this box is running an overlay that was never merged"
+            _ov_asof=""
+            [ "${_ov_fage:-0}" -gt 0 ] && _ov_asof=" (as of a checkout last fetched ${_ov_fage}d ago — it may have merged since)"
+            warnn "deployed overlay commit $(echo "$_ov_c" | cut -c1-12) is NOT on $_ov_ref$_ov_asof — this box is running an overlay that was never merged"
         elif [ "${_ov_n:-0}" -gt 0 ]; then
             # Age of the OLDEST undeployed commit — how long the fleet has
             # been missing the fix, not how recently someone merged.

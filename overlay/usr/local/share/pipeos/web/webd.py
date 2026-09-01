@@ -950,6 +950,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.err(401, "sign in first")
             if sess.get("role") == "viewer":
                 return self.err(403, "your account can view this box, not change it")
+            # role "user" may transfer files — that is the role's whole point
             return self.api_file_up()
         # Every mutation serializes on MUTATE_LOCK; GET readers are not held, so
         # the dashboard still loads while a slow POST runs. The lock also keeps
@@ -970,9 +971,14 @@ class Handler(BaseHTTPRequestHandler):
         sess = self.authed()
         if not sess:
             return self.err(401, "sign in first")
-        # viewers read; only admins mutate (their two POSTs are self-scoped)
-        if sess.get("role") == "viewer" and path not in ("/api/logout", "/api/password"):
+        # Three roles: viewers read; users read AND move files (the explorer's
+        # mutations plus their own session/password); admins do everything.
+        role = sess.get("role")
+        if role == "viewer" and path not in ("/api/logout", "/api/password"):
             return self.err(403, "your account can view this box, not change it")
+        if role == "user" and path not in (
+                "/api/logout", "/api/password", "/api/file-op"):
+            return self.err(403, "your account can browse and move files, not change the box")
         handlers = {
             "/api/logout": self.api_logout,
             "/api/name": self.api_name,
@@ -1831,8 +1837,8 @@ class Handler(BaseHTTPRequestHandler):
         if find_user(users, name):
             return self.err(400, "that user already exists")
         role = body.get("role") or "viewer"
-        if role not in ("admin", "viewer"):
-            return self.err(400, "role must be admin or viewer")
+        if role not in ("admin", "user", "viewer"):
+            return self.err(400, "role must be admin, user or viewer")
         pw = body.get("password") or ""
         if len(pw) < 8:
             return self.err(400, "password must be at least 8 characters")
@@ -1910,9 +1916,9 @@ class Handler(BaseHTTPRequestHandler):
         u = find_user(users, (body.get("name") or "").strip())
         if u is None:
             return self.err(404, "no such user")
-        if "role" in body and body["role"] not in ("admin", "viewer"):
-            return self.err(400, "role must be admin or viewer")
-        demote = (body.get("role") == "viewer" or body.get("disabled") is True)
+        if "role" in body and body["role"] not in ("admin", "user", "viewer"):
+            return self.err(400, "role must be admin, user or viewer")
+        demote = (body.get("role") in ("user", "viewer") or body.get("disabled") is True)
         if demote and u.get("role") == "admin" and self._last_admin_guard(users, u["name"]):
             return self.err(400, "that would leave the box with no admin")
         if "role" in body:
