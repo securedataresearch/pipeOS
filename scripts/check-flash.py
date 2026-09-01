@@ -192,9 +192,10 @@ check("7 NO_MOUNT without a dev override is refused outright",
       rc == 2 and "refusing" in out, repr(out))
 # The box's tar is busybox: GNU-only flags pass every host-side probe and
 # die on the first real run (2026-09-01, basho_box, mid-one-shot). Pin it.
-src = open(BIN).read()
+import re as _re
+src = "\n".join(l.split("#", 1)[0] for l in open(BIN).read().splitlines())
 check("8 no GNU-only tar flags — busybox is what ships",
-      "--owner" not in src and "--group" not in src and "--exclude=" not in src, "GNU tar flag in pipeos-flash")
+      not _re.search(r"tar[^\n]*--(owner|group|exclude=)", src), "GNU tar flag in pipeos-flash")
 
 rc, out = sh("sh %s check" % BIN, env={"PIPEOS_FLASH_ROOT": "/tmp/x"})
 check("7b a relocated root without NO_MOUNT is refused outright",
