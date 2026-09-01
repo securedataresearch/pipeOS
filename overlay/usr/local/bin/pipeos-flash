@@ -366,18 +366,19 @@ cmd_apply() {
     merge_apkovl "$IDENT" "$GENERIC" "$MERGED" || die "apkovl merge failed"
     say "merged: image overlay + world union over this box's identity"
 
-    # the merged world must resolve against the image's repos BEFORE the write
+    # the merged world must resolve against the image's repos BEFORE the
+    # write. Against the LIVE root, read-only (--simulate): apk-tools 3
+    # refuses to conjure a database in an empty --root (the one-shot's
+    # second catch, 2026-09-01), and the question is the same — can these
+    # names resolve from the repos the new media will carry.
     if [ "$NO_MOUNT" != 1 ]; then
         state simulating
         _repos="--repository $IMGMNT/apks/pipeos"
         [ -d "$IMGMNT/apks/extra" ] && _repos="$_repos --repository $IMGMNT/apks/extra"
         # shellcheck disable=SC2086
-        if ! apk --root /tmp/.flash-apk-root.$$ --initdb --allow-untrusted $_repos \
-                --simulate add $(cat "$MERGED.world") >/dev/null 2>&1; then
-            rm -rf /tmp/.flash-apk-root.$$
-            die "the merged world does not resolve against the image's repos — refusing"
+        if ! _sim=$(apk --simulate add $_repos $(cat "$MERGED.world") 2>&1); then
+            die "the merged world does not resolve against the image's repos — $(echo "$_sim" | tail -2 | tr '\n' ' ')"
         fi
-        rm -rf /tmp/.flash-apk-root.$$
     fi
 
     if [ "$YES" != yes ]; then
