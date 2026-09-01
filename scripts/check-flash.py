@@ -97,8 +97,11 @@ check("1 the build's sfdisk layout parses to start=2048 size=16384",
 plain = os.path.join(d, "plain.img")
 open(plain, "wb").write(b"\0" * 4096)
 rc, out = run_fns('image_p1_geometry "%s"' % plain)
-check("2 a non-GPT file is refused by the signature check",
-      rc != 0 and "GPT" in out, repr(out))
+# "signature" specifically: the entry-read fallback also refuses a zeroed
+# file, and a row that accepted either message could not see the signature
+# check removed (control A caught exactly that on CI, 2026-09-01).
+check("2 a non-GPT file is refused by the signature check, by name",
+      rc != 0 and "signature" in out, repr(out))
 
 # ── 3. fits: the rule, all four sides ────────────────────────────────────
 rows = [
