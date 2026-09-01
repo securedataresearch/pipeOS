@@ -50,10 +50,12 @@ done
 # "hand-edited since generation" CRITICAL (basho_box, 2026-08-31).
 rm -f "$stage/overlay/etc/profile.d/10-pipebox-env.sh"
 
+. "$(dirname "$0")/lib-overlay-stamp.sh"
+# shellcheck disable=SC2086  # PATHS is a word list on purpose
+overlay_stamp "$stage/overlay" "$commit" HEAD "$cdate" "$(id -un)@$(hostname) (deploy-box push)" $PATHS \
+    > "$stage/overlay-stamp"
 manifest=$(mktemp)
-(cd "$stage/overlay" && find . -type f | sed 's|^\./||' | sort | while read -r f; do
-    sha256sum "$f" | sed 's|  \./|  |'
-done) > "$manifest"
+grep -E '^[0-9a-f]{64}  ' "$stage/overlay-stamp" > "$manifest"
 
 n=$(wc -l < "$manifest")
 echo "deploy-box: $n files @ $commit ($cdate) -> $HOST"
@@ -63,16 +65,6 @@ if [ "$DRY" = yes ]; then
     echo "dry run — nothing shipped."
     exit 0
 fi
-
-{
-    echo "commit $commit"
-    echo "ref HEAD"
-    echo "commit_date $cdate"
-    echo "deployed_at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    echo "deployed_by $(id -un)@$(hostname) (deploy-box push)"
-    echo "#  sha256 of every file this deploy is responsible for"
-    cat "$manifest"
-} > "$stage/overlay-stamp"
 
 # --owner=0/--group=0 or the box's sshd dies: this tar is built by an
 # unprivileged user, and without the override its directory entries carry

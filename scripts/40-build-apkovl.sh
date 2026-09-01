@@ -155,6 +155,22 @@ chmod +x "$STAGE/etc/local.d/"*.start "$STAGE/etc/local.d/"*.stop \
          "$STAGE/etc/periodic/weekly/"* \
          "$STAGE/usr/local/bin/"* 2>/dev/null || true
 
+# ---- the overlay stamp, written by the build (#179). A box flashed from a
+# published image used to boot with no /etc/pipeos/.overlay-stamp at all and
+# selfcheck read that, correctly, as "an overlay of unknown age, hand-copied"
+# — the state pipeOS#97 was filed about, on every fresh box. The image knows
+# exactly which commit its overlay is; say so, in the format the on-box
+# deployer writes, over the same path set it owns. Generated per-box files
+# (the card outputs) are not the overlay's and are not listed.
+. "$PIPEOS_ROOT/scripts/lib-overlay-stamp.sh"
+_stamp_commit=$(git -C "$PIPEOS_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
+_stamp_cdate=$(git -C "$PIPEOS_ROOT" show -s --format=%cs HEAD 2>/dev/null || date -u +%F)
+overlay_stamp "$STAGE" "$_stamp_commit" "image" "$_stamp_cdate" "build@image ($VARIANT)" \
+    usr/local/bin usr/local/share/pipeos etc/init.d etc/periodic etc/local.d \
+    etc/doas.d etc/apk/protected_paths.d/lbu.list root/.claude/CLAUDE.md \
+    > "$STAGE/etc/pipeos/.overlay-stamp"
+echo "==> overlay stamp: $(echo "$_stamp_commit" | cut -c1-12) ($(grep -c '^[0-9a-f]\{64\}  ' "$STAGE/etc/pipeos/.overlay-stamp") files)"
+
 # busybox tar (pipeOS's own tar, so a box can build itself) rejects
 # --owner/--group and prints usage. Running as root — which the build always is
 # on a box — the staged tree is already root-owned, so --numeric-owner alone

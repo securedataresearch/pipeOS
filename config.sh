@@ -135,13 +135,16 @@ unset _cand
 # places that must agree: what abuild builds, what the extra-repo fetch must
 # NOT look for on the CDN, and what gets added to the image's apk world.
 #
-# Off by default because the root filesystem is tmpfs (see README): an
-# installed package is not disk, it is RAM, permanently, on every boot. The
-# Antigravity CLI binary alone is ~197MB unpacked — worth it on a box someone
-# asked for it on, not worth it on all four fleet boxes by default.
+# ON by default since 2026-09-01 (#179): the dashboard offers antigravity as
+# an assistant backend, and a box whose image lacks the package can only say
+# "not installed on this image" (basho_box). The cost is real and stated: the
+# root filesystem is tmpfs (see README), so an installed package is RAM,
+# permanently, on every boot — the Antigravity CLI binary alone is ~197MB
+# unpacked. The backend itself stays opt-in on the box; only the bytes are
+# unconditional. Omit it for a lean build:
 #
-#   WITH_ANTIGRAVITY=1 make apks && WITH_ANTIGRAVITY=1 make usb
-WITH_ANTIGRAVITY="${WITH_ANTIGRAVITY:-0}"
+#   WITH_ANTIGRAVITY=0 make apks && WITH_ANTIGRAVITY=0 make usb
+WITH_ANTIGRAVITY="${WITH_ANTIGRAVITY:-1}"
 # OVERRIDABLE, and that is not decoration: the customer build
 # (the customer build's run-root-build.sh) exports PIPEOS_PKGS="pipe claude-code"
 # because a customer box ships no hermes. An unconditional assignment here

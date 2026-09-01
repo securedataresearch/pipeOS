@@ -132,6 +132,12 @@ cmd_status() {
     else
         fail "/work not mounted"
     fi
+    # images built since #179 carry their own descriptor; older ones say nothing
+    if [ -r "$MEDIA/pipeos-image.txt" ]; then
+        _ib=$(sed -n 's/^built=//p' "$MEDIA/pipeos-image.txt" | head -1)
+        _ic=$(sed -n 's/^commit=//p' "$MEDIA/pipeos-image.txt" | head -1 | cut -c1-12)
+        ok "image built ${_ib:-?} @ ${_ic:-?}"
+    fi
     free=$(df -k $MEDIA | awk 'NR==2{printf "%d", $4/1024}')
     if [ "${free:-0}" -lt 300 ]; then warn "media ${free}MB free"; else ok "media ${free}MB free"; fi
     # Which daemons SHOULD run is declared in services.conf (the web wizard
