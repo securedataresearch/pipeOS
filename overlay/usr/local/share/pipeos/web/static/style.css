@@ -69,7 +69,8 @@ a:hover { text-decoration-color: var(--accent); }
   padding: 1.1rem .8rem; position: sticky; top: 0; height: 100vh;
 }
 .brand { font-weight: 700; letter-spacing: .02em; padding: .2rem .5rem .6rem; display: flex; align-items: center; gap: .45rem; }
-.brand .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+/* the mark is the | — the site's brand bar, one shape across the family */
+.brand .dot { width: 4px; height: 16px; border-radius: 2px; background: var(--accent); }
 .boxid { padding: .5rem .55rem .8rem; border-bottom: 1px solid var(--line); margin-bottom: .5rem; }
 .boxname { font-weight: 600; font-size: 1.05rem; letter-spacing: -.01em; }
 .sidenav nav { display: flex; flex-direction: column; gap: 2px; }
