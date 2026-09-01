@@ -127,7 +127,6 @@ MC "$OUT/.boot_repository" ::/apks/extra/.boot_repository
     echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "p1_start_sectors=$((PART_OFFSET_MB * 2048))"
     echo "p1_size_sectors=$((P1_SIZE_MB * 2048))"
-    echo "with_antigravity=$WITH_ANTIGRAVITY"
 } > "$OUT/pipeos-image.txt"
 MC "$OUT/pipeos-image.txt" ::/pipeos-image.txt
 

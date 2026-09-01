@@ -191,7 +191,7 @@ merge_apkovl() {   # IDENTITY GENERIC OUT
         cp -a "$_t/b/etc/pipeos/.overlay-stamp" "$_t/a/etc/pipeos/.overlay-stamp"
     fi
     # world union: everything the box had, plus everything the image ships
-    # (antigravity-cli reaches an existing box exactly here). Nothing removed.
+    # (an optional package reaches an existing box exactly here). Nothing removed.
     if [ -f "$_t/b/etc/apk/world" ]; then
         mkdir -p "$_t/a/etc/apk"
         cat "$_t/a/etc/apk/world" "$_t/b/etc/apk/world" 2>/dev/null | grep -v '^$' | sort -u \

@@ -197,7 +197,9 @@ assert a["pass_set"] is True and a["port"] == "7681" and "password" not in a, a
 # backend selection: allowlisted, install-checked, and a backend-only flip
 # keeps the saved password and port
 req("/api/assistant-config", {"backend": "skynet"}, expect=400)
-req("/api/assistant-config", {"backend": "agy"}, expect=400)  # not installed here
+_absent = next((b for b in webd.ASSISTANT_BACKENDS if webd.shutil.which(b) is None), None)
+if _absent:
+    req("/api/assistant-config", {"backend": _absent}, expect=400)  # not installed here
 assert a["backend"] == "claude" and any(b["id"] == "hermes" for b in a["backends"])
 if any(b["id"] == "hermes" and b["installed"] for b in a["backends"]):
     req("/api/assistant-config", {"backend": "hermes", "keep_pass": True})

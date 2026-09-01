@@ -16,7 +16,7 @@ chmod 700 "$STAGE/root"
 # Optional payloads (config.sh). overlay/etc/apk/world stays the base image's
 # world in the tree — this appends, so a `git diff` of the overlay never has to
 # be read as "did someone leave the 200MB CLI switched on?". The answer lives in
-# one place, WITH_ANTIGRAVITY, and shows up in the build log below.
+# one place, EXTRA_WORLD (config.sh), and shows up in the build log below.
 if [ -n "$EXTRA_WORLD" ]; then
     for _pkg in $EXTRA_WORLD; do
         grep -qxF "$_pkg" "$STAGE/etc/apk/world" || echo "$_pkg" >> "$STAGE/etc/apk/world"
@@ -72,10 +72,10 @@ fi
 FLEET_SVCS=""
 if [ -n "${CARD:-}" ] && [ -n "$(sed -n 's/^NICK=//p' "$CARD" | head -1)" ]; then
     FLEET_SVCS="pipe-daemon pipebox-listener"
-    printf 'SERVICE_PIPE=on\nSERVICE_CLAUDE=on\nSERVICE_STREAM=off\nSERVICE_AGY=off\nSERVICE_SUPPORT=off\nSERVICE_ASSISTANT=off\nSERVICE_TERMINALS=off\nSERVICE_NAS=off\n' \
+    printf 'SERVICE_PIPE=on\nSERVICE_CLAUDE=on\nSERVICE_STREAM=off\nSERVICE_SUPPORT=off\nSERVICE_ASSISTANT=off\nSERVICE_TERMINALS=off\nSERVICE_NAS=off\n' \
         > "$STAGE/etc/pipeos/services.conf"
 else
-    printf 'SERVICE_PIPE=off\nSERVICE_CLAUDE=off\nSERVICE_STREAM=off\nSERVICE_AGY=off\nSERVICE_SUPPORT=off\nSERVICE_ASSISTANT=off\nSERVICE_TERMINALS=off\nSERVICE_NAS=off\n' \
+    printf 'SERVICE_PIPE=off\nSERVICE_CLAUDE=off\nSERVICE_STREAM=off\nSERVICE_SUPPORT=off\nSERVICE_ASSISTANT=off\nSERVICE_TERMINALS=off\nSERVICE_NAS=off\n' \
         > "$STAGE/etc/pipeos/services.conf"
 fi
 

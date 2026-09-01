@@ -38,7 +38,6 @@ fi
 # the terminal drops into (the dashboard writes it).
 case "$BACKEND" in
 hermes) CMD="hermes" ;;
-agy)    CMD="agy" ;;
 *)      CMD="claude --continue --settings $SETTINGS" ;;
 esac
 command -v "${CMD%% *}" >/dev/null 2>&1 || {
