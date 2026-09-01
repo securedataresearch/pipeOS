@@ -280,6 +280,13 @@ if [ "$SERVICE_PIPE" = on ]; then
         aerr=$(echo "$authj" | jq -r '.status.auth_error // empty' 2>/dev/null)
         if [ -n "$aerr" ]; then
             crit "pipe daemon auth failed ($aerr)"
+        elif [ -s /root/.pipe/credentials.dat ]; then
+            # Credentials exist on disk: this box HAS signed in — the boot
+            # window just closed before the relay handshake finished (seen
+            # live on basho_box: the report said "not signed in yet" while
+            # `pipe status` answered authenticated:true minutes later).
+            # Slow is a note, not a nudge to re-run login.
+            warnn "pipe is signed in but the relay connection was still coming up at check time"
         else
             warnn "pipe is enabled but not signed in yet — run 'pipe login' to use it, or turn pipe off"
         fi
@@ -507,7 +514,12 @@ else
     _ov_c=$(sed -n 's/^commit //p' "$_ov_stamp" | head -1)
     if ! git -C "$_ov_repo" rev-parse --verify -q "$_ov_c^{commit}" >/dev/null 2>&1; then
         warnn "deployed overlay commit ${_ov_c:-<none>} is not in the local checkout — cannot tell how old this overlay is"
-    elif _ov_tip=$(git -C "$_ov_repo" rev-parse --verify -q "$_ov_ref^{commit}" 2>/dev/null); then
+    elif { timeout 15 git -C "$_ov_repo" fetch -q origin main >/dev/null 2>&1 || true; } \
+        && _ov_tip=$(git -C "$_ov_repo" rev-parse --verify -q "$_ov_ref^{commit}" 2>/dev/null); then
+        # The fetch above is opportunistic and bounded: without it, a deploy
+        # merged five minutes after it shipped reads "never merged" until
+        # someone pulls by hand (seen live on basho_box with #176). Offline
+        # is fine — the staleness caveats below take over.
         # Same one-line fix as pipeos:overlay_behind, and for the same reason:
         # `rev-list --count c..tip` is 0 when the tip is an ancestor of c, so a
         # box deployed from an UNMERGED commit cut off main's tip reports
@@ -526,7 +538,9 @@ else
         fi
         _ov_n=$(git -C "$_ov_repo" rev-list --count "$_ov_c..$_ov_tip" 2>/dev/null || echo 0)
         if ! git -C "$_ov_repo" merge-base --is-ancestor "$_ov_c" "$_ov_tip" 2>/dev/null; then
-            warnn "deployed overlay commit $(echo "$_ov_c" | cut -c1-12) is NOT on $_ov_ref — this box is running an overlay that was never merged"
+            _ov_asof=""
+            [ "${_ov_fage:-0}" -gt 0 ] && _ov_asof=" (as of a fetch ${_ov_fage}d ago — it may have merged since)"
+            warnn "deployed overlay commit $(echo "$_ov_c" | cut -c1-12) is NOT on $_ov_ref$_ov_asof — this box is running an overlay that was never merged"
         elif [ "${_ov_n:-0}" -gt 0 ]; then
             # Age of the OLDEST undeployed commit — how long the fleet has
             # been missing the fix, not how recently someone merged.
