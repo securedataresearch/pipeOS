@@ -47,6 +47,10 @@ img_assets=()
 if [ -f "$IMG_XZ" ]; then
     if [ -n "$(find "$IMG_XZ" -mtime -1 2>/dev/null)" ]; then
         sha256sum "$IMG_XZ" | sed "s|$OUT/||" > "$IMG_XZ.sha256"
+        # SHA256SUMS lists the image too (#179): one digest file for every
+        # asset a box may fetch. pipeos-selfupdate reads only its own line;
+        # the .sha256 asset stays for docs/fulfillment.md's by-hand check.
+        cat "$IMG_XZ.sha256" >> "$stage/SHA256SUMS"
         img_assets=("$IMG_XZ" "$IMG_XZ.sha256")
         echo "including flashable image: $(basename "$IMG_XZ") ($(du -h "$IMG_XZ" | cut -f1))"
     else

@@ -118,6 +118,19 @@ mmd -i "$P1" ::/cache 2>/dev/null || true
 MC "$OUT/.boot_repository" ::/apks/pipeos/.boot_repository
 MC "$OUT/.boot_repository" ::/apks/extra/.boot_repository
 
+# The image describes itself (#179): what a box is running, and the p1
+# geometry an on-box flasher must match before it writes. Read by
+# `pipeos status` and by pipeos-flash; harmless to everything older.
+{
+    echo "variant=$VARIANT"
+    echo "commit=$(git -C "$PIPEOS_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+    echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "p1_start_sectors=$((PART_OFFSET_MB * 2048))"
+    echo "p1_size_sectors=$((P1_SIZE_MB * 2048))"
+    echo "with_antigravity=$WITH_ANTIGRAVITY"
+} > "$OUT/pipeos-image.txt"
+MC "$OUT/pipeos-image.txt" ::/pipeos-image.txt
+
 echo "==> merging partition into image"
 dd if="$P1" of="$IMG" bs=1M seek=$PART_OFFSET_MB conv=notrunc,sparse status=none
 rm -f "$P1"   # merged into $IMG; keeping it double-books P1_SIZE_MB of scratch
