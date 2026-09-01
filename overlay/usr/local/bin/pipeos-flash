@@ -197,7 +197,9 @@ merge_apkovl() {   # IDENTITY GENERIC OUT
         cat "$_t/a/etc/apk/world" "$_t/b/etc/apk/world" 2>/dev/null | grep -v '^$' | sort -u \
             > "$_t/a/world.merged" && mv "$_t/a/world.merged" "$_t/a/etc/apk/world"
     fi
-    (cd "$_t/a" && tar --numeric-owner --owner=0 --group=0 -czf "$_t/out.tar.gz" .) \
+    # busybox tar: no --owner/--group (GNU-isms — the first live run died on
+    # them). Run as root over root-owned trees, --numeric-owner is enough.
+    (cd "$_t/a" && tar --numeric-owner -czf "$_t/out.tar.gz" .) \
         || { say "cannot re-tar the merged apkovl" >&2; rm -rf "$_t"; return 1; }
     gzip -t "$_t/out.tar.gz" 2>/dev/null && tar -tzf "$_t/out.tar.gz" >/dev/null 2>&1 \
         || { say "merged apkovl failed integrity check" >&2; rm -rf "$_t"; return 1; }
