@@ -115,6 +115,11 @@ jobs:
           python3 scripts/check-flash.py
           python3 scripts/check-flash-controls.py
 
+      # #193. The Install button's wrapper: order and refusals. The dangerous
+      # halves (selfupdate, apk, save, verify) carry their own gates.
+      - name: backend install syncs, installs, verifies, saves — in that order
+        run: python3 scripts/check-backend-install.py
+
       # pipeOS#134. The product image is one artifact for every business, so
       # the two things that used to be baked or fleet-scoped now have gates:
       # the box derives its own NICK at setup, and fleet machinery (the work

@@ -609,6 +609,33 @@ PIPE_PREFS = ("dm_relay", "remember_login", "agent_events")
 # The id doubles as the binary name; a backend is offered only when installed.
 ASSISTANT_BACKENDS = ("claude", "hermes", "agy")
 
+# On-demand backend install (#193): the image ships lean, the release repo
+# carries the optional backends, and this button-backed thread runs the
+# fenced installer. Only what the ram-hungry row needs to say is here.
+INSTALL_BIN = "/usr/local/bin/pipeos-install-backend"
+INSTALL_STATE = "/run/pipeos/backend-install.state"
+INSTALL_NOTES = {"agy": "~200 MB of memory while installed (the root fs lives in RAM)"}
+INSTALL = {"running": False, "backend": "", "ok": None, "detail": ""}
+INSTALL_LOCK = threading.Lock()
+
+
+def install_worker(backend):
+    rc, out = run([INSTALL_BIN, backend], timeout=1800)
+    with INSTALL_LOCK:
+        INSTALL.update({"running": False, "ok": rc == 0,
+                        "detail": "" if rc == 0 else out.strip()[-300:]})
+
+
+def install_step():
+    try:
+        with open(INSTALL_STATE) as f:
+            for line in f:
+                if line.startswith("step="):
+                    return line[5:].strip()
+    except OSError:
+        pass
+    return ""
+
 # bare (no --boot) is read-only by contract — pipeOS#13's "safe to run any
 # time, by anyone, on any box": no DM, no writes, no service starts
 SELFCHECK_BIN = "/usr/local/bin/pipeos-selfcheck"
@@ -1088,6 +1115,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/assistant-config": self.api_assistant_set,
             "/api/cohort": self.api_cohort,
             "/api/update-now": self.api_update_now,
+            "/api/assistant-install": self.api_assistant_install,
             "/api/flash": self.api_flash,
         }
         fn = handlers.get(path)
@@ -2393,8 +2421,10 @@ class PhaseB:
                         "port": vals["ASSISTANT_PORT"] or "7681",
                         "pass_set": bool(vals["ASSISTANT_PASS"]),
                         "backend": vals["ASSISTANT_BACKEND"] or "claude",
-                        "backends": [{"id": b, "installed": shutil.which(b) is not None}
+                        "backends": [{"id": b, "installed": shutil.which(b) is not None,
+                                       "note": INSTALL_NOTES.get(b, "")}
                                      for b in ASSISTANT_BACKENDS],
+                        "install": dict(INSTALL, step=install_step()),
                         "running": rc == 0})
 
     def api_assistant_set(self, body):
@@ -2619,6 +2649,19 @@ class PhaseB:
         threading.Thread(target=flash_worker, args=(
             ["sh", "-c", "%s fetch && %s apply --yes" % (FLASH_BIN, FLASH_BIN)],),
             daemon=True).start()
+        self.send(200, {"ok": True, "started": True})
+
+    def api_assistant_install(self, body):
+        backend = (body.get("backend") or "").strip()
+        if backend not in ASSISTANT_BACKENDS:
+            return self.err(400, "backend must be one of: " + ", ".join(ASSISTANT_BACKENDS))
+        if shutil.which(backend) is not None:
+            return self.err(400, "%s is already installed" % backend)
+        with INSTALL_LOCK:
+            if INSTALL["running"]:
+                return self.err(400, "an install is already running")
+            INSTALL.update({"running": True, "backend": backend, "ok": None, "detail": ""})
+        threading.Thread(target=install_worker, args=(backend,), daemon=True).start()
         self.send(200, {"ok": True, "started": True})
 
     def api_update_now(self, _body):

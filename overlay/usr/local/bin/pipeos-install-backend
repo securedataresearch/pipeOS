@@ -1,0 +1,57 @@
+#!/bin/sh
+# pipeos-install-backend — put an assistant backend onto this box, on demand.
+#
+#   pipeos-install-backend agy
+#
+# The image ships lean; the signed release repo carries the optional
+# backends. Installing is: make sure the media repo has the package (one
+# `pipeos selfupdate` syncs it from the release), `apk add`, verify, save —
+# after which the package lives on the boot media and every reboot
+# reinstalls it like anything else. The dashboard's Install button runs
+# this; owners never see a terminal (Sam, 2026-09-01).
+#
+# Fenced from the box's agent like every installer. Seams for the probe,
+# never set in production: PIPEOS_INSTALL_ROOT (path prefix),
+# PIPEOS_INSTALL_APK / _SELFUPDATE / _SAVE / _VERIFY (command stubs).
+set -u
+
+R=${PIPEOS_INSTALL_ROOT:-}
+APK=${PIPEOS_INSTALL_APK:-apk}
+SELFUPDATE=${PIPEOS_INSTALL_SELFUPDATE:-/usr/local/bin/pipeos-selfupdate}
+SAVE=${PIPEOS_INSTALL_SAVE:-/usr/local/bin/pipeos-save}
+VERIFY=${PIPEOS_INSTALL_VERIFY:-"/usr/local/bin/pipeos verify"}
+REPO=$R/media/usb/apks/pipeos/x86_64
+STATE=$R/run/pipeos/backend-install.state
+
+state() { mkdir -p "$(dirname "$STATE")" 2>/dev/null; printf 'step=%s\ndetail=%s\n' "$1" "${2:-}" > "$STATE" 2>/dev/null; }
+die()   { echo "install-backend: $*" >&2; state failed "$*"; exit 1; }
+
+BACKEND=${1:-}
+# backend id -> package (the id is the binary; the package may differ)
+case "$BACKEND" in
+    agy)    PKG=antigravity-cli ;;
+    claude) PKG=claude-code ;;
+    hermes) PKG=hermes-agent ;;
+    *) die "unknown backend: ${BACKEND:-<none>} (agy, claude, hermes)" ;;
+esac
+
+command -v "$BACKEND" >/dev/null 2>&1 && { state done "already installed"; echo "already installed"; exit 0; }
+
+# the media repo must carry the package; one selfupdate syncs the release
+if ! ls "$REPO/$PKG"-*.apk >/dev/null 2>&1; then
+    state syncing "fetching the release repo"
+    "$SELFUPDATE" >/dev/null 2>&1 || die "cannot sync the release repo (is the box online?)"
+    ls "$REPO/$PKG"-*.apk >/dev/null 2>&1 || die "the release repo does not carry $PKG — publish one that does"
+fi
+
+state installing "$PKG"
+$APK add "$PKG" >/dev/null 2>&1 || die "apk add $PKG failed"
+
+state verifying
+$VERIFY >/dev/null 2>&1 || die "post-install verify failed — a reboot would not reproduce this; run pipeos verify"
+
+state saving
+"$SAVE" >/dev/null 2>&1 || die "state save failed — the install would not survive a reboot; run pipeos save"
+
+state done "$PKG"
+echo "installed: $PKG"

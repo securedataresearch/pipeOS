@@ -1020,16 +1020,20 @@ async function dashboard() {
       cur.textContent = BNAMES[a.backend] || a.backend;
       cur.className = "pill status-ok";
       box.className = "";
+      const inst = a.install || {};
       box.replaceChildren(...(a.backends || []).map(b => {
+        const installing = inst.running && inst.backend === b.id;
         const row = el(`<div class="targetline">
           <span class="tname">${esc(BNAMES[b.id] || b.id)}</span>
-          <span class="note">${b.installed ? "" : "not installed on this image"}</span>
+          <span class="note">${b.installed ? "" : (installing ? esc(inst.step || "installing") + "…" : esc(b.note || ""))}</span>
           <span style="margin-left:auto">${b.id === a.backend
             ? '<span class="pill status-ok">active</span>'
-            : (b.installed ? '<button class="ghost small" type="button">use</button>' : "")}</span>
+            : (b.installed ? '<button class="ghost small" type="button" data-a="use">use</button>'
+               : (installing ? '<span class="pill status-warn">installing…</span>'
+                  : '<button class="ghost small" type="button" data-a="install">install</button>'))}</span>
         </div>`);
-        const btn = row.querySelector("button");
-        if (btn) btn.onclick = async () => {
+        const useBtn = row.querySelector('[data-a="use"]');
+        if (useBtn) useBtn.onclick = async () => {
           const m = v.querySelector("#abmsg"); m.hidden = false; m.textContent = "switching…";
           try {
             const r = await api("/api/assistant-config", { backend: b.id, keep_pass: true });
@@ -1038,8 +1042,26 @@ async function dashboard() {
             loadBackends();
           } catch (e) { m.textContent = e.message; }
         };
+        const inBtn = row.querySelector('[data-a="install"]');
+        if (inBtn) inBtn.onclick = async () => {
+          const m = v.querySelector("#abmsg"); m.hidden = false;
+          m.textContent = "Installing " + (BNAMES[b.id] || b.id) + " — a few minutes; it lands on the boot media and survives reboots.";
+          try { await api("/api/assistant-install", { backend: b.id }); pollInstall(); }
+          catch (e) { m.textContent = e.message; }
+        };
         return row;
       }));
+      if (inst.running && !loadBackends._t) pollInstall();
+      else if (!inst.running && loadBackends._t) { clearInterval(loadBackends._t); loadBackends._t = 0;
+        if (inst.ok === false) { const m = v.querySelector("#abmsg"); m.hidden = false; m.textContent = "Install failed: " + inst.detail; }
+        else if (inst.ok === true) { const m = v.querySelector("#abmsg"); m.hidden = false; m.textContent = "Installed."; }
+      }
+      function pollInstall() {
+        if (loadBackends._t) return;
+        loadBackends._t = setInterval(() => {
+          if (v.isConnected) loadBackends(); else { clearInterval(loadBackends._t); loadBackends._t = 0; }
+        }, 4000);
+      }
     }).catch(() => {});
     loadBackends();
   }

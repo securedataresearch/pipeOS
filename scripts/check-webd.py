@@ -61,6 +61,11 @@ webd.FLASH_BIN = tmp + "/flash-stub"
 with open(webd.FLASH_BIN, "w") as f:
     f.write("#!/bin/sh\necho step=done > " + tmp + "/flash.state\n")
 os.chmod(webd.FLASH_BIN, 0o755)
+webd.INSTALL_STATE = tmp + "/backend-install.state"
+webd.INSTALL_BIN = tmp + "/install-stub"
+with open(webd.INSTALL_BIN, "w") as f:
+    f.write("#!/bin/sh\necho step=done > " + tmp + "/backend-install.state\necho ok\n")
+os.chmod(webd.INSTALL_BIN, 0o755)
 webd.LOG_ALLOW = {k: tmp + "/" + k + ".log" for k in webd.LOG_ALLOW}
 with open(webd.CARD, "w") as f:
     f.write("NICK=\nROLE=GENERIC\nOWNER_NICK=\n")
@@ -327,6 +332,18 @@ for _ in range(100):
 f = req("/api/flash")
 assert f["ok"] is True and f["step"] == "done", f
 ok("flash: GET is shaped; confirm is checked server-side; the worker runs and reports done")
+# backend install: bad backend, already-installed, then a stubbed run
+req("/api/assistant-install", {"backend": "nope"}, expect=400)
+req("/api/assistant-install", {"backend": "claude" if webd.shutil.which("claude") else "sh"}, expect=400) if webd.shutil.which("claude") else None
+r = req("/api/assistant-install", {"backend": "agy"})
+assert r["started"]
+for _ in range(100):
+    if not req("/api/assistant")["install"]["running"]:
+        break
+    _sel.select([], [], [], 0.1)
+ai = req("/api/assistant")["install"]
+assert ai["ok"] is True and ai["step"] == "done", ai
+ok("assistant install: validates the backend, runs the installer, reports done")
 raw = urllib.request.Request(base + "/api/file-up?path=work&name=up.bin", data=b"x" * 100)
 raw.add_header("Cookie", "session=" + cookie["v"])
 raw.add_header("Origin", base)
@@ -444,6 +461,7 @@ req("/api/nas", {"shares": []}, expect=403)
 req("/api/nas-password", {"name": "peek", "password": "whatever12"}, expect=403)
 req("/api/backup", {"dest": "ext/sdx1"}, expect=403)
 req("/api/flash", {"mode": "inplace", "confirm": "x"}, expect=403)
+req("/api/assistant-install", {"backend": "agy"}, expect=403)
 r = req("/api/password", {"current": "peekpassword", "new": "peekpassword2"})
 assert r["ok"]
 assert req("/api/docs")["pages"], "viewer must be able to read the docs"
