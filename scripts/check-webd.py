@@ -296,6 +296,17 @@ try:
 except urllib.error.HTTPError as e:
     assert e.code == 400
 ok("upload streams a raw body and refuses hostile names")
+# on-box docs: index lists the seeded pages in display order, a page comes
+# back as raw markdown, and hostile slugs bounce before touching the fs
+d = req("/api/docs")
+slugs = [p["slug"] for p in d["pages"]]
+assert slugs and slugs[0] == "getting-started" and "fence" in slugs, slugs
+assert all(p["title"] for p in d["pages"]), d
+page = req("/api/docs/getting-started")
+assert page.lstrip()[:1] == b"#", page[:40]
+req("/api/docs/No_Such", expect=400)
+req("/api/docs/nope", expect=404)
+ok("docs index and pages serve; hostile slugs refused")
 # pipe: pref allowlist + nick validation (no daemon here, so only the guards)
 req("/api/pipe-set", {"pref": "evil_pref", "value": True}, expect=400)
 req("/api/pipe-contact", {"nick": "bad nick!"}, expect=400)
@@ -347,6 +358,7 @@ req("/api/services", {"stream": False}, expect=403)
 req("/api/users", expect=403)
 r = req("/api/password", {"current": "peekpassword", "new": "peekpassword2"})
 assert r["ok"]
+assert req("/api/docs")["pages"], "viewer must be able to read the docs"
 ok("viewer reads but cannot mutate; can change own password")
 cookie["v"] = admin_cookie
 req("/api/users/set", {"name": "peek", "disabled": True})

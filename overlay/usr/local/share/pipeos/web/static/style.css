@@ -1,32 +1,39 @@
+/* pipe.online's settled scheme (site docs.css), taken back home: neutral
+   greys and one robin's-egg blue — spent super light as the fill, deep as
+   text. The box and the site are the same room now; a retune starts THERE
+   and lands here verbatim. --ok stays green on purpose: it means healthy,
+   not brand, and it must never be confused with the accent again. */
 :root {
-  --bg: #f4f3ee;
-  --bg2: #ecebe4;
+  --bg: #f4f4f5;
+  --bg2: #ebebed;
   --card: #ffffff;
-  --ink: #1b1a17;
-  --muted: #6b675c;
-  --faint: #928d80;
-  --line: #e2ded4;
-  --accent: #2f6f4f;
+  --ink: #1a1a1c;
+  --muted: #64666a;
+  --faint: #909296;
+  --line: #dfe0e2;
+  --accent: #1c608f;
   --accent-ink: #ffffff;
-  --accent-soft: #e4efe8;
-  --warn: #9a6b00;
-  --bad: #a33a2a;
-  --ok: #2f7d55;
-  --shadow: 0 1px 2px rgba(20,16,8,.05), 0 8px 24px rgba(20,16,8,.05);
+  --accent-soft: #e9f4fb;
+  --warn: #96690a;
+  --bad: #a83c2e;
+  --ok: #2c7d5b;
+  --shadow: 0 1px 2px rgba(10,10,12,.05), 0 8px 24px rgba(10,10,12,.05);
   --radius: 12px;
+  /* the CSS half of the no-flash pair; index.html's meta covers pre-paint */
+  color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #141412;
-    --bg2: #1b1a17;
-    --card: #212019;
-    --ink: #ece9e2;
-    --muted: #a39e92;
-    --faint: #746f64;
-    --line: #322f28;
-    --accent: #5aa87f;
-    --accent-ink: #0e120e;
-    --accent-soft: #23302a;
+    --bg: #141416;
+    --bg2: #1a1a1d;
+    --card: #1f1f23;
+    --ink: #e9e9eb;
+    --muted: #a2a4a8;
+    --faint: #707276;
+    --line: #2e2e33;
+    --accent: #a5d5ef;
+    --accent-ink: #0d1b24;
+    --accent-soft: #1f2b34;
     --warn: #d9a53f;
     --bad: #e0806a;
     --ok: #6bbb8c;
@@ -62,7 +69,8 @@ a:hover { text-decoration-color: var(--accent); }
   padding: 1.1rem .8rem; position: sticky; top: 0; height: 100vh;
 }
 .brand { font-weight: 700; letter-spacing: .02em; padding: .2rem .5rem .6rem; display: flex; align-items: center; gap: .45rem; }
-.brand .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+/* the mark is the | — the site's brand bar, one shape across the family */
+.brand .dot { width: 4px; height: 16px; border-radius: 2px; background: var(--accent); }
 .boxid { padding: .5rem .55rem .8rem; border-bottom: 1px solid var(--line); margin-bottom: .5rem; }
 .boxname { font-weight: 600; font-size: 1.05rem; letter-spacing: -.01em; }
 .sidenav nav { display: flex; flex-direction: column; gap: 2px; }
@@ -218,6 +226,19 @@ button.small { padding: .3rem .65rem; font-size: .82rem; margin: 0; width: auto;
 .chatrow input { flex: 1; margin: 0; }
 .chatrow button { margin: 0; width: auto; }
 
+/* docs view */
+.docgrid { display: grid; grid-template-columns: minmax(170px, 220px) minmax(0, 1fr); gap: .9rem; align-items: start; }
+.doclist { padding: .6rem; display: flex; flex-direction: column; gap: 2px; position: sticky; top: 1rem; }
+.doclist a { display: block; text-decoration: none; color: var(--muted); font-weight: 500; font-size: .93rem; padding: .45rem .6rem; border-radius: 9px; }
+.doclist a:hover { background: var(--bg2); color: var(--ink); }
+.doclist a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.docbody { line-height: 1.6; }
+.docbody h2 { margin: 0 0 .6rem; }
+.docbody h3 { font-size: .95rem; margin: 1.1rem 0 .35rem; }
+.docbody p, .docbody li { font-size: .93rem; }
+.docbody ul, .docbody ol { margin: .2rem 0 .9rem; padding-left: 1.3rem; }
+.docbody code { background: var(--bg2); border: 1px solid var(--line); border-radius: 5px; padding: .05rem .3rem; font: 12.5px ui-monospace, "SF Mono", Menlo, monospace; }
+
 /* mobile: bottom tab bar — thumbs live at the bottom, not off-screen top */
 @media (max-width: 720px) {
   .app { flex-direction: column; }
@@ -231,6 +252,8 @@ button.small { padding: .3rem .65rem; font-size: .82rem; margin: 0; width: auto;
   .tile .val { font-size: 1.25rem; }
   .charts { grid-template-columns: 1fr; }
   .filegrid { grid-template-columns: 1fr; }
+  .docgrid { grid-template-columns: 1fr; }
+  .doclist { position: static; flex-direction: row; flex-wrap: wrap; }
   .frow .facts { opacity: 1; }
   .frow .fdate { display: none; }
   .viewhead h1 { font-size: 1.35rem; }

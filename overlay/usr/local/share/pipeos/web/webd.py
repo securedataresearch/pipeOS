@@ -60,6 +60,14 @@ SRV_KEY = TLS_DIR + "/server.key"
 SESS_DIR = "/run/pipeos/web-sessions"
 BOOT_REPORT = "/run/pipeos/boot-report"
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+# On-box operator docs (markdown, shipped with the image). The dashboard's
+# Docs view lists and renders them; the box may be offline, so they live here.
+DOCS_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs"))
+DOC_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+# Display order; pages not listed here sort alphabetically after these.
+DOCS_ORDER = ("getting-started", "dashboard", "streaming", "users",
+              "files-and-backup", "persistence", "fence")
 
 USERS_CONF = ETC + "/users.json"
 TERMINALS_CONF = ETC + "/terminals.conf"
@@ -871,6 +879,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.serve_ca_mobileconfig()
         if path == "/install-ca.sh":
             return self.serve_ca_installer()
+        # /api/docs carries a slug segment, so it routes by prefix. Read-only,
+        # viewer-readable like the other readers.
+        if path == "/api/docs" or path.startswith("/api/docs/"):
+            if not self.authed():
+                return self.err(401, "sign in first")
+            return self.api_docs(path)
         readers = {
             "/api/status": self.api_status,
             "/api/users": self.api_users,
@@ -1915,6 +1929,45 @@ class PhaseB:
         text = tail_file(path, lines)
         self.send(200, {"name": name, "text": text if text is not None
                         else "(no log yet — the service may not have run)"})
+
+    def api_docs(self, path):
+        """GET /api/docs — the operator docs index; /api/docs/<slug> — one
+        page as raw markdown. Slugs match DOC_SLUG_RE, so nothing here can
+        name a path (no dots, no slashes)."""
+        slug = path[len("/api/docs"):].strip("/")
+        if not slug:
+            pages = []
+            try:
+                names = sorted(os.listdir(DOCS_DIR))
+            except OSError:
+                names = []
+            for fn in names:
+                if not fn.endswith(".md"):
+                    continue
+                s = fn[:-3]
+                if not DOC_SLUG_RE.match(s):
+                    continue
+                title = s
+                try:
+                    with open(os.path.join(DOCS_DIR, fn), encoding="utf-8") as f:
+                        for line in f:
+                            if line.startswith("# "):
+                                title = line[2:].strip()
+                                break
+                except OSError:
+                    continue
+                pages.append({"slug": s, "title": title})
+            order = {s: i for i, s in enumerate(DOCS_ORDER)}
+            pages.sort(key=lambda p: (order.get(p["slug"], len(order)), p["slug"]))
+            return self.send(200, {"pages": pages})
+        if not DOC_SLUG_RE.match(slug):
+            return self.err(400, "bad page name")
+        try:
+            with open(os.path.join(DOCS_DIR, slug + ".md"), "rb") as f:
+                data = f.read()
+        except OSError:
+            return self.err(404, "no such page")
+        self.send(200, data, ctype="text/markdown; charset=utf-8")
 
     def api_stream_get(self):
         base = ["STREAM_MODE", "STREAM_SRC", "STREAM_URL", "STREAM_RES",

@@ -28,6 +28,54 @@ function esc(s) {
 
 function busy(btn, on) { if (btn) btn.disabled = on; }
 
+/* Tiny markdown renderer for the on-box docs: escape everything first, then
+   shape it — headings, paragraphs, fenced code, inline code/bold/links,
+   lists. That's the whole grammar the docs use; no library, box may be
+   offline. Headings shift down one level (# -> h2) under the view's h1. */
+function mdToHtml(md) {
+  const inline = (s) => s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, t, u) =>
+      /^(https?:\/\/|\/|#)/.test(u)
+        ? '<a href="' + u + '" target="_blank" rel="noopener">' + t + "</a>" : t);
+  const out = [];
+  const lines = esc(md).split("\n");
+  let i = 0, list = null, para = [];
+  const flushPara = () => { if (para.length) { out.push("<p>" + inline(para.join(" ")) + "</p>"); para = []; } };
+  const flushList = () => { if (list) { out.push("</" + list + ">"); list = null; } };
+  while (i < lines.length) {
+    const ln = lines[i];
+    if (/^```/.test(ln)) {
+      flushPara(); flushList();
+      const code = [];
+      for (i++; i < lines.length && !/^```/.test(lines[i]); i++) code.push(lines[i]);
+      i++;
+      out.push('<pre class="report">' + code.join("\n") + "</pre>");
+      continue;
+    }
+    const h = ln.match(/^(#{1,4}) +(.*)$/);
+    if (h) {
+      flushPara(); flushList();
+      const lv = h[1].length + 1;
+      out.push("<h" + lv + ">" + inline(h[2]) + "</h" + lv + ">");
+      i++; continue;
+    }
+    const li = ln.match(/^[-*] +(.*)$/), oli = ln.match(/^\d+[.)] +(.*)$/);
+    if (li || oli) {
+      flushPara();
+      const want = li ? "ul" : "ol";
+      if (list !== want) { flushList(); out.push("<" + want + ">"); list = want; }
+      out.push("<li>" + inline((li || oli)[1]) + "</li>");
+      i++; continue;
+    }
+    if (!ln.trim()) { flushPara(); flushList(); i++; continue; }
+    para.push(ln.trim()); i++;
+  }
+  flushPara(); flushList();
+  return out.join("\n");
+}
+
 /* ---------- routing ---------- */
 
 async function boot() {
@@ -353,6 +401,7 @@ async function dashboard() {
     network: '<svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
     system: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="2" x2="9" y2="4"/><line x1="15" y1="2" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="22"/><line x1="15" y1="20" x2="15" y2="22"/><line x1="20" y1="9" x2="22" y2="9"/><line x1="20" y1="15" x2="22" y2="15"/><line x1="2" y1="9" x2="4" y2="9"/><line x1="2" y1="15" x2="4" y2="15"/></svg>',
     users: '<svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+    docs: '<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
   };
   const isAdmin = st.role !== "viewer";
   const navItem = (id, label) => `<a data-nav="${id}" href="#/${id}"><span class="ic">${ICON[id] || ""}</span>${label}</a>`;
@@ -373,6 +422,7 @@ async function dashboard() {
         ${isAdmin ? navItem("users", "Users") : ""}
         ${navItem("network", "Network")}
         ${navItem("system", "System")}
+        ${navItem("docs", "Docs")}
       </nav>
       <div class="navfoot">
         <span class="note">up ${fmtUptime(st.uptime_s)} · ${st.work_pct == null ? "disk ?" : st.work_pct + "% disk"}${st.work_free_mb != null ? " · " + Math.round(st.work_free_mb / 1024) + " GB free" : ""}</span>
@@ -623,6 +673,14 @@ async function dashboard() {
           <p class="note">Accounts live in the box's saved state; their files live on the work disk at /work/home/&lt;name&gt; and survive even a media reflash.</p>
         </div>
       </section>` : ""}
+
+      <section data-view="docs" hidden>
+        <div class="viewhead"><h1>Docs</h1></div>
+        <div class="docgrid">
+          <div class="card doclist" id="doclist"><p class="note">loading…</p></div>
+          <div class="card docbody" id="docbody"><p class="note">Pick a page.</p></div>
+        </div>
+      </section>
 
       <section data-view="network" hidden>
         <div class="viewhead"><h1>Network</h1></div>
@@ -1589,11 +1647,40 @@ async function dashboard() {
       ], { t0: h.t0, interval: h.interval_s, unit: "bps" });
     } catch (e) {}
   };
+  // ---- docs: list the box's own pages, render markdown on pick ----
+  const loadDocs = async () => {
+    const list = v.querySelector("#doclist"), body = v.querySelector("#docbody");
+    let pages;
+    try {
+      pages = (await api("/api/docs")).pages || [];
+    } catch (e) {
+      list.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+      return;
+    }
+    if (!pages.length) { list.innerHTML = '<p class="note">No docs on this box.</p>'; return; }
+    const open = async (slug) => {
+      list.querySelectorAll("a").forEach(a => a.classList.toggle("active", a.dataset.slug === slug));
+      try {
+        const res = await fetch("/api/docs/" + encodeURIComponent(slug));
+        if (!res.ok) throw new Error("page failed to load (" + res.status + ")");
+        body.innerHTML = mdToHtml(await res.text());
+        body.scrollTop = 0;
+      } catch (e) {
+        body.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+      }
+    };
+    list.innerHTML = pages.map(p =>
+      `<a href="#/docs" data-slug="${esc(p.slug)}">${esc(p.title)}</a>`).join("");
+    list.querySelectorAll("a").forEach(a => {
+      a.onclick = (ev) => { ev.preventDefault(); open(a.dataset.slug); };
+    });
+    open(pages[0].slug);
+  };
   // ---- view router: show one section at a time, driven by the URL hash ----
   // Views with live data register a poller (runs only while on screen) or a
   // lazy loader (runs on first visit).
   const POLLERS = { system: pollSystem, network: pollNetwork };
-  const LAZY = { files: () => { loadFiles(""); loadFiles._disks(); }, pipe: loadPipe, users: loadUsers };
+  const LAZY = { files: () => { loadFiles(""); loadFiles._disks(); }, pipe: loadPipe, users: loadUsers, docs: loadDocs };
   const seen = {};
   let viewTimer = null;
   const views = v.querySelectorAll("[data-view]");
