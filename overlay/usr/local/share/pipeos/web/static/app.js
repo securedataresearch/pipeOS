@@ -366,13 +366,20 @@ function chart(elm, series, opts) {
     <div class="chfoot">${opts.t0 ? `<span>${t(opts.t0)}</span><span>${t(opts.t0 + n * opts.interval)}</span>` : ""}</div>`;
 }
 
+// The verdict as the owner should read it: one calm phrase. The selfcheck's
+// own wording (counts, "DEGRADED", operator notes) stays in the collapsed
+// output for whoever wants it.
 function verdictClass(report) {
   const m = /^verdict: (.*)$/m.exec(report || "");
   const v = m ? m[1] : "";
-  if (/DEGRADED/.test(v)) return ["status-bad", v];
-  if (/warning|remediation|recovered/.test(v)) return ["status-warn", v];
-  if (/green/.test(v)) return ["status-ok", v];
-  return ["status-warn", v || "no boot report yet"];
+  if (!v) return ["status-warn", "no boot report yet"];
+  if (/DEGRADED/.test(v)) return ["status-bad", "Needs attention"];
+  if (/remediation/.test(v)) return ["status-warn", "Needs a hand"];
+  if (/recovered/.test(v)) return ["status-ok", "Recovered at boot"];
+  const w = /(\d+) warning/.exec(v);
+  if (w) return ["status-warn", `Healthy, ${w[1]} thing${w[1] === "1" ? "" : "s"} to know`];
+  if (/green/.test(v)) return ["status-ok", "Healthy"];
+  return ["status-warn", v];
 }
 
 async function dashboard() {
@@ -455,7 +462,7 @@ async function dashboard() {
         <div class="card">
           <div class="cardhead"><h2>Services</h2></div>
           <div>${running}</div>
-          <details style="margin-top:.6rem"><summary class="note">Full boot report</summary>
+          <details style="margin-top:.6rem"><summary class="note">output</summary>
             <pre class="report">${esc(st.boot_report || "(none this boot)")}</pre></details>
         </div>
       </section>
@@ -844,10 +851,13 @@ async function dashboard() {
     // re-checked against /api/pipe below.
     const liveSvcs = Object.keys(st.running);
     (report || "").split("\n").forEach(l => {
+      // Plain sentences, no shouting prefixes; operator notes never
+      // surface here — they live in the collapsed output.
       if (/^CRITICAL:/.test(l)) {
         if (liveSvcs.some(k => l.includes(k))) return;
-        alertItems.push(["bad", label + l]);
-      } else if (/^warn:|^would fix:/.test(l)) alertItems.push(["warn", label + l]);
+        alertItems.push(["bad", label + l.replace(/^CRITICAL:\s*/, "")]);
+      } else if (/^warn:/.test(l)) alertItems.push(["warn", label + l.replace(/^warn:\s*/, "")]);
+      else if (/^would fix:/.test(l)) alertItems.push(["warn", label + l]);
     });
     Object.entries(st.running).forEach(([k, ok]) => {
       if (!ok) alertItems.push(["bad", k + " is enabled but not running"]);
