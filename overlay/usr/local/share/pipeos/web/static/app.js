@@ -782,6 +782,11 @@ async function dashboard() {
             <span class="pill" id="updstate">updates: checking…</span>
             <button id="updnow" class="ghost" hidden>Update now</button>
           </div>
+          <div id="flashrow" style="margin-top:1rem">
+            <span class="pill" id="fstate">live disk: checking…</span>
+            <button id="fflash" class="ghost" hidden>Flash a new live disk</button>
+            <p class="note" id="fmsg" hidden></p>
+          </div>
           <details><summary class="note">Change admin password</summary>
             <label for="cur">Current password</label><input id="cur" type="password">
             <label for="new">New password</label><input id="new" type="password" minlength="8">
@@ -1645,6 +1650,46 @@ async function dashboard() {
     } catch (e) { v.querySelector("#updstate").textContent = "updates: " + e.message; }
     busy(b, false);
   };
+  const loadFlash = async () => {
+    const st8 = v.querySelector("#fstate"), btn = v.querySelector("#fflash"), msg = v.querySelector("#fmsg");
+    try {
+      const f = await api("/api/flash");
+      if (f.running) {
+        st8.textContent = "live disk: " + (f.step || "working") + "…" + (f.progress ? " " + f.progress : "");
+        st8.className = "pill status-warn";
+        btn.hidden = true;
+        if (!loadFlash._t) loadFlash._t = setInterval(() => {
+          if (v.isConnected) loadFlash(); else { clearInterval(loadFlash._t); loadFlash._t = 0; }
+        }, 4000);
+        return;
+      }
+      if (loadFlash._t) { clearInterval(loadFlash._t); loadFlash._t = 0; }
+      if (f.ok === false) { st8.textContent = "live disk: FAILED"; st8.className = "pill status-bad"; msg.hidden = false; msg.textContent = f.detail; }
+      else if (f.ok === true && f.step === "done") {
+        st8.textContent = "live disk: written — reboot to finish";
+        st8.className = "pill status-ok";
+        msg.hidden = false; msg.textContent = "The new image is on the boot media with this box's identity. Reboot when ready.";
+      } else {
+        const cur = f.image && f.image.built ? f.image.built.slice(0, 10) : "unknown build";
+        st8.textContent = "live disk: " + cur;
+        st8.className = "pill";
+        btn.hidden = false;
+      }
+    } catch (e) { st8.textContent = "live disk: ?"; }
+  };
+  v.querySelector("#fflash").onclick = async () => {
+    const msg = v.querySelector("#fmsg");
+    const t = prompt(
+      "This rewrites the BOOT PARTITION with the latest released image.\n" +
+      "Your data on the work disk and this box's identity are kept; a power\n" +
+      "loss mid-write leaves the box unbootable until reflashed from another\n" +
+      "machine. Back up first (Files → Backup).\n\nType the box's name to continue:");
+    if (t == null) return;
+    msg.hidden = true;
+    try { await api("/api/flash", { mode: "inplace", confirm: t.trim() }); loadFlash(); }
+    catch (e) { msg.hidden = false; msg.textContent = e.message; }
+  };
+  loadFlash();
   v.querySelector("#repair").onclick = async () => {
     const msg = v.querySelector("#mmsg"); msg.hidden = false; msg.textContent = "repairing…";
     try {

@@ -1,0 +1,461 @@
+#!/bin/sh
+# pipeos-flash — write a freshly released image onto this box's boot media,
+# and come back up as the same box.
+#
+#   pipeos flash check              what is running vs the latest release
+#   pipeos flash fetch              download + verify the image into /work
+#   pipeos flash apply [--yes] [--image FILE]   rewrite the boot partition
+#   pipeos flash restore-identity FILE          stage a backup bundle as the
+#                                               next boot's apkovl
+#
+# `apply` writes ONLY partition 1 (the PIPEOS FAT): /work is partition 2 of
+# the same disk and is never touched — the write goes through the partition
+# node, so the kernel bounds it. Before a byte lands: the image is digest-
+# verified and loop-mounted and its repo verified; the geometry must match
+# (both p1 start at sector 2048, image p1 <= disk p1); a fresh identity is
+# packaged to /work; the box's apkovl and the image's are MERGED — the
+# image's overlay paths and a world union over the box's identity — and the
+# merged world must resolve against the image's repos; then the media is
+# quiesced (modloop re-looped from RAM, every mount of p1 unmounted) or the
+# whole thing aborts with nothing written. After the dd: label and boot
+# files verified, the merged apkovl installed as canonical AND known-good
+# (the old known-good names packages that are no longer on the media).
+# Reboot is the owner's move; this never reboots.
+#
+# Power loss mid-write leaves p1 unbootable; identity survives on p2
+# ($STAGE/identity-*.apkovl.tar.gz and previous-*.apkovl.tar.gz) and on any
+# `pipeos backup` disk. Recovery: reflash from any machine
+# (docs/live-disk.md), then `pipeos flash restore-identity`.
+#
+# Operator/owner verb — hard-banned for the box's agent (settings deny),
+# like every media writer. Test seams, never set in production and fenced
+# like deploy-overlay's: PIPEOS_FLASH_SYS (fake /sys), PIPEOS_FLASH_MOUNTS
+# (fake /proc/mounts), PIPEOS_FLASH_DEV (a regular file standing in for the
+# p1 node), PIPEOS_FLASH_NO_MOUNT=1 (skip mount/umount/modloop/apk steps;
+# refused unless PIPEOS_FLASH_DEV is also set).
+
+set -u
+
+# PIPEOS_FLASH_ROOT relocates every path this reads and writes, so the probe
+# can run the apply against a throwaway tree. Fenced like deploy-overlay's
+# ROOT: a relocated run must also be NO_MOUNT, because mount/umount/dd of
+# real media cannot be relocated with it.
+FROOT=${PIPEOS_FLASH_ROOT:-}
+MEDIA=$FROOT/media/usb
+STAGE=$FROOT/work/.pipeos/flash
+RUN=$FROOT/run/pipeos
+STATE=$RUN/flash.state
+PROGRESS=$RUN/flash.progress
+LOG=$FROOT/work/logs/flash.log
+APPLIED=$FROOT/work/.pipeos/flash.applied
+CONF=$FROOT/etc/pipeos/selfupdate.conf
+IMG_ASSET=pipeos-usb.img.xz
+IMGMNT=$RUN/flash-img
+VERIFY=/usr/local/share/pipeos/verify-repo.sh
+[ -x "$VERIFY" ] || VERIFY=/work/repos/pipeOS/scripts/verify-repo.sh
+
+SYS=${PIPEOS_FLASH_SYS:-/sys}
+MOUNTS=${PIPEOS_FLASH_MOUNTS:-/proc/mounts}
+DEV_OVERRIDE=${PIPEOS_FLASH_DEV:-}
+NO_MOUNT=${PIPEOS_FLASH_NO_MOUNT:-0}
+if [ "$NO_MOUNT" = 1 ] && [ -z "$DEV_OVERRIDE" ]; then
+    echo "pipeos-flash: PIPEOS_FLASH_NO_MOUNT is a test seam and needs PIPEOS_FLASH_DEV — refusing" >&2
+    exit 2
+fi
+if [ -n "$FROOT" ] && [ "$NO_MOUNT" != 1 ]; then
+    echo "pipeos-flash: PIPEOS_FLASH_ROOT is a test seam and needs PIPEOS_FLASH_NO_MOUNT=1 — refusing" >&2
+    exit 2
+fi
+
+mkdir -p "$RUN" "$(dirname "$LOG")" "$STAGE" 2>/dev/null
+say()   { echo "pipeos-flash: $*"; }
+log()   { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG" 2>/dev/null; }
+state() { mkdir -p "$RUN" 2>/dev/null; printf 'step=%s\ndetail=%s\n' "$1" "${2:-}" > "$STATE" 2>/dev/null; }
+die()   { say "$*" >&2; log "ERROR $*"; state failed "$*"; exit 1; }
+
+# fetch URL OUTFILE — wget with the failure mode NAMED (pipeos-selfupdate's,
+# verbatim; #116: "source down?" once sent an operator to restart a server
+# that was up and 404ing).
+fetch() {
+    _err=$(wget -q -T 20 -O "$2" "$1" 2>&1)
+    _rc=$?
+    [ "$_rc" = 0 ] && return 0
+    case "$_err" in
+        *"server returned error"*) log "HTTP error for $1: $_err"
+            echo "the origin ANSWERED but refused: ${_err#wget: } — the URL/asset is wrong or the release is gone (not a dead server)" ;;
+        *"bad address"*) echo "DNS cannot resolve the origin host (network/DNS problem)" ;;
+        *) echo "cannot connect to the origin (host down or unreachable): ${_err#wget: }" ;;
+    esac
+    return "$_rc"
+}
+
+take_save_lock() {
+    mkdir -p "$FROOT/run" 2>/dev/null
+    exec 9> "$FROOT/run/pipeos-save.lock"
+    _i=0
+    until flock -n 9; do
+        _i=$((_i+1))
+        [ "$_i" -ge 60 ] && die "save lock held for 60s; giving up"
+        sleep 1
+    done
+}
+
+release_url() {
+    _u=""
+    [ -r "$CONF" ] && _u=$(sed -n 's/^UPDATE_RELEASE_URL=//p' "$CONF" | head -1)
+    [ -n "$_u" ] || die "no UPDATE_RELEASE_URL in $CONF — nothing to flash from"
+    echo "${_u%/}"
+}
+
+# ---- GPT: partition 1 straight from the label, no tools -------------------
+# Entry 1 of the GPT array sits at LBA 2 (byte 1024): first LBA at +32,
+# last LBA at +40, both 8-byte little-endian. The signature check first —
+# these offsets mean nothing on a disk that is not GPT.
+image_p1_geometry() {   # IMG -> "start_sectors size_sectors" on stdout
+    _sig=$(dd if="$1" bs=1 skip=512 count=8 2>/dev/null)
+    [ "$_sig" = "EFI PART" ] || { say "no GPT signature in $1" >&2; return 1; }
+    _first=$(od -An -tu8 -j 1056 -N 8 "$1" 2>/dev/null | tr -d ' ')
+    _last=$(od -An -tu8 -j 1064 -N 8 "$1" 2>/dev/null | tr -d ' ')
+    [ -n "$_first" ] && [ -n "$_last" ] && [ "$_last" -gt "$_first" ] 2>/dev/null \
+        || { say "cannot read the GPT entry from $1" >&2; return 1; }
+    echo "$_first $((_last - _first + 1))"
+}
+
+# ---- the box's own p1: found by label, asserted to be partition 1 of the
+# disk that also carries PIPEWORK as partition 2 (in-place is only for the
+# box's own stick; anything else is `pipeos flash --to`).
+target_p1() {   # -> "node start_sectors size_sectors" on stdout
+    _p1=$(findfs LABEL=PIPEOS 2>/dev/null) || { say "no PIPEOS label on any disk" >&2; return 1; }
+    case "$_p1" in
+        *p1) _disk=${_p1%p1} ;;
+        *1)  _disk=${_p1%1} ;;
+        *)   say "PIPEOS is $_p1 — not partition 1; refusing" >&2; return 1 ;;
+    esac
+    _work=$(findfs LABEL=PIPEWORK 2>/dev/null) || { say "no PIPEWORK label — this box's layout is not the one this tool knows" >&2; return 1; }
+    case "$_work" in
+        "${_disk}p2"|"${_disk}2") : ;;
+        *) say "PIPEWORK is $_work, not partition 2 of $_disk — refusing (use pipeos flash --to on a spare disk)" >&2; return 1 ;;
+    esac
+    _name=$(basename "$_p1")
+    _start=$(cat "$SYS/class/block/$_name/start" 2>/dev/null)
+    _size=$(cat "$SYS/class/block/$_name/size" 2>/dev/null)
+    [ -n "$_start" ] && [ -n "$_size" ] || { say "cannot read $_name geometry from $SYS" >&2; return 1; }
+    echo "$_p1 $_start $_size"
+}
+
+# ---- the geometry rule: both p1s start at sector 2048 (the layout every
+# image this repo has ever built uses — anything else is a hand-partitioned
+# disk this tool does not understand), and the image's p1 must fit. Smaller
+# is fine: the GPT on disk is never touched and FAT uses what it declares.
+fits() {   # img_start img_size tgt_start tgt_size
+    [ "$1" = 2048 ] || { say "image p1 starts at sector $1, not 2048 — not an image this tool understands" >&2; return 1; }
+    [ "$3" = 2048 ] || { say "disk p1 starts at sector $3, not 2048 — hand-partitioned disk; refusing" >&2; return 1; }
+    if [ "$2" -gt "$4" ]; then
+        say "this image needs $(( $2 / 2048 ))MB and the boot partition is $(( $4 / 2048 ))MB — use \`pipeos flash --to\` on a bigger disk" >&2
+        return 1
+    fi
+    return 0
+}
+
+# ---- merge: the image's overlay + a world union, over the box's identity.
+# DEPLOY_PATHS is pipeos-deploy-overlay's list, verbatim (the probe cmp's
+# them); NEVER likewise. The one exception inside NEVER territory is the
+# image's own .overlay-stamp — it describes the overlay this merge installs.
+DEPLOY_PATHS="usr/local/bin
+usr/local/share/pipeos
+etc/periodic
+etc/local.d
+etc/init.d
+etc/doas.d
+etc/apk/protected_paths.d/lbu.list
+root/.claude/CLAUDE.md"
+
+NEVER="etc/pipeos root/.pipe etc/profile.d/10-pipebox-env.sh"
+
+merge_apkovl() {   # IDENTITY GENERIC OUT
+    _t=$(mktemp -d) || return 1
+    mkdir -p "$_t/a" "$_t/b"
+    tar -xzf "$1" -C "$_t/a" 2>/dev/null || { say "cannot extract the identity apkovl" >&2; rm -rf "$_t"; return 1; }
+    tar -xzf "$2" -C "$_t/b" 2>/dev/null || { say "cannot extract the image apkovl" >&2; rm -rf "$_t"; return 1; }
+    echo "$DEPLOY_PATHS" | while read -r _p; do
+        [ -n "$_p" ] || continue
+        rm -rf "${_t:?}/a/$_p"
+        if [ -e "$_t/b/$_p" ]; then
+            mkdir -p "$_t/a/$(dirname "$_p")"
+            cp -a "$_t/b/$_p" "$_t/a/$_p"
+        fi
+    done
+    # NEVER paths stay the box's — except the stamp, which is the image's.
+    if [ -f "$_t/b/etc/pipeos/.overlay-stamp" ]; then
+        mkdir -p "$_t/a/etc/pipeos"
+        cp -a "$_t/b/etc/pipeos/.overlay-stamp" "$_t/a/etc/pipeos/.overlay-stamp"
+    fi
+    # world union: everything the box had, plus everything the image ships
+    # (antigravity-cli reaches an existing box exactly here). Nothing removed.
+    if [ -f "$_t/b/etc/apk/world" ]; then
+        mkdir -p "$_t/a/etc/apk"
+        cat "$_t/a/etc/apk/world" "$_t/b/etc/apk/world" 2>/dev/null | grep -v '^$' | sort -u \
+            > "$_t/a/world.merged" && mv "$_t/a/world.merged" "$_t/a/etc/apk/world"
+    fi
+    (cd "$_t/a" && tar --numeric-owner --owner=0 --group=0 -czf "$_t/out.tar.gz" .) \
+        || { say "cannot re-tar the merged apkovl" >&2; rm -rf "$_t"; return 1; }
+    gzip -t "$_t/out.tar.gz" 2>/dev/null && tar -tzf "$_t/out.tar.gz" >/dev/null 2>&1 \
+        || { say "merged apkovl failed integrity check" >&2; rm -rf "$_t"; return 1; }
+    mv "$_t/out.tar.gz" "$3"
+    cp "$_t/a/etc/apk/world" "$3.world" 2>/dev/null
+    rm -rf "$_t"
+    return 0
+}
+
+# ---- nothing may hold the media when p1 is rewritten: the modloop (the
+# kernel-module squashfs loop-mounted FROM the media) moves to RAM first,
+# then every mount of the p1 node goes. Any failure aborts pre-write.
+quiesce_media() {   # P1DEV
+    _ml=$(awk '$2=="/.modloop"{print $1}' "$MOUNTS" | head -1)
+    if [ -n "$_ml" ]; then
+        _f=$(find "$MEDIA/boot" -name 'modloop-*' 2>/dev/null | head -1)
+        [ -n "$_f" ] || { say "modloop mounted but no modloop file under $MEDIA/boot" >&2; return 1; }
+        _need=$(( $(wc -c < "$_f") * 2 ))
+        _free=$(( $(df -k /run | awk 'NR==2{print $4}') * 1024 ))
+        [ "$_free" -gt "$_need" ] || { say "not enough RAM under /run to rehome the modloop" >&2; return 1; }
+        cp "$_f" "$RUN/$(basename "$_f")" || { say "cannot copy the modloop to RAM" >&2; return 1; }
+        umount /.modloop 2>/dev/null || { say "cannot unmount /.modloop — a module load is in flight; try again" >&2; return 1; }
+        mount -o loop,ro "$RUN/$(basename "$_f")" /.modloop \
+            || { say "cannot re-loop the modloop from RAM" >&2; return 1; }
+    fi
+    if command -v fuser >/dev/null 2>&1 && fuser -m "$MEDIA" >/dev/null 2>&1; then
+        say "something still holds $MEDIA: $(fuser -m "$MEDIA" 2>/dev/null)" >&2
+        return 1
+    fi
+    # every mount of the p1 node (fstab's, plus any initramfs leftover),
+    # last-mounted first
+    awk -v d="$1" '$1==d{print $2}' "$MOUNTS" | tac | while read -r _m; do
+        umount "$_m" || exit 1
+    done || { say "cannot unmount every mount of $1 — refusing to write under a live mount" >&2; return 1; }
+    return 0
+}
+
+# ---- verbs ---------------------------------------------------------------
+
+staged_digest() { cat "$STAGE/image.digest" 2>/dev/null; }
+
+remote_digest() {   # URL -> digest of the image asset
+    _t=$(mktemp)
+    if fetch "$1/SHA256SUMS" "$_t" >/dev/null 2>&1; then
+        _d=$(awk -v a="$IMG_ASSET" '$2==a{print $1}' "$_t")
+    fi
+    if [ -z "${_d:-}" ] && fetch "$1/$IMG_ASSET.sha256" "$_t" >/dev/null 2>&1; then
+        _d=$(awk '{print $1; exit}' "$_t")
+    fi
+    rm -f "$_t"
+    echo "${_d:-}"
+}
+
+cmd_check() {
+    _url=$(release_url)
+    say "origin: $_url"
+    say "running image: $(sed -n 's/^built=//p' "$MEDIA/pipeos-image.txt" 2>/dev/null | head -1)${DEV_OVERRIDE:+ (dev override)}"
+    say "applied by flash: $(cat "$APPLIED" 2>/dev/null || echo never)"
+    _rd=$(remote_digest "$_url")
+    [ -n "$_rd" ] || die "the release publishes no image digest (SHA256SUMS or $IMG_ASSET.sha256)"
+    say "latest release image: $_rd"
+    _sd=$(staged_digest)
+    [ "$_sd" = "$_rd" ] && say "staged: current ($STAGE/$IMG_ASSET)" || say "staged: ${_sd:-nothing}"
+    _free=$(df -k /work | awk 'NR==2{printf "%d", $4/1024}')
+    say "/work free: ${_free}MB (fetch+apply wants ~6000MB)"
+}
+
+cmd_fetch() {
+    mountpoint -q /work || die "/work not mounted"
+    _url=$(release_url)
+    _rd=$(remote_digest "$_url")
+    [ -n "$_rd" ] || die "the release publishes no image digest"
+    mkdir -p "$STAGE"
+    if [ "$(staged_digest)" = "$_rd" ] && [ -f "$STAGE/$IMG_ASSET" ]; then
+        say "already staged and current"
+        return 0
+    fi
+    _free_mb=$(df -k /work | awk 'NR==2{printf "%d", $4/1024}')
+    [ "$_free_mb" -ge 6000 ] || die "only ${_free_mb}MB free on /work — fetch+decompress wants ~6000MB"
+    state fetching
+    say "fetching $IMG_ASSET (~2GB) ..."
+    if ! err=$(fetch "$_url/$IMG_ASSET" "$STAGE/$IMG_ASSET.new"); then
+        die "cannot fetch the image — $err"
+    fi
+    _got=$(sha256sum "$STAGE/$IMG_ASSET.new" | cut -d' ' -f1)
+    [ "$_got" = "$_rd" ] || { rm -f "$STAGE/$IMG_ASSET.new"; die "image digest mismatch (got $_got, release says $_rd)"; }
+    mv "$STAGE/$IMG_ASSET.new" "$STAGE/$IMG_ASSET"
+    echo "$_rd" > "$STAGE/image.digest"
+    state staged
+    say "staged and verified: $STAGE/$IMG_ASSET"
+}
+
+cmd_apply() {
+    YES=no; IMG=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes) YES=yes ;;
+            --image) shift; IMG=${1:-} ;;
+            *) die "unknown apply option: $1" ;;
+        esac
+        shift
+    done
+    [ -f "$FROOT/etc/pipeos/provisioned" ] || die "this box is not claimed — flash the generic image from any machine instead"
+    [ -f "$FROOT/etc/pipeos/rollback-pending" ] && die "a rollback is staged — reboot first"
+    if [ "$NO_MOUNT" != 1 ]; then
+        mountpoint -q /work || die "/work not mounted"
+    fi
+    if [ -e /run/pipeos-selfupdate.lock ] && ! flock -n 8 8</run/pipeos-selfupdate.lock 2>/dev/null; then
+        die "a self-update is running — try again when it finishes"
+    fi
+
+    mkdir -p "$STAGE" "$RUN"
+    if [ -z "$IMG" ]; then
+        [ -f "$STAGE/$IMG_ASSET" ] || die "no staged image — run \`pipeos flash fetch\` first"
+        state decompressing
+        say "decompressing (a few minutes) ..."
+        unxz -kc "$STAGE/$IMG_ASSET" > "$STAGE/pipeos-usb.img.new" || die "decompress failed"
+        mv "$STAGE/pipeos-usb.img.new" "$STAGE/pipeos-usb.img"
+        IMG=$STAGE/pipeos-usb.img
+    fi
+    [ -f "$IMG" ] || die "no such image: $IMG"
+
+    # geometry, both sides, before anything else
+    set -- $(image_p1_geometry "$IMG") || die "cannot read the image's partition table"
+    IMG_START=$1; IMG_SIZE=$2
+    if [ -n "$DEV_OVERRIDE" ]; then
+        P1=$DEV_OVERRIDE; TGT_START=2048; TGT_SIZE=$IMG_SIZE
+    else
+        set -- $(target_p1) || die "cannot resolve this box's boot partition"
+        P1=$1; TGT_START=$2; TGT_SIZE=$3
+    fi
+    fits "$IMG_START" "$IMG_SIZE" "$TGT_START" "$TGT_SIZE" || die "geometry refused"
+
+    # look inside the image before trusting it
+    if [ "$NO_MOUNT" != 1 ]; then
+        modprobe loop vfat squashfs 2>/dev/null || true
+        mkdir -p "$IMGMNT"
+        mount -o loop,ro,offset=$((IMG_START * 512)) "$IMG" "$IMGMNT" || die "cannot loop-mount the image"
+        trap 'umount "$IMGMNT" 2>/dev/null' EXIT
+        for _f in pipeos.apkovl.tar.gz apks/pipeos/x86_64/APKINDEX.tar.gz; do
+            [ -e "$IMGMNT/$_f" ] || die "the image is missing $_f — not a pipeOS image"
+        done
+        ls "$IMGMNT"/boot/vmlinuz-* >/dev/null 2>&1 || die "the image has no kernel"
+        [ -x "$VERIFY" ] && { "$VERIFY" "$IMGMNT/apks/pipeos/x86_64" >/dev/null || die "the image's repo failed verification"; }
+        GENERIC=$IMGMNT/pipeos.apkovl.tar.gz
+    else
+        GENERIC=${PIPEOS_FLASH_GENERIC:?NO_MOUNT needs PIPEOS_FLASH_GENERIC}
+    fi
+
+    take_save_lock
+    state packaging
+    TS=$(date -u +%Y%m%d%H%M%S)
+    IDENT=$STAGE/identity-$TS.apkovl.tar.gz
+    if [ "$NO_MOUNT" != 1 ]; then
+        lbu package "$IDENT" >/dev/null 2>&1 || die "lbu package failed"
+    else
+        cp "${PIPEOS_FLASH_IDENTITY:?NO_MOUNT needs PIPEOS_FLASH_IDENTITY}" "$IDENT"
+    fi
+    gzip -t "$IDENT" 2>/dev/null && tar -tzf "$IDENT" >/dev/null 2>&1 || die "identity apkovl failed integrity check"
+    [ -f "$MEDIA/pipeos.apkovl.tar.gz" ] && cp "$MEDIA/pipeos.apkovl.tar.gz" "$STAGE/previous-$TS.apkovl.tar.gz" 2>/dev/null
+
+    state merging
+    MERGED=$STAGE/merged-$TS.apkovl.tar.gz
+    merge_apkovl "$IDENT" "$GENERIC" "$MERGED" || die "apkovl merge failed"
+    say "merged: image overlay + world union over this box's identity"
+
+    # the merged world must resolve against the image's repos BEFORE the write
+    if [ "$NO_MOUNT" != 1 ]; then
+        state simulating
+        _repos="--repository $IMGMNT/apks/pipeos"
+        [ -d "$IMGMNT/apks/extra" ] && _repos="$_repos --repository $IMGMNT/apks/extra"
+        # shellcheck disable=SC2086
+        if ! apk --root /tmp/.flash-apk-root.$$ --initdb --allow-untrusted $_repos \
+                --simulate add $(cat "$MERGED.world") >/dev/null 2>&1; then
+            rm -rf /tmp/.flash-apk-root.$$
+            die "the merged world does not resolve against the image's repos — refusing"
+        fi
+        rm -rf /tmp/.flash-apk-root.$$
+    fi
+
+    if [ "$YES" != yes ]; then
+        say "ready to rewrite $P1 in place ($(( IMG_SIZE / 2048 ))MB)."
+        say "power loss mid-write leaves the box unbootable until reflashed;"
+        say "identity copies are on /work at $STAGE. Type the box's hostname to continue:"
+        read -r _ans
+        [ "$_ans" = "$(hostname)" ] || die "confirmation did not match $(hostname) — nothing written"
+    fi
+
+    if [ "$NO_MOUNT" != 1 ]; then
+        state quiescing
+        umount "$IMGMNT" 2>/dev/null; trap - EXIT
+        quiesce_media "$P1" || die "media not quiescent — nothing written"
+    fi
+
+    state writing "point of no return"
+    log "POINT OF NO RETURN: dd $(basename "$IMG") -> $P1 ($IMG_SIZE sectors)"
+    if ! dd if="$IMG" of="$P1" bs=4M iflag=skip_bytes,count_bytes \
+            skip=$((IMG_START * 512)) count=$((IMG_SIZE * 512)) \
+            oflag=direct conv=fsync status=progress 2>"$PROGRESS"; then
+        die "dd failed mid-write — p1 is NOT bootable; see docs/live-disk.md for recovery (identity is safe at $STAGE)"
+    fi
+    sync; command -v blockdev >/dev/null 2>&1 && blockdev --flushbufs "$P1" 2>/dev/null
+
+    if [ "$NO_MOUNT" != 1 ]; then
+        state verifying
+        blkid "$P1" 2>/dev/null | grep -q 'LABEL="PIPEOS"' || die "written partition has no PIPEOS label — recovery: docs/live-disk.md"
+        mount "$MEDIA" || die "cannot remount the new media"
+        for _f in pipeos.apkovl.tar.gz apks/pipeos/x86_64/APKINDEX.tar.gz; do
+            [ -e "$MEDIA/$_f" ] || die "new media is missing $_f"
+        done
+        ls "$MEDIA"/boot/vmlinuz-* >/dev/null 2>&1 || die "new media has no kernel"
+
+        state installing-identity
+        mount -o remount,rw "$MEDIA" || die "cannot remount media rw"
+        trap 'sync; mount -o remount,ro "$MEDIA" 2>/dev/null' EXIT
+        cp "$MERGED" "$MEDIA/pipeos.apkovl.tar.gz.new" && sync \
+            && mv "$MEDIA/pipeos.apkovl.tar.gz.new" "$MEDIA/pipeos.apkovl.tar.gz" \
+            || die "cannot install the merged apkovl — recovery: pipeos flash restore-identity $IDENT"
+        # the image's generic apkovl is gone; the old known-good and rotations
+        # name packages that are no longer on this media
+        cp "$MERGED" "$MEDIA/pipeos.known-good.tar.gz" 2>/dev/null || true
+        rm -f "$MEDIA"/pipeos.[0-9]*.tar.gz
+        sync
+    fi
+
+    cat "$STAGE/image.digest" 2>/dev/null > "$APPLIED" || date -u +%s > "$APPLIED"
+    rm -f "$STAGE/pipeos-usb.img"
+    state done
+    say "done. Reboot to boot the new image as this box."
+    say "identity copies kept at $STAGE (identity-$TS, previous-$TS)."
+    log "flash apply complete"
+}
+
+cmd_restore_identity() {
+    _f=${1:-}
+    [ -n "$_f" ] || die "usage: pipeos flash restore-identity FILE[.enc]"
+    [ -f "$_f" ] || die "no such file: $_f"
+    case "$_f" in
+        *.enc)
+            say "encrypted bundle — passphrase:"
+            _plain=$RUN/restore-identity.tar.gz
+            openssl enc -d -aes-256-cbc -pbkdf2 -in "$_f" -out "$_plain" || die "decryption failed"
+            _f=$_plain ;;
+    esac
+    gzip -t "$_f" 2>/dev/null && tar -tzf "$_f" >/dev/null 2>&1 || die "bundle failed integrity check"
+    exec /usr/local/bin/pipeos rollback "$_f"
+}
+
+# Library seam for the probe: source with _PIPEOS_FLASH_LIB=1 to get the
+# functions without the dispatch (the dispatch's usage path exits).
+if [ "${_PIPEOS_FLASH_LIB:-0}" = 1 ]; then
+    return 0 2>/dev/null || exit 0
+fi
+
+case "${1:-}" in
+    check)  shift; cmd_check "$@" ;;
+    fetch)  shift; cmd_fetch "$@" ;;
+    apply)  shift; cmd_apply "$@" ;;
+    restore-identity) shift; cmd_restore_identity "$@" ;;
+    *) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

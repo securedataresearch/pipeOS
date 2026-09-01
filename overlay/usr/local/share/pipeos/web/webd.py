@@ -747,6 +747,57 @@ def backup_step():
     return ""
 
 
+# ---- flash -----------------------------------------------------------------
+# The dashboard face of pipeos-flash (#181): a thread that runs the binary,
+# state the Live disk card polls, and the release's image digest. All the
+# judgement — geometry, merge, quiesce — is the script's; see check-flash.py.
+
+FLASH_BIN = "/usr/local/bin/pipeos-flash"
+FLASH_STATE = "/run/pipeos/flash.state"
+FLASH_PROGRESS = "/run/pipeos/flash.progress"
+FLASH_APPLIED = "/work/.pipeos/flash.applied"
+FLASH_IMAGE_TXT = "/media/usb/pipeos-image.txt"
+FLASH = {"running": False, "mode": "", "started": 0, "ok": None, "detail": ""}
+FLASH_LOCK = threading.Lock()
+
+
+def flash_worker(argv):
+    rc, out = run(argv, timeout=3 * 3600)
+    with FLASH_LOCK:
+        FLASH.update({"running": False, "ok": rc == 0,
+                      "detail": "" if rc == 0 else out.strip()[-300:]})
+
+
+def flash_step():
+    try:
+        with open(FLASH_STATE) as f:
+            for line in f:
+                if line.startswith("step="):
+                    return line[5:].strip()
+    except OSError:
+        pass
+    return ""
+
+
+def release_sums():
+    """The release's SHA256SUMS as {asset: digest}, or {} when unreachable.
+    One fetch for both the update pill and the Live disk card."""
+    conf = read_conf_values(SELFUPDATE_CONF, ["UPDATE_RELEASE_URL"])
+    url = (conf["UPDATE_RELEASE_URL"] or "").rstrip("/")
+    if not url:
+        return {}
+    try:
+        with urllib.request.urlopen(url + "/SHA256SUMS", timeout=10) as r:
+            out = {}
+            for line in r.read().decode().splitlines():
+                parts = line.split()
+                if len(parts) == 2 and re.fullmatch(r"[0-9a-f]{64}", parts[0]):
+                    out[parts[1]] = parts[0]
+            return out
+    except OSError:
+        return {}
+
+
 def dev_protected(sub):
     """True unless `sub` (a partition or disk name) sits on a disk the
     inventory calls safe."""
@@ -930,6 +981,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/pipe-contacts": self.api_pipe_contacts,
             "/api/pipe-board": self.api_pipe_board,
             "/api/update": self.api_update_get,
+            "/api/flash": self.api_flash_get,
         }
         fn = readers.get(path)
         if fn is not None:
@@ -1006,6 +1058,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/assistant-config": self.api_assistant_set,
             "/api/cohort": self.api_cohort,
             "/api/update-now": self.api_update_now,
+            "/api/flash": self.api_flash,
         }
         fn = handlers.get(path)
         if fn is None:
@@ -2484,6 +2537,58 @@ class PhaseB:
         self.send(200, {"origin": origin, "applied": applied[:12],
                         "remote": remote[:12], "state": state,
                         "last": tail_file(LOG_ALLOW["selfupdate"], 3) or ""})
+
+    def api_flash_get(self):
+        image = {}
+        try:
+            with open(FLASH_IMAGE_TXT) as f:
+                for line in f:
+                    if "=" in line:
+                        k, v = line.strip().split("=", 1)
+                        image[k] = v
+        except OSError:
+            pass
+        applied = ""
+        try:
+            with open(FLASH_APPLIED) as f:
+                applied = f.read().strip()
+        except OSError:
+            pass
+        remote = release_sums().get("pipeos-usb.img.xz", "")
+        progress = ""
+        try:
+            with open(FLASH_PROGRESS) as f:
+                progress = f.read()[-4000:].replace("\r", "\n").strip().split("\n")[-1]
+        except OSError:
+            pass
+        with FLASH_LOCK:
+            state = dict(FLASH)
+        state.update({"image": image, "applied": applied[:12], "remote": remote[:12],
+                      "step": flash_step(), "progress": progress})
+        self.send(200, state)
+
+    def api_flash(self, body):
+        mode = body.get("mode")
+        if mode != "inplace":
+            return self.err(400, "mode must be inplace (flash --to lands next)")
+        # the typed confirmation is checked HERE, not only in the browser:
+        # a dashboard that trusts the client on a media rewrite trusts too much
+        want = card_get("NICK") or socket.gethostname()
+        if (body.get("confirm") or "").strip() != want:
+            return self.err(400, "type the box's name (%s) to confirm" % want)
+        with BACKUP_LOCK:
+            if BACKUP["running"]:
+                return self.err(400, "a backup is running — let it finish first")
+        with FLASH_LOCK:
+            if FLASH["running"]:
+                return self.err(400, "a flash is already running")
+            FLASH.update({"running": True, "mode": mode,
+                          "started": int(time.time()), "ok": None, "detail": ""})
+        # fetch (no-op when staged and current), then apply
+        threading.Thread(target=flash_worker, args=(
+            ["sh", "-c", "%s fetch && %s apply --yes" % (FLASH_BIN, FLASH_BIN)],),
+            daemon=True).start()
+        self.send(200, {"ok": True, "started": True})
 
     def api_update_now(self, _body):
         rc, out = run(["pipeos-selfupdate"], timeout=900)
