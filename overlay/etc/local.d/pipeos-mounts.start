@@ -1,0 +1,37 @@
+#!/bin/sh
+# pipeos-mounts.start — replay the owner's external mounts after a reboot.
+#
+# The root is tmpfs, so a drive mounted from the dashboard is gone at boot
+# unless something replays it. The dashboard records every mounted external's
+# filesystem UUID in /etc/pipeos/mounts.conf (lbu-listed); this script, which
+# runs before pipeos-services.start alphabetically, finds each UUID's current
+# device node and mounts it where the dashboard would have (/media/ext/<dev>).
+# Device names may move between boots (sdb today, sda tomorrow) — the UUID is
+# the identity, the mountpoint is derived, and anything that needs a stable
+# reference to the drive (the NAS shares) stores the UUID too.
+#
+# A recorded drive that is absent at boot is not an error: drives unplug.
+# Never silent, though — the skip is logged, and pipeos-nas's own start_pre
+# reports a share whose drive is missing.
+
+CONF=/etc/pipeos/mounts.conf
+[ -r "$CONF" ] || exit 0
+# shellcheck disable=SC1090
+. "$CONF" 2>/dev/null
+
+for uuid in ${MOUNT_UUIDS:-}; do
+	dev=$(findfs "UUID=$uuid" 2>/dev/null || blkid -U "$uuid" 2>/dev/null)
+	if [ -z "$dev" ]; then
+		logger -t pipeos-mounts "recorded drive UUID=$uuid is not attached — skipping" 2>/dev/null
+		continue
+	fi
+	name=${dev##*/}
+	mp="/media/ext/$name"
+	mountpoint -q "$mp" && continue
+	mkdir -p "$mp"
+	if ! mount -o noexec,nosuid,nodev "$dev" "$mp" 2>/dev/null; then
+		rmdir "$mp" 2>/dev/null
+		logger -t pipeos-mounts "could not mount UUID=$uuid ($dev) at $mp" 2>/dev/null
+	fi
+done
+exit 0

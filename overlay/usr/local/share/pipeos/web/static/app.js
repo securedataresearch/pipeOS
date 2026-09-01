@@ -100,6 +100,7 @@ const SERVICES = [
   { key: "agy", name: "Antigravity", desc: "The agy coding agent (if installed on this image).", def: false },
   { key: "pipe", name: "pipe messaging", desc: "Talk to the box by DM from anywhere, via pipe.online.", def: false },
   { key: "support", name: "Vendor support access", desc: "Let your vendor connect to help. Off unless you switch it on.", def: false },
+  { key: "nas", name: "Network storage", desc: "Share folders over SMB on your local network (set up under Files).", def: false },
 ];
 
 function wizard(state) {
@@ -544,11 +545,6 @@ async function dashboard() {
                 <input id="fupin" type="file" multiple hidden>
               </span>
             </div>
-            <div id="fmovebar" class="movebar" hidden>
-              <span class="note" id="fmovemsg"></span>
-              <button id="fmovehere" class="small" type="button">move here</button>
-              <button id="fmovecancel" class="ghost small" type="button">cancel</button>
-            </div>
             <p class="err" id="ferr" hidden></p>
             <p class="note" id="fprog" hidden></p>
             <div id="flist">loading…</div>
@@ -578,6 +574,32 @@ async function dashboard() {
             <button id="bgo" type="button">Back up now</button>
           </div>
           <p class="note" id="bmsg" hidden></p>
+        </div>
+        <div class="card" style="margin-top:.9rem">
+          <div class="cardhead"><h2>Network storage</h2><span class="pill" id="nstate">checking…</span></div>
+          <p class="note" id="nhint">Share folders over SMB: other devices on your network connect natively (Finder, Explorer, a phone) with a dashboard account.</p>
+          <div id="nshares" class="note">loading…</div>
+          <div id="nform">
+            <label>Add a share</label>
+            <div class="chatrow">
+              <select id="nroot" style="margin:0"></select>
+              <input id="nrel" type="text" autocomplete="off" placeholder="folder inside (optional)" style="margin:0">
+            </div>
+            <div class="chatrow" style="margin-top:.4rem">
+              <input id="nname" type="text" autocomplete="off" placeholder="share name, e.g. media" style="margin:0">
+              <button id="nadd" type="button">Add share</button>
+            </div>
+            <div id="nusers" class="note" style="margin-top:.4rem"></div>
+            <label style="margin-top:.9rem">SMB passwords</label>
+            <p class="note">SMB needs its own password per account — set one here for each person who will connect.</p>
+            <div class="chatrow">
+              <select id="npuser" style="margin:0"></select>
+              <input id="nppass" type="password" placeholder="at least 8 characters" style="margin:0">
+              <button id="npset" type="button">Set</button>
+            </div>
+          </div>
+          <p class="err" id="nerr" hidden></p>
+          <p class="note" id="nmsg" hidden></p>
         </div>
       </section>
 
@@ -1223,8 +1245,8 @@ async function dashboard() {
   let loadFiles = null;
   {
     const flist = v.querySelector("#flist"), crumbs = v.querySelector("#crumbs"),
-      ferr = v.querySelector("#ferr"), movebar = v.querySelector("#fmovebar");
-    let cwd = "", moving = null;
+      ferr = v.querySelector("#ferr");
+    let cwd = "";
     const fileErr = m => { ferr.textContent = m || ""; ferr.hidden = !m; };
     const fmtSize = n => n == null ? "" :
       n >= (1 << 30) ? (n / (1 << 30)).toFixed(1) + " GB" :
@@ -1234,22 +1256,13 @@ async function dashboard() {
       const d = new Date(t * 1000);
       return d.toLocaleDateString() + " " + String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
     };
-    const syncMove = () => {
-      movebar.hidden = !moving;
-      if (moving) v.querySelector("#fmovemsg").textContent =
-        `Moving “${moving.name}” — open the destination folder, then`;
-    };
+    // Moving is drag-and-drop only: the old "move here / cancel" arm bar
+    // confused more than it helped (Sam) and the drag path already covers it.
     const doMove = async (srcPath, destPath) => {
       try {
         await api("/api/file-op", { op: "move", path: srcPath, dest: destPath });
-        moving = null; syncMove(); loadFiles(cwd);
-      } catch (e) {
-        // surface it where the user is looking — the bottom-of-list err was
-        // invisible, which read as "the button does nothing"
-        moving = moving || { name: srcPath.split("/").pop(), path: srcPath };
-        movebar.hidden = false;
-        v.querySelector("#fmovemsg").textContent = "✗ " + e.message + " — pick another folder, or";
-      }
+        loadFiles(cwd);
+      } catch (e) { fileErr("move failed: " + e.message); }
     };
     const frow = (f, isDir) => {
       const p = (cwd ? cwd + "/" : "") + f.name;
@@ -1260,7 +1273,6 @@ async function dashboard() {
         <span class="fmeta fdate">${fmtDate(f.mtime)}</span>
         <span class="facts">
           ${isDir ? `<a class="ghost small btn" data-vok href="/api/file-tar?path=${encodeURIComponent(p)}">download</a>` : ""}
-          <button class="ghost small" type="button" data-a="move">move</button>
           <button class="ghost small" type="button" data-a="ren">rename</button>
           <button class="ghost small" type="button" data-a="del">delete</button>
         </span></div>`);
@@ -1285,7 +1297,6 @@ async function dashboard() {
           doMove(src, p);
         });
       }
-      r.querySelector("[data-a=move]").onclick = () => { moving = { path: p, name: f.name }; syncMove(); };
       r.querySelector("[data-a=ren]").onclick = async () => {
         const nn = (prompt("Rename “" + f.name + "” to:", f.name) || "").trim();
         if (!nn || nn === f.name) return;
@@ -1455,9 +1466,80 @@ async function dashboard() {
       try { await api("/api/backup", { dest: bdest.value }); loadBackup(); }
       catch (e) { bmsg.hidden = false; bmsg.textContent = e.message; }
     };
-    loadFiles._disks = () => { loadDisks(); loadBackup(); };
-    v.querySelector("#fmovehere").onclick = () => { if (moving) doMove(moving.path, cwd); };
-    v.querySelector("#fmovecancel").onclick = () => { moving = null; syncMove(); };
+    // ---- network storage (SMB) ----
+    const nstate = v.querySelector("#nstate"), nshares = v.querySelector("#nshares"),
+      nerr = v.querySelector("#nerr"), nmsg = v.querySelector("#nmsg");
+    let nasShares = [], nasUsers = [], nasSmb = [];
+    const nasErr = m => { nerr.textContent = m || ""; nerr.hidden = !m; };
+    const nasSay = m => { nmsg.textContent = m || ""; nmsg.hidden = !m; };
+    const renderNasUsers = () => {
+      const box = v.querySelector("#nusers");
+      if (!nasUsers.length) {
+        box.innerHTML = "No accounts with unix access yet — add one under Users first.";
+        return;
+      }
+      box.innerHTML = "May connect: " + nasUsers.map(u =>
+        `<label style="margin-right:.9rem;display:inline"><input type="checkbox" data-nu="${esc(u)}"> ${esc(u)}${nasSmb.includes(u) ? "" : " (no SMB password yet)"}</label>`).join("");
+    };
+    const postNas = async shares => {
+      nasErr(""); nasSay("saving…");
+      try {
+        const r = await api("/api/nas", { shares });
+        nasSay((r.problems || []).join("; ") || "saved");
+        loadNas();
+      } catch (e) { nasSay(""); nasErr(e.message); }
+    };
+    const loadNas = async () => {
+      try {
+        const d = await api("/api/nas");
+        nasShares = d.shares || []; nasUsers = d.eligible_users || []; nasSmb = d.smb_users || [];
+        nstate.textContent = !d.installed ? "not installed"
+          : d.running ? "sharing" : d.enabled ? "enabled, not running" : "off";
+        if (!d.installed) {
+          v.querySelector("#nform").hidden = true;
+          v.querySelector("#nhint").textContent =
+            "samba is not on this image yet — update the box software, then share folders here.";
+        }
+        const rsel = v.querySelector("#nroot");
+        rsel.innerHTML = (d.roots || []).map(r => `<option value="${esc(r.key)}">${esc(r.label)}</option>`).join("");
+        nshares.innerHTML = nasShares.length ? nasShares.map((sh, i) =>
+          `<div class="targetline"><span class="tdot ${sh.attached ? "on" : "off"}"></span>
+           <span class="tname">${esc(sh.name)}</span>
+           <span class="note">smb://${esc(d.host || "pipeos")}.local/${esc(sh.name)} · ${esc((sh.users || []).join(", "))}${sh.attached ? "" : " · drive not attached"}</span>
+           <button class="ghost small" type="button" data-nrm="${i}" style="margin-left:auto">remove</button></div>`).join("")
+          : "No shares yet.";
+        nshares.querySelectorAll("[data-nrm]").forEach(b => b.onclick = () => {
+          const keep = nasShares.filter((_, i) => i !== Number(b.dataset.nrm));
+          postNas(keep.map(sh => ({ name: sh.name, path: sh.path, users: sh.users })));
+        });
+        const psel = v.querySelector("#npuser");
+        psel.innerHTML = nasUsers.map(u => `<option>${esc(u)}</option>`).join("");
+        renderNasUsers();
+      } catch (e) { nstate.textContent = "?"; nasErr(e.message); }
+    };
+    v.querySelector("#nadd").onclick = () => {
+      const name = v.querySelector("#nname").value.trim();
+      const rel = v.querySelector("#nrel").value.trim().replace(/^\/+|\/+$/g, "");
+      const root = v.querySelector("#nroot").value;
+      const users = [...v.querySelectorAll("#nusers input:checked")].map(c => c.dataset.nu);
+      if (!name) return nasErr("give the share a name");
+      if (!users.length) return nasErr("tick at least one account");
+      const path = root + (rel ? "/" + rel : "");
+      postNas(nasShares.map(sh => ({ name: sh.name, path: sh.path, users: sh.users }))
+        .concat([{ name, path, users }]));
+      v.querySelector("#nname").value = ""; v.querySelector("#nrel").value = "";
+    };
+    v.querySelector("#npset").onclick = async () => {
+      const name = v.querySelector("#npuser").value, pw = v.querySelector("#nppass").value;
+      nasErr(""); nasSay("setting…");
+      try {
+        await api("/api/nas-password", { name, password: pw });
+        v.querySelector("#nppass").value = "";
+        nasSay("SMB password set for " + name);
+        loadNas();
+      } catch (e) { nasSay(""); nasErr(e.message); }
+    };
+    loadFiles._disks = () => { loadDisks(); loadBackup(); loadNas(); };
     v.querySelector("#fmkdir").onclick = async () => {
       const name = (prompt("New folder name:") || "").trim();
       if (!name) return;

@@ -52,6 +52,13 @@ ADMIN_CONF = ETC + "/web-admin.conf"
 SERVICES_CONF = ETC + "/services.conf"
 CLAUDE_AUTH = ETC + "/claude-auth.env"
 CARD = ETC + "/card.conf"
+# network storage (SMB): nas.conf declares the shares (source of truth, the
+# init script renders smb.conf from it at every start); mounts.conf records
+# which external drives to re-mount after a reboot, by filesystem UUID.
+NAS_CONF = ETC + "/nas.conf"
+MOUNTS_CONF = ETC + "/mounts.conf"
+NAS_MAX_SHARES = 8
+NAS_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
 PROVISIONED = ETC + "/provisioned"
 TLS_DIR = ETC + "/tls"
 CA_CRT = TLS_DIR + "/ca.crt"
@@ -66,7 +73,7 @@ DOCS_DIR = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs"))
 DOC_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 # Display order; pages not listed here sort alphabetically after these.
-DOCS_ORDER = ("getting-started", "dashboard", "streaming", "users",
+DOCS_ORDER = ("getting-started", "dashboard", "streaming", "nas", "users",
               "files-and-backup", "persistence", "fence")
 
 USERS_CONF = ETC + "/users.json"
@@ -78,7 +85,7 @@ USER_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 # names that must never become unix accounts from the dashboard
 USER_NAME_DENY = {"root", "nobody", "operator", "shutdown", "halt", "sync", "bin", "daemon", "adm"}
 TERM_PORT_BASE = 7701
-SVC_KEYS = ("pipe", "claude", "stream", "agy", "support", "assistant", "terminals")
+SVC_KEYS = ("pipe", "claude", "stream", "agy", "support", "assistant", "terminals", "nas")
 
 # How many stream targets (providers) the dashboard manages. Each is a slot in
 # stream.conf: STREAM_T{N}_URL / _KEY / _ON / _NAME.
@@ -386,6 +393,8 @@ def daemons_for(svcs):
         out.append("pipeos-assistant")
     if svcs.get("terminals"):
         out.append("pipeos-terminals")
+    if svcs.get("nas"):
+        out.append("pipeos-nas")
     return out
 
 
@@ -395,7 +404,8 @@ def apply_services(svcs):
     problems = []
     want = set(daemons_for(svcs))
     managed = ("pipe-daemon", "pipebox-listener", "pipeos-stream",
-               "pipeos-support", "pipeos-assistant", "pipeos-terminals")
+               "pipeos-support", "pipeos-assistant", "pipeos-terminals",
+               "pipeos-nas")
     for svc in managed:
         if svc in want:
             # STREAM_BOOT=0 = "stream now when asked, but not by itself at
@@ -419,6 +429,8 @@ def apply_services(svcs):
                     problems.append("the assistant terminal is enabled but has no password yet")
                 elif svc == "pipeos-terminals":
                     problems.append("user terminals are enabled but no user has one configured yet")
+                elif svc == "pipeos-nas":
+                    problems.append("network storage is enabled but no usable share is configured yet")
                 else:
                     problems.append("%s failed to start: %s" % (svc, out.strip()[-200:]))
         else:
@@ -631,6 +643,19 @@ def mounts_by_dev():
     except OSError:
         pass
     return out
+
+
+def read_mount_uuids():
+    """The external drives the owner mounted, by filesystem UUID — the set
+    pipeos-mounts.start replays after a reboot (device names move; UUIDs
+    are the identity)."""
+    return read_conf_values(MOUNTS_CONF, ["MOUNT_UUIDS"])["MOUNT_UUIDS"].split()
+
+
+def write_mount_uuids(uuids):
+    seen = list(dict.fromkeys(u for u in uuids if u))
+    write_private(MOUNTS_CONF, "MOUNT_UUIDS='%s'\n" % " ".join(seen))
+    os.chmod(MOUNTS_CONF, 0o644)
 
 
 def _sysread(path):
@@ -894,6 +919,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/file-dl": self.api_file_dl,
             "/api/file-tar": self.api_file_tar,
             "/api/disks": self.api_disks,
+            "/api/nas": self.api_nas_get,
             "/api/backup": self.api_backup_get,
             "/api/health": self.api_health,
             "/api/logs": self.api_logs,
@@ -957,6 +983,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/file-op": self.api_file_op,
             "/api/disk-op": self.api_disk_op,
             "/api/backup": self.api_backup,
+            "/api/nas": self.api_nas_set,
+            "/api/nas-password": self.api_nas_password,
             "/api/pipe-set": self.api_pipe_set,
             "/api/pipe-logout": self.api_pipe_logout,
             "/api/password": self.api_password,
@@ -1415,10 +1443,17 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     pass
                 return self.err(500, "mount failed: " + out.strip()[-200:])
+            # Record the drive so pipeos-mounts.start re-mounts it after a
+            # reboot; the save carries mounts.conf onto the media.
+            uuid = blkid_all().get(node, {}).get("uuid", "")
+            if uuid:
+                write_mount_uuids(read_mount_uuids() + [uuid])
+                save_state()
             self.send(200, {"ok": True, "mount": mp, "root": "ext/" + dev})
         elif op == "unmount":
             if not os.path.ismount(mp):
                 return self.err(400, "not mounted here")
+            uuid = blkid_all().get(node, {}).get("uuid", "")
             rc, out = run(["umount", mp], timeout=30)
             if rc != 0:
                 return self.err(500, "unmount failed (files in use?): " + out.strip()[-200:])
@@ -1426,6 +1461,11 @@ class Handler(BaseHTTPRequestHandler):
                 os.rmdir(mp)
             except OSError:
                 pass
+            # An explicit unmount is the owner saying "stop replaying this
+            # drive at boot" — drop it from the record.
+            if uuid:
+                write_mount_uuids([u for u in read_mount_uuids() if u != uuid])
+                save_state()
             self.send(200, {"ok": True})
         elif op == "format":
             label = (body.get("label") or "").strip()
@@ -1442,6 +1482,180 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, {"ok": True})
         else:
             self.err(400, "op must be mount, unmount or format")
+
+    # -- network storage: the owner's chosen folders, served over SMB.
+    # nas.conf (written here, quote-guarded) is the source of truth; the
+    # pipeos-nas init script renders smb.conf from it at every start, so a
+    # drive that changed device names re-resolves by UUID and nothing stale
+    # persists. Roots are stored as 'work' or the drive's filesystem UUID.
+
+    def _nas_read_shares(self):
+        keys = []
+        for n in range(1, NAS_MAX_SHARES + 1):
+            keys += ["NAS_S%d_%s" % (n, k) for k in ("NAME", "ROOT", "REL", "USERS")]
+        vals = read_conf_values(NAS_CONF, keys)
+        out = []
+        for n in range(1, NAS_MAX_SHARES + 1):
+            if vals["NAS_S%d_NAME" % n]:
+                out.append({
+                    "name": vals["NAS_S%d_NAME" % n],
+                    "root": vals["NAS_S%d_ROOT" % n],
+                    "rel": vals["NAS_S%d_REL" % n],
+                    "users": vals["NAS_S%d_USERS" % n].split(),
+                })
+        return out
+
+    def _nas_uuid_roots(self):
+        """explorer root key ('work' / 'ext/<dev>') maps both ways to the
+        stored identity ('work' / UUID)."""
+        by_key, by_uuid = {"work": "work"}, {"work": "work"}
+        ids = blkid_all()
+        for key, path in self._file_roots().items():
+            if key == "work":
+                continue
+            dev = "/dev/" + key.split("/", 1)[1]
+            uuid = ids.get(dev, {}).get("uuid", "")
+            if uuid:
+                by_key[key] = uuid
+                by_uuid[uuid] = key
+        return by_key, by_uuid
+
+    def api_nas_get(self):
+        _, by_uuid = self._nas_uuid_roots()
+        shares = []
+        for sh in self._nas_read_shares():
+            key = by_uuid.get(sh["root"])
+            shares.append({
+                "name": sh["name"], "users": sh["users"], "rel": sh["rel"],
+                "path": (key + ("/" + sh["rel"] if sh["rel"] else "")) if key else "",
+                "attached": key is not None,
+            })
+        users = [u["name"] for u in read_users()
+                 if u.get("unix") and not u.get("disabled")]
+        rc, _out = run(["rc-service", "pipeos-nas", "status"], timeout=15)
+        smb_users = []
+        rc2, out2 = run(["pdbedit", "-L", "-s", "/dev/null"], timeout=15)
+        if rc2 == 0:
+            smb_users = [l.split(":")[0] for l in out2.splitlines() if ":" in l]
+        ids = blkid_all()
+        roots = [{"key": "work", "label": "work (the box's data drive)"}]
+        for key, path in sorted(self._file_roots().items()):
+            if key == "work":
+                continue
+            dev = "/dev/" + key.split("/", 1)[1]
+            label = ids.get(dev, {}).get("label", "")
+            roots.append({"key": key, "label": key + (" — " + label if label else "")})
+        self.send(200, {
+            "shares": shares, "eligible_users": users, "smb_users": smb_users,
+            "roots": roots,
+            "enabled": read_services().get("nas", False), "running": rc == 0,
+            "installed": bool(shutil.which("smbd")),
+            "host": socket.gethostname(),
+        })
+
+    def api_nas_set(self, body):
+        def guard(v, label):
+            v = (v or "").strip()
+            if any(c in v for c in "'\n\r\0"):
+                raise ValueError("%s may not contain quotes or newlines" % label)
+            if len(v) > 300:
+                raise ValueError("%s is too long" % label)
+            return v
+        shares = body.get("shares")
+        if not isinstance(shares, list) or len(shares) > NAS_MAX_SHARES:
+            return self.err(400, "shares must be a list (max %d)" % NAS_MAX_SHARES)
+        by_key, _ = self._nas_uuid_roots()
+        users_known = {u["name"] for u in read_users()
+                       if u.get("unix") and not u.get("disabled")}
+        fields, names = {}, set()
+        try:
+            for i, t in enumerate(shares):
+                n = i + 1
+                if not isinstance(t, dict):
+                    raise ValueError("share %d is not an object" % n)
+                name = guard(t.get("name"), "share %d name" % n)
+                if not NAS_NAME_RE.fullmatch(name):
+                    raise ValueError("share %d name: letters, digits, _ -, max 32" % n)
+                if name.lower() in names:
+                    raise ValueError("two shares named '%s'" % name)
+                names.add(name.lower())
+                path = guard(t.get("path"), "share %d path" % n)
+                resolved = self._files_path(path)
+                if resolved is None or not os.path.isdir(resolved):
+                    raise ValueError("share %d: that folder does not exist" % n)
+                root_key = path.split("/")[0] if path.split("/")[0] == "work" \
+                    else "/".join(path.split("/")[:2])
+                root_id = by_key.get(root_key)
+                if not root_id:
+                    raise ValueError("share %d: its drive has no filesystem UUID" % n)
+                rel = "/".join(path.split("/")[1 if root_key == "work" else 2:])
+                users = t.get("users") or []
+                if not isinstance(users, list) or not users:
+                    raise ValueError("share %d needs at least one user" % n)
+                for u in users:
+                    if u not in users_known:
+                        raise ValueError(
+                            "share %d: '%s' is not an enabled account with unix access" % (n, u))
+                fields["NAS_S%d_NAME" % n] = name
+                fields["NAS_S%d_ROOT" % n] = root_id
+                fields["NAS_S%d_REL" % n] = guard(rel, "share %d path" % n)
+                fields["NAS_S%d_USERS" % n] = " ".join(users)
+        except ValueError as e:
+            return self.err(400, str(e))
+        for n in range(len(shares) + 1, NAS_MAX_SHARES + 1):
+            for k in ("NAME", "ROOT", "REL", "USERS"):
+                fields["NAS_S%d_%s" % (n, k)] = ""
+        write_private(NAS_CONF, "".join(
+            "%s='%s'\n" % (k, fields[k]) for k in sorted(fields)))
+        problems = []
+        svcs = read_services()
+        if shares and not svcs.get("nas"):
+            # Configure implies enable — same contract as streaming.
+            svcs["nas"] = True
+            write_services(svcs)
+            problems += apply_services(svcs)
+        elif svcs.get("nas"):
+            if shares:
+                rc, out = run(["rc-service", "pipeos-nas", "restart"], timeout=60)
+                if rc != 0:
+                    problems.append("network storage did not restart: " + out.strip()[-200:])
+            else:
+                svcs["nas"] = False
+                write_services(svcs)
+                problems += apply_services(svcs)
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "problems": problems,
+                        "saved": saved, "save_detail": "" if saved else detail})
+
+    def api_nas_password(self, body):
+        """Set (or update) a user's SMB password. Samba keeps its own
+        password db — the dashboard hash cannot be converted — so the admin
+        sets it here explicitly; it lives in nas-private and survives via
+        lbu. smbpasswd needs a config naming that private dir, which may
+        predate the service's first start, so render a minimal one."""
+        name = (body.get("name") or "").strip()
+        pw = body.get("password") or ""
+        users_known = {u["name"] for u in read_users()
+                       if u.get("unix") and not u.get("disabled")}
+        if name not in users_known:
+            return self.err(400, "that user has no enabled unix account")
+        if len(pw) < 8 or any(c in pw for c in "\n\r\0"):
+            return self.err(400, "SMB password: at least 8 characters, no newlines")
+        if not shutil.which("smbpasswd"):
+            return self.err(500, "samba is not installed yet (samba-common-tools)")
+        os.makedirs("/run/pipeos", exist_ok=True)
+        os.makedirs(NAS_CONF.rsplit("/", 1)[0] + "/nas-private", mode=0o700, exist_ok=True)
+        mini = "/run/pipeos/smbpasswd.conf"
+        with open(mini, "w") as f:
+            f.write("[global]\nprivate dir = %s\npassdb backend = tdbsam:%s/passdb.tdb\n"
+                    % (ETC + "/nas-private", ETC + "/nas-private"))
+        rc, out = run(["smbpasswd", "-c", mini, "-s", "-a", name],
+                      input_text=pw + "\n" + pw + "\n", timeout=30)
+        if rc != 0:
+            return self.err(500, "smbpasswd failed: " + out.strip()[-200:])
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "saved": saved,
+                        "save_detail": "" if saved else detail})
 
     def api_metrics(self):
         up, pct, free_mb = uptime_disk()

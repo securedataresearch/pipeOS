@@ -36,6 +36,8 @@ webd.USERS_CONF = tmp + "/users.json"
 webd.TERMINALS_CONF = tmp + "/terminals.conf"
 webd.ASSISTANT_CONF = tmp + "/assistant.conf"
 webd.SELFUPDATE_CONF = tmp + "/selfupdate.conf"
+webd.NAS_CONF = tmp + "/nas.conf"
+webd.MOUNTS_CONF = tmp + "/mounts.conf"
 webd.UPDATE_STAMP = tmp + "/selfupdate.applied"
 webd.LOG_ALLOW = {k: tmp + "/" + k + ".log" for k in webd.LOG_ALLOW}
 with open(webd.CARD, "w") as f:
@@ -343,6 +345,44 @@ req("/api/users/add", {"name": "root", "password": "hunter22hunter"}, expect=400
 req("/api/users/add", {"name": "shorty", "password": "short"}, expect=400)
 req("/api/users/add", {"name": "sudoer", "password": "hunter22hunter", "sudo": True}, expect=400)
 ok("users/add refuses hostile names, short passwords, sudo without unix")
+# network storage: the share jail (paths resolve through _files_path, names
+# validated, users must be real unix accounts), the config round-trip, and
+# the empty-post disable path. No samba on the test host, so /api/nas still
+# answers (installed:false) and nas-password reports the missing tool.
+r = req("/api/nas")
+assert r["shares"] == [] and isinstance(r["roots"], list) and r["roots"][0]["key"] == "work"
+req("/api/nas", {"shares": [{"name": "bad name!", "path": "work", "users": ["x"]}]}, expect=400)
+req("/api/nas", {"shares": [{"name": "esc", "path": "work/../../etc", "users": ["x"]}]}, expect=400)
+req("/api/nas", {"shares": [{"name": "ghost", "path": "work", "users": ["nobody-here"]}]}, expect=400)
+ok("nas refuses bad names, escaping paths, and unknown users")
+# a unix-enabled account, seeded through the store: the HTTP path shells out
+# to pipeos-user, which does not exist on a dev host
+_us = webd.read_users()
+_us.append({"name": "smbuser", "role": "viewer", "hash": "x", "unix": True, "created": 0})
+webd.write_users(_us)
+os.makedirs(webd.FILES_WORK, exist_ok=True)
+os.makedirs(os.path.join(webd.FILES_WORK, "music"), exist_ok=True)
+r = req("/api/nas", {"shares": [{"name": "music", "path": "work/music", "users": ["smbuser"]}]})
+assert r["ok"]
+with open(webd.NAS_CONF) as f:
+    nas_text = f.read()
+assert "NAS_S1_NAME='music'" in nas_text and "NAS_S1_ROOT='work'" in nas_text
+assert "NAS_S1_REL='music'" in nas_text and "NAS_S1_USERS='smbuser'" in nas_text
+with open(webd.SERVICES_CONF) as f:
+    assert "SERVICE_NAS=on" in f.read()  # configure implies enable
+r = req("/api/nas")
+assert r["shares"] and r["shares"][0]["name"] == "music" and r["shares"][0]["attached"]
+assert "smbuser" in r["eligible_users"]
+ok("nas config round-trips and enables the service")
+r = req("/api/nas", {"shares": []})
+assert r["ok"]
+with open(webd.SERVICES_CONF) as f:
+    assert "SERVICE_NAS=off" in f.read()  # removing the last share disables
+req("/api/nas-password", {"name": "smbuser", "password": "short"}, expect=400)
+req("/api/nas-password", {"name": "nobody-here", "password": "longenough1"}, expect=400)
+ok("nas: empty share list disables; password endpoint validates first")
+webd.write_users([u for u in webd.read_users() if u["name"] != "smbuser"])
+
 r = req("/api/users/add", {"name": "peek", "password": "peekpassword", "role": "viewer"})
 assert r["ok"]
 assert "$6$" not in json.dumps(req("/api/users"))
@@ -356,6 +396,8 @@ req("/api/login", {"username": "peek", "password": "peekpassword"})
 req("/api/status", expect=200)
 req("/api/services", {"stream": False}, expect=403)
 req("/api/users", expect=403)
+req("/api/nas", {"shares": []}, expect=403)
+req("/api/nas-password", {"name": "peek", "password": "whatever12"}, expect=403)
 r = req("/api/password", {"current": "peekpassword", "new": "peekpassword2"})
 assert r["ok"]
 assert req("/api/docs")["pages"], "viewer must be able to read the docs"

@@ -210,7 +210,6 @@ button.small { padding: .3rem .65rem; font-size: .82rem; margin: 0; width: auto;
 .crumbs { font-size: .95rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .crumbs a { font-weight: 600; }
 .crumbs .sep { color: var(--faint); margin: 0 .25rem; }
-.movebar { display: flex; align-items: center; gap: .6rem; padding: .45rem .7rem; border: 1px dashed var(--accent); border-radius: var(--radius); margin-bottom: .6rem; background: var(--accent-soft); }
 .frow { display: flex; align-items: center; gap: .6rem; padding: .38rem .2rem; border-bottom: 1px solid var(--line); font-size: .93rem; }
 .frow:last-child { border-bottom: 0; }
 .frow .fic { width: 16px; height: 16px; flex: none; color: var(--muted); }
