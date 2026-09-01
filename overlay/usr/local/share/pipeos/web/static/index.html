@@ -3,6 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Before the stylesheet, so the pre-CSS canvas is already the reader's
+     polarity: without this a dark-mode browser painted its default white
+     until style.css arrived — a flash on every load, and the dashboard
+     reloads often. -->
+<meta name="color-scheme" content="light dark">
 <title>pipeOS</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
