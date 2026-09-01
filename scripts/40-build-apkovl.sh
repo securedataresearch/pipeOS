@@ -72,10 +72,10 @@ fi
 FLEET_SVCS=""
 if [ -n "${CARD:-}" ] && [ -n "$(sed -n 's/^NICK=//p' "$CARD" | head -1)" ]; then
     FLEET_SVCS="pipe-daemon pipebox-listener"
-    printf 'SERVICE_PIPE=on\nSERVICE_CLAUDE=on\nSERVICE_STREAM=off\nSERVICE_AGY=off\nSERVICE_SUPPORT=off\nSERVICE_ASSISTANT=off\n' \
+    printf 'SERVICE_PIPE=on\nSERVICE_CLAUDE=on\nSERVICE_STREAM=off\nSERVICE_AGY=off\nSERVICE_SUPPORT=off\nSERVICE_ASSISTANT=off\nSERVICE_TERMINALS=off\nSERVICE_NAS=off\n' \
         > "$STAGE/etc/pipeos/services.conf"
 else
-    printf 'SERVICE_PIPE=off\nSERVICE_CLAUDE=off\nSERVICE_STREAM=off\nSERVICE_AGY=off\nSERVICE_SUPPORT=off\nSERVICE_ASSISTANT=off\n' \
+    printf 'SERVICE_PIPE=off\nSERVICE_CLAUDE=off\nSERVICE_STREAM=off\nSERVICE_AGY=off\nSERVICE_SUPPORT=off\nSERVICE_ASSISTANT=off\nSERVICE_TERMINALS=off\nSERVICE_NAS=off\n' \
         > "$STAGE/etc/pipeos/services.conf"
 fi
 

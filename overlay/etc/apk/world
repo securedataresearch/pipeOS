@@ -52,6 +52,8 @@ pipe
 python3
 ripgrep
 rsync
+samba-common-tools
+samba-server
 sed
 sfdisk
 sl

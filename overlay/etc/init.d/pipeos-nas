@@ -1,0 +1,127 @@
+#!/sbin/openrc-run
+# pipeos-nas — network storage: serve the owner's chosen folders over SMB.
+#
+# smbd (samba-server; the lts kernel ships no ksmbd module, checked
+# 2026-08-31 on 6.18.35-0-lts) runs in the foreground under
+# supervise-daemon against a config RENDERED HERE at every start from
+# /etc/pipeos/nas.conf. nas.conf is the source of truth the dashboard
+# writes; smb.conf is derived state in /run, so a drive that changed
+# device names between boots re-resolves by UUID and nothing stale ever
+# persists. The passdb lives in /etc/pipeos/nas-private (lbu-listed) so
+# SMB credentials survive a reboot.
+#
+# nas.conf (mode 600, dashboard-written, shell-sourced — values are
+# single-quote-guarded at write time):
+#   NAS_S{n}_NAME=   share name
+#   NAS_S{n}_ROOT=   'work', or a filesystem UUID for an external drive
+#   NAS_S{n}_REL=    path under the root ('' = the root itself)
+#   NAS_S{n}_USERS=  space-separated dashboard accounts allowed in
+#
+# Files are served as root (force user) AFTER samba authentication: the
+# tree under /work is root-owned by design, and the people the admin
+# lists here are the same people the dashboard's file explorer would
+# hand the whole tree to. No guest access, ever.
+description="SMB network storage for the owner's chosen folders"
+
+supervisor=supervise-daemon
+respawn_delay=10
+respawn_max=0
+
+output_log=/work/logs/pipeos-nas.log
+error_log=/work/logs/pipeos-nas.log
+
+CONF=/etc/pipeos/nas.conf
+RENDERED=/run/pipeos/smb.conf
+PRIVATE=/etc/pipeos/nas-private
+
+depend() {
+	need net localmount
+	use pipeos-workspace
+	after chronyd
+}
+
+resolve_root() {
+	# 'work' → /work; anything else is a filesystem UUID that
+	# pipeos-mounts.start (or the dashboard) mounted under /media/ext.
+	if [ "$1" = work ]; then
+		echo /work
+		return 0
+	fi
+	dev=$(findfs "UUID=$1" 2>/dev/null || blkid -U "$1" 2>/dev/null) || return 1
+	[ -n "$dev" ] || return 1
+	awk -v d="$dev" '$1 == d { print $2; exit }' /proc/mounts
+}
+
+start_pre() {
+	if [ ! -r "$CONF" ]; then
+		eerror "network storage is enabled but $CONF does not exist — no share configured"
+		return 1
+	fi
+	command -v smbd >/dev/null 2>&1 || { eerror "smbd is not installed (samba-server)"; return 1; }
+	# shellcheck disable=SC1090
+	. "$CONF"
+	checkpath -d -m 0700 "$PRIVATE" || return 1
+	checkpath -d -m 0755 /run/pipeos /run/samba || return 1
+	mountpoint -q /work && { checkpath -d -m 0755 /work/logs || return 1; }
+
+	{
+		printf '[global]\n'
+		printf 'server role = standalone server\n'
+		printf 'server string = %s\n' "$(hostname 2>/dev/null || echo pipeos)"
+		printf 'map to guest = never\n'
+		printf 'restrict anonymous = 2\n'
+		printf 'smb ports = 445\n'
+		printf 'disable netbios = yes\n'
+		printf 'load printers = no\nprinting = bsd\ndisable spoolss = yes\n'
+		printf 'private dir = %s\n' "$PRIVATE"
+		printf 'passdb backend = tdbsam:%s/passdb.tdb\n' "$PRIVATE"
+		printf 'lock directory = /run/samba\nstate directory = /run/samba\n'
+		printf 'cache directory = /run/samba\npid directory = /run/samba\n'
+		printf 'log file = /work/logs/smbd.log\nmax log size = 1024\n'
+	} > "$RENDERED"
+
+	shares=0
+	n=1
+	while [ $n -le 8 ]; do
+		name=$(eval "printf %s \"\${NAS_S${n}_NAME:-}\"")
+		root=$(eval "printf %s \"\${NAS_S${n}_ROOT:-}\"")
+		rel=$(eval "printf %s \"\${NAS_S${n}_REL:-}\"")
+		users=$(eval "printf %s \"\${NAS_S${n}_USERS:-}\"")
+		n=$((n + 1))
+		[ -n "$name" ] && [ -n "$root" ] && [ -n "$users" ] || continue
+		base=$(resolve_root "$root")
+		if [ -z "$base" ]; then
+			ewarn "share '$name': its drive (UUID $root) is not attached — skipping"
+			continue
+		fi
+		path="$base${rel:+/$rel}"
+		if [ ! -d "$path" ]; then
+			ewarn "share '$name': $path does not exist — skipping"
+			continue
+		fi
+		{
+			printf '\n[%s]\n' "$name"
+			printf 'path = %s\n' "$path"
+			printf 'valid users = %s\n' "$users"
+			printf 'read only = no\n'
+			printf 'force user = root\n'
+			printf 'browseable = yes\n'
+		} >> "$RENDERED"
+		shares=$((shares + 1))
+	done
+
+	if [ "$shares" -eq 0 ]; then
+		eerror "network storage is enabled but no configured share is usable right now"
+		return 1
+	fi
+	return 0
+}
+
+start() {
+	ebegin "Starting SMB network storage"
+	supervise-daemon pipeos-nas --start \
+		--stdout "$output_log" --stderr "$error_log" \
+		--respawn-delay "$respawn_delay" --respawn-max "$respawn_max" \
+		/usr/sbin/smbd -- --foreground --no-process-group -s "$RENDERED"
+	eend $?
+}

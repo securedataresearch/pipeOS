@@ -33,8 +33,9 @@ fi
 [ "${SERVICE_SUPPORT:-}" = on ] && want="$want pipeos-support"
 [ "${SERVICE_ASSISTANT:-}" = on ] && want="$want pipeos-assistant"
 [ "${SERVICE_TERMINALS:-}" = on ] && want="$want pipeos-terminals"
+[ "${SERVICE_NAS:-}" = on ] && want="$want pipeos-nas"
 
-for svc in pipe-daemon pipebox-listener pipeos-stream pipeos-support pipeos-assistant pipeos-terminals; do
+for svc in pipe-daemon pipebox-listener pipeos-stream pipeos-support pipeos-assistant pipeos-terminals pipeos-nas; do
 	case " $want " in
 	*" $svc "*)
 		rc-update -q add "$svc" default 2>/dev/null

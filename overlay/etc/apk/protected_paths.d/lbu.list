@@ -23,6 +23,14 @@
 +etc/local.d/pipeos-services.start
 # users: per-user browser terminals + the dashboard's user records + doas policy
 +etc/init.d/pipeos-terminals
+# network storage (SMB): the service, its declared shares, the replayed
+# external mounts, and samba's passdb (private dir) — all custom files in
+# apk audit's blind spots
++etc/init.d/pipeos-nas
++etc/local.d/pipeos-mounts.start
++etc/pipeos/nas.conf
++etc/pipeos/mounts.conf
++etc/pipeos/nas-private
 +etc/pipeos/users.json
 +etc/pipeos/terminals.conf
 +etc/doas.d/pipeos.conf
