@@ -153,6 +153,29 @@ fi
 [ "$BOOT" = yes ] && rm -f "$MARKER" 2>/dev/null
 
 # ---- 3. daemons (remediate: start what should be running)
+# At boot this script races the rest of the runlevel: OpenRC starts services
+# in parallel, pipeos-web's start_pre can wait up to 30s for /work, and the
+# runlevel reconciler runs inside `local`. Probing mid-start read as "down
+# and would not start" (rc-service start fails on a service that is already
+# starting) — two clean boots on basho_box DMed DEGRADED for exactly this.
+# So at boot, first let `local` finish (it is the last of the spine), then
+# give any still-missing daemon a settle window before declaring it down.
+if [ "$BOOT" = yes ]; then
+    _i=0
+    while [ $_i -lt 12 ] && ! rc-service local status >/dev/null 2>&1; do
+        sleep 5; _i=$((_i+1))
+    done
+fi
+svc_settles() {
+    # true if $1 comes up on its own within ~20s — "still starting" at boot
+    _t=0
+    while [ $_t -lt 4 ]; do
+        sleep 5
+        rc-service "$1" status >/dev/null 2>&1 && return 0
+        _t=$((_t+1))
+    done
+    return 1
+}
 # WHICH daemons should be running is declared, not assumed: the wizard writes
 # /etc/pipeos/services.conf and this check reads it. pipe is a service a box
 # opts into, not its spine — a client box with pipe off must not read
@@ -192,6 +215,8 @@ for svc in $want_svcs; do
     elif [ "$BOOT" != yes ]; then
         crit "$svc down"
         would "start $svc"
+    elif svc_settles "$svc"; then
+        :  # it was still starting when first probed — parallel boot, alive now
     elif rc-service "$svc" start >/dev/null 2>&1; then
         fixed "$svc was down; started it"
     else
