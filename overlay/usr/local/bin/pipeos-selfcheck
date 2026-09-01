@@ -187,7 +187,7 @@ svc_settles() {
 # DEGRADED forever (the old hardcoded pair did exactly that). A box with no
 # services.conf predates the wizard: that is a fleet box, and the legacy
 # assumption (pipe on) is the safe reading for it.
-SERVICE_PIPE=on SERVICE_CLAUDE=on SERVICE_STREAM=off SERVICE_AGY=off SERVICE_SUPPORT=off SERVICE_ASSISTANT=off SERVICE_TERMINALS=off SERVICE_NAS=off
+SERVICE_PIPE=on SERVICE_CLAUDE=on SERVICE_STREAM=off SERVICE_SUPPORT=off SERVICE_ASSISTANT=off SERVICE_TERMINALS=off SERVICE_NAS=off
 # shellcheck disable=SC1091
 [ -r /etc/pipeos/services.conf ] && . /etc/pipeos/services.conf 2>/dev/null
 want_svcs="pipeos-web pipeos-mdns"
@@ -798,7 +798,7 @@ _claimed=no
 msg="pipeos boot report [$(hostname)] $(date -u '+%Y-%m-%d %H:%MZ')
 went down: $down
 claimed: $_claimed
-services: pipe=$SERVICE_PIPE claude=$SERVICE_CLAUDE stream=$SERVICE_STREAM agy=$SERVICE_AGY support=$SERVICE_SUPPORT
+services: pipe=$SERVICE_PIPE claude=$SERVICE_CLAUDE stream=$SERVICE_STREAM support=$SERVICE_SUPPORT
 verdict: $verdict"
 [ -s "$R" ] && msg="$msg
 $(cat "$R")"

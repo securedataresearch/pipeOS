@@ -148,7 +148,7 @@ if pipe status 2>/dev/null | grep -q '^nick: ' && ! pipe status 2>/dev/null | gr
     if [ -f /etc/pipeos/services.conf ]; then
         sed -i 's/^SERVICE_PIPE=.*/SERVICE_PIPE=on/;s/^SERVICE_CLAUDE=.*/SERVICE_CLAUDE=on/' /etc/pipeos/services.conf
     else
-        printf 'SERVICE_PIPE=on\nSERVICE_CLAUDE=on\nSERVICE_STREAM=off\nSERVICE_AGY=off\nSERVICE_SUPPORT=off\n' \
+        printf 'SERVICE_PIPE=on\nSERVICE_CLAUDE=on\nSERVICE_STREAM=off\nSERVICE_SUPPORT=off\n' \
             > /etc/pipeos/services.conf
     fi
     rc-update add pipe-daemon default >/dev/null 2>&1 || true

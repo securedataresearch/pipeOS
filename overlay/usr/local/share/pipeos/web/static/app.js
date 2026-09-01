@@ -94,10 +94,9 @@ async function boot() {
 /* ---------- wizard ---------- */
 
 const SERVICES = [
-  { key: "claude", name: "AI assistant", desc: "The box runs an agent you can put to work (Claude, Hermes, or Antigravity — pick under Assistant).", def: true },
+  { key: "claude", name: "AI assistant", desc: "The box runs an agent you can put to work (Claude or Hermes — pick under Assistant).", def: true },
   { key: "stream", name: "Streaming", desc: "Restream video with ffmpeg (configure after setup).", def: false },
   { key: "assistant", name: "Assistant terminal", desc: "A browser terminal into the box's assistant (set a password below).", def: false },
-  { key: "agy", name: "Antigravity", desc: "The agy coding agent (if installed on this image).", def: false },
   { key: "pipe", name: "pipe messaging", desc: "Talk to the box by DM from anywhere, via pipe.online.", def: false },
   { key: "support", name: "Vendor support access", desc: "Let your vendor connect to help. Off unless you switch it on.", def: false },
   { key: "nas", name: "Network storage", desc: "Share folders over SMB on your local network (set up under Files).", def: false },
@@ -522,7 +521,7 @@ async function dashboard() {
         <div class="viewhead"><h1>Assistant</h1></div>
         <div class="card">
           <div class="cardhead"><h2>Backend</h2><span class="pill" id="abcur">…</span></div>
-          <p class="note">Which assistant the chat and the terminal run. The box can ship Claude, Hermes, and Antigravity.</p>
+          <p class="note">Which assistant the chat and the terminal run. The box can ship Claude and Hermes.</p>
           <div id="abchoices" class="note">loading…</div>
           <p class="note" id="abmsg" hidden></p>
         </div>
@@ -1014,7 +1013,7 @@ async function dashboard() {
   }
   // assistant backend picker (shown whenever the assistant view exists)
   if (v.querySelector("#abchoices")) {
-    const BNAMES = { claude: "Claude", hermes: "Hermes", agy: "Antigravity" };
+    const BNAMES = { claude: "Claude", hermes: "Hermes" };
     const loadBackends = () => api("/api/assistant").then(a => {
       const cur = v.querySelector("#abcur"), box = v.querySelector("#abchoices");
       cur.textContent = BNAMES[a.backend] || a.backend;

@@ -135,16 +135,11 @@ unset _cand
 # places that must agree: what abuild builds, what the extra-repo fetch must
 # NOT look for on the CDN, and what gets added to the image's apk world.
 #
-# ON by default since 2026-09-01 (#179): the dashboard offers antigravity as
-# an assistant backend, and a box whose image lacks the package can only say
-# "not installed on this image" (basho_box). The cost is real and stated: the
-# root filesystem is tmpfs (see README), so an installed package is RAM,
-# permanently, on every boot — the Antigravity CLI binary alone is ~197MB
-# unpacked. The backend itself stays opt-in on the box; only the bytes are
-# unconditional. Omit it for a lean build:
-#
-#   WITH_ANTIGRAVITY=0 make apks && WITH_ANTIGRAVITY=0 make usb
-WITH_ANTIGRAVITY="${WITH_ANTIGRAVITY:-1}"
+# Antigravity was a payload here (2026-08..09-01) and is gone: Google ships
+# no musl build, the glibc-sysroot workaround bloated the image past
+# GitHub's 2GiB release-asset cap, and Sam pulled it entirely rather than
+# keep paying for it. If an optional backend ever returns, pipeOS#195's
+# closed branch holds the on-demand install machinery.
 # OVERRIDABLE, and that is not decoration: the customer build
 # (the customer build's run-root-build.sh) exports PIPEOS_PKGS="pipe claude-code"
 # because a customer box ships no hermes. An unconditional assignment here
@@ -152,24 +147,8 @@ WITH_ANTIGRAVITY="${WITH_ANTIGRAVITY:-1}"
 # stick that is meant not to have it — a fleet-ism reappearing in the factory
 # path, which is the exact drift the card work exists to end.
 PIPEOS_PKGS="${PIPEOS_PKGS:-pipe claude-code hermes-agent}"
-# appended to the staged /etc/apk/world in 40-build-apkovl.sh
+# appended to the staged /etc/apk/world in 40-build-apkovl.sh (empty today)
 EXTRA_WORLD=""
-if [ "$WITH_ANTIGRAVITY" = 1 ]; then
-    # Idempotent on purpose. This file is sourced once per process today, so a
-    # plain append happens to be correct — but "happens to be" is how a list
-    # ends up as `... antigravity-cli pipeos-glibc antigravity-cli` the first
-    # time something sources it twice in one shell, and the symptom would be a
-    # package built twice rather than an error.
-    case " $PIPEOS_PKGS " in
-        *" antigravity-cli "*) ;;
-        # order matters for a from-scratch build: the sysroot before its consumer
-        *) PIPEOS_PKGS="$PIPEOS_PKGS pipeos-glibc antigravity-cli" ;;
-    esac
-    case " $EXTRA_WORLD " in
-        *" antigravity-cli "*) ;;
-        *) EXTRA_WORLD="${EXTRA_WORLD:+$EXTRA_WORLD }antigravity-cli" ;;
-    esac
-fi
 
 PIPE_SRC="${PIPE_SRC:-$HOME/Projects/pipe}"
 HERMES_SRC="${HERMES_SRC:-$HOME/.hermes/hermes-agent}"

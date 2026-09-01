@@ -138,7 +138,7 @@ generic = apkovl(d, "generic", {
     "usr/local/bin/pipeos-thing": "NEW",
     "usr/local/bin/pipeos-newtool": "NEWTOOL",
     "etc/pipeos/.overlay-stamp": "commit image\n",
-}, ["a", "c", "antigravity-cli"])
+}, ["a", "c", "optional-extra"])
 merged = os.path.join(d, "merged.tar.gz")
 rc, out = run_fns('merge_apkovl "%s" "%s" "%s"' % (ident, generic, merged))
 got = {}
@@ -156,7 +156,7 @@ check("5 the merge takes the image's overlay, keeps the box's identity, unions t
       and g("root/.pipe/identity.dat") == "MYKEY"
       and g("etc/pipeos/card.conf") == "NICK=probe\n"
       and g("etc/pipeos/.overlay-stamp") == "commit image\n"
-      and sorted(g("etc/apk/world").split()) == ["a", "antigravity-cli", "b", "c"],
+      and sorted(g("etc/apk/world").split()) == ["a", "b", "c", "optional-extra"],
       repr((rc, out, sorted(got)))[:400])
 
 # ── 6. a full apply against a fake device: exact bounds, nothing past ────

@@ -145,7 +145,7 @@ cmd_status() {
     # Which daemons SHOULD run is declared in services.conf (the web wizard
     # writes it); a box without the file predates the wizard — fleet legacy,
     # pipe assumed on. pipe off is a configuration, not a failure.
-    SERVICE_PIPE=on SERVICE_CLAUDE=on SERVICE_STREAM=off SERVICE_AGY=off SERVICE_SUPPORT=off
+    SERVICE_PIPE=on SERVICE_CLAUDE=on SERVICE_STREAM=off SERVICE_SUPPORT=off
     # shellcheck disable=SC1091
     [ -r /etc/pipeos/services.conf ] && . /etc/pipeos/services.conf 2>/dev/null
     svcs="pipeos-web pipeos-mdns"

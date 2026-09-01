@@ -16,7 +16,7 @@ these docs for the details and the settled bitrates.
 
 ## Assistant
 
-Pick the assistant backend the box runs (Claude, Hermes, or Antigravity),
+Pick the assistant backend the box runs (Claude or Hermes),
 chat with the box, and manage the browser terminal.
 
 ## Files

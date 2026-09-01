@@ -85,7 +85,7 @@ USER_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 # names that must never become unix accounts from the dashboard
 USER_NAME_DENY = {"root", "nobody", "operator", "shutdown", "halt", "sync", "bin", "daemon", "adm"}
 TERM_PORT_BASE = 7701
-SVC_KEYS = ("pipe", "claude", "stream", "agy", "support", "assistant", "terminals", "nas")
+SVC_KEYS = ("pipe", "claude", "stream", "support", "assistant", "terminals", "nas")
 
 # How many stream targets (providers) the dashboard manages. Each is a slot in
 # stream.conf: STREAM_T{N}_URL / _KEY / _ON / _NAME.
@@ -605,9 +605,9 @@ def primary_ip():
 # The only pipe preferences the dashboard may flip (pipe set's own settable set)
 PIPE_PREFS = ("dm_relay", "remember_login", "agent_events")
 
-# Assistant backends the box may ship: claude-code, hermes-agent, antigravity.
+# Assistant backends the box may ship: claude-code, hermes-agent.
 # The id doubles as the binary name; a backend is offered only when installed.
-ASSISTANT_BACKENDS = ("claude", "hermes", "agy")
+ASSISTANT_BACKENDS = ("claude", "hermes")
 
 # bare (no --boot) is read-only by contract — pipeOS#13's "safe to run any
 # time, by anyone, on any box": no DM, no writes, no service starts
@@ -2097,8 +2097,6 @@ class Handler(BaseHTTPRequestHandler):
         if backend == "hermes":
             # -z = one-shot; a named --continue session keeps one conversation
             argv = ["hermes", "-z", msg, "--continue", "webchat"]
-        elif backend == "agy":
-            return self.err(400, "antigravity has no dashboard chat wiring yet — use the terminal")
         else:
             backend = "claude"
             try:
