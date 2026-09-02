@@ -436,6 +436,7 @@ async function dashboard() {
         ${st.services.pipe ? navItem("pipe", "pipe") : ""}
         ${navItem("services", "Services")}
         ${isAdmin ? navItem("users", "Users") : ""}
+        ${isAdmin ? navItem("setup", "Setup") : ""}
         ${navItem("network", "Network")}
         ${navItem("system", "System")}
         ${navItem("docs", "Docs")}
@@ -718,6 +719,33 @@ async function dashboard() {
           <div class="card doclist" id="doclist"><p class="note">loading…</p></div>
           <div class="card docbody" id="docbody"><p class="note">Pick a page.</p></div>
         </div>
+      </section>
+
+      <section data-view="setup" hidden>
+        <div class="viewhead"><h1>Setup</h1></div>
+        <div class="card">
+          <div class="cardhead"><h2>Name</h2></div>
+          <p class="note">The name becomes the box's address — <code>studio</code> makes <code>http://studio.local/</code>.</p>
+          <label for="sunick">Box name</label><input id="sunick" autocomplete="off">
+          <label for="suowner">Owner nick (gets the boot report over pipe)</label><input id="suowner" autocomplete="off">
+          <button id="suname" type="button">Save name</button>
+          <p class="note" id="sunmsg" hidden></p>
+        </div>
+        <div class="card">
+          <div class="cardhead"><h2>Claude</h2><span class="pill" id="sucstate">checking…</span></div>
+          <p class="note">Run <code>claude setup-token</code> on any computer and paste the token. Your account, your billing, your data.</p>
+          <label for="suctok">Claude token</label><input id="suctok" type="password" autocomplete="off">
+          <button id="sucgo" type="button">Connect Claude</button>
+          <p class="note" id="sucmsg" hidden></p>
+        </div>
+        <div class="card">
+          <div class="cardhead"><h2>pipe</h2><span class="pill" id="supstate">checking…</span></div>
+          <p class="note">Messaging for you and the box — it gets a nick of its own on the wire. Mint a one-time key on <a href="https://pipe.online" target="_blank" rel="noopener">pipe.online</a>.</p>
+          <label for="supkey">One-time key</label><input id="supkey" type="password" autocomplete="off">
+          <button id="supgo" type="button">Connect pipe</button>
+          <p class="note" id="supmsg" hidden></p>
+        </div>
+        <p class="note">The whole walkthrough lives at <a href="https://pipe.online/setup/" target="_blank" rel="noopener">pipe.online/setup</a>.</p>
       </section>
 
       <section data-view="network" hidden>
@@ -1826,11 +1854,49 @@ async function dashboard() {
     });
     open(pages[0].slug);
   };
+  const loadSetup = async () => {
+    v.querySelector("#sunick").value = st.nick || st.hostname || "";
+    v.querySelector("#suowner").value = st.owner || "";
+    const cs = v.querySelector("#sucstate");
+    cs.textContent = st.services.claude ? "assistant on" : "assistant off";
+    cs.className = "pill " + (st.services.claude ? "status-ok" : "");
+    const ps = v.querySelector("#supstate");
+    try {
+      const p = await api("/api/pipe");
+      ps.textContent = p.authed ? "signed in as " + (p.nick || "?") : (st.services.pipe ? "not signed in" : "off");
+      ps.className = "pill " + (p.authed ? "status-ok" : "status-warn");
+    } catch (e) { ps.textContent = st.services.pipe ? "?" : "off"; ps.className = "pill"; }
+    v.querySelector("#suname").onclick = async () => {
+      const m = v.querySelector("#sunmsg"); m.hidden = false; m.textContent = "saving…";
+      try {
+        await api("/api/name", { nick: v.querySelector("#sunick").value.trim(), owner: v.querySelector("#suowner").value.trim() });
+        m.textContent = "Saved. The new address takes effect within a minute.";
+      } catch (e) { m.textContent = e.message; }
+    };
+    v.querySelector("#sucgo").onclick = async () => {
+      const m = v.querySelector("#sucmsg"); m.hidden = false; m.textContent = "connecting (the box makes a real call to check)…";
+      try {
+        const r = await api("/api/claude-token", { token: v.querySelector("#suctok").value.trim() });
+        m.textContent = r.ok ? "Connected." : (r.detail || "failed");
+        loadSetup();
+      } catch (e) { m.textContent = e.message; }
+    };
+    v.querySelector("#supgo").onclick = async () => {
+      const m = v.querySelector("#supmsg"); m.hidden = false; m.textContent = "connecting…";
+      try {
+        if (!st.services.pipe) { await api("/api/services", { pipe: true }); st.services.pipe = true; }
+        const r = await api("/api/pipe-key", { key: v.querySelector("#supkey").value.trim() });
+        m.textContent = "Connected" + (r.nick ? " as " + r.nick : "") + ".";
+        loadSetup();
+      } catch (e) { m.textContent = e.message; }
+    };
+  };
+
   // ---- view router: show one section at a time, driven by the URL hash ----
   // Views with live data register a poller (runs only while on screen) or a
   // lazy loader (runs on first visit).
   const POLLERS = { system: pollSystem, network: pollNetwork };
-  const LAZY = { files: () => { loadFiles(""); loadFiles._disks(); }, pipe: loadPipe, users: loadUsers, docs: loadDocs };
+  const LAZY = { files: () => { loadFiles(""); loadFiles._disks(); }, pipe: loadPipe, users: loadUsers, docs: loadDocs, setup: loadSetup };
   const seen = {};
   let viewTimer = null;
   const views = v.querySelectorAll("[data-view]");
