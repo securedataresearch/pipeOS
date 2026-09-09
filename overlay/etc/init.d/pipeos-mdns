@@ -22,6 +22,14 @@ depend() {
 
 start_pre() {
 	mountpoint -q /work && { checkpath -d -m 0755 /work/logs || return 1; }
+	# supervise-daemon opens the log AFTER dropping to command_user, and
+	# /work/logs is root's: on the first image with the svc-mdns account
+	# (2026-09-09, the first two Machines) the responder never started and
+	# nothing said so — the log it would have said it in was the thing it
+	# could not open. The file is made here, owned by the user.
+	if mountpoint -q /work && [ -n "${command_user:-}" ]; then
+		checkpath -f -m 0644 -o "$command_user" /work/logs/pipeos-mdns.log || return 1
+	fi
 	# the peer cache the lobby reads (checkpath makes no parents)
 	checkpath -d -m 0755 /run/pipeos || return 1
 	if getent passwd svc-mdns >/dev/null 2>&1; then

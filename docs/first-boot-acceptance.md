@@ -55,6 +55,27 @@ Release under test: `________`   Box: `________`   Date: `________`
       in ____ s; operator reached the box with `ssh -J`; toggle off; the
       tunnel died in ____ s.
 
+## First run — 2026-09-09, two Lenovo 10RR Machines, release 35f697b
+
+Timed from the workstation over the API, not from a phone; the phone pass
+is still owed.
+
+- Both Machines up and answering `/api/state` within a minute of power.
+- **Discovery dead on both**: the responder never started — supervise-daemon
+  opens its log after dropping to svc-mdns, and `/work/logs` is root's.
+  Fixed in the init script (the log file is made owned by the user).
+- **Both booted DEGRADED** with two CRITICALs a customer cannot act on: a
+  stale card stamp shipped by the build (the stamp is gitignored; the
+  build now regenerates it) and "authorized_keys missing" on an image
+  whose root is locked by design (now a note). A fresh Machine must boot
+  green; the lobby shows the verdict to a stranger.
+- After the responder fix: each Machine appeared in the other's lobby in
+  under 5 s; rename to the sibling's name, to its pre-claim name, and to
+  an older non-lobby box's name all refused with the right sentence; real
+  renames to `alpha` and `beta` answered on the LAN at once.
+- The flasher's closing line still said "root / pipeos" for a client
+  image. Fixed.
+
 ## 6. What a stranger tripped on
 
 Every place the pass stopped, with the wording on screen and what it

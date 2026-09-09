@@ -36,12 +36,18 @@ fi
 if [ -n "${CARD:-}" ]; then
     [ -r "$CARD" ] || { echo "CARD not readable: $CARD" >&2; exit 1; }
     cp "$CARD" "$STAGE/etc/pipeos/card.conf"
-    sh "$PIPEOS_ROOT/overlay/usr/local/bin/pipebox-card" generate \
-        --card "$STAGE/etc/pipeos/card.conf" \
-        --root "$STAGE" \
-        --templates "$PIPEOS_ROOT/overlay/usr/local/share/pipeos/card"
     echo "baked card: $CARD (NICK=$(sed -n 's/^NICK=//p' "$CARD" | head -1))"
 fi
+# Always regenerate from whatever card the stage carries — the generic one
+# too. The stamp (etc/pipeos/.card-stamp) is gitignored, so without this the
+# image shipped the build host's stale stamp beside a fresh settings file,
+# and every Machine booted CRITICAL "hand-edited since generation" (the first
+# two Machines, 2026-09-09). With no NICK the generator sets no provisioned
+# marker, so the generic image stays unclaimed exactly as before.
+sh "$PIPEOS_ROOT/overlay/usr/local/bin/pipebox-card" generate \
+    --card "$STAGE/etc/pipeos/card.conf" \
+    --root "$STAGE" \
+    --templates "$PIPEOS_ROOT/overlay/usr/local/share/pipeos/card"
 
 # ---- optional: operator ssh (fleet sticks — remote admin with no console).
 # AUTH_KEYS=<pubkey file> bakes the operator's ssh public key, so key-based
