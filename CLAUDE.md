@@ -6,13 +6,19 @@ config/state, local apk repos for software. `/work` (ext4 `LABEL=PIPEWORK`)
 holds bulk data. Machine-scoped agent rules ship in
 `overlay/root/.claude/CLAUDE.md`; this file is about working on the repo.
 
-## Deployment model — every change lands twice
+## Deployment model — three ways a change lands
 
 1. **Live box** (`/usr/local/bin`, `/etc`, …) — persists via lbu/pipeos-save.
    New files under `/etc/init.d` need a `+etc/init.d/<name>` line in
    `overlay/etc/apk/protected_paths.d/lbu.list` or they vanish at reboot
    (apk audit skips new files there).
 2. **`overlay/`** — the identical file, committed, ships in future images.
+3. **The live disk** — a *released* image reaches a claimed box whole via
+   `pipeos flash apply` (in place: the box's identity merged over the
+   image's overlay, p1 rewritten, reboot is the owner's) or `pipeos flash
+   apply --to /dev/sdX` (a second stick, then a swap); an unclaimed box gets
+   the generic image from any machine (`make flash DEV=`). `docs/live-disk.md`
+   is the mechanism, the geometry rule and the power-loss recovery.
 
 Step 1 is `pipeos deploy-overlay [--from REF]` (operator; agent-fenced like
 `pipeos save`), not a hand tarball: it installs a commit's overlay, refuses to

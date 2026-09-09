@@ -57,10 +57,10 @@ die()  { echo "pipeos-selfupdate: $*" >&2; log "ERROR $*"; exit 1; }
 
 [ "$(id -u)" = 0 ] || die "run as root"
 
-# Feature is off until pointed at a source. Silent success: a daily cron on an
-# unconfigured box should not nag.
+# Both blank = off (the shipped conf points at this repo's Releases; an owner
+# blanks it to opt out). Silent success: a daily cron should not nag.
 if [ -z "$UPDATE_URL" ] && [ -z "$UPDATE_RELEASE_URL" ]; then
-    say "no UPDATE_URL/UPDATE_RELEASE_URL in $CONF — self-update disabled (this is the default)."
+    say "no UPDATE_URL/UPDATE_RELEASE_URL in $CONF — self-update disabled."
     exit 0
 fi
 
