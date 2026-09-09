@@ -4,8 +4,9 @@
 # No Foreman, no GitHub, no repo lane — the owner directs it, the team
 # reaches it by DM and (once the owner wires a cohort) the board.
 #
-# OWNER_NICK and COHORT_ID are filled at first boot by pipebox-setup, on
-# the customer's premises, with the customer's own pipe identity. Nothing
+# OWNER_NICK and COHORT_ID stay empty here: the customer claims the box
+# from the web wizard on their premises (the console pipebox-setup is the
+# fleet path), and names the owner there if pipe is turned on. Nothing
 # fleet-specific may ever appear in this file.
 
 NICK=pilot0

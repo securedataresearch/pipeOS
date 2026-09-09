@@ -41,3 +41,32 @@ Stripe dashboard; nothing here depends on any other order system.
 Flash and burn-in a small stock of sticks/boxes after each release; label
 with the release tag. Re-flash stock older than two releases — customers
 should never unbox an image the update pill immediately flags.
+
+## Pilot delivery
+
+A pilot is an order we walk through the door with. Per pilot:
+
+1. **Stick**: from the released image, labelled with the release tag
+   (`gh release view --json tagName`), burned in per step 3 — never
+   claimed. `curl http://pipeos.local/api/state` → `"claimed": false`
+   before it goes in the bag.
+2. **The sheet**: [client-onboarding](client-onboarding.md), printed.
+3. **On site, the client's hands, not ours**: claim, name, services, the
+   Claude sign-in. We watch and fill in
+   [first-boot-acceptance](first-boot-acceptance.md); we do not touch the
+   keyboard.
+4. **The reboot drill**, from the sheet: Reboot the box → back with state.
+5. **The support door, both ways**: client flips **Vendor support access**
+   on; the Services view shows the box's key and "waiting for a port";
+   the client sends us the key (any channel — it is public); we pin it on
+   the relay to the next free port (`docs/support-relay.md`, the ledger in
+   `authorized_keys`) and tell them the number; `SUPPORT_PORT=` goes in
+   `/etc/pipeos/support.conf` on the box and the pill goes "tunnel up"; we
+   prove it with `ssh -J`; the client flips it **off** and we show the
+   tunnel is gone. Then it stays off unless they need us.
+6. **Sign-off**: the filled acceptance sheet in `docs/acceptance/`, one
+   per pilot, with the release tag and the port assigned.
+
+The two pilot boxes get cards (`docs/cards/pilot0.card`, `pilot1.card`)
+only for our records; nothing on a card reaches a customer box — identity
+enters at the claim, on their premises.

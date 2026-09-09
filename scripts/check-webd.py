@@ -37,6 +37,8 @@ webd.TERMINALS_CONF = tmp + "/terminals.conf"
 webd.ASSISTANT_CONF = tmp + "/assistant.conf"
 webd.SELFUPDATE_CONF = tmp + "/selfupdate.conf"
 webd.NAS_CONF = tmp + "/nas.conf"
+webd.SUPPORT_CONF = tmp + "/support.conf"
+webd.SUPPORT_KEY = tmp + "/support_key"
 webd.MOUNTS_CONF = tmp + "/mounts.conf"
 webd.UPDATE_STAMP = tmp + "/selfupdate.applied"
 webd.BACKUP_STATE = tmp + "/backup.state"
@@ -185,6 +187,29 @@ ok("a fresh sign-in retires the pasted token — the variable would win over it"
 req("/api/claude-logout", {})
 assert req("/api/claude")["method"] == "none" and not os.path.exists(webd.CLAUDE_CREDS)
 ok("sign-out clears the credential")
+
+# ---- vendor support access (#159): the surface docs/support-relay.md promised
+sp = req("/api/support")
+assert sp["enabled"] is False and sp["pubkey"] == ""
+ok("support off: no key, card hidden")
+with open(webd.SUPPORT_CONF, "w") as f:
+    f.write("SUPPORT_RELAY=tunnel@relay.example\nSUPPORT_PORT=\n")
+r = req("/api/services", {"support": True})
+assert r["services"]["support"] is True
+sp = req("/api/support")
+assert sp["enabled"] and sp["pubkey"].startswith("ssh-ed25519 ") and sp["relay"] == "tunnel@relay.example"
+assert sp["configured"] is False and os.path.exists(webd.SUPPORT_KEY)
+assert (os.stat(webd.SUPPORT_KEY).st_mode & 0o077) == 0
+first_key = sp["pubkey"]
+ok("support on: an ed25519 key is made once (owner-only), the pubkey and relay are shown, no port = not configured")
+with open(webd.SUPPORT_CONF, "w") as f:
+    f.write("SUPPORT_RELAY=tunnel@relay.example\nSUPPORT_PORT=42001\n")
+req("/api/services", {"support": False})
+req("/api/services", {"support": True})
+sp = req("/api/support")
+assert sp["pubkey"] == first_key and sp["configured"] is True and sp["port"] == "42001"
+ok("toggling again keeps the same key; a port makes it configured")
+req("/api/services", {"support": False})
 with open(webd.SERVICES_CONF) as f:
     assert "SERVICE_CLAUDE=on" in f.read()
 ok("service toggle lands in services.conf")
