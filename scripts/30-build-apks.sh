@@ -54,6 +54,11 @@ done
 # dir while resolving build requirements)
 chmod -R a+rwX "$OUT/pipeos" "$OUT/repo" "$PIPEOS_ROOT/vendor" 2>/dev/null || true
 
+# Start from nothing: abuild -r indexes every apk in the dir, so a repo that
+# is never cleared ships every version ever built (hermes 0.18.2 and three
+# old pipes were riding the 2026-09-09 image, indexed). Same rule #198 gave
+# selfupdate — a clean tree, nothing dropped rides along.
+rm -f "$OUT/repo/pipeos/$ALPINE_ARCH"/*.apk "$OUT/repo/pipeos/$ALPINE_ARCH"/APKINDEX.tar.gz
 for pkg in $PIPEOS_PKGS; do
     echo "==> abuild $pkg-${VERS[$pkg]}"
     "$CR" -u builder "cd /pipeOS/out/pipeos/$pkg && REPODEST=/pipeOS/out/repo abuild -r"
@@ -75,6 +80,12 @@ ls -lh "$OUT/repo/pipeos/$ALPINE_ARCH/"
 # second place to forget. Adding a package to config.sh now updates both.
 echo "==> building extra repo with runtime deps (from overlay/etc/apk/world)"
 UTILS=$(grep -vxF -f <(printf '%s\n' $PIPEOS_PKGS) "$PIPEOS_ROOT/overlay/etc/apk/world")
+# The closure is rebuilt from empty every time: apk fetch never removes, so
+# a dir that persists across builds accumulates every version the CDN has
+# served (two chromiums, two github-clis, ... — 174MB on the 2026-09-09
+# image, which pushed the xz past GitHub's 2GiB asset cap). A release is
+# exactly today's closure, not the union of every closure since August.
+rm -rf "$OUT/repo/extra"
 mkdir -p "$OUT/repo/extra/$ALPINE_ARCH"; chmod -R a+rwX "$OUT/repo/extra" 2>/dev/null || true
 "$CR" "apk fetch --recursive -o /pipeOS/out/repo/extra/$ALPINE_ARCH \
     --repository https://dl-cdn.alpinelinux.org/alpine/v3.24/community \
