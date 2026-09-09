@@ -30,6 +30,30 @@ BREAKS = [
     ("G  the NO_MOUNT fence is gone",
      'if [ "$NO_MOUNT" = 1 ] && [ -z "$DEV_OVERRIDE" ]; then',
      'if false; then'),
+    # ---- `apply --to` (#182): the spare-disk guards, the carve, the identity
+    # on the new p1, the swap text, the typed device path.
+    ("H  whole_disk accepts a partition",
+     '        *) say "$1 is not a whole disk', '        /dev/never) say "$1 is not a whole disk'),
+    ("I  the mounted-partition guard is gone",
+     '''    _hit=$(awk -v d="$1" '$1==d || index($1,d)==1 {print $1" on "$2}' "$MOUNTS" | tr '\\n' ' ')''',
+     '    _hit=""'),
+    ("J  the boot-media disk is not refused",
+     '''    [ "$_mu" != "$1" ] || { say "$1 holds this box's boot media''',
+     '''    true || { say "$1 holds this box's boot media'''),
+    ("K  the size guard is gone",
+     '    [ "$_dev" -ge "$_img" ] ||', '    true ||'),
+    ("L  the carve is gone",
+     '''    echo ',+,L,-' | sfdisk -q -a --no-reread "$1" >/dev/null 2>&1 \\''',
+     '    true \\'),
+    ("M  --to writes only the image's p1 bytes, not the whole image",
+     'if ! dd if="$IMG" of="$TO" bs=4M oflag=direct conv=notrunc,fsync status=progress 2>"$PROGRESS"; then',
+     'if ! dd if="$IMG" of="$TO" bs=4M iflag=skip_bytes,count_bytes skip=$((IMG_START * 512)) count=$((IMG_SIZE * 512)) oflag=direct conv=notrunc,fsync status=progress 2>"$PROGRESS"; then'),
+    ("N  known-good is not installed on the new p1",
+     '    cp "$2" "$1/pipeos.known-good.tar.gz" 2>/dev/null || true', '    true'),
+    ("O  the swap text loses the removal rule",
+     '    say "  3. REMOVE the old stick.', '    say "  3. Reboot.'),
+    ("P  the typed device path no longer gates the write",
+     '            [ "$_ans" = "$TO" ] ||', '            true ||'),
 ]
 
 src = open(BIN).read()
