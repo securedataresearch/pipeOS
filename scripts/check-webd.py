@@ -39,6 +39,29 @@ webd.SELFUPDATE_CONF = tmp + "/selfupdate.conf"
 webd.NAS_CONF = tmp + "/nas.conf"
 webd.SUPPORT_CONF = tmp + "/support.conf"
 webd.SUPPORT_KEY = tmp + "/support_key"
+# the LAN lobby: mdnsd's cache stands in as a file; identity and the
+# one-shot LAN question are stubbed on the lanid module webd imported
+webd.MDNS_CACHE = tmp + "/peers.json"
+webd.lanid.mac4 = lambda iface=None: "7f3a"
+webd.box_hostname = lambda: "pipeos"
+webd.lanid.query_a = lambda name, *a, **k: {"10.0.0.9"} if name == "printer.local" else set()
+webd.lanid.local_ips = lambda: {"127.0.0.1"}
+
+
+def seed_peers(peers, written=None):
+    import time as _t
+    now = int(_t.time())
+    with open(webd.MDNS_CACHE, "w") as f:
+        json.dump({"v": 1, "self": "7f3a", "interval": 10, "written": written if written is not None else now,
+                   "peers": {p["id"]: dict(p, last_seen=now) for p in peers}}, f)
+
+
+PEERS = [
+    {"id": "9c21", "name": "studio", "host": "studio.local", "ip": "10.0.0.2", "claimed": True,
+     "verdict": "all green", "commit": "abc1234", "built": "2026-09-01T00:00:00Z", "model": "Test Box"},
+    {"id": "1a2b", "name": "", "host": "pipeos-1a2b.local", "ip": "10.0.0.3", "claimed": False,
+     "verdict": "", "commit": "", "built": "", "model": ""},
+]
 webd.MOUNTS_CONF = tmp + "/mounts.conf"
 webd.UPDATE_STAMP = tmp + "/selfupdate.applied"
 webd.BACKUP_STATE = tmp + "/backup.state"
@@ -131,6 +154,28 @@ def ok(label):
 s = req("/api/state")
 assert s["claimed"] is False and s["authed"] is False
 ok("fresh box reports unclaimed")
+
+# ---- the LAN lobby (#lobby): public, stateless, identical on every Machine
+assert s["lan_name"] == "pipeos-7f3a" and s["siblings"] == 0
+ok("no cache: the pre-claim name is known and there are no siblings (a lone Machine gets the wizard)")
+seed_peers(PEERS)
+s = req("/api/state")
+assert s["siblings"] == 2
+lb = req("/api/lobby")
+ms = lb["machines"]
+assert lb["discovery_ok"] is True and len(ms) == 3 and sum(1 for m in ms if m["self"]) == 1
+assert [m["id"] for m in ms][0] == "9c21"
+mine = next(m for m in ms if m["self"])
+assert mine["claimed"] is False and mine["host"] == "pipeos-7f3a.local" and mine["name"] == ""
+peer = next(m for m in ms if m["id"] == "9c21")
+assert peer["name"] == "studio" and peer["verdict"] == "all green" and peer["model"] == "Test Box" and peer["self"] is False
+assert b"<title>pipeOS</title>" in req("/lobby")
+ok("with siblings: /api/lobby (no session) lists self plus peers, claimed first, every field through; /lobby serves the shell")
+seed_peers(PEERS, written=100)
+s = req("/api/state"); lb = req("/api/lobby")
+assert s["siblings"] == 0 and lb["discovery_ok"] is False and len(lb["machines"]) == 1
+ok("a cache the responder stopped writing counts for nothing, and the page says discovery is down")
+os.unlink(webd.MDNS_CACHE)
 assert b"<title>pipeOS</title>" in req("/")
 ok("/ serves the app shell")
 req("/api/status", expect=401)
@@ -215,6 +260,20 @@ with open(webd.SERVICES_CONF) as f:
 ok("service toggle lands in services.conf")
 req("/api/name", {"nick": "bad name!"}, expect=400)
 ok("hostile nick refused")
+seed_peers(PEERS)
+_card_set, _save = webd.card_set, webd.save_state
+webd.card_set = lambda updates: None
+webd.save_state = lambda: (True, "")
+for nick, frag in (("studio", "already a Machine"), ("STUDIO", "already a Machine"),
+                   ("pipeos-1a2b", "already a Machine"), ("printer", "already answers"),
+                   ("pipeos", "every Machine")):
+    r = req("/api/name", {"nick": nick}, expect=409)
+    assert frag in r["error"], (nick, r)
+r = req("/api/name", {"nick": "attic"})
+assert r["ok"]
+webd.card_set, webd.save_state = _card_set, _save
+os.unlink(webd.MDNS_CACHE)
+ok("a rename refuses a sibling's name (any case), a sibling's pre-claim name, a name that answers on the LAN, and plain pipeos; a free name goes through")
 cookie["v"] = "0" * 64
 req("/api/status", expect=401)
 ok("bogus session refused")

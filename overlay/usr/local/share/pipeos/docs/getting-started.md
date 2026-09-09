@@ -18,9 +18,11 @@ The same image boots from USB, SATA or NVMe; the media is found by its
 
 ## First boot — the web wizard
 
-There is no desktop. The box comes up listening on the LAN and advertises
-itself as `<hostname>.local`. Open that address in a browser (usually
-`http://pipeos.local`).
+There is no desktop. The Machine comes up listening on the LAN and
+advertises itself as `<hostname>.local`. Open that address in a browser
+(usually `http://pipeos.local`). Several Machines? `http://pipeos.local`
+lists them all; the one marked **unclaimed** is the new one — open it by
+its `pipeos-xxxx.local` name.
 
 1. **Claim** — the first visitor sets the admin password. The claim is saved
    to the media immediately, so it survives a reboot even if you stop here.
