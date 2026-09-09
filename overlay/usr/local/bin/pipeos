@@ -16,7 +16,8 @@
 #   pipeos rollback [TS|known-good]  stage an older apkovl for next boot
 #   pipeos sync-media          push freshly built pipeos repo -> media
 #   pipeos backup DEST [--identity-only]   identity bundle + /work onto a mounted external
-#   pipeos flash check|fetch|apply     a new released image onto the boot media, in place
+#   pipeos flash check|fetch|apply [--to DEV]   a new released image: in place, or onto a spare disk
+#   pipeos restore-work SRC [--force] [--onto DEV]   /work back from a backup dir or an old stick's p2
 #   pipeos deploy-overlay      install a repo commit's overlay onto this box
 #
 # Read-only verbs (status/verify/diff/snapshot) are open to the resident
@@ -377,10 +378,11 @@ case "$1" in
     sync-media)  shift; exec /usr/local/bin/pipeos-sync-media "$@" ;;
     backup)      shift; exec /usr/local/bin/pipeos-backup "$@" ;;
     flash)       shift; exec /usr/local/bin/pipeos-flash "$@" ;;
+    restore-work) shift; exec /usr/local/bin/pipeos-restore-work "$@" ;;
     deploy-overlay) shift; exec /usr/local/bin/pipeos-deploy-overlay "$@" ;;
     selfupdate)  shift; exec /usr/local/bin/pipeos-selfupdate "$@" ;;
     *)
-        sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
         exit 1
         ;;
 esac

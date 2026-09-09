@@ -2599,7 +2599,7 @@ class PhaseB:
     def api_flash(self, body):
         mode = body.get("mode")
         if mode != "inplace":
-            return self.err(400, "mode must be inplace (flash --to lands next)")
+            return self.err(400, "mode must be inplace (a second stick is `pipeos flash apply --to /dev/sdX` from a shell for now)")
         # the typed confirmation is checked HERE, not only in the browser:
         # a dashboard that trusts the client on a media rewrite trusts too much
         want = card_get("NICK") or socket.gethostname()

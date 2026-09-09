@@ -1,0 +1,170 @@
+#!/bin/sh
+# pipeos-restore-work — /work back from a backup, or from an old stick.
+#
+#   pipeos restore-work SRC [--force] [--onto DEV]
+#
+# SRC is one of:
+#   a `pipeos backup` root       DEST/pipeos-backup/<nick>  (its work/ is used)
+#   that root's work/ directory, or any directory holding a /work tree
+#   a device                     /dev/sdb2 — an old stick's PIPEWORK, mounted
+#                                read-only for the copy and released after
+# The destination is the mounted /work — or, with --onto DEV, an UNMOUNTED
+# ext4 partition: the new stick's p2 that `pipeos flash apply --to` carved,
+# populated before the swap so the new stick boots with its data in place.
+#
+# Additive, on purpose: rsync -a with no --delete. On the empty /work a
+# swap produces, additive IS a mirror; on a --force'd non-empty /work,
+# --delete could erase repos newer than the backup (unrecoverable) whereas
+# a stale leftover is visible and fixable. Never restored: /.pipeos (this
+# box's runtime state — flash staging, stamps, clean-shutdown marks), /logs
+# (this boot's history), /cache, lost+found. One exception:
+# .pipeos/users.manifest is carried over when the destination has none, so
+# pipeos-user re-adopts the same uids. A non-empty destination needs
+# --force; "empty" means nothing beyond lost+found, the directories
+# workspace.sh creates, and the empty claude/projects it lays down.
+#
+# Operator/owner verb — hard-banned for the box's agent like every media
+# writer (pipebox-settings.json deny list). Seams for the probe, never set
+# in production: PIPEOS_RESTORE_ROOT prefixes every absolute path;
+# PIPEOS_RESTORE_MOUNTS replaces /proc/mounts; PIPEOS_RESTORE_RSYNC replaces
+# rsync; PIPEOS_RESTORE_MOUNT stands in for mount/umount; PIPEOS_RESTORE_BLKID
+# replaces blkid; PIPEOS_RESTORE_BLOCK names a path treated as a block device.
+
+set -u
+
+R=${PIPEOS_RESTORE_ROOT:-}
+WORK=$R/work
+RUN=$R/run/pipeos
+LOCK=$R/run/pipeos-save.lock
+STATE=$RUN/restore-work.state
+MOUNTS=${PIPEOS_RESTORE_MOUNTS:-/proc/mounts}
+RSYNC=${PIPEOS_RESTORE_RSYNC:-rsync}
+MNT=${PIPEOS_RESTORE_MOUNT:-}
+BLKID=${PIPEOS_RESTORE_BLKID:-blkid}
+FAKEBLOCK=${PIPEOS_RESTORE_BLOCK:-}
+
+SRC=""; FORCE=no; ONTO=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --force) FORCE=yes ;;
+        --onto) shift; ONTO=${1:-} ;;
+        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+        -*) echo "pipeos-restore-work: unknown option $1" >&2; exit 2 ;;
+        *) SRC=$1 ;;
+    esac
+    shift
+done
+[ -n "$SRC" ] || { echo "usage: pipeos restore-work SRC [--force] [--onto DEV]" >&2; exit 2; }
+SRC=${SRC%/}
+
+say()   { echo "pipeos-restore-work: $*"; }
+state() { mkdir -p "$RUN" 2>/dev/null; printf 'step=%s\nok=%s\ndetail=%s\n' "$1" "${2:-}" "${3:-}" > "$STATE" 2>/dev/null; }
+die()   { say "$*" >&2; state failed no "$*"; exit 1; }
+
+# ---- the same lock every media mutator takes (pipeos-flash's, verbatim)
+take_save_lock() {
+    mkdir -p "$R/run" 2>/dev/null
+    exec 9> "$LOCK"
+    _i=0
+    until flock -n 9; do
+        _i=$((_i+1))
+        [ "$_i" -ge 60 ] && die "save lock held for 60s; giving up"
+        sleep 1
+    done
+}
+
+is_block()     { [ -b "$1" ] || { [ -n "$FAKEBLOCK" ] && [ "$1" = "$FAKEBLOCK" ]; }; }
+do_mount()     { if [ -n "$MNT" ]; then "$MNT" "$@"; else "$@"; fi; }
+src_of_mount() { awk -v m="$1" '$2==m{s=$1} END{print s}' "$MOUNTS"; }
+mounted_at()   { awk -v d="$1" '$1==d{print $2; exit}' "$MOUNTS"; }
+fs_of_dir()    { awk -v p="$1" 'index(p,$2)==1 && length($2)>=b {b=length($2); f=$3} END{print f}' "$MOUNTS"; }
+
+CLEAN=""
+cleanup() { for _m in $CLEAN; do do_mount umount "$_m" 2>/dev/null; done; }
+trap cleanup EXIT
+
+resolve_src() {
+    if is_block "$SRC"; then
+        [ "$(src_of_mount "$WORK")" != "$SRC" ] || die "$SRC is this box's own work disk — nothing to restore from itself"
+        _at=$(mounted_at "$SRC")
+        [ -z "$_at" ] || die "$SRC is mounted at $_at — give the directory instead"
+        mkdir -p "$RUN/restore-src"
+        do_mount mount -t ext4 -o ro "$SRC" "$RUN/restore-src" \
+            || die "cannot mount $SRC read-only as ext4 — is it the old stick's PIPEWORK (partition 2)?"
+        CLEAN="$RUN/restore-src $CLEAN"
+        SRC_DIR=$RUN/restore-src
+        SRC_FS=ext4
+    elif [ -d "$SRC" ]; then
+        if [ -d "$SRC/work" ] && [ -e "$SRC/identity" ]; then
+            say "backup root; using $SRC/work"
+            SRC_DIR=$SRC/work
+        else
+            SRC_DIR=$SRC
+        fi
+        SRC_FS=$(fs_of_dir "$SRC_DIR")
+    else
+        die "no such source: $SRC (a backup dir, its work/ subdir, or a device like /dev/sdb2)"
+    fi
+}
+
+resolve_dst() {
+    if [ -n "$ONTO" ]; then
+        is_block "$ONTO" || die "$ONTO is not a block device"
+        [ "$(src_of_mount "$WORK")" != "$ONTO" ] || die "$ONTO is the running /work — drop --onto"
+        _at=$(mounted_at "$ONTO")
+        [ -z "$_at" ] || die "$ONTO is mounted at $_at — unmount it first"
+        _t=$("$BLKID" -o value -s TYPE "$ONTO" 2>/dev/null)
+        [ "$_t" = ext4 ] || die "$ONTO is not ext4 (${_t:-no filesystem}) — the new stick's p2 is made by \`pipeos flash apply --to\`"
+        mkdir -p "$RUN/restore-dst"
+        do_mount mount -t ext4 "$ONTO" "$RUN/restore-dst" || die "cannot mount $ONTO"
+        CLEAN="$RUN/restore-dst $CLEAN"
+        DST=$RUN/restore-dst
+    else
+        [ -n "$(src_of_mount "$WORK")" ] || die "$WORK is not mounted — nothing to restore onto"
+        DST=$WORK
+    fi
+}
+
+# ---- "empty" by the rule in the header; prints the first offender.
+work_is_empty() {   # DIR
+    for _e in "$1"/* "$1"/.[!.]*; do
+        [ -e "$_e" ] || continue
+        _n=$(basename "$_e")
+        case "$_n" in
+            lost+found|.pipeos|logs|cache) continue ;;
+            repos|claude|pipebox|backup|home)
+                _inner=$(find "$_e" -mindepth 1 2>/dev/null | grep -v "^$_e/projects\$" | head -1)
+                [ -z "$_inner" ] || { echo "${_inner#"$1"/}"; return 1; } ;;
+            *) echo "$_n"; return 1 ;;
+        esac
+    done
+    return 0
+}
+
+restore() {
+    case "$SRC_FS" in
+        vfat|msdos|exfat|fat*) say "NOTE: source is on $SRC_FS; file modes come back as FAT stores them" ;;
+    esac
+    $RSYNC -a --exclude /lost+found --exclude /.pipeos --exclude /logs --exclude /cache \
+        "$SRC_DIR/" "$DST/" >/dev/null 2>"$RUN/restore-work.rsync.err" \
+        || die "rsync failed: $(tail -c 300 "$RUN/restore-work.rsync.err" 2>/dev/null)"
+    if [ -f "$SRC_DIR/.pipeos/users.manifest" ] && [ ! -e "$DST/.pipeos/users.manifest" ]; then
+        mkdir -p "$DST/.pipeos" && cp "$SRC_DIR/.pipeos/users.manifest" "$DST/.pipeos/users.manifest" \
+            && say "users.manifest carried over (the destination had none)"
+    fi
+    sync
+}
+
+# ---- run ------------------------------------------------------------------
+mkdir -p "$RUN" 2>/dev/null
+resolve_src
+resolve_dst
+if [ "$FORCE" != yes ]; then
+    _first=$(work_is_empty "$DST") \
+        || die "$DST is not empty (first: $_first) — --force merges the backup over it (nothing is deleted)"
+fi
+take_save_lock
+state restoring no "$SRC_DIR -> $DST"
+restore
+state done yes "$DST"
+say "restored $SRC_DIR -> $DST (additive; .pipeos, logs, cache left alone)"

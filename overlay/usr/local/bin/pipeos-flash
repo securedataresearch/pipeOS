@@ -1,10 +1,13 @@
 #!/bin/sh
 # pipeos-flash — write a freshly released image onto this box's boot media,
-# and come back up as the same box.
+# and come back up as the same box — or onto a SPARE disk, as this box's
+# next stick.
 #
 #   pipeos flash check              what is running vs the latest release
 #   pipeos flash fetch              download + verify the image into /work
 #   pipeos flash apply [--yes] [--image FILE]   rewrite the boot partition
+#   pipeos flash apply --to DEV [--yes] [--image FILE]   write a SPARE whole
+#                                               disk as this box's next stick
 #   pipeos flash restore-identity FILE          stage a backup bundle as the
 #                                               next boot's apkovl
 #
@@ -22,6 +25,18 @@
 # (the old known-good names packages that are no longer on the media).
 # Reboot is the owner's move; this never reboots.
 #
+# `apply --to DEV` writes the WHOLE image to a spare disk — never the disk
+# behind /media/usb or /work, never a mounted one, never a partition — then
+# carves the rest as PIPEWORK (grow.sh's stanza) and installs the same
+# merged apkovl as canonical AND known-good on the new stick's p1, so it
+# boots as this box. Then it prints the swap. The old stick must be REMOVED
+# before the new one boots: both carry LABEL=PIPEOS/PIPEWORK and
+# fstab/workspace.sh mount by label. The running box is untouched; nothing
+# here reboots. /work is not copied — that is `pipeos restore-work` (from a
+# backup dir, the old stick's p2, or --onto the new stick's p2 before the
+# swap). Typed confirmation is the device path: the thing that can go wrong
+# is the target, so the target is what the operator types.
+#
 # Power loss mid-write leaves p1 unbootable; identity survives on p2
 # ($STAGE/identity-*.apkovl.tar.gz and previous-*.apkovl.tar.gz) and on any
 # `pipeos backup` disk. Recovery: reflash from any machine
@@ -31,8 +46,10 @@
 # like every media writer. Test seams, never set in production and fenced
 # like deploy-overlay's: PIPEOS_FLASH_SYS (fake /sys), PIPEOS_FLASH_MOUNTS
 # (fake /proc/mounts), PIPEOS_FLASH_DEV (a regular file standing in for the
-# p1 node), PIPEOS_FLASH_NO_MOUNT=1 (skip mount/umount/modloop/apk steps;
-# refused unless PIPEOS_FLASH_DEV is also set).
+# p1 node — or, with --to, for the whole disk; the disk guards are skipped),
+# PIPEOS_FLASH_NO_MOUNT=1 (skip mount/umount/modloop/apk steps; refused
+# unless PIPEOS_FLASH_DEV is also set), PIPEOS_FLASH_P1MNT (a directory
+# standing in for the new stick's mounted p1; --to under NO_MOUNT only).
 
 set -u
 
@@ -123,7 +140,10 @@ image_p1_geometry() {   # IMG -> "start_sectors size_sectors" on stdout
 
 # ---- the box's own p1: found by label, asserted to be partition 1 of the
 # disk that also carries PIPEWORK as partition 2 (in-place is only for the
-# box's own stick; anything else is `pipeos flash --to`).
+# box's own stick; anything else is `pipeos flash apply --to`). And the
+# label must resolve to the device actually mounted at /media/usb: with a
+# second pipeOS stick attached, findfs answers whichever it likes, and an
+# in-place write to the wrong stick is the one thing this must never do.
 target_p1() {   # -> "node start_sectors size_sectors" on stdout
     _p1=$(findfs LABEL=PIPEOS 2>/dev/null) || { say "no PIPEOS label on any disk" >&2; return 1; }
     case "$_p1" in
@@ -134,8 +154,13 @@ target_p1() {   # -> "node start_sectors size_sectors" on stdout
     _work=$(findfs LABEL=PIPEWORK 2>/dev/null) || { say "no PIPEWORK label — this box's layout is not the one this tool knows" >&2; return 1; }
     case "$_work" in
         "${_disk}p2"|"${_disk}2") : ;;
-        *) say "PIPEWORK is $_work, not partition 2 of $_disk — refusing (use pipeos flash --to on a spare disk)" >&2; return 1 ;;
+        *) say "PIPEWORK is $_work, not partition 2 of $_disk — refusing (use pipeos flash apply --to on a spare disk)" >&2; return 1 ;;
     esac
+    _mu=$(awk '$2=="/media/usb"{s=$1} END{print s}' "$MOUNTS")
+    if [ -n "$_mu" ] && [ "$_mu" != "$_p1" ]; then
+        say "LABEL=PIPEOS resolves to $_p1 but /media/usb is $_mu — two pipeOS sticks attached? remove the spare and retry" >&2
+        return 1
+    fi
     _name=$(basename "$_p1")
     _start=$(cat "$SYS/class/block/$_name/start" 2>/dev/null)
     _size=$(cat "$SYS/class/block/$_name/size" 2>/dev/null)
@@ -151,10 +176,134 @@ fits() {   # img_start img_size tgt_start tgt_size
     [ "$1" = 2048 ] || { say "image p1 starts at sector $1, not 2048 — not an image this tool understands" >&2; return 1; }
     [ "$3" = 2048 ] || { say "disk p1 starts at sector $3, not 2048 — hand-partitioned disk; refusing" >&2; return 1; }
     if [ "$2" -gt "$4" ]; then
-        say "this image needs $(( $2 / 2048 ))MB and the boot partition is $(( $4 / 2048 ))MB — use \`pipeos flash --to\` on a bigger disk" >&2
+        say "this image needs $(( $2 / 2048 ))MB and the boot partition is $(( $4 / 2048 ))MB — use \`pipeos flash apply --to\` on a bigger disk" >&2
         return 1
     fi
     return 0
+}
+
+# ---- a SPARE disk for `apply --to`: 70-flash.sh's guards (whole disk,
+# nothing mounted, not the system disk, typed path) ported to the box and
+# read through $SYS/$MOUNTS so the probe can drive them, plus the size guard
+# the host-side flasher never had. "System disk" is decided by what is
+# MOUNTED — /media/usb, /work, a /dev root — not by label: an old, unmounted
+# pipeOS stick is exactly the spare this is for.
+whole_disk() {   # DEV
+    case "$1" in
+        /dev/sd[a-z]|/dev/sd[a-z][a-z]|/dev/nvme*n[0-9]|/dev/mmcblk[0-9]) : ;;
+        *) say "$1 is not a whole disk (/dev/sdX or /dev/nvmeXn1) — refusing" >&2; return 1 ;;
+    esac
+    if [ -z "$DEV_OVERRIDE" ] && [ ! -b "$1" ]; then
+        say "$1 is not a block device" >&2; return 1
+    fi
+    return 0
+}
+
+parent_disk() {   # NODE -> disk name on stdout (empty: NODE is itself a disk)
+    _n=$(basename "$1")
+    for _d in "$SYS"/block/*/"$_n"; do
+        [ -e "$_d" ] && { basename "$(dirname "$_d")"; return 0; }
+    done
+    echo ""
+}
+
+disk_of_mount() {   # MOUNTPOINT -> /dev/<disk> on stdout, empty when not a /dev source
+    _s=$(awk -v m="$1" '$2==m{s=$1} END{print s}' "$MOUNTS")
+    case "$_s" in /dev/*) ;; *) echo ""; return 0 ;; esac
+    _p=$(parent_disk "$_s")
+    if [ -n "$_p" ]; then echo "/dev/$_p"; else echo "$_s"; fi
+}
+
+not_system_disk() {   # DEV
+    _mu=$(disk_of_mount /media/usb)
+    [ -n "$_mu" ] || { say "cannot tell which disk carries /media/usb — refusing rather than guessing" >&2; return 1; }
+    [ "$_mu" != "$1" ] || { say "$1 holds this box's boot media (/media/usb) — in-place is \`pipeos flash apply\`" >&2; return 1; }
+    _mw=$(disk_of_mount /work)
+    [ "$_mw" != "$1" ] || { say "$1 holds this box's work disk (/work) — refusing" >&2; return 1; }
+    _mr=$(disk_of_mount /)
+    [ -z "$_mr" ] || [ "$_mr" != "$1" ] || { say "$1 holds the root filesystem — refusing" >&2; return 1; }
+    return 0
+}
+
+not_mounted() {   # DEV
+    _hit=$(awk -v d="$1" '$1==d || index($1,d)==1 {print $1" on "$2}' "$MOUNTS" | tr '\n' ' ')
+    [ -z "$_hit" ] || { say "$1 (or a partition on it) is mounted: ${_hit}— unmount it first (the dashboard's Files view can)" >&2; return 1; }
+    return 0
+}
+
+big_enough() {   # DEV IMG
+    _n=$(basename "$1")
+    _dev=$(cat "$SYS/class/block/$_n/size" 2>/dev/null)
+    [ -n "$_dev" ] || { say "cannot read $1 size from $SYS — refusing" >&2; return 1; }
+    _img=$(( $(wc -c < "$2") / 512 ))
+    [ "$_dev" -ge "$_img" ] || { say "$1 is $(( _dev / 2048 ))MB and the image needs $(( _img / 2048 ))MB — use a bigger disk" >&2; return 1; }
+    [ $(( _dev - _img )) -ge $(( 8 * 1024 * 2048 )) ] \
+        || say "NOTE: only ~$(( (_dev - _img) / 2048 ))MB will be left for /work on $1"
+    return 0
+}
+
+# ---- the rest of a fresh stick becomes PIPEWORK now, not at first boot:
+# grow.sh's stanza, so the new stick's first boot is the same whether or not
+# the old stick is still attached (grow.sh's gate is "no PIPEWORK label
+# anywhere", which the old stick would trip). Under NO_MOUNT the table is
+# written to the file and nothing is formatted. Prints the p2 node.
+carve_work() {   # DISK
+    case "$1" in *[0-9]) _p2=${1}p2 ;; *) _p2=${1}2 ;; esac
+    command -v sfdisk >/dev/null 2>&1 || { say "no sfdisk on this box — not carving" >&2; return 1; }
+    _label=$(sfdisk -d "$1" 2>/dev/null | sed -n 's/^label: *//p')
+    if [ "$_label" = gpt ]; then
+        sfdisk --relocate gpt-bak-std "$1" >/dev/null 2>&1 \
+            || { say "could not relocate the backup GPT on $1 — not carving" >&2; return 1; }
+    fi
+    echo ',+,L,-' | sfdisk -q -a --no-reread "$1" >/dev/null 2>&1 \
+        || { say "sfdisk could not add a partition on $1" >&2; return 1; }
+    if [ "$NO_MOUNT" = 1 ]; then echo "$_p2"; return 0; fi
+    blockdev --rereadpt "$1" 2>/dev/null || partx -a "$1" 2>/dev/null || true
+    _i=0
+    until [ -b "$_p2" ]; do
+        _i=$((_i+1)); [ "$_i" -ge 5 ] && break; sleep 1
+    done
+    [ -b "$_p2" ] || { say "$_p2 did not appear after the carve" >&2; return 1; }
+    mkfs.ext4 -q -L PIPEWORK "$_p2" >/dev/null 2>&1 || { say "mkfs.ext4 failed on $_p2" >&2; return 1; }
+    echo "$_p2"
+}
+
+# ---- the merged apkovl onto a mounted p1 as canonical AND known-good; the
+# image's generic apkovl is gone, and the old known-good and rotations name
+# packages that are no longer on this media. Shared by both paths.
+install_identity() {   # MNT MERGED IDENT
+    for _f in pipeos.apkovl.tar.gz apks/pipeos/x86_64/APKINDEX.tar.gz; do
+        [ -e "$1/$_f" ] || die "new media is missing $_f"
+    done
+    ls "$1"/boot/vmlinuz-* >/dev/null 2>&1 || die "new media has no kernel"
+    cp "$2" "$1/pipeos.apkovl.tar.gz.new" && sync \
+        && mv "$1/pipeos.apkovl.tar.gz.new" "$1/pipeos.apkovl.tar.gz" \
+        || die "cannot install the merged apkovl — recovery: pipeos flash restore-identity $3"
+    cp "$2" "$1/pipeos.known-good.tar.gz" 2>/dev/null || true
+    rm -f "$1"/pipeos.[0-9]*.tar.gz
+    sync
+}
+
+print_swap() {   # DEV P2
+    say "done. $1 is now this box's next stick: the released image, this box's"
+    if [ -n "$2" ]; then
+        say "identity as canonical + known-good, and an empty PIPEWORK on $2."
+        say ""
+        say "Optional, before the swap (no downtime for your data):"
+        say "  pipeos restore-work /work --onto $2"
+    else
+        say "identity as canonical + known-good. PIPEWORK was not carved — first boot makes it."
+    fi
+    say ""
+    say "The swap:"
+    say "  1. pipeos save                 (state as of now onto the CURRENT stick)"
+    say "  2. poweroff"
+    say "  3. REMOVE the old stick. Both sticks say PIPEOS/PIPEWORK and the box"
+    say "     mounts by label — two attached is a coin toss."
+    say "  4. Boot from $1 (UEFI, Secure Boot off)."
+    say "  5. If /work is empty: plug the old stick back in and run"
+    say "     pipeos restore-work /dev/<old>2     (or from a backup dir)."
+    say "Keep the old stick until the new one has booted and saved once."
 }
 
 # ---- merge: the image's overlay + a world union, over the box's identity.
@@ -293,11 +442,12 @@ cmd_fetch() {
 }
 
 cmd_apply() {
-    YES=no; IMG=""
+    YES=no; IMG=""; TO=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --yes) YES=yes ;;
             --image) shift; IMG=${1:-} ;;
+            --to) shift; TO=${1:-}; [ -n "$TO" ] || die "--to needs a device (/dev/sdX)" ;;
             *) die "unknown apply option: $1" ;;
         esac
         shift
@@ -321,11 +471,22 @@ cmd_apply() {
         IMG=$STAGE/pipeos-usb.img
     fi
     [ -f "$IMG" ] || die "no such image: $IMG"
+    IMG_TOTAL=$(( $(wc -c < "$IMG") / 512 ))
+
+    # a spare disk: every guard before anything else is staged or locked
+    if [ -n "$TO" ] && [ -z "$DEV_OVERRIDE" ]; then
+        whole_disk "$TO" && not_system_disk "$TO" && not_mounted "$TO" && big_enough "$TO" "$IMG" \
+            || die "refused — nothing written"
+        blkid "$TO"* 2>/dev/null | grep -q 'LABEL="PIPEOS"' \
+            && say "NOTE: $TO already carries a pipeOS label (an old stick?) — it will be overwritten"
+    fi
 
     # geometry, both sides, before anything else
     set -- $(image_p1_geometry "$IMG") || die "cannot read the image's partition table"
     IMG_START=$1; IMG_SIZE=$2
-    if [ -n "$DEV_OVERRIDE" ]; then
+    if [ -n "$TO" ]; then
+        P1=$TO; TGT_START=2048; TGT_SIZE=$IMG_SIZE
+    elif [ -n "$DEV_OVERRIDE" ]; then
         P1=$DEV_OVERRIDE; TGT_START=2048; TGT_SIZE=$IMG_SIZE
     else
         set -- $(target_p1) || die "cannot resolve this box's boot partition"
@@ -382,11 +543,64 @@ cmd_apply() {
     fi
 
     if [ "$YES" != yes ]; then
-        say "ready to rewrite $P1 in place ($(( IMG_SIZE / 2048 ))MB)."
-        say "power loss mid-write leaves the box unbootable until reflashed;"
-        say "identity copies are on /work at $STAGE. Type the box's hostname to continue:"
-        read -r _ans
-        [ "$_ans" = "$(hostname)" ] || die "confirmation did not match $(hostname) — nothing written"
+        if [ -n "$TO" ]; then
+            say "ready to write $(basename "$IMG") ($(( IMG_TOTAL / 2048 ))MB) to $TO — ALL DATA ON $TO IS DESTROYED."
+            say "this box's own media is untouched. Type the device path to continue:"
+            read -r _ans
+            [ "$_ans" = "$TO" ] || die "confirmation did not match $TO — nothing written"
+        else
+            say "ready to rewrite $P1 in place ($(( IMG_SIZE / 2048 ))MB)."
+            say "power loss mid-write leaves the box unbootable until reflashed;"
+            say "identity copies are on /work at $STAGE. Type the box's hostname to continue:"
+            read -r _ans
+            [ "$_ans" = "$(hostname)" ] || die "confirmation did not match $(hostname) — nothing written"
+        fi
+    fi
+
+    # ---- the spare-disk path: whole image, carve, identity on the new p1,
+    # the swap printed. This box's media is never touched.
+    if [ -n "$TO" ]; then
+        if [ "$NO_MOUNT" != 1 ]; then
+            umount "$IMGMNT" 2>/dev/null; trap - EXIT
+        fi
+        # conv=notrunc: nothing on a block device; on the probe's regular file it
+        # is what keeps the bytes past the write in place to be asserted on.
+        state writing "point of no return ($TO)"
+        log "POINT OF NO RETURN: dd $(basename "$IMG") -> $TO (whole image, $IMG_TOTAL sectors)"
+        if ! dd if="$IMG" of="$TO" bs=4M oflag=direct conv=notrunc,fsync status=progress 2>"$PROGRESS"; then
+            die "dd failed mid-write — $TO is not bootable; this box is untouched; retry \`pipeos flash apply --to $TO\`"
+        fi
+        sync
+        case "$TO" in *[0-9]) P1NEW=${TO}p1 ;; *) P1NEW=${TO}1 ;; esac
+        if [ "$NO_MOUNT" != 1 ]; then
+            blockdev --rereadpt "$TO" 2>/dev/null || partx -a "$TO" 2>/dev/null || true
+            _i=0
+            until [ -b "$P1NEW" ]; do
+                _i=$((_i+1))
+                [ "$_i" -ge 5 ] && die "partitions of $TO did not appear after the write — unplug/replug and inspect"
+                sleep 1
+            done
+        fi
+        state carving "$TO"
+        P2=$(carve_work "$TO") \
+            || { P2=""; say "WARNING: could not carve PIPEWORK on $TO — first boot alone will (grow.sh); restore-work --onto must wait until then"; }
+        state installing-identity "$TO"
+        if [ "$NO_MOUNT" != 1 ]; then
+            blkid "$P1NEW" 2>/dev/null | grep -q 'LABEL="PIPEOS"' || die "written disk has no PIPEOS label — retry \`pipeos flash apply --to $TO\`"
+            mkdir -p "$RUN/flash-to"
+            mount -o rw "$P1NEW" "$RUN/flash-to" || die "cannot mount the new stick's boot partition $P1NEW"
+            trap 'sync; umount "$RUN/flash-to" 2>/dev/null' EXIT
+            install_identity "$RUN/flash-to" "$MERGED" "$IDENT"
+            umount "$RUN/flash-to"; trap - EXIT
+        else
+            install_identity "${PIPEOS_FLASH_P1MNT:?NO_MOUNT --to needs PIPEOS_FLASH_P1MNT}" "$MERGED" "$IDENT"
+        fi
+        rm -f "$STAGE/pipeos-usb.img"
+        state done "to $TO"
+        print_swap "$TO" "$P2"
+        say "identity copies kept at $STAGE (identity-$TS, previous-$TS)."
+        log "flash apply --to $TO complete"
+        return 0
     fi
 
     if [ "$NO_MOUNT" != 1 ]; then
@@ -399,7 +613,7 @@ cmd_apply() {
     log "POINT OF NO RETURN: dd $(basename "$IMG") -> $P1 ($IMG_SIZE sectors)"
     if ! dd if="$IMG" of="$P1" bs=4M iflag=skip_bytes,count_bytes \
             skip=$((IMG_START * 512)) count=$((IMG_SIZE * 512)) \
-            oflag=direct conv=fsync status=progress 2>"$PROGRESS"; then
+            oflag=direct conv=notrunc,fsync status=progress 2>"$PROGRESS"; then
         die "dd failed mid-write — p1 is NOT bootable; see docs/live-disk.md for recovery (identity is safe at $STAGE)"
     fi
     sync; command -v blockdev >/dev/null 2>&1 && blockdev --flushbufs "$P1" 2>/dev/null
@@ -408,22 +622,10 @@ cmd_apply() {
         state verifying
         blkid "$P1" 2>/dev/null | grep -q 'LABEL="PIPEOS"' || die "written partition has no PIPEOS label — recovery: docs/live-disk.md"
         mount "$MEDIA" || die "cannot remount the new media"
-        for _f in pipeos.apkovl.tar.gz apks/pipeos/x86_64/APKINDEX.tar.gz; do
-            [ -e "$MEDIA/$_f" ] || die "new media is missing $_f"
-        done
-        ls "$MEDIA"/boot/vmlinuz-* >/dev/null 2>&1 || die "new media has no kernel"
-
         state installing-identity
         mount -o remount,rw "$MEDIA" || die "cannot remount media rw"
         trap 'sync; mount -o remount,ro "$MEDIA" 2>/dev/null' EXIT
-        cp "$MERGED" "$MEDIA/pipeos.apkovl.tar.gz.new" && sync \
-            && mv "$MEDIA/pipeos.apkovl.tar.gz.new" "$MEDIA/pipeos.apkovl.tar.gz" \
-            || die "cannot install the merged apkovl — recovery: pipeos flash restore-identity $IDENT"
-        # the image's generic apkovl is gone; the old known-good and rotations
-        # name packages that are no longer on this media
-        cp "$MERGED" "$MEDIA/pipeos.known-good.tar.gz" 2>/dev/null || true
-        rm -f "$MEDIA"/pipeos.[0-9]*.tar.gz
-        sync
+        install_identity "$MEDIA" "$MERGED" "$IDENT"
     fi
 
     cat "$STAGE/image.digest" 2>/dev/null > "$APPLIED" || date -u +%s > "$APPLIED"
@@ -460,5 +662,5 @@ case "${1:-}" in
     fetch)  shift; cmd_fetch "$@" ;;
     apply)  shift; cmd_apply "$@" ;;
     restore-identity) shift; cmd_restore_identity "$@" ;;
-    *) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    *) sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

@@ -115,6 +115,16 @@ jobs:
           python3 scripts/check-flash.py
           python3 scripts/check-flash-controls.py
 
+      # #182. `pipeos flash apply --to` writes a SPARE disk as this box's next
+      # stick (whole-disk guards, the carve, identity on the new p1, the swap
+      # text — rows in check-flash.py), and pipeos-restore-work brings /work
+      # back without clobbering the box's runtime state. Both are fenced from
+      # the agent; the fence is a row.
+      - name: restore-work is additive, guards its source and destination, and is fenced
+        run: |
+          python3 scripts/check-restore-work.py
+          python3 scripts/check-restore-work-controls.py
+
       # pipeOS#134. The product image is one artifact for every business, so
       # the two things that used to be baked or fleet-scoped now have gates:
       # the box derives its own NICK at setup, and fleet machinery (the work
