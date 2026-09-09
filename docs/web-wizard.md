@@ -14,6 +14,19 @@ default off; the pipe-first flow (`pipebox-setup`) remains for fleet boxes.
 
 ## Flow
 
+0. **Find** — every Machine answers `pipeos.local`, and on a LAN with more
+   than one that address is the **lobby**: a page every Machine serves
+   identically, listing each Machine the responder has heard (name or
+   pre-claim name, claimed?, boot verdict, address, link). A lone
+   unclaimed Machine skips the lobby and opens its wizard; `/lobby` shows
+   it regardless, and a claimed Machine's login page links to it. The
+   pre-claim name is `pipeos-<last 4 hex of the primary MAC>.local`, so a
+   claim lands on the Machine you meant. Discovery is `mdnsd.py`
+   advertising `_pipeos._tcp` (PTR/SRV/TXT/A) and asking for it every
+   10 s; peers land in `/run/pipeos/mdns/peers.json`, which `GET
+   /api/lobby` (public, like `/api/state`) reads. No leader: a view of the
+   network needs none. Renaming refuses a name a sibling uses or that
+   already answers on the LAN (one mDNS question, one second).
 1. **Claim** — set the admin password. This writes
    `/etc/pipeos/web-admin.conf` (the claim credential), sets
    `/etc/pipeos/provisioned`, and runs `pipeos-save` immediately: the claim
@@ -83,6 +96,8 @@ Two more toggles ride the same services model:
 | `usr/local/share/pipeos/web/mdnsd.py` | minimal mDNS responder |
 | `usr/local/share/pipeos/web/static/` | the UI (no framework, no build step) |
 | `usr/local/bin/pipeos-webd`, `pipeos-mdnsd` | shell launchers (CI shellchecks bin/) |
+| `usr/local/share/pipeos/web/lanid.py` | LAN identity (primary MAC, model) and the mDNS wire, shared by webd and mdnsd |
+| `/run/pipeos/mdns/peers.json` | the responder's peer cache — what the lobby lists |
 | `usr/local/bin/pipebox-claude-trust` | shared headless-claude trust helper |
 | `etc/init.d/pipeos-web`, `pipeos-mdns` | always in the default runlevel |
 | `etc/init.d/pipeos-stream` | ffmpeg restream, toggled via the UI |

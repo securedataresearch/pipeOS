@@ -1,6 +1,6 @@
 #!/sbin/openrc-run
 # pipeos-mdns — answers <hostname>.local so browsers can find the box.
-description="minimal mDNS responder for <hostname>.local"
+description="minimal mDNS responder: <hostname>.local, pipeos.local, and the _pipeos._tcp lobby"
 
 supervisor=supervise-daemon
 command=/usr/local/bin/pipeos-mdnsd
@@ -22,6 +22,13 @@ depend() {
 
 start_pre() {
 	mountpoint -q /work && { checkpath -d -m 0755 /work/logs || return 1; }
+	# the peer cache the lobby reads (checkpath makes no parents)
+	checkpath -d -m 0755 /run/pipeos || return 1
+	if getent passwd svc-mdns >/dev/null 2>&1; then
+		checkpath -d -m 0755 -o svc-mdns:svc-mdns /run/pipeos/mdns || return 1
+	else
+		checkpath -d -m 0755 /run/pipeos/mdns || return 1
+	fi
 	# no /work is not fatal for discovery — log to nowhere and answer anyway
 	if ! mountpoint -q /work; then
 		output_log=/dev/null

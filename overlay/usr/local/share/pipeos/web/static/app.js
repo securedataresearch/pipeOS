@@ -86,9 +86,61 @@ async function boot() {
     app.replaceChildren(el(`<div class="card"><p class="err">The box did not answer: ${esc(e.message)}</p></div>`));
     return;
   }
-  if (!state.claimed) return wizard(state);
+  // the lobby (#lobby): pipeos.local lists every Machine on the network.
+  // A lone unclaimed Machine still opens straight into its wizard.
+  if (location.pathname === "/lobby") return lobby(state);
+  if (!state.claimed) return state.siblings > 0 ? lobby(state) : wizard(state);
   if (!state.authed) return loginView(state);
   return dashboard();
+}
+
+/* ---------- the lobby ---------- */
+
+function lobby(state) {
+  const v = el(`<div>
+    <h1>Machines on this network</h1>
+    <p class="sub">Every PipeOS Machine that answered on this network. Open one by its name.</p>
+    ${state.claimed ? "" : `
+    <div class="card">
+      <div class="cardhead"><h2>This Machine is unclaimed</h2><span class="pill status-warn">${esc(state.lan_name)}</span></div>
+      <p class="note">Nobody owns it yet. The first person to set a password does.</p>
+      <button id="claimme" type="button">Claim this Machine</button>
+    </div>`}
+    <div class="card"><div id="lrows" class="note">looking…</div><p class="note" id="lnote" hidden></p></div>
+    ${state.claimed ? `<p class="note"><a href="/">Sign in to this Machine</a></p>` : ""}
+  </div>`);
+  const claim = v.querySelector("#claimme");
+  if (claim) claim.onclick = () => { history.replaceState(null, "", "/"); wizard(state); };
+  const render = (r) => {
+    const rows = v.querySelector("#lrows"), note = v.querySelector("#lnote");
+    if (!rows) return;
+    const ms = r.machines || [];
+    if (!ms.length) { rows.className = "note"; rows.textContent = "No Machines answered yet."; }
+    else {
+      rows.className = "";
+      rows.innerHTML = ms.map(m => {
+        const label = m.name || (m.host || "").replace(/\.local$/, "") || m.ip || "?";
+        const [vcls, vtxt] = verdictClass(m.verdict ? "verdict: " + m.verdict : "");
+        const href = m.host ? "http://" + m.host + "/" : (m.ip ? "http://" + m.ip + "/" : "");
+        const pills = (m.self ? '<span class="pill">this one</span>' : "")
+          + (m.claimed ? "" : '<span class="pill status-warn">unclaimed</span>')
+          + `<span class="pill ${vcls}">${esc(vtxt)}</span>`;
+        return `<div class="row">
+          <div><div class="name">${href ? `<a href="${esc(href)}">${esc(label)}</a>` : esc(label)} ${pills}</div>
+          <div class="desc">${esc(m.model || "")}${m.model && m.ip ? " · " : ""}${esc(m.ip || "")}${m.host && m.ip ? " · " + esc(m.host) : ""}</div></div>
+        </div>`;
+      }).join("");
+    }
+    const others = ms.filter(m => !m.self).length;
+    note.hidden = false;
+    note.textContent = !r.discovery_ok
+      ? "Discovery is not running on this Machine — the list may be incomplete."
+      : (others ? "This list refreshes every few seconds." : "No other Machines answered yet. This list refreshes every few seconds; a Machine that just powered on takes about a minute.");
+  };
+  const load = async () => { try { render(await api("/api/lobby")); } catch (e) { const n = v.querySelector("#lnote"); if (n) { n.hidden = false; n.textContent = e.message; } } };
+  app.replaceChildren(v);
+  load();
+  const t = setInterval(() => { if (!document.body.contains(v)) { clearInterval(t); return; } load(); }, 5000);
 }
 
 /* ---------- wizard ---------- */
@@ -343,6 +395,7 @@ function loginView(state) {
       <button id="go">Sign in</button>
       <p class="err" id="err" hidden></p>
     </div>
+    ${state.siblings > 0 ? `<p class="note"><a href="/lobby">Other Machines on this network</a></p>` : ""}
   </div>`);
   const go = async () => {
     const err = v.querySelector("#err"); err.hidden = true;

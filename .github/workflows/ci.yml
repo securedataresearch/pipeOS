@@ -59,6 +59,14 @@ jobs:
           # dies on import.
           python3 -m py_compile overlay/usr/local/share/pipeos/web/*.py
 
+      # The LAN lobby: every Machine advertises _pipeos._tcp and browses for
+      # its siblings; pipeos.local lists them all. Two real responders on
+      # the loopback group, and the controls put the bugs back.
+      - name: the LAN lobby — two responders find each other, forget each other, and the controls put the bugs back
+        run: |
+          python3 scripts/check-mdns.py
+          python3 scripts/check-mdns-controls.py
+
       - name: the web wizard claims, refuses, and forgets sessions correctly
         run: python3 scripts/check-webd.py
 

@@ -47,6 +47,9 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lanid  # noqa: E402  — LAN identity + the mDNS wire, shared with mdnsd.py
+
 ETC = "/etc/pipeos"
 ADMIN_CONF = ETC + "/web-admin.conf"
 SERVICES_CONF = ETC + "/services.conf"
@@ -75,6 +78,11 @@ SRV_CRT = TLS_DIR + "/server.crt"
 SRV_KEY = TLS_DIR + "/server.key"
 SESS_DIR = "/run/pipeos/web-sessions"
 BOOT_REPORT = "/run/pipeos/boot-report"
+# The LAN lobby (#lobby): mdnsd's peer cache, and how stale a row may be
+# before the lobby stops showing it (3× the responder's 10 s interval).
+MDNS_CACHE = "/run/pipeos/mdns/peers.json"
+MDNS_EXPIRE_S = 30
+LAN_QUERY_S = 1.0
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 # On-box operator docs (markdown, shipped with the image). The dashboard's
 # Docs view lists and renders them; the box may be offline, so they live here.
@@ -361,6 +369,62 @@ def claude_login_code(code):
         return True, ""
     m = re.search(r"(Login failed[^\n]*|[Ee]rror[^\n]*)", text)
     return False, (m.group(1) if m else text.strip()[-200:] or "sign-in did not complete")
+
+
+# ---- the LAN lobby ------------------------------------------------------------
+# Every Machine serves the same page: itself plus whatever mdnsd has heard.
+# Stateless on purpose — a view of the network needs no leader.
+
+def peers():
+    """(list of peer dicts, discovery_ok). A cache the responder has not
+    touched for a minute is a dead responder's memory, not the LAN."""
+    try:
+        with open(MDNS_CACHE) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return [], False
+    now = time.time()
+    if now - float(d.get("written", 0)) > 60:
+        return [], False
+    out = [p for p in d.get("peers", {}).values() if now - float(p.get("last_seen", 0)) <= MDNS_EXPIRE_S]
+    return out, True
+
+
+def box_hostname():
+    return socket.gethostname().lower()
+
+
+def self_entry():
+    hn = box_hostname()
+    m4 = lanid.mac4()
+    lan = lanid.lan_name(m4)
+    img = lanid.image_info(FLASH_IMAGE_TXT)
+    return {"id": m4, "name": "" if hn == "pipeos" else hn,
+            "host": (hn if hn != "pipeos" else lan) + ".local",
+            "ip": primary_ip()[0], "claimed": claimed(),
+            "verdict": lanid.verdict_line(BOOT_REPORT), "commit": img["commit"][:12],
+            "built": img["built"], "model": lanid.model(), "self": True}
+
+
+def lobby_entries():
+    ps, ok = peers()
+    rows = [self_entry()] + [dict(p, self=False) for p in ps]
+    rows.sort(key=lambda r: (not r.get("claimed"), (r.get("name") or r.get("host") or "").lower()))
+    return rows, ok
+
+
+def name_taken(nick):
+    """The refusal, or "". First what the responder already knows, then
+    one real question to the LAN — a printer or a laptop called studio is
+    not a Machine but still owns studio.local."""
+    n = nick.lower()
+    ps, _ok = peers()
+    for p in ps:
+        if n in ((p.get("name") or "").lower(), (p.get("host") or "").split(".")[0].lower(), "pipeos-" + p.get("id", "")):
+            return "%s is already a Machine on this network — pick another name" % nick
+    if lanid.query_a(n + ".local", LAN_QUERY_S) - lanid.local_ips():
+        return "%s.local already answers on this network — pick another name" % nick
+    return ""
 
 
 def claimed():
@@ -1161,12 +1225,14 @@ class Handler(BaseHTTPRequestHandler):
     # -- routes --
     def do_GET(self):
         path = self.path.split("?")[0]
-        if path == "/" or path in ("/setup", "/login", "/dashboard"):
+        if path == "/" or path in ("/setup", "/login", "/dashboard", "/lobby"):
             return self.serve_static("index.html")
         if path.startswith("/static/"):
             return self.serve_static(path[len("/static/"):])
         if path == "/api/state":
             return self.api_state()
+        if path == "/api/lobby":
+            return self.api_lobby()
         # The CA root is public by design — the owner installs it to trust this
         # box, so these are unauthenticated (downloading a public cert is safe).
         if path == "/ca.crt":
@@ -1358,11 +1424,21 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- API: unauthenticated surface (deliberately tiny) --
     def api_state(self):
+        ps, _ok = peers()
         self.send(200, {
             "claimed": claimed(),
             "authed": bool(self.authed()),
             "hostname": socket.gethostname(),
+            "lan_name": lanid.lan_name(),
+            "siblings": len(ps),
         })
+
+    def api_lobby(self):
+        """Public like /api/state: what mDNS already tells the LAN, plus one
+        word of health per Machine. The page a stranger uses to find the
+        unclaimed one."""
+        rows, ok = lobby_entries()
+        self.send(200, {"machines": rows, "discovery_ok": ok, "lan_name": lanid.lan_name()})
 
     def api_claim(self, body):
         if claimed():
@@ -1980,6 +2056,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(400, "box name: letters, digits, . _ - only")
         if owner and not NICK_RE.fullmatch(owner):
             return self.err(400, "owner name: letters, digits, . _ - only")
+        if nick and nick.lower() == "pipeos" and peers()[0]:
+            return self.err(409, "pipeos is every Machine's address — pick a name of its own")
+        if nick and nick.lower() not in ("pipeos", box_hostname()):
+            taken = name_taken(nick)
+            if taken:
+                return self.err(409, taken)
         updates = {}
         if nick:
             updates["NICK"] = nick
@@ -2808,15 +2890,7 @@ class PhaseB:
                         "last": tail_file(LOG_ALLOW["selfupdate"], 3) or ""})
 
     def api_flash_get(self):
-        image = {}
-        try:
-            with open(FLASH_IMAGE_TXT) as f:
-                for line in f:
-                    if "=" in line:
-                        k, v = line.strip().split("=", 1)
-                        image[k] = v
-        except OSError:
-            pass
+        image = lanid.image_info(FLASH_IMAGE_TXT)
         applied = ""
         try:
             with open(FLASH_APPLIED) as f:

@@ -6,7 +6,8 @@
 
 1. **Plug in**: network cable to your router, power on.
 2. **Wait one minute**, then on any phone or computer on the same network,
-   open: **http://pipeos.local/**
+   open: **http://pipeos.local/**. More than one Machine? The page lists
+   them; pick the one marked **unclaimed**.
 3. **Claim it**: choose an admin password. Whoever sets it owns the box —
    do this before anything else. Keep the password safe; it is the only key.
 4. **Name it** (optional): the name becomes its address, e.g.

@@ -20,6 +20,8 @@ Release under test: `________`   Box: `________`   Date: `________`
 - [ ] Cable in, power on, stopwatch started.
 - [ ] `http://pipeos.local/` answers on a **phone** in ____ s.
 - [ ] …on a laptop in ____ s.
+- [ ] With a second Machine up: appears in its lobby within ____ s; the
+      unclaimed one is reachable by its `pipeos-xxxx.local` name.
 - [ ] If the phone could not resolve `pipeos.local` (Android without
       mDNS): the IP was findable from the router page in ____ s, and the
       onboarding sheet's wording covered it: yes / no.
