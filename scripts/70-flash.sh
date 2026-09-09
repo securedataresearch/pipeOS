@@ -200,4 +200,8 @@ fi
 sudo dd if="$IMG" of="$DEV" bs=4M oflag=direct conv=fsync status=progress
 sync
 echo "flashed. Boot the machine in UEFI mode with Secure Boot disabled."
-echo "Default login: root / $DEFAULT_ROOT_PW (ssh enabled; first login provisions)."
+if [ "${ROOT_LOGIN:-locked}" = password ]; then
+    echo "Default login: root / $DEFAULT_ROOT_PW (ssh enabled; first login provisions)."
+else
+    echo "Client image: root is locked. Open http://pipeos.local/ on the same network to claim it."
+fi

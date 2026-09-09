@@ -320,6 +320,12 @@ if [ ! -s /root/.ssh/authorized_keys ]; then
             crit "authorized_keys missing/empty (backup exists on /work)"
             would "restore /root/.ssh/authorized_keys from /work/.authorized_keys.backup"
         fi
+    elif grep -q '^root:\*:' /etc/shadow 2>/dev/null; then
+        # the client posture: root locked, no key baked, the browser is the
+        # way in. Every fresh Machine booted DEGRADED on this line
+        # (2026-09-09) — a customer's first sight of the lobby was "Needs
+        # attention" for a shell nobody promised them.
+        noten "no operator ssh key (client image, root locked) — shell access is granted from the dashboard: Users → ssh key"
     else
         crit "authorized_keys missing/empty and no /work backup — with key-only sshd this box is unreachable by shell"
     fi
