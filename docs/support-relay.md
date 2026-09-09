@@ -13,8 +13,10 @@ Operator admin is root-by-key.
 
 1. Owner flips **Vendor support access** ON in the dashboard. The box
    generates its tunnel identity (`/etc/pipeos/support_key`, ed25519) on
-   first enable and the dashboard shows the **public key** and the box's
-   assigned port.
+   first enable and the Services view shows the **public key**, the relay
+   (shipped: `tunnel@relay.pipeterminal.com`) and the port — "waiting for
+   a port" until step 3 assigns one and it is written to
+   `/etc/pipeos/support.conf` as `SUPPORT_PORT=`.
 2. Owner sends us that public key (any channel — it is public).
 3. Operator appends it on the relay, pinned to the box's port so one box
    cannot squat another's:

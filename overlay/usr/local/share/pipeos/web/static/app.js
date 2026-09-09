@@ -670,6 +670,12 @@ async function dashboard() {
       <section data-view="services" hidden>
         <div class="viewhead"><h1>Services</h1></div>
         <div class="card">${rows}<p class="err" id="serr" hidden></p></div>
+        <div class="card" id="supcard" hidden>
+          <div class="cardhead"><h2>Vendor support access</h2><span class="pill" id="supstate">checking…</span></div>
+          <p class="note">While this is on, the Machine dials <b>out</b> to your vendor's relay and holds a door open for them; nothing listens on your network. Switch it off and the door closes within seconds. To let them in the first time, send them this key (it is public) — they pin it to a port on their side and tell you the number.</p>
+          <pre class="report" id="suppub"></pre>
+          <p class="note" id="supdetail"></p>
+        </div>
         ${st.services.pipe ? `
         <div class="card">
           <h2>pipe messaging</h2>
@@ -834,6 +840,25 @@ async function dashboard() {
     </main>
   </div>`);
   v.querySelector("#logout").onclick = async () => { try { await api("/api/logout", {}); } catch (e) {} boot(); };
+  // the support card: shown while the toggle is on; the key, the relay and
+  // port, and whether the tunnel is up right now (#159)
+  const loadSupport = async () => {
+    const card = v.querySelector("#supcard");
+    if (!card) return;
+    try {
+      const r = await api("/api/support");
+      card.hidden = !r.enabled;
+      if (!r.enabled) return;
+      v.querySelector("#suppub").textContent = r.pubkey || "(no key yet — switch the toggle off and on)";
+      const pill = v.querySelector("#supstate");
+      pill.textContent = r.connected ? "tunnel up" : (r.configured ? "dialing…" : "waiting for a port");
+      pill.className = "pill " + (r.connected ? "status-ok" : "status-warn");
+      v.querySelector("#supdetail").textContent = r.configured
+        ? "Relay " + r.relay + ", port " + r.port + "."
+        : "Relay " + (r.relay || "not set") + ". No port assigned yet: send the key above to your vendor; they reply with a port number, which goes in /etc/pipeos/support.conf as SUPPORT_PORT.";
+    } catch (e) { card.hidden = true; }
+  };
+  loadSupport();
   v.querySelectorAll("input[type=checkbox]").forEach(c => {
     if (!c.dataset.k) return;  // service toggles only — not e.g. the VAAPI box
     c.onchange = async () => {
@@ -846,6 +871,7 @@ async function dashboard() {
         serr.textContent = e.message; serr.hidden = false;
         c.checked = !c.checked;
       }
+      if (c.dataset.k === "support") loadSupport();
     };
   });
   // one wiring for every chat surface (assistant view, files pane)

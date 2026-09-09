@@ -56,6 +56,8 @@ CARD = ETC + "/card.conf"
 # init script renders smb.conf from it at every start); mounts.conf records
 # which external drives to re-mount after a reboot, by filesystem UUID.
 NAS_CONF = ETC + "/nas.conf"
+SUPPORT_CONF = ETC + "/support.conf"
+SUPPORT_KEY = ETC + "/support_key"
 MOUNTS_CONF = ETC + "/mounts.conf"
 NAS_MAX_SHARES = 8
 NAS_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
@@ -398,6 +400,31 @@ def daemons_for(svcs):
     return out
 
 
+def support_ensure_key():
+    """The box's tunnel identity, made on first enable (ed25519, no
+    passphrase — a supervised daemon cannot type one). Idempotent."""
+    if os.path.exists(SUPPORT_KEY) and os.path.exists(SUPPORT_KEY + ".pub"):
+        return True
+    rc, _ = run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C",
+                 "pipeos-support-" + (card_get("NICK") or socket.gethostname()),
+                 "-f", SUPPORT_KEY], timeout=30)
+    try:
+        os.chmod(SUPPORT_KEY, 0o600)
+    except OSError:
+        pass
+    return rc == 0 and os.path.exists(SUPPORT_KEY + ".pub")
+
+
+def support_info():
+    conf = read_conf_values(SUPPORT_CONF, ["SUPPORT_RELAY", "SUPPORT_PORT"])
+    try:
+        with open(SUPPORT_KEY + ".pub") as f:
+            pub = f.read().strip()
+    except OSError:
+        pub = ""
+    return {"pubkey": pub, "relay": conf["SUPPORT_RELAY"], "port": conf["SUPPORT_PORT"]}
+
+
 def apply_services(svcs):
     """Mirror the declaration into rc-update + running state. Best-effort per
     daemon; returns a list of human-readable problems (empty == clean)."""
@@ -406,6 +433,8 @@ def apply_services(svcs):
     managed = ("pipe-daemon", "pipebox-listener", "pipeos-stream",
                "pipeos-support", "pipeos-assistant", "pipeos-terminals",
                "pipeos-nas")
+    if "pipeos-support" in want and not support_ensure_key():
+        problems.append("could not create the support key (ssh-keygen)")
     for svc in managed:
         if svc in want:
             # STREAM_BOOT=0 = "stream now when asked, but not by itself at
@@ -1007,6 +1036,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/stream": self.api_stream_get,
             "/api/stream-log": self.api_stream_log,
             "/api/assistant": self.api_assistant_get,
+            "/api/support": self.api_support_get,
             "/api/pipe": self.api_pipe_get,
             "/api/pipe-contacts": self.api_pipe_contacts,
             "/api/pipe-board": self.api_pipe_board,
@@ -2439,6 +2469,18 @@ class PhaseB:
         saved, detail = save_state()
         self.send(200, {"ok": True, "problems": problems, "saved": saved,
                         "save_detail": "" if saved else detail})
+
+    def api_support_get(self):
+        """The support surface docs/support-relay.md promised: the box's
+        public key (the owner sends it to the vendor), the relay and port
+        it will dial, and whether the tunnel is up right now."""
+        info = support_info()
+        svcs = read_services()
+        info["enabled"] = bool(svcs.get("support"))
+        rc, _ = run(["rc-service", "pipeos-support", "status"], timeout=15)
+        info["connected"] = rc == 0
+        info["configured"] = bool(info["relay"] and info["port"])
+        self.send(200, info)
 
     def api_pipe_get(self):
         rc, out = run(["pipe", "status", "-o", "json"], timeout=20)

@@ -38,7 +38,8 @@ Claude enabled, carries **web chat**: `POST /api/chat` feeds the box's Claude
 
 Two more toggles ride the same services model:
 - **Vendor support access** (`pipeos-support`): opt-in reverse tunnel
-  (`ssh -R`) OUT to a support relay (`/etc/pipeos/support.conf`); refuses to
+  (`ssh -R`) OUT to a support relay (`/etc/pipeos/support.conf`; the key is
+  made on first enable and `GET /api/support` shows it, #159); refuses to
   start unconfigured, off by default, one switch for the customer.
 - **Updates**: silent daily self-update once `UPDATE_RELEASE_URL` points at a
   published release (`make release` → GitHub Release with SHA256SUMS +
