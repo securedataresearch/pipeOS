@@ -15,9 +15,11 @@ Stripe dashboard; nothing here depends on any other order system.
    sha256sum -c pipeos-usb.img.xz.sha256
    xz -dc pipeos-usb.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync
    ```
-   For a stick SKU, register the stick serial in `fleet/serials.txt` is NOT
-   required — that ledger is for the internal fleet. Note the order id on
-   the stick's bag instead.
+   (`make flash DEV=/dev/sdX` from this repo adds the whole-disk, unmounted
+   and not-the-host-root guards; [live-disk](live-disk.md) has the three
+   ways an image lands.) For a stick SKU, registering the serial in
+   `fleet/serials.txt` is NOT required — that ledger is for the internal
+   fleet. Note the order id on the stick's bag instead.
 3. **Burn-in (preloaded box only)**: install media, boot once on the bench,
    wait ~3 minutes, confirm on the bench network:
    - `http://pipeos.local/` answers and reads **unclaimed**;
@@ -27,7 +29,8 @@ Stripe dashboard; nothing here depends on any other order system.
    - **DO NOT claim the box.** The customer's first visit is the claim;
      a box that arrives claimed is a box that arrives owned by us.
    - If you claimed it to debug: reflash before shipping. A reflash is the
-     only clean unclaim.
+     only clean unclaim ([live-disk](live-disk.md): the generic image is
+     nobody's; identity enters at the customer's first visit).
 4. **Pack**: box + power lead + the one-page
    [client-onboarding](client-onboarding.md) sheet (printed).
 5. **Mark fulfilled** in Stripe with the tracking number; email goes from
