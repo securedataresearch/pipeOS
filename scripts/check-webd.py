@@ -62,6 +62,30 @@ with open(webd.FLASH_BIN, "w") as f:
     f.write("#!/bin/sh\necho step=done > " + tmp + "/flash.state\n")
 os.chmod(webd.FLASH_BIN, 0o755)
 webd.LOG_ALLOW = {k: tmp + "/" + k + ".log" for k in webd.LOG_ALLOW}
+# Claude, three ways (#192): a stub `claude` on PATH that behaves like the
+# real one from the outside — `auth login` prints the OSC-8-wrapped link and
+# reads the code from stdin, `auth status` answers from the credentials
+# file, `-p` answers ok — and HOME redirected so the credential lands in
+# the tempdir. The argv log is how a row sees --console.
+os.makedirs(tmp + "/bin"); os.makedirs(tmp + "/home")
+with open(tmp + "/bin/claude", "w") as f:
+    f.write("#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + tmp + "/claude.argv\n"
+            "case \"$1 $2\" in\n"
+            "  \"auth login\")\n"
+            "    printf 'Opening browser to sign in\\n'\n"
+            "    printf 'If the browser did not open, visit: \\033]8;;https://claude.com/cai/oauth/authorize?code=true&state=STUBSTATE\\033\\\\https://claude.com/cai/oauth/authorize?code=true&state=STUBSTATE\\033]8;;\\033\\\\\\n'\n"
+            "    printf 'Paste code here if prompted > '\n"
+            "    read -r code\n"
+            "    if [ \"$code\" = \"good#code\" ]; then mkdir -p \"$HOME/.claude\"; echo '{\"claudeAiOauth\":{\"accessToken\":\"stub\"}}' > \"$HOME/.claude/.credentials.json\"; echo 'Login successful'; exit 0; fi\n"
+            "    echo 'Login failed: Request failed with status code 400'; exit 0 ;;\n"
+            "  \"auth status\") if [ -f \"$HOME/.claude/.credentials.json\" ]; then echo '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"apiProvider\":\"firstParty\"}'; else echo '{\"loggedIn\":false,\"authMethod\":\"none\"}'; fi ;;\n"
+            "  \"auth logout\") rm -f \"$HOME/.claude/.credentials.json\" ;;\n"
+            "  *) echo ok ;;\n"
+            "esac\n")
+os.chmod(tmp + "/bin/claude", 0o755)
+os.environ["PATH"] = tmp + "/bin:" + os.environ.get("PATH", "")
+webd.CLAUDE_HOME = tmp + "/home"
+webd.CLAUDE_CREDS = tmp + "/home/.claude/.credentials.json"
 with open(webd.CARD, "w") as f:
     f.write("NICK=\nROLE=GENERIC\nOWNER_NICK=\n")
 with open(webd.BOOT_REPORT, "w") as f:
@@ -123,6 +147,44 @@ assert "verdict: all green" in st["boot_report"]
 ok("status returns the boot report")
 r = req("/api/services", {"claude": True, "pipe": False})
 assert r["services"]["claude"] is True and r["services"]["pipe"] is False
+ok("services toggle round-trips")
+
+# ---- Claude, three ways (#192) ------------------------------------------
+c = req("/api/claude")
+assert c["method"] == "none" and c["logged_in"] is False
+ok("fresh box: no Claude credential, and the pill would say so")
+r = req("/api/claude-login/start", {"billing": "claude"})
+assert r["url"] == "https://claude.com/cai/oauth/authorize?code=true&state=STUBSTATE", r["url"]
+assert "auth login --claudeai" in open(tmp + "/claude.argv").read()
+ok("sign-in start hands back the one link claude printed, OSC-8 wrapper and duplicate stripped")
+r = req("/api/claude-login/code", {"code": "bad#code"}, expect=400)
+assert "Login failed" in r["error"] and not os.path.exists(webd.CLAUDE_CREDS)
+assert req("/api/claude")["method"] == "none"
+ok("a wrong code is refused in claude's own words; nothing is stored")
+req("/api/claude-login/code", {"code": "good#code"}, expect=400)
+ok("a code with no sign-in waiting is refused")
+r = req("/api/claude-login/start", {"billing": "console"})
+assert "auth login --console" in open(tmp + "/claude.argv").read()
+r = req("/api/claude-login/code", {"code": "good#code"})
+assert r["method"] == "login" and r["probe_ok"] is True and os.path.exists(webd.CLAUDE_CREDS)
+c = req("/api/claude")
+assert c["method"] == "login" and c["logged_in"] is True
+ok("Console billing asks claude for --console; the right code signs the box in and the probe answers")
+r = req("/api/claude-token", {"token": "sk-ant-api03-" + "k" * 60})
+assert r["method"] == "apikey" and open(webd.CLAUDE_AUTH).read().startswith("ANTHROPIC_API_KEY=sk-ant-api03-")
+assert req("/api/claude")["method"] == "apikey"
+r = req("/api/claude-token", {"token": "sk-ant-oat01-" + "t" * 60})
+assert r["method"] == "token" and open(webd.CLAUDE_AUTH).read().startswith("CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-")
+assert req("/api/claude")["method"] == "token"
+req("/api/claude-token", {"token": "short"}, expect=400)
+ok("an API key and a setup-token each land as their own variable; the file wins over the sign-in; junk is refused")
+req("/api/claude-login/start", {"billing": "claude"})
+r = req("/api/claude-login/code", {"code": "good#code"})
+assert r["method"] == "login" and not os.path.exists(webd.CLAUDE_AUTH)
+ok("a fresh sign-in retires the pasted token — the variable would win over it")
+req("/api/claude-logout", {})
+assert req("/api/claude")["method"] == "none" and not os.path.exists(webd.CLAUDE_CREDS)
+ok("sign-out clears the credential")
 with open(webd.SERVICES_CONF) as f:
     assert "SERVICE_CLAUDE=on" in f.read()
 ok("service toggle lands in services.conf")
@@ -465,7 +527,9 @@ req("/api/users", expect=403)
 req("/api/name", {"hostname": "nope"}, expect=403)
 req("/api/backup", {"dest": "ext/sdx1"}, expect=403)
 req("/api/flash", {"mode": "inplace", "confirm": "x"}, expect=403)
-ok("role user: file-op allowed; services/nas/users/name/backup/flash refused")
+req("/api/claude-login/start", {"billing": "claude"}, expect=403)
+req("/api/claude-token", {"token": "sk-ant-api03-" + "k" * 60}, expect=403)
+ok("role user: file-op allowed; services/nas/users/name/backup/flash/claude refused")
 cookie["v"] = saved_admin2
 req("/api/users/del", {"name": "mover"})
 
