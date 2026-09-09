@@ -1,4 +1,4 @@
-# Your pipeOS box — one page
+# Your PipeOS Machine — one page
 
 *(Print or send this with every box.)*
 
@@ -14,9 +14,10 @@
 5. **Pick what it does**: flip the switches. Claude assistant is on by
    default; streaming, pipe messaging, and vendor support access are off
    until you say otherwise.
-6. **Connect Claude**: on any computer, run `claude setup-token`
-   (install from claude.com/claude-code if needed), paste the token into
-   the wizard. Your account, your billing, your data.
+6. **Connect Claude**: press **Sign in with Claude**. The Machine shows
+   a link — open it on your phone or computer, sign in, and paste back the
+   code it shows. Your account, your billing, your data. (Have an
+   Anthropic API key instead? There is a field for that.)
 
 Done. The same page is your dashboard from now on.
 

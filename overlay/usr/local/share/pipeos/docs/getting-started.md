@@ -27,8 +27,10 @@ itself as `<hostname>.local`. Open that address in a browser (usually
 2. **Name** — give the box a nick, and optionally your own nick as owner.
 3. **Services** — turn on what this box should run: Claude, pipe, streaming,
    the assistant terminal.
-4. **Connect** — paste a Claude setup token and, if pipe is on, a one-time
-   key from your pipe.online account page.
+4. **Connect** — sign in with your Claude account: the Machine shows a
+   link, you open it on any device and paste back the code it shows (or
+   paste an Anthropic API key or a setup-token instead). If pipe is on, a
+   one-time key from your pipe.online account page.
 
 After the wizard, the same address is the dashboard. Sign in with the
 password you set.

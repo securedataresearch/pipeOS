@@ -205,17 +205,96 @@ function step3() {
   app.replaceChildren(v);
 }
 
+/* The Claude card, shared by wizard step 4 and the Setup view (#192). Two
+   ways in, neither needing a terminal anywhere: sign in with a Claude
+   account (the Machine runs `claude auth login` with its browser
+   suppressed and shows the link it prints; the owner signs in on any
+   device and pastes back the code the page shows), or paste an Anthropic
+   Console key / a setup-token. The pill reads GET /api/claude, which is
+   the credential's real state — not the service toggle. */
+function claudeCard(opts) {
+  const wiz = !!(opts && opts.wizard);
+  const v = el(`<div class="card">
+    <div class="cardhead"><h2${wiz ? ' style="margin-top:0"' : ""}>${wiz ? "Connect Claude" : "Claude"}</h2><span class="pill" id="cstate">checking…</span></div>
+    <p class="note">Sign in with your Claude account from any phone or computer: the Machine shows you a link, you paste back a code. Your account, your billing, your data.</p>
+    <div id="cstart">
+      <button id="cgo" type="button">Sign in with Claude</button>
+      <label class="note" style="display:block;margin-top:.5rem"><input type="checkbox" id="cconsole"> Bill an Anthropic Console account instead of a Claude subscription</label>
+    </div>
+    <div id="clink" hidden>
+      <p class="note">1. Open this link on any device and sign in. &nbsp;2. Copy the code the page shows. &nbsp;3. Paste it below.</p>
+      <pre class="report" id="curl"></pre>
+      <p class="note"><a id="copen" href="#" target="_blank" rel="noopener">Open the link</a> · click the link text to copy it</p>
+      <label for="ccode">Code from the sign-in page</label>
+      <input id="ccode" autocomplete="off" spellcheck="false">
+      <button id="cconnect" type="button">Connect</button>
+      <button id="ccancel" type="button" class="ghost">Start over</button>
+    </div>
+    <details style="margin-top:.7rem"><summary class="note">Have an API key or a setup-token instead?</summary>
+      <p class="note">An Anthropic Console key (<code>sk-ant-api…</code>, from console.anthropic.com — billed to that account, never expires) or the token <code>claude setup-token</code> prints on a computer that has Claude Code (your subscription, one year).</p>
+      <label for="ctok">Key or token</label>
+      <input id="ctok" type="password" autocomplete="off">
+      <button id="ctokgo" type="button">Connect with this</button>
+    </details>
+    <p class="note" id="cout" hidden><a id="coutgo" href="#">Sign out of Claude on this box</a></p>
+    <p id="cmsg" class="note" hidden></p>
+  </div>`);
+  const q = (sel) => v.querySelector(sel);
+  const msg = (t) => { const m = q("#cmsg"); m.hidden = false; m.textContent = t; };
+  const pill = q("#cstate");
+  const refresh = async () => {
+    try {
+      const r = await api("/api/claude");
+      const words = {
+        login: "signed in" + (r.billing && r.billing !== "firstParty" ? " (" + r.billing + ")" : ""),
+        apikey: "API key", token: "setup-token", none: "not connected",
+      };
+      pill.textContent = words[r.method] || r.method;
+      pill.className = "pill " + (r.method === "none" ? "status-warn" : "status-ok");
+      q("#cout").hidden = r.method === "none";
+    } catch (e) { pill.textContent = "?"; pill.className = "pill"; }
+  };
+  const showStart = () => { q("#clink").hidden = true; q("#cstart").hidden = false; };
+  const landed = (r) => {
+    msg(r.probe_ok ? "Claude answered — connected." : "Stored, but the test call failed: " + r.probe);
+    refresh();
+  };
+  q("#cgo").onclick = async () => {
+    busy(q("#cgo"), true); msg("asking the Machine for a sign-in link…");
+    try {
+      const r = await api("/api/claude-login/start", { billing: q("#cconsole").checked ? "console" : "claude" });
+      q("#curl").textContent = r.url; q("#copen").href = r.url;
+      q("#cstart").hidden = true; q("#clink").hidden = false; q("#cmsg").hidden = true;
+      q("#ccode").focus();
+    } catch (e) { msg(e.message); }
+    busy(q("#cgo"), false);
+  };
+  q("#ccancel").onclick = () => { showStart(); q("#cmsg").hidden = true; };
+  q("#cconnect").onclick = async () => {
+    busy(q("#cconnect"), true); msg("connecting (the Machine makes a real call to check)…");
+    try {
+      const r = await api("/api/claude-login/code", { code: q("#ccode").value.trim() });
+      showStart(); q("#ccode").value = ""; landed(r);
+    } catch (e) { msg(e.message); }
+    busy(q("#cconnect"), false);
+  };
+  q("#ctokgo").onclick = async () => {
+    busy(q("#ctokgo"), true); msg("checking (the Machine makes a real call)…");
+    try { const r = await api("/api/claude-token", { token: q("#ctok").value.trim() }); q("#ctok").value = ""; landed(r); }
+    catch (e) { msg(e.message); }
+    busy(q("#ctokgo"), false);
+  };
+  q("#coutgo").onclick = async (ev) => {
+    ev.preventDefault();
+    try { await api("/api/claude-logout", {}); msg("signed out — the Machine has no Claude credential now."); refresh(); }
+    catch (e) { msg(e.message); }
+  };
+  refresh();
+  return v;
+}
+
 function step4(services) {
   const parts = [];
-  if (services.claude) parts.push(`
-    <div class="card">
-      <h2 style="margin-top:0">Connect Claude</h2>
-      <p class="note">On your own computer, run <code>claude setup-token</code> and paste the token here.</p>
-      <label for="ctok">Claude token</label>
-      <input id="ctok" type="password" autocomplete="off">
-      <button id="cgo">Connect Claude</button>
-      <p id="cmsg" class="note" hidden></p>
-    </div>`);
   if (services.pipe) parts.push(`
     <div class="card">
       <h2 style="margin-top:0">Sign in to pipe</h2>
@@ -225,23 +304,17 @@ function step4(services) {
       <button id="pgo">Sign in</button>
       <p id="pmsg" class="note" hidden></p>
     </div>`);
+  const any = services.claude || services.pipe;
   const v = el(`<div>
     <p class="steps">Step 4 of 4</p>
     <h1>Connect your accounts</h1>
-    <p class="sub">${parts.length ? "Each step is optional — you can finish them later from the dashboard." : "Nothing to connect for the services you chose."}</p>
+    <p class="sub">${any ? "Each step is optional — you can finish them later from the dashboard's Setup view." : "Nothing to connect for the services you chose."}</p>
+    <div id="cslot"></div>
     ${parts.join("")}
     <button id="done">Finish setup</button>
   </div>`);
-  const cgo = v.querySelector("#cgo");
-  if (cgo) cgo.onclick = async () => {
-    const msg = v.querySelector("#cmsg"); msg.hidden = false; msg.textContent = "Checking the token…";
-    busy(cgo, true);
-    try {
-      const r = await api("/api/claude-token", { token: v.querySelector("#ctok").value.trim() });
-      msg.textContent = r.probe_ok ? "Claude answered — connected." : "Token stored, but the test call failed: " + r.probe;
-    } catch (e) { msg.textContent = e.message; }
-    busy(cgo, false);
-  };
+  const slot = v.querySelector("#cslot");
+  if (services.claude) slot.replaceWith(claudeCard({ wizard: true })); else slot.remove();
   const pgo = v.querySelector("#pgo");
   if (pgo) pgo.onclick = async () => {
     const msg = v.querySelector("#pmsg"); msg.hidden = false; msg.textContent = "Signing in…";
@@ -738,13 +811,7 @@ async function dashboard() {
           <button id="suname" type="button">Save name</button>
           <p class="note" id="sunmsg" hidden></p>
         </div>
-        <div class="card">
-          <div class="cardhead"><h2>Claude</h2><span class="pill" id="sucstate">checking…</span></div>
-          <p class="note">Run <code>claude setup-token</code> on any computer and paste the token. Your account, your billing, your data.</p>
-          <label for="suctok">Claude token</label><input id="suctok" type="password" autocomplete="off">
-          <button id="sucgo" type="button">Connect Claude</button>
-          <p class="note" id="sucmsg" hidden></p>
-        </div>
+        <div id="suclaude"></div>
         <div class="card">
           <div class="cardhead"><h2>pipe</h2><span class="pill" id="supstate">checking…</span></div>
           <p class="note">Messaging for you and the box — it gets a nick of its own on the wire. Mint a one-time key on <a href="https://pipe.online" target="_blank" rel="noopener">pipe.online</a>.</p>
@@ -752,7 +819,7 @@ async function dashboard() {
           <button id="supgo" type="button">Connect pipe</button>
           <p class="note" id="supmsg" hidden></p>
         </div>
-        <p class="note">The whole walkthrough lives at <a href="https://pipe.online/setup/" target="_blank" rel="noopener">pipe.online/setup</a>.</p>
+        <p class="note">The manual is under Docs on this box, and at <a href="https://pipe.online/docs/pipeos/" target="_blank" rel="noopener">pipe.online/docs/pipeos</a>.</p>
       </section>
 
       <section data-view="network" hidden>
@@ -1884,9 +1951,8 @@ async function dashboard() {
   const loadSetup = async () => {
     v.querySelector("#sunick").value = st.nick || st.hostname || "";
     v.querySelector("#suowner").value = st.owner || "";
-    const cs = v.querySelector("#sucstate");
-    cs.textContent = st.services.claude ? "assistant on" : "assistant off";
-    cs.className = "pill " + (st.services.claude ? "status-ok" : "");
+    const slot = v.querySelector("#suclaude");
+    if (slot) slot.replaceWith(claudeCard({}));
     const ps = v.querySelector("#supstate");
     try {
       const p = await api("/api/pipe");
@@ -1898,14 +1964,6 @@ async function dashboard() {
       try {
         await api("/api/name", { nick: v.querySelector("#sunick").value.trim(), owner: v.querySelector("#suowner").value.trim() });
         m.textContent = "Saved. The new address takes effect within a minute.";
-      } catch (e) { m.textContent = e.message; }
-    };
-    v.querySelector("#sucgo").onclick = async () => {
-      const m = v.querySelector("#sucmsg"); m.hidden = false; m.textContent = "connecting (the box makes a real call to check)…";
-      try {
-        const r = await api("/api/claude-token", { token: v.querySelector("#suctok").value.trim() });
-        m.textContent = r.ok ? "Connected." : (r.detail || "failed");
-        loadSetup();
       } catch (e) { m.textContent = e.message; }
     };
     v.querySelector("#supgo").onclick = async () => {
