@@ -51,6 +51,13 @@ ETC = "/etc/pipeos"
 ADMIN_CONF = ETC + "/web-admin.conf"
 SERVICES_CONF = ETC + "/services.conf"
 CLAUDE_AUTH = ETC + "/claude-auth.env"
+# The Claude credential, three ways (#192). A browser sign-in lands where
+# `claude` itself keeps it (and refreshes it); an API key or a setup-token
+# is one line in CLAUDE_AUTH. The env file wins when both exist — claude
+# reads the variable every session — so a successful sign-in removes it.
+CLAUDE_HOME = "/root"
+CLAUDE_CREDS = CLAUDE_HOME + "/.claude/.credentials.json"
+CLAUDE_BIN = "claude"
 CARD = ETC + "/card.conf"
 # network storage (SMB): nas.conf declares the shares (source of truth, the
 # init script renders smb.conf from it at every start); mounts.conf records
@@ -187,17 +194,171 @@ echo "done — reload https://@HOST@.local/ and look for the padlock (restart th
 """
 
 
-def run(argv, timeout=60, input_text=None):
+def run(argv, timeout=60, input_text=None, env=None):
     """Run a command (no shell, ever). Returns (rc, stdout+stderr)."""
     try:
         p = subprocess.run(
-            argv, input=input_text, capture_output=True, text=True, timeout=timeout
+            argv, input=input_text, capture_output=True, text=True, timeout=timeout, env=env
         )
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except subprocess.TimeoutExpired:
         return 124, "timed out: " + " ".join(argv)
     except FileNotFoundError:
         return 127, "not found: " + argv[0]
+
+
+# ---- Claude auth (#192) ---------------------------------------------------
+# One browser sign-in at a time: `claude auth login` is spawned with its
+# browser suppressed, the sign-in URL it prints is handed to the page, the
+# owner signs in on any device and pastes the code the browser shows back
+# into the page, which feeds it to the waiting process's stdin. Nothing
+# here needs a terminal on either side.
+CLAUDE_LOGIN_LOCK = threading.Lock()
+CLAUDE_LOGIN = {"proc": None, "url": "", "billing": "", "started": 0, "out": []}
+CLAUDE_LOGIN_TTL = 600
+ANSI_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def claude_auth_env():
+    """(name, value) of the line in CLAUDE_AUTH, or (None, None)."""
+    try:
+        with open(CLAUDE_AUTH) as f:
+            m = re.search(r"^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=(\S+)", f.read(), re.M)
+    except OSError:
+        return None, None
+    return (m.group(1), m.group(2)) if m else (None, None)
+
+
+def claude_env(extra=None):
+    env = dict(os.environ, HOME=CLAUDE_HOME)
+    env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+    env.pop("ANTHROPIC_API_KEY", None)
+    name, value = claude_auth_env()
+    if name:
+        env[name] = value
+    if extra:
+        env.update(extra)
+    return env
+
+
+def claude_status():
+    """`claude auth status` as a dict — {} when the CLI is absent or mute."""
+    rc, out = run([CLAUDE_BIN, "auth", "status"], timeout=20, env=claude_env())
+    try:
+        return json.loads(out[out.index("{"):out.rindex("}") + 1])
+    except (ValueError, AttributeError):
+        return {}
+
+
+def claude_method():
+    """How the box is connected: login | apikey | token | none, plus detail."""
+    name, _ = claude_auth_env()
+    if name == "ANTHROPIC_API_KEY":
+        return "apikey", {}
+    if name == "CLAUDE_CODE_OAUTH_TOKEN":
+        return "token", {}
+    st = claude_status() if os.path.exists(CLAUDE_CREDS) else {}
+    if st.get("loggedIn"):
+        return "login", st
+    return "none", st
+
+
+def claude_probe(env):
+    """Does the credential answer? One real call; the last 200 chars either way."""
+    try:
+        p = subprocess.run(
+            [CLAUDE_BIN, "-p", "reply with exactly: ok"],
+            capture_output=True, text=True, timeout=90, env=env, cwd=CLAUDE_HOME,
+        )
+        return p.returncode == 0, (p.stdout or p.stderr or "").strip()[-200:]
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        return False, str(e)[:200]
+
+
+def claude_login_reap():
+    """Drop a finished or abandoned sign-in. Caller holds CLAUDE_LOGIN_LOCK."""
+    p = CLAUDE_LOGIN["proc"]
+    if p is None:
+        return
+    if p.poll() is None and time.time() - CLAUDE_LOGIN["started"] < CLAUDE_LOGIN_TTL:
+        return
+    try:
+        p.kill()
+    except OSError:
+        pass
+    CLAUDE_LOGIN.update({"proc": None, "url": "", "billing": "", "started": 0, "out": []})
+
+
+def claude_login_start(billing):
+    """Spawn `claude auth login`, return the sign-in URL it prints."""
+    with CLAUDE_LOGIN_LOCK:
+        claude_login_reap()
+        if CLAUDE_LOGIN["proc"] is not None:
+            try:
+                CLAUDE_LOGIN["proc"].kill()
+            except OSError:
+                pass
+        argv = [CLAUDE_BIN, "auth", "login", "--console" if billing == "console" else "--claudeai"]
+        env = claude_env({"BROWSER": "/bin/false", "DISPLAY": "", "NO_COLOR": "1"})
+        try:
+            p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, text=True, env=env, cwd=CLAUDE_HOME)
+        except FileNotFoundError:
+            raise RuntimeError("the claude command is not installed on this box")
+        out = []
+        CLAUDE_LOGIN.update({"proc": p, "url": "", "billing": billing, "started": time.time(), "out": out})
+
+        def pump():
+            for line in p.stdout:
+                out.append(ANSI_RE.sub("", line))
+        threading.Thread(target=pump, daemon=True).start()
+        deadline = time.time() + 15
+        url = ""
+        while time.time() < deadline and not url:
+            for line in list(out):
+                m = re.search(r"https://\S+", line)
+                if m:
+                    url = m.group(0)
+                    cut = url.find("https://", 8)   # the link's text and target, concatenated
+                    if cut > 0:
+                        url = url[:cut]
+                    break
+            if not url and p.poll() is not None:
+                break
+            if not url:
+                time.sleep(0.2)
+        if not url:
+            p.kill()
+            CLAUDE_LOGIN.update({"proc": None, "url": "", "billing": "", "started": 0, "out": []})
+            raise RuntimeError("claude did not offer a sign-in link: " + "".join(out).strip()[-200:])
+        CLAUDE_LOGIN["url"] = url
+        return url
+
+
+def claude_login_code(code):
+    """Feed the pasted code to the waiting sign-in; True when claude is now logged in."""
+    with CLAUDE_LOGIN_LOCK:
+        claude_login_reap()
+        p = CLAUDE_LOGIN["proc"]
+        if p is None:
+            return False, "no sign-in is waiting — press Sign in with Claude again"
+        out = CLAUDE_LOGIN["out"]
+        try:
+            p.stdin.write(code + "\n")
+            p.stdin.flush()
+        except (OSError, ValueError):
+            pass
+        try:
+            p.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            p.kill()
+        time.sleep(0.2)
+        text = "".join(out)
+        CLAUDE_LOGIN.update({"proc": None, "url": "", "billing": "", "started": 0, "out": []})
+    if os.path.exists(CLAUDE_CREDS) and claude_status().get("loggedIn"):
+        return True, ""
+    m = re.search(r"(Login failed[^\n]*|[Ee]rror[^\n]*)", text)
+    return False, (m.group(1) if m else text.strip()[-200:] or "sign-in did not complete")
 
 
 def claimed():
@@ -1007,6 +1168,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/stream": self.api_stream_get,
             "/api/stream-log": self.api_stream_log,
             "/api/assistant": self.api_assistant_get,
+            "/api/claude": self.api_claude_get,
             "/api/pipe": self.api_pipe_get,
             "/api/pipe-contacts": self.api_pipe_contacts,
             "/api/pipe-board": self.api_pipe_board,
@@ -1066,6 +1228,9 @@ class Handler(BaseHTTPRequestHandler):
             "/api/name": self.api_name,
             "/api/services": self.api_services,
             "/api/claude-token": self.api_claude_token,
+            "/api/claude-login/start": self.api_claude_login_start,
+            "/api/claude-login/code": self.api_claude_login_code,
+            "/api/claude-logout": self.api_claude_logout,
             "/api/pipe-key": self.api_pipe_key,
             "/api/pipe-contact": self.api_pipe_contact,
             "/api/file-op": self.api_file_op,
@@ -1814,23 +1979,60 @@ class Handler(BaseHTTPRequestHandler):
     def api_claude_token(self, body):
         token = (body.get("token") or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9_.:\-]{20,512}", token):
-            return self.err(400, "that does not look like a claude setup-token")
-        write_private(CLAUDE_AUTH, "CLAUDE_CODE_OAUTH_TOKEN=%s\n" % token)
+            return self.err(400, "that does not look like an API key or a setup-token")
+        # an Anthropic Console key bills the Console account; a setup-token
+        # rides the owner's Claude subscription. Same file, one line, the
+        # variable claude expects for each.
+        name = "ANTHROPIC_API_KEY" if token.startswith("sk-ant-api") else "CLAUDE_CODE_OAUTH_TOKEN"
+        write_private(CLAUDE_AUTH, "%s=%s\n" % (name, token))
         run(["pipebox-claude-trust"], timeout=60)
-        # smoke-probe: does the credential actually answer?
-        env = dict(os.environ, HOME="/root", CLAUDE_CODE_OAUTH_TOKEN=token)
-        try:
-            p = subprocess.run(
-                ["claude", "-p", "reply with exactly: ok"],
-                capture_output=True, text=True, timeout=90, env=env, cwd="/work/pipebox",
-            )
-            probe_ok = p.returncode == 0
-            probe_out = (p.stdout or p.stderr or "").strip()[-200:]
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            probe_ok, probe_out = False, str(e)[:200]
+        probe_ok, probe_out = claude_probe(claude_env({name: token}))
         saved, detail = save_state()
-        self.send(200, {"ok": True, "probe_ok": probe_ok, "probe": probe_out,
+        self.send(200, {"ok": True, "method": "apikey" if name == "ANTHROPIC_API_KEY" else "token",
+                        "probe_ok": probe_ok, "probe": probe_out,
                         "saved": saved, "save_detail": "" if saved else detail})
+
+    def api_claude_get(self):
+        method, st = claude_method()
+        self.send(200, {"method": method, "logged_in": method != "none",
+                        "auth_method": st.get("authMethod", ""),
+                        "billing": st.get("apiProvider", ""),
+                        "pending": CLAUDE_LOGIN["proc"] is not None and CLAUDE_LOGIN["proc"].poll() is None})
+
+    def api_claude_login_start(self, body):
+        billing = "console" if body.get("billing") == "console" else "claude"
+        try:
+            url = claude_login_start(billing)
+        except RuntimeError as e:
+            return self.err(500, str(e))
+        self.send(200, {"ok": True, "url": url, "billing": billing})
+
+    def api_claude_login_code(self, body):
+        code = (body.get("code") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_#.:\-]{6,512}", code):
+            return self.err(400, "that does not look like the code the sign-in page shows")
+        ok, why = claude_login_code(code)
+        if not ok:
+            return self.err(400, why)
+        # the sign-in is the credential now; a leftover token would win over it
+        try:
+            os.unlink(CLAUDE_AUTH)
+        except OSError:
+            pass
+        run(["pipebox-claude-trust"], timeout=60)
+        probe_ok, probe_out = claude_probe(claude_env())
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "method": "login", "probe_ok": probe_ok, "probe": probe_out,
+                        "saved": saved, "save_detail": "" if saved else detail})
+
+    def api_claude_logout(self, body):
+        run([CLAUDE_BIN, "auth", "logout"], timeout=20, env=claude_env())
+        try:
+            os.unlink(CLAUDE_AUTH)
+        except OSError:
+            pass
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "saved": saved, "save_detail": "" if saved else detail})
 
     def api_pipe_key(self, body):
         key = (body.get("key") or "").strip()
@@ -2099,13 +2301,9 @@ class Handler(BaseHTTPRequestHandler):
             argv = ["hermes", "-z", msg, "--continue", "webchat"]
         else:
             backend = "claude"
-            try:
-                with open(CLAUDE_AUTH) as f:
-                    m = re.search(r"CLAUDE_CODE_OAUTH_TOKEN=(\S+)", f.read())
-                if m:
-                    env["CLAUDE_CODE_OAUTH_TOKEN"] = m.group(1)
-            except OSError:
-                pass
+            name, value = claude_auth_env()
+            if name:
+                env[name] = value
             argv = ["claude", "-p", "--settings", "/etc/pipeos/pipebox-settings.json"]
             if os.path.exists("/work/pipebox/webchat/.started"):
                 argv.append("--continue")

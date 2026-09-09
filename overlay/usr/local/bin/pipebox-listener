@@ -15,7 +15,12 @@ export PIPE_NO_SPAWN=1
 # Agent auth token (secret; provisioned into the box's env file, never in git)
 # and the build toolchain on PATH, so a BUILD/TEST box's agent can run
 # cargo/rustc/cc from /work/buildroot when present.
-[ -r /etc/pipeos/claude-auth.env ] && . /etc/pipeos/claude-auth.env
+if [ -r /etc/pipeos/claude-auth.env ]; then
+    . /etc/pipeos/claude-auth.env
+    # sourcing sets a shell variable; claude -p needs it in the environment
+    [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && export CLAUDE_CODE_OAUTH_TOKEN
+    [ -n "${ANTHROPIC_API_KEY:-}" ] && export ANTHROPIC_API_KEY
+fi
 [ -d /work/buildroot/usr/bin ] && export PATH="/work/buildroot/usr/bin:$PATH"
 # The generated shell environment. Its header says /etc/profile sources it,
 # and for an ssh session that is true — but nothing on this path is a login

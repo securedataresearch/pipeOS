@@ -20,7 +20,15 @@ WORKDIR=/work/pipebox/webchat
 # shellcheck disable=SC1090
 [ -r "$CONF" ] && . "$CONF"
 # shellcheck disable=SC1090
-[ -r "$AUTH" ] && . "$AUTH" && export CLAUDE_CODE_OAUTH_TOKEN
+# one line, one of two variables: a setup-token (the owner's subscription)
+# or an Anthropic Console key. A browser sign-in leaves no file — claude
+# finds its own credential under HOME. Export only what is set: an empty
+# exported ANTHROPIC_API_KEY is a credential claude would try to use.
+if [ -r "$AUTH" ]; then
+    . "$AUTH"
+    [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && export CLAUDE_CODE_OAUTH_TOKEN
+    [ -n "${ANTHROPIC_API_KEY:-}" ] && export ANTHROPIC_API_KEY
+fi
 
 export HOME=/root
 mkdir -p "$WORKDIR" 2>/dev/null

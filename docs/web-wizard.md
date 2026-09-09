@@ -23,11 +23,24 @@ default off; the pipe-first flow (`pipebox-setup`) remains for fleet boxes.
 3. **Services** — toggles written to `/etc/pipeos/services.conf` and mirrored
    to `rc-update`/`rc-service`. The listener (pipe→claude bridge) runs only
    when pipe AND claude are both on.
-4. **Connect** — Claude: paste a `claude setup-token` token
-   (→ `/etc/pipeos/claude-auth.env`, smoke-probed with a real `claude -p`
-   call). pipe: paste a one-time key from pipe.online — harmless TTL now,
-   a human is live on the page; the box's nick is derived back from
-   `pipe status` (#134), never typed.
+4. **Connect** — Claude, two ways, no terminal on either side (#192):
+   **sign in** — the box runs `claude auth login` with its browser
+   suppressed (`--console` when the owner picks Console billing), hands
+   the page the sign-in URL it prints, and the owner signs in on any
+   device and pastes back the code the page shows; the code goes to the
+   waiting process's stdin and the credential lands where `claude` keeps
+   and refreshes it (`/root/.claude/.credentials.json`, in lbu's list; the
+   15-minute autosave persists a refresh). Or **paste** an Anthropic
+   Console key (`sk-ant-api…` → `ANTHROPIC_API_KEY=`) or a `claude
+   setup-token` (→ `CLAUDE_CODE_OAUTH_TOKEN=`) into
+   `/etc/pipeos/claude-auth.env`. Either way one real `claude -p` call
+   proves it. The env file wins over the sign-in (claude reads the
+   variable every session), so a successful sign-in deletes it. Anthropic's
+   SDK docs reserve claude.ai login in third-party products for approved
+   partners; the Console-key path is the one those docs point at, and the
+   card offers both — the owner's call. pipe: paste a one-time key from
+   pipe.online — harmless TTL now, a human is live on the page; the box's
+   nick is derived back from `pipe status` (#134), never typed.
 
 The dashboard humanizes `/run/pipeos/boot-report` (the pipe owner-DM was the
 only delivery channel before; it still works when pipe is on), toggles
