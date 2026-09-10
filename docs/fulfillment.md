@@ -3,6 +3,35 @@
 Scope: turning a paid order into a box in the mail. The order book is the
 Stripe dashboard; nothing here depends on any other order system.
 
+## Turning the store on (once)
+
+The Buy buttons on pipe.online/hardware post to the relay's
+`/stripe/checkout-box?sku=disk|machine`. The endpoint has shipped since the
+pricing pivot; what was missing on 2026-09-09 was the two prices — every
+Buy answered a bare 504 because the platform in front of the relay
+rewrites the relay's "not for sale yet" 503. Now an unpriced SKU sends the
+visitor back to the page's note; to sell:
+
+1. Mint the products and prices, in the Stripe account the relay bills to
+   (`stripe login` first; live mode):
+   ```sh
+   stripe products create --name "PipeOS Live Disk" --description "pipeOS on a stick, in a ring box"
+   stripe prices create --product prod_… --unit-amount 2000 --currency usd --tax-behavior exclusive
+   stripe products create --name "PipeOS Machine" --description "a 1-liter box with pipeOS ready, unclaimed"
+   stripe prices create --product prod_… --unit-amount 79900 --currency usd --tax-behavior exclusive
+   ```
+   The unit amounts are the page's ($20, $799); the page is the contract.
+   Automatic tax needs a registration in the Stripe dashboard (Tax →
+   Registrations) or checkout fails at the tax step.
+2. Paste the two `price_…` ids into the relay's console env as
+   `STRIPE_DISK_PRICE_ID` and `STRIPE_MACHINE_PRICE_ID` (SECRET), then
+   `scripts/do-apply.sh prod` in the pipe repo — the spec declares both keys
+   and the apply carries the values through.
+3. Prove it without paying: press Buy, reach Stripe's page, cancel — it
+   returns to pricing. A test-mode purchase with card 4242… lands in the
+   dashboard's order book with shipping, phone and the `pipe-live-disk` /
+   `pipe-machine` label.
+
 ## Per order
 
 1. **Pull the order** from Stripe: name, shipping address, email, SKU
