@@ -66,11 +66,13 @@ etc/periodic
 etc/local.d
 etc/init.d
 etc/doas.d
+etc/profile.d
 etc/apk/protected_paths.d/lbu.list
 root/.claude/CLAUDE.md"
 
 # Second gate. Anything whose overlay-relative path starts with one of these
 # is dropped even if the list above grows to include it by accident.
+# etc/profile.d carries shell hooks (zz-pipeos-provision.sh, zz-pipeos-claude.sh);
 # 10-pipebox-env.sh is CARD-GENERATED on the box (pipebox-card OUTPUTS) even
 # though a template-ish copy lives in overlay/ — deploying it over the
 # generated file trips selfcheck's "hand-edited since generation" CRITICAL
