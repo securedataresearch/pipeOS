@@ -118,18 +118,7 @@ function lobby(state) {
     if (!ms.length) { rows.className = "note"; rows.textContent = "No Machines answered yet."; }
     else {
       rows.className = "";
-      rows.innerHTML = ms.map(m => {
-        const label = m.name || (m.host || "").replace(/\.local$/, "") || m.ip || "?";
-        const [vcls, vtxt] = verdictClass(m.verdict ? "verdict: " + m.verdict : "");
-        const href = m.host ? "http://" + m.host + "/" : (m.ip ? "http://" + m.ip + "/" : "");
-        const pills = (m.self ? '<span class="pill">this one</span>' : "")
-          + (m.claimed ? "" : '<span class="pill status-warn">unclaimed</span>')
-          + `<span class="pill ${vcls}">${esc(vtxt)}</span>`;
-        return `<div class="row">
-          <div><div class="name">${href ? `<a href="${esc(href)}">${esc(label)}</a>` : esc(label)} ${pills}</div>
-          <div class="desc">${esc(m.model || "")}${m.model && m.ip ? " · " : ""}${esc(m.ip || "")}${m.host && m.ip ? " · " + esc(m.host) : ""}</div></div>
-        </div>`;
-      }).join("");
+      rows.innerHTML = machineRows(ms);
     }
     const others = ms.filter(m => !m.self).length;
     note.hidden = false;
@@ -141,6 +130,28 @@ function lobby(state) {
   app.replaceChildren(v);
   load();
   const t = setInterval(() => { if (!document.body.contains(v)) { clearInterval(t); return; } load(); }, 5000);
+}
+
+// One row per Machine the responder has heard — the lobby and the
+// dashboard's Network view draw the same list (Sam, 2026-09-10: claiming
+// the next box should start from the network page of the one you own).
+// An unclaimed Machine gets a Claim link straight to its wizard.
+function machineRows(ms) {
+  return ms.map(m => {
+    const label = m.name || (m.host || "").replace(/\.local$/, "") || m.ip || "?";
+    const [vcls, vtxt] = verdictClass(m.verdict ? "verdict: " + m.verdict : "");
+    const href = m.host ? "http://" + m.host + "/" : (m.ip ? "http://" + m.ip + "/" : "");
+    const pills = (m.self ? '<span class="pill">this one</span>' : "")
+      + (m.claimed ? "" : '<span class="pill status-warn">unclaimed</span>')
+      + `<span class="pill ${vcls}">${esc(vtxt)}</span>`;
+    const act = (!m.claimed && !m.self && href) ? `<a class="btn" href="${esc(href)}" target="_blank" rel="noopener">Claim ↗</a>`
+      : (!m.self && href ? `<a class="btn ghost" href="${esc(href)}" target="_blank" rel="noopener">Open ↗</a>` : "");
+    return `<div class="row">
+      <div><div class="name">${href ? `<a href="${esc(href)}">${esc(label)}</a>` : esc(label)} ${pills}</div>
+      <div class="desc">${esc(m.model || "")}${m.model && m.ip ? " · " : ""}${esc(m.ip || "")}${m.host && m.ip ? " · " + esc(m.host) : ""}</div></div>
+      <div>${act}</div>
+    </div>`;
+  }).join("");
 }
 
 /* ---------- wizard ---------- */
@@ -888,6 +899,10 @@ async function dashboard() {
 
       <section data-view="network" hidden>
         <div class="viewhead"><h1>Network</h1></div>
+        <div class="card">
+          <div class="cardhead"><h2>Machines on this network</h2><span class="note" id="nmnote"></span></div>
+          <div id="nmrows" class="note">looking…</div>
+        </div>
         <div class="stats">
           <div class="tile"><div class="k">Address</div><div class="val small" id="nip">…</div><div class="note" id="nif"></div></div>
           <div class="tile"><div class="k">Down</div><div class="val small" id="nrx">…</div></div>
@@ -1965,6 +1980,16 @@ async function dashboard() {
   });
   // ---- network tiles + traffic chart ----
   const pollNetwork = async () => {
+    try {
+      const r = await api("/api/lobby");
+      const rows = v.querySelector("#nmrows"), note = v.querySelector("#nmnote");
+      const ms = r.machines || [];
+      if (ms.length) { rows.className = ""; rows.innerHTML = machineRows(ms); }
+      else { rows.className = "note"; rows.textContent = "No Machines answered yet."; }
+      const un = ms.filter(m => !m.claimed).length;
+      note.textContent = !r.discovery_ok ? "discovery is not running here"
+        : (un ? `${un} unclaimed — Claim opens its setup wizard` : `${ms.length} Machine${ms.length === 1 ? "" : "s"}`);
+    } catch (e) {}
     try {
       const m = await api("/api/metrics");
       v.querySelector("#nip").textContent = m.ip || "?";
