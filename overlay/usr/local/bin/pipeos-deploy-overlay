@@ -167,10 +167,19 @@ cdate=$(git -C "$REPO" log -1 --format=%cI "$commit")
 # no repo card to compare against either, so the gate reports and steps aside
 # rather than blocking a first deploy.
 NICK=
+ROLE=
 [ -r "$CARD" ] && NICK=$(sed -n 's/^NICK=//p' "$CARD" | tr -d '"' | head -1)
+[ -r "$CARD" ] && ROLE=$(sed -n 's/^ROLE=//p' "$CARD" | tr -d '"' | head -1)
 card_action=none
 if [ -z "$NICK" ]; then
     say "no NICK in $CARD — unprovisioned box, card gate skipped"
+elif [ "$ROLE" = GENERIC ]; then
+    # A GENERIC Machine's card is the owner's, written by the wizard on their
+    # premises (docs/cluster.md §1, §6); no repo card describes it, and the
+    # pipe nick it signed in with may collide with an old fleet card's name
+    # (zero signed in as box0 on 2026-09-10 and the gate compared it against
+    # the TEST box's card). R19 is about fleet boxes whose card IS the repo's.
+    say "ROLE=GENERIC — the card is the owner's, card gate skipped"
 elif ! git -C "$REPO" cat-file -e "$commit:docs/cards/$NICK.card" 2>/dev/null; then
     say "no docs/cards/$NICK.card at $REF — card gate skipped (box not in the repo yet)"
 else
