@@ -86,20 +86,20 @@ controls = [
      lambda s: s.replace(
          """    box_norm=$(mktemp)
     cp "$CARD" "$box_norm"
-    for _f in OWNER_NICK COHORT_ID; do
+    for _f in OWNER_NICK COHORT_ID NAME; do
         if [ -z "$(sed -n "s/^$_f=//p" "$repo_card" | head -1)" ]; then
             sed -i "s/^$_f=.*/$_f=/" "$box_norm"
         fi
     done""",
          """    box_norm=$(mktemp)
     cp "$CARD" "$box_norm"
-    for _f in OWNER_NICK COHORT_ID; do
+    for _f in OWNER_NICK COHORT_ID NAME; do
         sed -i "s/^$_f=.*/$_f=/" "$box_norm" "$repo_card"
     done""")),
 
     ("L: --install-card drops the on-box owner fills",
      lambda s: s.replace(
-         """    for _f in OWNER_NICK COHORT_ID; do
+         """    for _f in OWNER_NICK COHORT_ID NAME; do
         if [ -z "$(sed -n "s/^$_f=//p" "$repo_card" | head -1)" ]; then
             _bv=$(sed -n "s/^$_f=//p" "$CARD" | head -1)
             [ -n "$_bv" ] && sed -i "s/^$_f=.*/$_f=$_bv/" "$repo_card"

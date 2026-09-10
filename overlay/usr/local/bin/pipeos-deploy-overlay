@@ -175,13 +175,14 @@ else
     repo_card=$(mktemp)
     git -C "$REPO" show "$commit:docs/cards/$NICK.card" > "$repo_card"
     # OWNER_NICK and COHORT_ID are filled on premises at first boot by
-    # pipebox-setup — the GENERIC cards ship them empty on purpose. A box
+    # pipebox-setup, NAME by the wizard (docs/cluster.md §1) — the GENERIC
+    # cards ship them empty on purpose. A box
     # value atop an EMPTY repo value is provisioning, not drift, so it is
     # masked out of the comparison (and preserved by --install-card below).
     # Any other difference is still drift and still dies.
     box_norm=$(mktemp)
     cp "$CARD" "$box_norm"
-    for _f in OWNER_NICK COHORT_ID; do
+    for _f in OWNER_NICK COHORT_ID NAME; do
         if [ -z "$(sed -n "s/^$_f=//p" "$repo_card" | head -1)" ]; then
             sed -i "s/^$_f=.*/$_f=/" "$box_norm"
         fi
@@ -364,7 +365,7 @@ done < "$listing"
 if [ "$card_action" = install ]; then
     # Carry the box's on-premises fills forward where the repo ships the
     # field empty — installing a GENERIC card must not un-provision the box.
-    for _f in OWNER_NICK COHORT_ID; do
+    for _f in OWNER_NICK COHORT_ID NAME; do
         if [ -z "$(sed -n "s/^$_f=//p" "$repo_card" | head -1)" ]; then
             _bv=$(sed -n "s/^$_f=//p" "$CARD" | head -1)
             [ -n "$_bv" ] && sed -i "s/^$_f=.*/$_f=$_bv/" "$repo_card"

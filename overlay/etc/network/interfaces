@@ -3,4 +3,6 @@ iface lo inet loopback
 
 auto eth0
 iface eth0 inet dhcp
-    hostname pipeos
+    # ifupdown-ng evals this property: the lease carries the chassis id the
+    # pipeos-identity service set, which no card can know (docs/cluster.md §1)
+    hostname $(hostname)

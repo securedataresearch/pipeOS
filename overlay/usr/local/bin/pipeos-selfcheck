@@ -801,7 +801,9 @@ _nall=$((ncrit + nstate))
 # this report, and "what did the owner turn on" is the first thing it shows.
 _claimed=no
 [ -s /etc/pipeos/web-admin.conf ] && _claimed=yes
-msg="pipeos boot report [$(hostname)] $(date -u '+%Y-%m-%d %H:%MZ')
+_bname=$(sed -n 's/^NAME=["]*\([^"]*\)["]*$/\1/p' /etc/pipeos/card.conf 2>/dev/null | head -1)
+_bhead=$(hostname); [ -n "$_bname" ] && _bhead="$_bname ($_bhead)"
+msg="pipeos boot report [$_bhead] $(date -u '+%Y-%m-%d %H:%MZ')
 went down: $down
 claimed: $_claimed
 services: pipe=$SERVICE_PIPE claude=$SERVICE_CLAUDE stream=$SERVICE_STREAM support=$SERVICE_SUPPORT

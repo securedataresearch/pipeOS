@@ -6,6 +6,7 @@
 # scarce resource, so TEST is the doubled role.
 
 NICK=box2
+NAME=
 ROLE=SHIP
 OWNER_NICK=sam
 FOREMAN_NICK=shrek

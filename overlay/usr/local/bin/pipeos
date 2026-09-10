@@ -19,6 +19,7 @@
 #   pipeos flash check|fetch|apply [--to DEV]   a new released image: in place, or onto a spare disk
 #   pipeos restore-work SRC [--force] [--onto DEV]   /work back from a backup dir or an old stick's p2
 #   pipeos deploy-overlay      install a repo commit's overlay onto this box
+#   pipeos unclaim [--yes]     nobody's box again: drop the claim, name, users; reboot
 #
 # Read-only verbs (status/verify/diff/snapshot) are open to the resident
 # agent; mutating verbs are root/human territory (pipebox-settings.json).
@@ -366,6 +367,43 @@ cmd_rollback() {
     echo "(saves are fenced until then; the fence lives in tmpfs and clears itself at reboot)"
 }
 
+# ------------------------------------------------------------- unclaim
+# The reclaim path (docs/cluster.md §1, §11): the web claim, the dashboard
+# users, the owner's name and owner nick go; the box reboots into the wizard
+# as an unclaimed Machine at pipeos-<id>.local. Kept on purpose, because they
+# are the operator's and not the claim's: root's ssh keys, the Claude
+# sign-in, the pipe identity (NICK) on a fleet-role box, /work. A GENERIC
+# box's NICK is cleared too — it was derived from a sign-in that belonged to
+# the previous owner.
+cmd_unclaim() {
+    [ "$(id -u)" = 0 ] || { echo "unclaim: root only" >&2; return 1; }
+    _hn=$(hostname)
+    if [ "$1" != "--yes" ]; then
+        echo "This makes $_hn nobody's box: claim, dashboard users, name and owner are"
+        echo "removed and it reboots into the setup wizard. Type the hostname to continue:"
+        read -r _ans
+        [ "$_ans" = "$_hn" ] || { echo "did not match $_hn — nothing changed" >&2; return 1; }
+    fi
+    _card=/etc/pipeos/card.conf
+    sed -i 's/^NAME=.*/NAME=/; s/^OWNER_NICK=.*/OWNER_NICK=/' "$_card"
+    if [ "$(sed -n 's/^ROLE=//p' "$_card" | head -1)" = GENERIC ]; then
+        sed -i 's/^NICK=.*/NICK=/' "$_card"
+    fi
+    pipebox-card generate --card "$_card" >/dev/null || { echo "card regeneration failed" >&2; return 1; }
+    rm -f /etc/pipeos/web-admin.conf /etc/pipeos/users.json /etc/pipeos/terminals.conf \
+          /etc/pipeos/services.conf
+    rm -rf /run/pipeos/web-sessions
+    # save BEFORE the provisioned marker goes: pipeos-save is a no-op without
+    # it, and the removal itself is what has to reach the media
+    /usr/local/bin/pipeos-save || { echo "save failed — the box is still claimed on the media" >&2; return 1; }
+    rm -f /etc/pipeos/provisioned
+    # the marker's removal is the one change that cannot go through
+    # pipeos-save; lbu is the canonical writer underneath it
+    lbu commit -d >/dev/null 2>&1 || { echo "final commit failed" >&2; return 1; }
+    echo "$_hn is unclaimed; rebooting into the wizard at http://$_hn.local/"
+    sleep 2; reboot
+}
+
 # ---------------------------------------------------------------- main
 case "$1" in
     status)      cmd_status ;;
@@ -381,8 +419,9 @@ case "$1" in
     restore-work) shift; exec /usr/local/bin/pipeos-restore-work "$@" ;;
     deploy-overlay) shift; exec /usr/local/bin/pipeos-deploy-overlay "$@" ;;
     selfupdate)  shift; exec /usr/local/bin/pipeos-selfupdate "$@" ;;
+    unclaim)     shift; cmd_unclaim "$@" ;;
     *)
-        sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
         exit 1
         ;;
 esac

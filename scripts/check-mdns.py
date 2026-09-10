@@ -98,11 +98,20 @@ check("3 PTR, SRV, TXT and A round-trip through the parser with the right fields
 def names_for(hostname, claimed):
     json.dump({"hostname": hostname, "mac4": "7f3a", "claimed": claimed}, open(os.path.join(LANDIR, "idB.json"), "w"))
     return mdnsd.our_names(mdnsd.read_ident())
-check("4 pipeos-<mac4>.local is answered while unclaimed and while claimed-but-unnamed, not once named; pipeos.local always",
+def names_named(name):
+    json.dump({"hostname": "pipeos-7f3a", "mac4": "7f3a", "claimed": True, "name": name}, open(os.path.join(LANDIR, "idB.json"), "w"))
+    return mdnsd.our_names(mdnsd.read_ident())
+check("4 pipeos-<mac4>.local is answered always — unclaimed, claimed-but-unnamed, and named (the name is an alias beside it); pipeos.local always; a legacy name-as-hostname box keeps its name",
       names_for("pipeos", False) == {"pipeos.local", "pipeos-7f3a.local"}
       and names_for("pipeos", True) == {"pipeos.local", "pipeos-7f3a.local"}
-      and names_for("studio", True) == {"pipeos.local", "studio.local"},
-      repr((names_for("pipeos", False), names_for("studio", True))))
+      and names_named("") == {"pipeos.local", "pipeos-7f3a.local"}
+      and names_named("miura") == {"pipeos.local", "pipeos-7f3a.local", "miura.local"}
+      and names_for("studio", True) == {"pipeos.local", "pipeos-7f3a.local", "studio.local"},
+      repr((names_for("pipeos", False), names_named("miura"), names_for("studio", True))))
+json.dump({"hostname": "pipeos-7f3a", "mac4": "7f3a", "claimed": True, "name": "miura"}, open(os.path.join(LANDIR, "idB.json"), "w"))
+_i = mdnsd.read_ident()
+check("4b a named box advertises the name as n and serves the web at <name>.local",
+      _i["nick"] == "miura" and _i["web_host"] == "miura.local" and mdnsd._txt(_i)["n"] == "miura", repr(_i))
 json.dump(identB, open(os.path.join(LANDIR, "idB.json"), "w"))
 
 # ── 5. TTL 0 parses as such ──────────────────────────────────────────────

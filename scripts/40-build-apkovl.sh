@@ -147,7 +147,7 @@ mk_runlevel() {
     for s in "$@"; do ln -sf "/etc/init.d/$s" "$STAGE/etc/runlevels/$level/$s"; done
 }
 mk_runlevel sysinit devfs dmesg mdev hwdrivers modloop
-mk_runlevel boot     modules sysctl hostname bootmisc syslog networking hwclock seedrng watchdog
+mk_runlevel boot     modules sysctl pipeos-identity hostname bootmisc syslog networking hwclock seedrng watchdog
 # The pipe pair is NOT in the client default runlevel: pipe is a service the
 # wizard turns on (rc-update at claim time), not the box's spine. Fleet sticks
 # (CARD with a NICK) get it back via FLEET_SVCS above.

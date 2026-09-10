@@ -1,0 +1,42 @@
+#!/sbin/openrc-run
+# pipeos-identity — the hostname is the chassis id, computed from hardware
+# at every boot (docs/cluster.md §1). A Machine is pipeos-<last four hex of
+# its primary MAC> for life; the owner's name is an mDNS alias on top of it,
+# never the hostname, so nothing that reaches the box by id breaks on a
+# rename and no card has to know a MAC. Same interface rule as
+# lanid.primary_iface (sysfs, not lo, real MAC, up beats down, then name);
+# lanid.mac4 reads the answer back out of the hostname so the two never
+# disagree.
+description="hostname = pipeos-<chassis id>, from the primary MAC"
+
+depend() {
+	before hostname
+	after sysfs
+}
+
+chassis_id() {
+	_best= _bestup=1
+	for _d in /sys/class/net/*; do
+		_n=${_d##*/}
+		[ "$_n" = lo ] && continue
+		_mac=$(cat "$_d/address" 2>/dev/null | tr 'A-F' 'a-f')
+		[ -n "$_mac" ] && [ "$_mac" != 00:00:00:00:00:00 ] || continue
+		_up=1; [ "$(cat "$_d/operstate" 2>/dev/null)" = up ] && _up=0
+		# strictly better only: sorted glob order already breaks ties by name
+		if [ -z "$_best" ] || [ "$_up" -lt "$_bestup" ]; then
+			_best=$_mac; _bestup=$_up
+		fi
+	done
+	_hex=$(printf '%s' "$_best" | tr -cd '0-9a-f')
+	[ ${#_hex} -ge 4 ] && printf '%s' "${_hex#"${_hex%????}"}" || printf '0000'
+}
+
+start() {
+	ebegin "Setting the chassis id"
+	_hn="pipeos-$(chassis_id)"
+	# rewrite only on change: /etc/hostname rides the apkovl and a no-op
+	# write would show up in every `pipeos diff`
+	[ "$(cat /etc/hostname 2>/dev/null)" = "$_hn" ] || printf '%s\n' "$_hn" > /etc/hostname
+	hostname -F /etc/hostname
+	eend $?
+}

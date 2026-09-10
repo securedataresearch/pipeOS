@@ -58,11 +58,26 @@ def primary_iface():
 
 
 def mac4(iface=None):
-    """Last four hex digits of the primary MAC, lowercase; never raises."""
+    """Last four hex digits of the primary MAC, lowercase; never raises.
+    When the pipeos-identity service has already stamped the id into the
+    hostname (pipeos-xxxx), that wins: it was computed before any link was
+    up, and the two must never disagree on a box with more than one NIC."""
+    if iface is None:
+        m = re.fullmatch(r"pipeos-([0-9a-f]{4})", _hostname().lower())
+        if m:
+            return m.group(1)
     n = iface or primary_iface()
     mac = _read(os.path.join(SYS_NET, n, "address")).lower() if n else ""
     hexs = re.sub(r"[^0-9a-f]", "", mac)
     return hexs[-4:] if len(hexs) >= 4 else "0000"
+
+
+def _hostname():
+    try:
+        import socket
+        return socket.gethostname()
+    except OSError:
+        return ""
 
 
 def lan_name(m4=None):
