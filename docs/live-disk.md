@@ -177,10 +177,13 @@ only p1; first boot carves p2 (`grow.sh`), and the first visitor claims the
 box (`web-wizard.md`). A stick flashed this way is nobody's: fulfillment's
 rule is that a reflash is the only clean unclaim.
 
-## basho_box runbook
+## basho_box runbook (historical)
 
-basho_box (`docs/cards/basho0.card`) is the reference box and ran the first
-real in-place flash on 2026-09-01. Three things the probes had not caught
+basho_box was the reference box until 2026-09-10, when it was reflashed as
+a plain Machine of Sam's cluster (every Machine is GENERIC; the OS carries
+no role like "the stream box" — docs/cluster.md). Its card is gone; the
+findings below still stand. It ran the first real in-place flash on
+2026-09-01. Three things the probes had not caught
 (#196): busybox `tar` has no `--owner/--group` (the merge re-tar died,
 pre-write, and the gates held); apk-tools 3 refuses to conjure a database
 in an empty `--root`, so the world gate simulates against the live root;
