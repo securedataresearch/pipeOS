@@ -71,6 +71,14 @@ Flash and burn-in a small stock of sticks/boxes after each release; label
 with the release tag. Re-flash stock older than two releases — customers
 should never unbox an image the update pill immediately flags.
 
+Our own Machines (the operator's cluster) are flashed from a **local** build
+of the released commit with the workstation key baked in
+(`AUTH_KEYS=~/.ssh/id_ed25519.pub make usb`, then `scripts/70-flash.sh
+--image out/pipeos-usb.img /dev/sdX`). That image is never published: a
+release asset with an operator key in it is an operator key on every
+customer box. Reused sticks get `wipefs -a` first — a leftover `PIPEWORK`
+label stops `grow.sh` from carving `/work`.
+
 ## Pilot delivery
 
 A pilot is an order we walk through the door with. Per pilot:
