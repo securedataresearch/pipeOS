@@ -316,6 +316,7 @@ etc/periodic
 etc/local.d
 etc/init.d
 etc/doas.d
+etc/profile.d
 etc/apk/protected_paths.d/lbu.list
 root/.claude/CLAUDE.md"
 
