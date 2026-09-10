@@ -26,7 +26,7 @@ ROLE) are named where the design reuses them.
 - Identity is fluid on purpose: a reflash is a new box; the three boxes on
   the bench today get re-claimed under this scheme rather than migrated.
 
-→ pipeOS "cluster: chassis id as hostname, car-name alias, name suggester"
+→ #210
 
 ## 2. Labels — the box says on its side what the screen says
 
@@ -36,7 +36,7 @@ ROLE) are named where the design reuses them.
   common label sizes; printing goes through whatever the workstation has.
 - A phone photo of the sticker is enough for support to know which box.
 
-→ pipeOS "cluster: label print utility with preview"
+→ #218
 
 ## 3. What a cluster is — a decision, not a fact
 
@@ -60,8 +60,7 @@ ROLE) are named where the design reuses them.
   plus whatever else is kludged onto the wired network. A list, not a
   search box.
 
-→ pipeOS "cluster: membership — mark out of the lobby, minted secrets,
-leaderless member list, grey-until-removed"
+→ #211
 
 ## 4. The network map
 
@@ -72,7 +71,7 @@ leaderless member list, grey-until-removed"
   in the image and the dashboard renders its output.
 - The map is where the owner draws the cluster boundary (§3).
 
-→ pipeOS "cluster: ship netgaze; network map in the dashboard"
+→ #217
 
 ## 5. Sign-in and users — keys, not passwords; no propagation
 
@@ -85,7 +84,7 @@ leaderless member list, grey-until-removed"
   propagation wherever it can.
 - Sign-in is per box for now; with keys everywhere the question goes away.
 
-→ pipeOS "cluster: users view across members (read), keys-first management"
+→ #215
 
 ## 6. Roles
 
@@ -95,7 +94,7 @@ leaderless member list, grey-until-removed"
 - Roles are a permissions surface: an operator can adjust a box's role,
   gate what a role may do, and define new roles.
 
-→ pipeOS "cluster: roles as an owner-facing, editable permission surface"
+→ #214
 
 ## 7. Services — per box
 
@@ -104,7 +103,7 @@ leaderless member list, grey-until-removed"
   service on several boxes in one action, but each toggle is still that
   box's own setting.
 
-→ folds into the cluster-page issue (§10)
+→ #212
 
 ## 8. Data — `/data`, with a cluster-wide index
 
@@ -119,8 +118,7 @@ leaderless member list, grey-until-removed"
 - Agents on a cluster whose owner is on pipe are wired together
   **automatically** (a cohort, in pipe's terms); nothing to configure.
 
-→ pipeOS "data: rename /work to /data"; "cluster: cross-member file
-index"; "cluster: automatic cohort for members whose owner is on pipe"
+→ #219, #220
 
 ## 9. Updates and health
 
@@ -134,8 +132,7 @@ index"; "cluster: automatic cohort for members whose owner is on pipe"
 - A **Reboot everything** button exists. It warns when something like a
   stream or a build is running, and still lets the owner do it.
 
-→ pipeOS "cluster: rolling update policy"; folds into the cluster-page
-issue (§10)
+→ #216, #212
 
 ## 10. The cluster page — the pilot's one page
 
@@ -146,7 +143,7 @@ issue (§10)
 - Without clicking into a box you can: see health, see files, see roles,
   change roles, shut everything down.
 
-→ pipeOS "cluster: the cluster page"
+→ #212
 
 ## 11. Onboarding the second box
 
@@ -159,7 +156,7 @@ issue (§10)
 - Association is entirely client-side: a shipped generic box carries
   nothing that ties it to any customer or cluster.
 
-→ pipeOS "cluster: join-this-cluster on first boot; adopt from a member"
+→ #213
 
 ## Order of work
 
