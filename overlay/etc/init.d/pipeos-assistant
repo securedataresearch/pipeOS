@@ -1,10 +1,11 @@
 #!/sbin/openrc-run
 # pipeos-assistant — a browser terminal into the box's assistant.
 #
-# ttyd serves an xterm.js terminal over HTTP on its own port; it runs
-# `tmux new -A -s assistant claude --continue`, so every browser client
-# attaches to the SAME persistent claude session — the same conversation and
-# /root/.claude memory the dashboard chat uses. Toggled from the web UI; NOT in
+# ttyd serves an xterm.js terminal over HTTP on its own port and attaches
+# to the box's ONE master claude session — a detached tmux server on
+# /run/pipeos/assistant/tmux.sock started by pipeos-assistant-run — so every
+# browser client, and `claude` in any user terminal, is the same
+# conversation and the same /root/.claude memory the dashboard chat uses. Toggled from the web UI; NOT in
 # the image's default runlevel. Refuses to start until a password is set — the
 # terminal is shell access on the LAN and must never be served open.
 #
@@ -44,6 +45,15 @@ start_pre() {
 	command -v claude >/dev/null 2>&1 || { eerror "claude is not installed on this image"; return 1; }
 	checkpath -d -m 0755 /work/logs || return 1
 	checkpath -d -m 0700 /work/pipebox/webchat || return 1
+	checkpath -d -m 0755 /run/pipeos || return 1
+	checkpath -d -m 0750 -o root:users /run/pipeos/assistant || return 1
+}
+
+stop_post() {
+	# the master session is detached from ttyd on purpose (it outlives
+	# browser tabs); a service stop is the one thing that ends it
+	tmux -S /run/pipeos/assistant/tmux.sock kill-server 2>/dev/null
+	return 0
 }
 
 start() {

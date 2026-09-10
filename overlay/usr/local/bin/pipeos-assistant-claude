@@ -1,0 +1,27 @@
+#!/bin/sh
+# pipeos-assistant-claude — the command inside the master tmux session
+# (see pipeos-assistant-run). Runs as root with HOME=/root in the dashboard
+# chat's working dir. --continue only when there is something to continue.
+set -u
+AUTH=/etc/pipeos/claude-auth.env
+SETTINGS=/etc/pipeos/pipebox-settings.json
+WORKDIR=/work/pipebox/webchat
+export HOME=/root
+if [ -r "$AUTH" ]; then
+	# shellcheck disable=SC1090
+	. "$AUTH"
+	[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && export CLAUDE_CODE_OAUTH_TOKEN
+	[ -n "${ANTHROPIC_API_KEY:-}" ] && export ANTHROPIC_API_KEY
+fi
+mkdir -p "$WORKDIR" 2>/dev/null
+cd "$WORKDIR" 2>/dev/null || cd /root || exit 1
+case "${ASSISTANT_BACKEND:-claude}" in
+hermes) exec hermes ;;
+esac
+cont=""
+# claude keys its transcripts by the cwd with / -> -
+for f in "/root/.claude/projects/$(printf '%s' "$WORKDIR" | tr / -)"/*.jsonl; do
+	[ -f "$f" ] && { cont="--continue"; break; }
+done
+# shellcheck disable=SC2086
+exec claude $cont --settings "$SETTINGS"

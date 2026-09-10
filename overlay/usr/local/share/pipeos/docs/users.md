@@ -19,7 +19,9 @@ An account can also get a unix login on the box. Its home lives under
 `/work/home/<name>`, so it survives a reflash of the boot media. Each such
 user can get a personal browser terminal on its own port (7701 and up) —
 enable the terminals service and share `https://<box>.local:<port>` with
-that user; the terminal asks for their password.
+that user; the terminal asks for their password. In that terminal `claude`
+is the Machine's one Claude — the same session as the Assistant terminal
+and the dashboard chat — not a second sign-in. Detach with ctrl-b d.
 
 ## Lockouts
 
