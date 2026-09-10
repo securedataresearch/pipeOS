@@ -31,8 +31,17 @@ default off; the pipe-first flow (`pipebox-setup`) remains for fleet boxes.
    `/etc/pipeos/web-admin.conf` (the claim credential), sets
    `/etc/pipeos/provisioned`, and runs `pipeos-save` immediately: the claim
    survives a reboot even if the wizard is abandoned right here.
-2. **Name** — NICK (+ optional owner) via `card.conf` + `pipebox-card
-   generate`, so hostname, motd, and the derived files stay card-verified.
+2. **Name** — the owner's alias (+ optional owner nick), NAME= in
+   `card.conf` + `pipebox-card generate`, so motd, issue and the derived
+   files stay card-verified. The hostname is NOT the name (docs/cluster.md
+   §1): it is the chassis id `pipeos-<mac4>`, written from hardware at
+   every boot by the `pipeos-identity` service, and `pipeos-<mac4>.local`
+   is answered for life beside `<name>.local`. The wizard offers five
+   classic-car names (`GET /api/name-suggest`, seeded by the id, skipping
+   what the lobby already shows); `pipeos-xxxx` names are refused. NICK
+   stays the pipe identity. `pipeos unclaim` (root) is the way back to an
+   unclaimed Machine — claim, users, name and owner go, the box reboots
+   into this wizard.
 3. **Services** — toggles written to `/etc/pipeos/services.conf` and mirrored
    to `rc-update`/`rc-service`. The listener (pipe→claude bridge) runs only
    when pipe AND claude are both on.

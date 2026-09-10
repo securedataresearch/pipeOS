@@ -11,6 +11,7 @@
 # box) so selfcheck's chassis anchor (1c) can hold; empty skips the check.
 
 NICK=basho0
+NAME=
 ROLE=GENERIC
 OWNER_NICK=sam
 FOREMAN_NICK=

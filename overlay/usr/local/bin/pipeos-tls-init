@@ -22,6 +22,9 @@ SRV_KEY="$TLS/server.key"; SRV_CRT="$TLS/server.crt"
 mkdir -p "$TLS"; chmod 700 "$TLS"
 
 HOST=$(hostname 2>/dev/null || echo pipeos)
+# the owner's alias (docs/cluster.md §1) rides the cert as a SAN; the CN
+# stays the chassis id so a rename never re-keys trust
+NAME=$(sed -n 's/^NAME=["]*\([^"]*\)["]*$/\1/p' /etc/pipeos/card.conf 2>/dev/null | head -1 | tr 'A-Z' 'a-z')
 IP=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
 
 # --- CA: generate once, keep forever (10 years) ---
@@ -36,12 +39,16 @@ fi
 
 # --- server cert: (re)issue when missing or the IP SAN no longer matches ---
 want_san="DNS:$HOST,DNS:$HOST.local,DNS:pipeos.local,DNS:localhost,IP:127.0.0.1"
+[ -n "$NAME" ] && [ "$NAME" != "$HOST" ] && want_san="$want_san,DNS:$NAME.local"
 [ -n "$IP" ] && want_san="$want_san,IP:$IP"
 
 need=0
 [ -f "$SRV_CRT" ] || need=1
 if [ "$need" = 0 ] && [ -n "$IP" ]; then
 	openssl x509 -in "$SRV_CRT" -noout -text 2>/dev/null | grep -q "IP Address:$IP" || need=1
+fi
+if [ "$need" = 0 ] && [ -n "$NAME" ]; then
+	openssl x509 -in "$SRV_CRT" -noout -text 2>/dev/null | grep -q "DNS:$NAME.local" || need=1
 fi
 
 if [ "$need" = 1 ]; then

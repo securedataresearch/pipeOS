@@ -31,6 +31,7 @@ import hmac
 import html
 import json
 import os
+import random
 import re
 import secrets
 import shutil
@@ -102,6 +103,18 @@ USER_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 # names that must never become unix accounts from the dashboard
 USER_NAME_DENY = {"root", "nobody", "operator", "shutdown", "halt", "sync", "bin", "daemon", "adm"}
 TERM_PORT_BASE = 7701
+# The name suggester's pool (docs/cluster.md §1): classic cars, every one a
+# valid NICK_RE name and a valid DNS label.
+CAR_NAMES = (
+    "corvette", "mustang", "giulia", "miura", "deuxchevaux", "delorean", "testarossa",
+    "countach", "esprit", "stratos", "dino", "capri", "cortina", "beetle", "spitfire",
+    "elan", "europa", "gullwing", "fairlady", "hakosuka", "celica", "supra", "impala",
+    "belair", "charger", "challenger", "barracuda", "firebird", "camaro", "thunderbird",
+    "cobra", "daytona", "pantera", "mangusta", "dauphine", "montreal", "duetto",
+    "fulvia", "flaminia", "aurelia", "interceptor", "healey", "frogeye", "morgan",
+    "karmann", "silvia", "skyline", "roadster", "bluebird", "quattro", "manta",
+    "kadett", "escort", "anglia", "minor", "midget", "sprite", "javelin", "hornet",
+)
 SVC_KEYS = ("pipe", "claude", "stream", "support", "assistant", "terminals", "nas")
 
 # How many stream targets (providers) the dashboard manages. Each is a slot in
@@ -394,13 +407,27 @@ def box_hostname():
     return socket.gethostname().lower()
 
 
-def self_entry():
+ID_NAME_RE = re.compile(r"pipeos(-[0-9a-f]{4})?", re.I)
+
+
+def box_name():
+    """The owner's alias (docs/cluster.md §1): NAME= in the card. On a box
+    imaged before the chassis-id scheme the hostname itself was the name,
+    so it stands in until the box is re-claimed."""
+    name = card_get("NAME").strip().lower()
+    if name:
+        return name
     hn = box_hostname()
+    return "" if ID_NAME_RE.fullmatch(hn) else hn
+
+
+def self_entry():
     m4 = lanid.mac4()
     lan = lanid.lan_name(m4)
+    name = box_name()
     img = lanid.image_info(FLASH_IMAGE_TXT)
-    return {"id": m4, "name": "" if hn == "pipeos" else hn,
-            "host": (hn if hn != "pipeos" else lan) + ".local",
+    return {"id": m4, "name": name,
+            "host": (name or lan) + ".local",
             "ip": primary_ip()[0], "claimed": claimed(),
             "verdict": lanid.verdict_line(BOOT_REPORT), "commit": img["commit"][:12],
             "built": img["built"], "model": lanid.model(), "self": True}
@@ -1249,6 +1276,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_docs(path)
         readers = {
             "/api/status": self.api_status,
+            "/api/name-suggest": self.api_name_suggest,
             "/api/users": self.api_users,
             "/api/metrics": self.api_metrics,
             "/api/metrics-history": self.api_metrics_history,
@@ -1429,6 +1457,8 @@ class Handler(BaseHTTPRequestHandler):
             "claimed": claimed(),
             "authed": bool(self.authed()),
             "hostname": socket.gethostname(),
+            "id": lanid.mac4(),
+            "name": box_name(),
             "lan_name": lanid.lan_name(),
             "siblings": len(ps),
         })
@@ -1501,6 +1531,8 @@ class Handler(BaseHTTPRequestHandler):
             "user": sess.get("user"),
             "role": sess.get("role"),
             "hostname": socket.gethostname(),
+            "id": lanid.mac4(),
+            "name": box_name(),
             "nick": card_get("NICK"),
             "owner": card_get("OWNER_NICK"),
             "uptime_s": up,
@@ -2050,21 +2082,25 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, metrics_history(span_s))
 
     def api_name(self, body):
-        nick = (body.get("nick") or "").strip()
+        # The name is the owner's alias (docs/cluster.md §1); the hostname
+        # stays the chassis id. `nick` is the field the old wizard posted.
+        name = (body.get("name") or body.get("nick") or "").strip().lower()
         owner = (body.get("owner") or "").strip()
-        if nick and not NICK_RE.fullmatch(nick):
+        if name and not NICK_RE.fullmatch(name):
             return self.err(400, "box name: letters, digits, . _ - only")
         if owner and not NICK_RE.fullmatch(owner):
             return self.err(400, "owner name: letters, digits, . _ - only")
-        if nick and nick.lower() == "pipeos" and peers()[0]:
-            return self.err(409, "pipeos is every Machine's address — pick a name of its own")
-        if nick and nick.lower() not in ("pipeos", box_hostname()):
-            taken = name_taken(nick)
+        if name and ID_NAME_RE.fullmatch(name):
+            if name == "pipeos":
+                return self.err(409, "pipeos is every Machine's address — pick a name of its own")
+            return self.err(409, "pipeos-xxxx names are chassis ids — pick a name of its own")
+        if name and name != box_name():
+            taken = name_taken(name)
             if taken:
                 return self.err(409, taken)
         updates = {}
-        if nick:
-            updates["NICK"] = nick
+        if name:
+            updates["NAME"] = name
         if owner:
             updates["OWNER_NICK"] = owner
         if not updates:
@@ -2074,8 +2110,20 @@ class Handler(BaseHTTPRequestHandler):
         except RuntimeError as e:
             return self.err(500, str(e))
         saved, detail = save_state()
-        self.send(200, {"ok": True, "hostname": socket.gethostname(),
+        self.send(200, {"ok": True, "hostname": socket.gethostname(), "name": box_name(),
                         "saved": saved, "save_detail": "" if saved else detail})
+
+    def api_name_suggest(self):
+        """Five classic cars not already on this network (docs/cluster.md
+        §1). Seeded by the chassis id so a box keeps its first suggestion
+        across reloads; the owner may type anything else."""
+        rows, _ok = lobby_entries()
+        used = {(r.get("name") or "").lower() for r in rows}
+        used |= {(r.get("host") or "").lower().removesuffix(".local") for r in rows}
+        pool = [c for c in CAR_NAMES if c not in used]
+        rnd = random.Random(lanid.mac4())
+        rnd.shuffle(pool)
+        self.send(200, {"names": pool[:5]})
 
     def api_services(self, body):
         svcs = read_services()

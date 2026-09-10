@@ -10,6 +10,7 @@
 # fleet-specific may ever appear in this file.
 
 NICK=pilot0
+NAME=
 ROLE=GENERIC
 OWNER_NICK=
 FOREMAN_NICK=

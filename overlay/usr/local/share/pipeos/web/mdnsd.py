@@ -49,6 +49,20 @@ SERVICE = lanid.SERVICE
 PROVISIONED = "/etc/pipeos/provisioned"
 BOOT_REPORT = "/run/pipeos/boot-report"
 IMAGE_TXT = "/media/usb/pipeos-image.txt"
+CARD = "/etc/pipeos/card.conf"
+
+
+def card_name():
+    """The owner's alias (docs/cluster.md §1) — a NAME= line in the card,
+    read every tick so a rename is announced without a restart."""
+    try:
+        with open(CARD) as f:
+            for line in f:
+                if line.startswith("NAME="):
+                    return line[5:].strip().strip('"').lower()
+    except OSError:
+        pass
+    return ""
 
 
 def log(msg):
@@ -69,28 +83,42 @@ def read_ident():
             d = {}
         hn = d.get("hostname", "pipeos")
         m4 = d.get("mac4", "0000")
+        name = (d.get("name") or "").lower()
         ident = {"id": m4, "hostname": hn, "claimed": bool(d.get("claimed")),
                  "verdict": d.get("verdict", ""), "commit": d.get("commit", ""),
                  "built": d.get("built", ""), "model": d.get("model", "")}
     else:
         hn = socket.gethostname().lower()
+        name = card_name()
         img = lanid.image_info(IMAGE_TXT)
         ident = {"id": lanid.mac4(), "hostname": hn, "claimed": os.path.exists(PROVISIONED),
                  "verdict": lanid.verdict_line(BOOT_REPORT), "commit": img["commit"][:12],
                  "built": img["built"], "model": lanid.model()}
-    ident["nick"] = "" if ident["hostname"] == "pipeos" else ident["hostname"]
     ident["lan_name"] = lanid.lan_name(ident["id"])
-    ident["web_host"] = (ident["hostname"] if ident["hostname"] != "pipeos" else ident["lan_name"]) + ".local"
+    # The name on the wire: the owner's alias; failing that a legacy hostname
+    # that was itself a name (pre-cluster boxes); nothing when the box is
+    # only its chassis id.
+    ident["name"] = name
+    if name:
+        ident["nick"] = name
+    elif ident["hostname"] in ("pipeos", ident["lan_name"]):
+        ident["nick"] = ""
+    else:
+        ident["nick"] = ident["hostname"]
+    ident["web_host"] = (ident["nick"] or ident["lan_name"]) + ".local"
     ident["instance"] = ident["id"] + "." + SERVICE
     return ident
 
 
 def our_names(ident):
-    names = {ident["hostname"] + ".local", "pipeos.local"}
-    # the pre-claim name: while unclaimed, or claimed but never named —
-    # either way "<hostname>.local" is pipeos.local and lands anywhere
-    if not ident["claimed"] or ident["hostname"] == "pipeos":
-        names.add(ident["lan_name"] + ".local")
+    # pipeos-<id>.local is the permanent address (docs/cluster.md §1) and is
+    # answered always — it used to be the pre-claim name only, and dropping
+    # it on naming is what made a renamed box unreachable by anything that
+    # had learned it. The alias sits beside it; the hostname is one or the
+    # other on a current image and a bare name on a legacy one.
+    names = {ident["hostname"] + ".local", "pipeos.local", ident["lan_name"] + ".local"}
+    if ident["name"]:
+        names.add(ident["name"] + ".local")
     return names
 
 

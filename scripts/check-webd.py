@@ -112,7 +112,7 @@ os.environ["PATH"] = tmp + "/bin:" + os.environ.get("PATH", "")
 webd.CLAUDE_HOME = tmp + "/home"
 webd.CLAUDE_CREDS = tmp + "/home/.claude/.credentials.json"
 with open(webd.CARD, "w") as f:
-    f.write("NICK=\nROLE=GENERIC\nOWNER_NICK=\n")
+    f.write("NICK=\nNAME=\nROLE=GENERIC\nOWNER_NICK=\n")
 with open(webd.BOOT_REPORT, "w") as f:
     f.write("pipeos boot report [test]\nverdict: all green\n")
 
@@ -265,15 +265,23 @@ _card_set, _save = webd.card_set, webd.save_state
 webd.card_set = lambda updates: None
 webd.save_state = lambda: (True, "")
 for nick, frag in (("studio", "already a Machine"), ("STUDIO", "already a Machine"),
-                   ("pipeos-1a2b", "already a Machine"), ("printer", "already answers"),
-                   ("pipeos", "every Machine")):
+                   ("pipeos-1a2b", "chassis ids"), ("pipeos-ffff", "chassis ids"),
+                   ("printer", "already answers"), ("pipeos", "every Machine")):
     r = req("/api/name", {"nick": nick}, expect=409)
     assert frag in r["error"], (nick, r)
-r = req("/api/name", {"nick": "attic"})
-assert r["ok"]
+_seen = {}
+webd.card_set = lambda updates: _seen.update(updates)
+r = req("/api/name", {"name": "Attic"})
+assert r["ok"] and _seen == {"NAME": "attic"}, (r, _seen)
 webd.card_set, webd.save_state = _card_set, _save
 os.unlink(webd.MDNS_CACHE)
-ok("a rename refuses a sibling's name (any case), a sibling's pre-claim name, a name that answers on the LAN, and plain pipeos; a free name goes through")
+ok("a rename refuses a sibling's name (any case), any pipeos-xxxx chassis id, a name that answers on the LAN, and plain pipeos; a free name lands in NAME= lowercased, never in NICK")
+seed_peers(PEERS)
+r = req("/api/name-suggest")
+assert len(r["names"]) == 5 and "studio" not in r["names"] and all(n in webd.CAR_NAMES for n in r["names"]), r
+assert r["names"] == req("/api/name-suggest")["names"]
+os.unlink(webd.MDNS_CACHE)
+ok("the suggester offers five cars not on the network, the same five each time")
 cookie["v"] = "0" * 64
 req("/api/status", expect=401)
 ok("bogus session refused")

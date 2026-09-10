@@ -67,7 +67,7 @@ start_pre() {
 	{
 		printf '[global]\n'
 		printf 'server role = standalone server\n'
-		printf 'server string = %s\n' "$(hostname 2>/dev/null || echo pipeos)"
+		printf 'server string = %s\n' "$(sed -n 's/^NAME=["]*\([^"]*\)["]*$/\1/p' /etc/pipeos/card.conf 2>/dev/null | grep . || hostname 2>/dev/null || echo pipeos)"
 		printf 'map to guest = never\n'
 		printf 'restrict anonymous = 2\n'
 		printf 'smb ports = 445\n'

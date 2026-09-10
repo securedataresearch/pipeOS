@@ -193,14 +193,16 @@ function step1(state) {
 }
 
 function step2(state) {
+  const id = state.lan_name || state.hostname;
   const v = el(`<div>
     <p class="steps">Step 2 of 4</p>
     <h1>Name the box</h1>
-    <p class="sub">The name becomes its address on your network.</p>
+    <p class="sub">A name of its own, on top of its permanent address.</p>
     <div class="card">
       <label for="nick">Box name</label>
-      <input id="nick" type="text" value="${esc(state.hostname === "pipeos" ? "" : state.hostname)}" placeholder="e.g. studio-box" pattern="[A-Za-z0-9_.-]+">
-      <p class="note">Letters, digits, dots, dashes. You will reach it at http://&lt;name&gt;.local/</p>
+      <div class="chips" id="suggest"></div>
+      <input id="nick" type="text" value="${esc(state.name || "")}" placeholder="pick one above, or type your own" pattern="[A-Za-z0-9_.-]+">
+      <p class="note">Letters, digits, dots, dashes. You will reach it at http://&lt;name&gt;.local/ — and always at http://${esc(id)}.local/, which never changes.</p>
       <label for="owner">Your name (optional)</label>
       <input id="owner" type="text" placeholder="e.g. sam">
       <button id="go">Continue</button>
@@ -209,6 +211,15 @@ function step2(state) {
     </div>
   </div>`);
   v.querySelector("#skip").onclick = () => step3();
+  api("/api/name-suggest").then(r => {
+    const box = v.querySelector("#suggest"), inp = v.querySelector("#nick");
+    (r.names || []).forEach((n, i) => {
+      const b = el(`<button type="button" class="chip">${esc(n)}</button>`);
+      b.onclick = () => { inp.value = n; inp.focus(); };
+      box.appendChild(b);
+      if (i === 0 && !inp.value) inp.value = n;
+    });
+  }).catch(() => {});
   v.querySelector("#go").onclick = async () => {
     const nick = v.querySelector("#nick").value.trim();
     const owner = v.querySelector("#owner").value.trim();

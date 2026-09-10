@@ -22,7 +22,7 @@ SHIPPED=overlay/etc/pipeos/card.conf
 # root/.pipe/policy.json (pipeOS#94: it was generated but ungated here, and
 # the committed copy drifted; the 2026-08-31 `make cards` realigned it and
 # this line is what keeps it aligned).
-OUTPUTS="etc/pipeos/pipebox.conf etc/pipeos/pipebox-settings.json etc/pipeos/mandate.md etc/profile.d/10-pipebox-env.sh etc/hostname etc/issue etc/motd etc/network/interfaces root/.pipe/policy.json"
+OUTPUTS="etc/pipeos/pipebox.conf etc/pipeos/pipebox-settings.json etc/pipeos/mandate.md etc/profile.d/10-pipebox-env.sh etc/issue etc/motd etc/network/interfaces root/.pipe/policy.json"
 
 fails=0
 say()  { printf '%s\n' "$*"; }
