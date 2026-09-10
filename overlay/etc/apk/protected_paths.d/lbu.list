@@ -18,6 +18,7 @@
 +etc/init.d/pipeos-mdns
 +etc/init.d/pipeos-stream
 +etc/init.d/pipeos-assistant
++etc/profile.d/zz-pipeos-claude.sh
 +etc/init.d/pipeos-support
 # boot reconciler for services.conf — custom /etc/local.d file, same apk-audit
 # blind spot as the init scripts above

@@ -1,0 +1,14 @@
+#!/bin/sh
+# pipeos-claude-attach — `claude` from a user terminal: attach to this
+# Machine's one master session instead of starting a second, unauthenticated
+# claude under the user's own HOME (docs/cluster.md; Sam, 2026-09-10). The
+# grant is per user (tmux server-access, done by pipeos-assistant-run for
+# every terminal user); the session runs as root, so a terminal user who can
+# attach can ask Claude to do anything root can — which is what having a
+# terminal on the box already meant.
+SOCK=/run/pipeos/assistant/tmux.sock
+if [ ! -S "$SOCK" ]; then
+	echo "this Machine's Claude is not running — turn on the Assistant in the dashboard (Services)." >&2
+	exit 1
+fi
+exec tmux -S "$SOCK" attach-session -t assistant

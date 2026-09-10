@@ -7,6 +7,16 @@
 #    on a dialog nobody is there to answer.
 # 2. Restart the listener IF it is meant to run (pipe+claude both on) — a
 #    fresh credential does nothing for a listener still holding the old env.
+# 3. Mark claude's first-run onboarding done for root. The interactive
+#    assistant (pipeos-assistant-run) is the one place claude runs with a
+#    screen on this box, and on the first cluster Machine (2026-09-10) it
+#    greeted the owner with the theme picker and then the sign-in page —
+#    with a valid credential on disk — because nobody had ever clicked
+#    through onboarding under /root. Non-interactive `claude -p` never
+#    needed it, so the listener hid the gap.
+# 4. Restart the assistant IF it is running: the wizard turns services on
+#    (step 3) before the Claude sign-in (step 4), so the master session
+#    started unauthenticated and sat on the sign-in screen forever.
 
 say() { printf '%s\n' "$*"; }
 
@@ -34,6 +44,22 @@ elif [ ! -f /root/.claude.json ]; then
     fi
 fi
 
+# 3. onboarding: theme + the completed flag, only where unset (a theme the
+#    owner picked in the terminal stays)
+if [ -f /root/.claude.json ] && command -v jq >/dev/null 2>&1; then
+    if ! jq -e '.hasCompletedOnboarding == true' /root/.claude.json >/dev/null 2>&1; then
+        if jq '.hasCompletedOnboarding = true | .theme = (.theme // "dark")' \
+            /root/.claude.json > /root/.claude.json.new \
+            && mv /root/.claude.json.new /root/.claude.json; then
+            :
+        else
+            rm -f /root/.claude.json.new
+            say 'WARNING: could not mark claude onboarding complete — the assistant'
+            say '         terminal will open on the first-run screens. See /root/.claude.json.'
+        fi
+    fi
+fi
+
 # services.conf is the wizard's declarative record; absent means a pre-wizard
 # fleet box, where the listener is unconditional.
 SERVICE_PIPE=on SERVICE_CLAUDE=on
@@ -41,4 +67,10 @@ SERVICE_PIPE=on SERVICE_CLAUDE=on
 [ -r /etc/pipeos/services.conf ] && . /etc/pipeos/services.conf 2>/dev/null
 if [ "$SERVICE_PIPE" = on ] && [ "$SERVICE_CLAUDE" = on ]; then
     rc-service pipebox-listener restart >/dev/null 2>&1 || true
+fi
+# 4. the master claude session (stop_post kills the tmux server, so the
+#    restart is a fresh claude with the new credential; --continue brings
+#    the conversation back)
+if rc-service pipeos-assistant status >/dev/null 2>&1; then
+    rc-service pipeos-assistant restart >/dev/null 2>&1 || true
 fi

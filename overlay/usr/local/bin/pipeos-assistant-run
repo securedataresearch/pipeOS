@@ -34,7 +34,7 @@ export HOME=/root
 mkdir -p "$WORKDIR" 2>/dev/null
 cd "$WORKDIR" 2>/dev/null || cd /root || exit 1
 
-USER=${ASSISTANT_USER:-admin}
+TTYD_USER=${ASSISTANT_USER:-admin}
 PORT=${ASSISTANT_PORT:-7681}
 BACKEND=${ASSISTANT_BACKEND:-claude}
 if [ -z "${ASSISTANT_PASS:-}" ]; then
@@ -43,21 +43,49 @@ if [ -z "${ASSISTANT_PASS:-}" ]; then
 fi
 
 # The box can ship more than one assistant; ASSISTANT_BACKEND picks which one
-# the terminal drops into (the dashboard writes it).
-case "$BACKEND" in
-hermes) CMD="hermes" ;;
-*)      CMD="claude --continue --settings $SETTINGS" ;;
-esac
-command -v "${CMD%% *}" >/dev/null 2>&1 || {
+# the master session runs (the dashboard writes it; pipeos-assistant-claude
+# reads it).
+case "$BACKEND" in hermes) BIN=hermes ;; *) BIN=claude ;; esac
+command -v "$BIN" >/dev/null 2>&1 || {
 	echo "pipeos-assistant-run: backend '$BACKEND' is not installed" >&2
 	exit 1
 }
 
-# --writable so the client can type; one shared tmux session (`-A` attach-or-
-# create) so every browser sees the same assistant. For claude, resuming
-# --continue in this cwd lands on the same conversation the dashboard chat uses.
+# One master claude per Machine (docs/cluster.md; Sam, 2026-09-10): the
+# session lives in a tmux server on a socket of its own, started DETACHED
+# here — not by ttyd on the first browser connect — so it exists whether or
+# not a browser is open, survives ttyd respawns, and a user terminal can
+# `claude` into it (pipeos-claude-attach). The command inside is
+# pipeos-assistant-claude, which adds --continue only when there is a
+# conversation to continue: on a fresh box `claude --continue` exits with
+# "No conversation found to continue" and the session died the instant it
+# started, every connect respawning it into the same failure.
+SOCK=/run/pipeos/assistant/tmux.sock
+mkdir -p /run/pipeos/assistant
+chown root:users /run/pipeos/assistant; chmod 750 /run/pipeos/assistant
+if ! tmux -S "$SOCK" has-session -t assistant 2>/dev/null; then
+	tmux -S "$SOCK" new-session -d -s assistant -x 200 -y 50 \
+		"ASSISTANT_BACKEND=$BACKEND exec /usr/local/bin/pipeos-assistant-claude" || {
+		echo "pipeos-assistant-run: could not start the master session" >&2; exit 1; }
+fi
+# the socket is root's; terminal users reach it through the group and an
+# explicit tmux grant per user (tmux >= 3.3 server-access), never by default
+chgrp users "$SOCK" 2>/dev/null; chmod 660 "$SOCK" 2>/dev/null
+if [ -r /etc/pipeos/terminals.conf ]; then
+	# shellcheck disable=SC1091
+	. /etc/pipeos/terminals.conf
+	i=1
+	while [ "$i" -le 16 ]; do
+		eval "u=\${TERM_${i}_USER:-}"
+		[ -n "$u" ] && tmux -S "$SOCK" server-access -a "$u" 2>/dev/null
+		i=$((i + 1))
+	done
+fi
+
+# --writable so the client can type; every browser attaches to the one
+# master session.
 exec ttyd --writable --interface 0.0.0.0 --port "$PORT" \
-	--credential "${USER}:${ASSISTANT_PASS}" \
+	--credential "${TTYD_USER}:${ASSISTANT_PASS}" \
 	-t "titleFixed=$(hostname 2>/dev/null || echo pipeos) assistant" \
 	-t 'theme={"background":"#131417"}' \
-	tmux new -A -s assistant "$CMD"
+	tmux -S "$SOCK" attach-session -t assistant
