@@ -150,6 +150,36 @@ def ok(label):
     npass += 1
     print("  ok   " + label)
 
+# ---- the persistence rule (Sam, 2026-09-10: "whenever settings are changed
+# we should persist it"). The root is tmpfs; a handler that changes state and
+# does not call save_state() has changed nothing past the next boot. Static,
+# so a new handler cannot be added without either saving or being listed here
+# with a reason.
+import inspect as _inspect
+import re
+_src = _inspect.getsource(webd)
+_table = dict(re.findall(r'"(/api/[^"]+)":\s*self\.(\w+)', _src[_src.index("handlers = {"):]))
+_no_save = {
+    "/api/logout": "a session, tmpfs by design",
+    "/api/claude-login/start": "starts a login; /code saves",
+    "/api/file-op": "/work, not the apkovl",
+    "/api/backup": "writes an external disk",
+    "/api/chat": "a conversation, under /work",
+    "/api/reboot": "the shutdown hook saves",
+    "/api/reboot-firmware": "the shutdown hook saves",
+    "/api/update-now": "pipeos-selfupdate saves itself",
+    "/api/flash": "pipeos-flash writes the media directly",
+    "/api/save": "is the save",
+}
+_missing = []
+for _path, _fn in _table.items():
+    _m = re.search(r"\n    def %s\(self[^)]*\):(.*?)(?=\n    def |\Z)" % _fn, _src, re.S)
+    if _path not in _no_save and (not _m or "save_state" not in _m.group(1)):
+        _missing.append(_path)
+assert not _missing, "handlers that change state without saving: %s" % _missing
+assert not (set(_no_save) - set(_table)), "no-save list names a handler that no longer exists"
+ok("every state-changing handler saves (%d handlers, %d exempt with a reason)" % (len(_table), len(_no_save)))
+
 
 s = req("/api/state")
 assert s["claimed"] is False and s["authed"] is False

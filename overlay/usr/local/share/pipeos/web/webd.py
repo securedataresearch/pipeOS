@@ -2533,7 +2533,11 @@ class Handler(BaseHTTPRequestHandler):
         rc, out = run(["rc-service", "sshd", "restart"], timeout=60)
         actions.append("restarted sshd" if rc == 0
                        else "sshd restart FAILED: " + out.strip()[-150:])
-        self.send(200, {"ok": True, "actions": actions})
+        # a restored key that is not saved is a key that vanishes again at
+        # the next boot — the very failure this repairs
+        saved, detail = save_state()
+        actions.append("saved" if saved else "save FAILED: " + detail)
+        self.send(200, {"ok": True, "actions": actions, "saved": saved})
 
 
 # ---- Phase B surfaces: logs, streaming, pipe, updates ----------------------
@@ -2867,7 +2871,8 @@ class PhaseB:
         rc, out = run(["pipe", verb, nick], timeout=20)
         if rc != 0:
             return self.err(500, ("could not %s %s: " % (verb, nick)) + out.strip()[-200:])
-        self.send(200, {"ok": True})
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "saved": saved, "save_detail": "" if saved else detail})
 
     def api_pipe_set(self, body):
         pref = body.get("pref") or ""
@@ -2877,13 +2882,16 @@ class PhaseB:
         rc, out = run(["pipe", "set", pref, val], timeout=20)
         if rc != 0:
             return self.err(500, "pipe set failed: " + out.strip()[-200:])
-        self.send(200, {"ok": True, "pref": pref, "value": val == "on"})
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "pref": pref, "value": val == "on",
+                        "saved": saved, "save_detail": "" if saved else detail})
 
     def api_pipe_logout(self, body):
         rc, out = run(["pipe", "logout"], timeout=20)
         if rc != 0:
             return self.err(500, "logout failed: " + out.strip()[-200:])
-        self.send(200, {"ok": True})
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "saved": saved, "save_detail": "" if saved else detail})
 
     def api_pipe_board(self):
         q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
