@@ -2620,6 +2620,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_services(self, body):
         svcs = read_services()
+        # Network storage is the one service whose "on" means nothing
+        # without configuration: nas.conf declares the shares, and adding
+        # one already turns the service on (api_nas_set, docs/nas.md). A
+        # bare toggle-on with no share wrote SERVICE_NAS=on anyway, the
+        # init refused at every boot, and the box sat DEGRADED (zero,
+        # 2026-09-11, pipeOS#266). Off is always allowed.
+        if body.get("nas") and not svcs.get("nas") and not self._nas_read_shares():
+            return self.err(409, "network storage has nothing to share yet — add a share "
+                                 "under Files → Network storage; adding one turns it on")
         for k in SVC_KEYS:
             if k in body:
                 svcs[k] = bool(body[k])

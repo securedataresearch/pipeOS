@@ -888,6 +888,15 @@ req("/api/nas-password", {"name": "smbuser", "password": "short"}, expect=400)
 req("/api/nas-password", {"name": "nobody-here", "password": "longenough1"}, expect=400)
 ok("nas: empty share list disables; password endpoint validates first")
 webd.write_users([u for u in webd.read_users() if u["name"] != "smbuser"])
+# the bare Services toggle: with no share there is nothing to serve, so
+# turning storage on there is refused and nothing is written (pipeOS#266);
+# off stays a plain toggle
+req("/api/services", {"nas": True}, expect=409)
+with open(webd.SERVICES_CONF) as f:
+    assert "SERVICE_NAS=off" in f.read()
+r = req("/api/services", {"nas": False})
+assert r["ok"] and r["services"]["nas"] is False
+ok("services refuses nas on with nothing to share; off is always allowed")
 
 r = req("/api/users/add", {"name": "peek", "password": "peekpassword", "role": "viewer"})
 assert r["ok"]

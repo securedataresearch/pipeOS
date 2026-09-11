@@ -17,7 +17,8 @@ Under **Files → Network storage**:
    it once here.
 
 Adding a share turns the service on; removing the last one turns it off.
-The switch also lives under Services.
+The switch under Services can turn storage off, but not on with nothing to
+share — add a share here and it switches itself on.
 
 ## Connect from another device
 
