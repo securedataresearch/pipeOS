@@ -21,7 +21,8 @@ without the dashboard login; the dashboard and this tool never disagree
 because the probe (check-schedctl.py) holds them to one shape.
 
 Seams (the probe): PIPEOS_SCHED_CONF, PIPEOS_SCHED_STATE_DIR,
-PIPEOS_SCHED_LOGDIR, PIPEOS_SCHED_RUN_BIN, PIPEOS_SAVE_BIN, PIPEOS_SCHED_WORK.
+PIPEOS_SCHED_LOGDIR, PIPEOS_SCHED_RUN_BIN, PIPEOS_SAVE_BIN, PIPEOS_SCHED_WORK,
+PIPEOS_SCHED_PAUSED.
 """
 import json
 import os
@@ -38,6 +39,7 @@ STATE_DIR = os.environ.get("PIPEOS_SCHED_STATE_DIR", "/work/.pipeos/schedule")
 LOGDIR = os.environ.get("PIPEOS_SCHED_LOGDIR", "/work/logs")
 RUN_BIN = os.environ.get("PIPEOS_SCHED_RUN_BIN", "/usr/local/bin/pipeos-schedule-run")
 SAVE_BIN = os.environ.get("PIPEOS_SAVE_BIN", "/usr/local/bin/pipeos-save")
+PAUSED = os.environ.get("PIPEOS_SCHED_PAUSED", "/work/.pipeos/ledger/paused")
 WORK = os.environ.get("PIPEOS_SCHED_WORK", "/work")
 MAX_JOBS = 32
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
@@ -224,6 +226,13 @@ def cmd_run(argv):
     name = (argv[0] if argv else "").strip().lower()
     if not any(j["name"] == name for j in read_jobs()):
         raise Refused("no job named %s" % name)
+    if os.path.exists(PAUSED):
+        # the runner refuses too (rc 75), but "started" would be a lie — the dashboard answers 409 here
+        try:
+            why = open(PAUSED).read().strip()
+        except OSError:
+            why = "the monthly cap is reached"
+        raise Refused("scheduled runs are paused — %s (pipeos usage cap N|none)" % why)
     subprocess.Popen([RUN_BIN, name], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, start_new_session=True)
     print("started %s — pipeos schedule log %s" % (name, name))

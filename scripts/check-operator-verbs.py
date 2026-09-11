@@ -125,8 +125,15 @@ import time
 time.sleep(0.3)
 ran = open(os.path.join(D, "ran")).read().split() if os.path.exists(os.path.join(D, "ran")) else []
 rc_rg, _ = sched("run", "ghost")
-check("5 run starts the runner detached for a known job and refuses a ghost; no save (nothing in /etc changed)",
-      rc_r == 0 and ran == ["nightly"] and rc_rg == 2 and saves() == 4, "rc=%s ran=%r ghost=%s" % (rc_r, ran, rc_rg))
+PAUSED = os.path.join(D, "paused")
+open(PAUSED, "w").write("monthly cap USD 1 reached")
+rc_rp, out_rp = sched("run", "nightly", env=dict(ENV, PIPEOS_SCHED_PAUSED=PAUSED))
+os.unlink(PAUSED)
+time.sleep(0.3)
+ran_p = open(os.path.join(D, "ran")).read().split()
+check("5 run starts the runner detached for a known job and refuses a ghost; under the cap's pause marker it refuses with the reason instead of saying 'started' (the runner would exit 75 anyway); no save",
+      rc_r == 0 and ran == ["nightly"] and rc_rg == 2 and rc_rp == 2 and "paused" in out_rp and "USD 1" in out_rp and ran_p == ["nightly"] and saves() == 4,
+      "rc=%s ran=%r ghost=%s paused=%s %s" % (rc_r, ran, rc_rg, rc_rp, out_rp))
 open(os.path.join(LOGS, "schedule-nightly.log"), "w").write("\n".join("line %d" % i for i in range(60)) + "\n")
 rc_lg, out_lg = sched("log", "nightly", "5")
 rc_lx, out_lx = sched("log", "../../etc/passwd")
