@@ -1705,12 +1705,16 @@ class Handler(BaseHTTPRequestHandler):
                 os.unlink(p)
             except OSError:
                 pass
+        # under the same lock the tick and the runner hold for their
+        # read-modify-write, or a stale copy could rename over their commit
         try:
             sp = os.path.join(SCHEDULE_STATE_DIR, "state.json")
-            with open(sp) as f:
-                st = json.load(f)
-            st.get("jobs", {}).pop(name, None)
-            write_private(sp, json.dumps(st))
+            with open(os.path.join(SCHEDULE_STATE_DIR, ".state.lock"), "a+") as lk:
+                fcntl.flock(lk, fcntl.LOCK_EX)
+                with open(sp) as f:
+                    st = json.load(f)
+                st.get("jobs", {}).pop(name, None)
+                write_private(sp, json.dumps(st))
         except (OSError, ValueError):
             pass
         saved, detail = save_state()
@@ -1724,6 +1728,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(404, "no job named %s" % name)
         if schedule_running():
             return self.err(409, "another job is running on this Machine — one at a time; try again when it finishes")
+        if os.path.exists(LEDGER_PAUSED):
+            return self.err(409, "scheduled runs are paused — the monthly cap is reached; raise it under Usage")
         try:
             subprocess.Popen([SCHEDULE_RUN_BIN, name], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=True)

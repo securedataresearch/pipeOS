@@ -103,15 +103,24 @@ def main():
         with open(tmp, "w") as f:
             json.dump(state, f)
         os.replace(tmp, STATE)
-    for name in fire:
-        if paused:
+    if paused:
+        for name in fire:
             log("skipped %s: scheduled runs are paused — the monthly cap is reached (raise it under Usage)" % name, job=name)
-            continue
-        try:
-            subprocess.Popen([RUN_BIN, name], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
+        return 0
+    if not fire:
+        return 0
+    # Jobs sharing a minute (two "every day 02:00" presets) run one after
+    # another in one detached shell: the runner is one-at-a-time by lock,
+    # and racing them would have the loser exit 75 with nothing recorded.
+    # Names are [a-z0-9-] (webd refuses anything else), so no quoting.
+    script = "; ".join("%s %s" % (RUN_BIN, name) for name in fire)
+    try:
+        subprocess.Popen(["/bin/sh", "-c", script], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        for name in fire:
             log("fired %s (%s)" % (name, key))
-        except OSError as e:
+    except OSError as e:
+        for name in fire:
             log("could not start %s: %s" % (name, e), job=name)
     return 0
 

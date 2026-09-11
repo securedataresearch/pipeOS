@@ -30,6 +30,7 @@ LOGDIR=${PIPEOS_SCHED_LOGDIR:-/work/logs}
 SETTINGS=${PIPEOS_SCHED_SETTINGS:-/etc/pipeos/pipebox-settings.json}
 SECRETS=${PIPEOS_SCHED_SECRETS:-/run/pipeos/secrets}
 WORKROOT=${PIPEOS_SCHED_WORK:-/work}
+PAUSED=${PIPEOS_SCHED_PAUSED:-/work/.pipeos/ledger/paused}
 
 job=${1:-}
 case "$job" in
@@ -89,24 +90,62 @@ LOG=$LOGDIR/schedule-$job.log
 mkdir -p "$LOGDIR" "$STATE_DIR/sessions" || exit 1
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG"; }
 
+notify=true
+dm() {
+    [ "$notify" = true ] || return 0
+    [ -n "${OWNER_NICK:-}" ] || return 0
+    pipe dm "$OWNER_NICK" "$1" >/dev/null 2>&1 || true
+}
+
+state_set() {
+    # state.json: one atomic read-modify-write under the state lock; jq does
+    # the merge so a torn write is impossible and a missing file is {}
+    ( flock 8
+      _cur=$(cat "$STATE_DIR/state.json" 2>/dev/null); [ -n "$_cur" ] || _cur='{}'
+      printf '%s' "$_cur" | jq --arg n "$job" --argjson p "$1" '.jobs[$n] = ((.jobs[$n] // {}) + $p)' \
+          > "$STATE_DIR/state.json.new" && mv "$STATE_DIR/state.json.new" "$STATE_DIR/state.json"
+    ) 8>> "$STATE_DIR/.state.lock"
+}
+
+# A refusal before the run is still a run that did not happen: it is
+# logged, counted as failed(2) in state.json, appended to runs.log and
+# DMed, so a misconfigured job reaches the dashboard's failure pill and
+# the selfcheck WARN instead of showing "never run" forever.
+refuse() {
+    log "job $job: $1 — refusing"
+    _ts=$(date -u +%s)
+    _f=$(jq -r --arg n "$job" '(.jobs[$n].consecutive_failures // 0) + 1' "$STATE_DIR/state.json" 2>/dev/null); [ -n "$_f" ] || _f=1
+    state_set "{\"last_start\": $_ts, \"last_end\": $_ts, \"last_rc\": 2, \"last_status\": \"failed(2)\", \"last_error\": $(printf '%s' "$1" | jq -Rs .), \"consecutive_failures\": $_f, \"running_pid\": 0}"
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) - $job failed(2)" >> "$STATE_DIR/runs.log"
+    dm "job $job: refused — $1"
+    exit 2
+}
+
 # ---- the job
 jq -e --arg n "$job" '.jobs[] | select(.name == $n)' "$CONF" > "$STATE_DIR/.job-$job.json" 2>/dev/null \
-    || { echo "no job named $job in $CONF" >&2; exit 2; }
+    || { echo "no job named $job in $CONF" >&2; log "no job named $job in $CONF"; exit 2; }
 J=$STATE_DIR/.job-$job.json
 # `if == null` rather than jq's `//`: `//` reads a literal false as absent,
 # which turned notify:false into the default (the probe caught it)
-jf() { jq -r --arg d "${2:-}" "if $1 == null then \$d else $1 end" "$J"; }
+# ("" is absent too: the dashboard stores a blank working dir as "")
+jf() { jq -r --arg d "${2:-}" "if $1 == null or $1 == \"\" then \$d else $1 end" "$J"; }
 prompt=$(jf '.prompt' '')
 cwd=$(jf '.cwd' "$WORKROOT/pipebox/jobs/$job")
 backend=$(jf '.backend' 'claude')
 notify=$(jf '.notify' 'true')
 session=$(jf '.session' 'fresh')
 rm -f "$J"
-[ -n "$prompt" ] || { log "job $job has no prompt — nothing to run"; exit 2; }
-case "$cwd" in "$WORKROOT"/*) ;; *) log "job $job: cwd $cwd is not under $WORKROOT — refusing"; exit 2 ;; esac
-mkdir -p "$cwd" 2>/dev/null || { log "job $job: cannot create $cwd"; exit 2; }
-case "$backend" in claude|hermes) ;; *) log "job $job: unknown assistant '$backend'"; exit 2 ;; esac
-command -v "$backend" >/dev/null 2>&1 || { log "job $job: $backend is not installed on this image"; exit 2; }
+[ -n "$prompt" ] || refuse "no prompt — nothing to run"
+case "$cwd" in "$WORKROOT"|"$WORKROOT"/*) ;; *) refuse "cwd $cwd is not under $WORKROOT" ;; esac
+mkdir -p "$cwd" 2>/dev/null || refuse "cannot create $cwd"
+case "$backend" in claude|hermes) ;; *) refuse "unknown assistant '$backend'" ;; esac
+command -v "$backend" >/dev/null 2>&1 || refuse "$backend is not installed on this image"
+# The monthly cap (#246): the tick skips, and so does every other way in —
+# Run now, an agent's `pipeos-schedule-run` — this is the one choke point.
+if [ -f "$PAUSED" ]; then
+    log "job $job: scheduled runs are paused — $(cat "$PAUSED" 2>/dev/null || echo "the monthly cap is reached") (raise it under Usage)"
+    exit 75
+fi
 
 # ---- one at a time
 exec 9> "$LOCK"
@@ -127,22 +166,6 @@ fi
 resume_args="--session-id $sid"
 [ "$session" = continue ] && [ -f "$STATE_DIR/sessions/.started-$sid" ] && resume_args="--resume $sid"
 
-dm() {
-    [ "$notify" = true ] || return 0
-    [ -n "${OWNER_NICK:-}" ] || return 0
-    pipe dm "$OWNER_NICK" "$1" >/dev/null 2>&1 || true
-}
-
-state_set() {
-    # state.json: one atomic read-modify-write under the state lock; jq does
-    # the merge so a torn write is impossible and a missing file is {}
-    ( flock 8
-      _cur=$(cat "$STATE_DIR/state.json" 2>/dev/null); [ -n "$_cur" ] || _cur='{}'
-      printf '%s' "$_cur" | jq --arg n "$job" --argjson p "$1" '.jobs[$n] = ((.jobs[$n] // {}) + $p)' \
-          > "$STATE_DIR/state.json.new" && mv "$STATE_DIR/state.json.new" "$STATE_DIR/state.json"
-    ) 8>> "$STATE_DIR/.state.lock"
-}
-
 start_ts=$(date -u +%s)
 log "=== run $(date -u +%Y-%m-%dT%H:%M:%SZ) job=$job sid=$sid backend=$backend cwd=$cwd timeout=${CLAUDE_TIMEOUT}s ==="
 state_set "{\"last_start\": $start_ts, \"last_status\": \"running\", \"last_sid\": \"$sid\", \"running_pid\": $$}"
@@ -158,7 +181,6 @@ else
     (cd "$cwd" && printf '%s' "$prompt" | timeout "$CLAUDE_TIMEOUT" claude -p \
             --settings "$SETTINGS" $resume_args >> "$LOG" 2>&1 9>&-) || rc=$?
 fi
-touch "$STATE_DIR/sessions/.started-$sid"
 end_ts=$(date -u +%s)
 
 # 126/127: never started (exec error) — a failure to count. 124/143: the
@@ -168,6 +190,13 @@ case "$rc" in
     124|143)  log "claude was CUT OFF after ${CLAUDE_TIMEOUT}s (rc=$rc) — not a failure: the run was working when the clock ran out. Raise AGENT_TIMEOUT_MIN on this box's card if this repeats."
               status="cut off" ;;
     *)        status="failed($rc)" ;;
+esac
+# The resume marker only after a run that reached the conversation (ok or
+# cut off while working): a run that died before claude made a session
+# would otherwise be resumed forever (pipebox-cohort-watch, pipeOS#51).
+case "$status" in
+    ok|"cut off") touch "$STATE_DIR/sessions/.started-$sid" ;;
+    *) [ "$session" = continue ] && [ ! -f "$STATE_DIR/sessions/.started-$sid" ] && rm -f "$sid_file" ;;
 esac
 case "$status" in
     ok|"cut off") fails=0 ;;
