@@ -93,8 +93,10 @@ def parse(text):
             vals.discard(7)
             vals.add(0)
         setattr(s, label, vals)
-    s.day_star = parts[2] == "*"
-    s.weekday_star = parts[4] == "*"
+    # Vixie: a day field is "unrestricted" when it STARTS with * — so */2
+    # is a star for the either/both rule below, exactly as crond reads it
+    s.day_star = parts[2].startswith("*")
+    s.weekday_star = parts[4].startswith("*")
     return s
 
 
@@ -105,13 +107,17 @@ def matches(spec, dt):
     wd = (dt.weekday() + 1) % 7   # python: Monday=0; cron: Sunday=0
     dom_ok = dt.day in spec.day
     dow_ok = wd in spec.weekday
-    if spec.day_star and spec.weekday_star:
-        return True
-    if spec.day_star:
-        return dow_ok
-    if spec.weekday_star:
-        return dom_ok
-    return dom_ok or dow_ok   # Vixie: both restricted -> either
+    return day_ok(spec, dom_ok, dow_ok)
+
+
+def day_ok(spec, dom_ok, dow_ok):
+    """Vixie's rule verbatim: when either day field starts with * the two
+    are ANDed (a literal * has every bit set, so it costs nothing; */2
+    keeps its bits, so `*/2 * mon` is odd-day Mondays); when both are
+    restricted, either matches."""
+    if spec.day_star or spec.weekday_star:
+        return dom_ok and dow_ok
+    return dom_ok or dow_ok
 
 
 def next_run(spec, after, limit_days=366):
@@ -129,9 +135,7 @@ def next_run(spec, after, limit_days=366):
             if day.month in spec.month:
                 wd = (day.weekday() + 1) % 7
                 dom_ok, dow_ok = day.day in spec.day, wd in spec.weekday
-                day_ok = (True if spec.day_star and spec.weekday_star else
-                          dow_ok if spec.day_star else dom_ok if spec.weekday_star else (dom_ok or dow_ok))
-                if day_ok:
+                if day_ok(spec, dom_ok, dow_ok):
                     for h in hours:
                         for m in minutes:
                             cand = day.replace(hour=h, minute=m)

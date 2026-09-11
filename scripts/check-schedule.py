@@ -168,7 +168,7 @@ BIG_PROMPT = "line one with 'quotes' and \"doubles\" and $dollar and `ticks`\n" 
 def runner(job, extra_env=None, wait=True):
     env = dict(os.environ, PATH=BIN + ":" + os.environ.get("PATH", ""), PIPEOS_SCHED_CONF=CONF, PIPEOS_SCHED_STATE_DIR=RSTATE,
                PIPEOS_SCHED_LOCK=LOCK, PIPEOS_SCHED_LOGDIR=RLOGS, PIPEOS_SCHED_PIPEBOX_CONF=PBCONF, PIPEOS_SCHED_SETTINGS=SETTINGS,
-               PIPEOS_SCHED_SECRETS=SECRETS, PIPEOS_SCHED_WORK=WORK)
+               PIPEOS_SCHED_SECRETS=SECRETS, PIPEOS_SCHED_WORK=WORK, PIPEOS_SCHED_PAUSED=os.path.join(D, "rpaused"))
     env.pop("CLAUDE_TIMEOUT", None)
     if extra_env:
         env.update(extra_env)
@@ -255,16 +255,56 @@ check("13 a hermes job runs `hermes -z <prompt> --continue job-<name>` and no cl
 rc_e, _ = runner("elsewhere")
 rc_u, _ = runner("no-such-job")
 rc_bad, _ = runner("../etc")
-check("14 a cwd outside the /work root is refused (rc 2), an unknown job is rc 2, a hostile name is rc 2", rc_e == 2 and rc_u == 2 and rc_bad == 2, "e=%s u=%s bad=%s" % (rc_e, rc_u, rc_bad))
+st_e = json.load(open(os.path.join(RSTATE, "state.json")))["jobs"].get("elsewhere", {})
+check("14 a cwd outside the /work root is refused (rc 2) AND recorded — state failed(2) with the reason, a runs.log line, a DM; an unknown job is rc 2, a hostile name is rc 2",
+      rc_e == 2 and rc_u == 2 and rc_bad == 2 and st_e.get("last_status") == "failed(2)" and st_e.get("consecutive_failures") == 1
+      and "not under" in st_e.get("last_error", "") and "elsewhere failed(2)" in open(os.path.join(RSTATE, "runs.log")).read()
+      and "job elsewhere: refused" in open(D + "/pipe.argv").read(),
+      "e=%s u=%s bad=%s st=%r" % (rc_e, rc_u, rc_bad, st_e))
 check("15 jobs.env from the vault reaches the run's environment (GH_TOKEN exported)",
       "ghp_fromvault" in subprocess.run(["sh", "-c", ". %s; set -a; . %s; set +a; env" % (PBCONF, os.path.join(SECRETS, "jobs.env"))], capture_output=True, text=True).stdout
       and "set -a" in open(RUNNER).read() and "jobs.env" in open(RUNNER).read(), "")
 
-# ── 16. the wiring ───────────────────────────────────────────────────────
+# ── 17-20. the review's findings (2026-09-11) ─────────────────────────────
+clear("claude"); clear("pipe")
+jobs({"name": "blank", "cron": "0 2 * * *", "prompt": "p", "cwd": ""},
+     {"name": "root", "cron": "0 2 * * *", "prompt": "p", "cwd": WORK},
+     {"name": "flaky", "cron": "0 3 * * *", "prompt": "p", "notify": False, "session": "continue"})
+rc_b, out_b = runner("blank")
+rc_r, out_r = runner("root")
+check("17 a blank working dir (what the dashboard stores for the documented default) runs under /work/pipebox/jobs/<name>, and /work itself is accepted",
+      rc_b == 0 and rc_r == 0 and os.path.isdir(os.path.join(WORK, "pipebox", "jobs", "blank")) and len(argv("claude")) == 2,
+      "b=%s %s r=%s %s" % (rc_b, out_b[-120:], rc_r, out_r[-120:]))
+clear("claude")
+open(os.path.join(D, "rpaused"), "w").write("monthly cap USD 40 reached")
+rc_p, _ = runner("blank")
+check("18 the runner itself honours the cap's pause marker (Run now and an agent's pipeos-schedule-run are not a way around the tick): rc 75, claude not started, the log says why",
+      rc_p == 75 and not argv("claude") and "monthly cap" in open(os.path.join(RLOGS, "schedule-blank.log")).read(), "rc=%s" % rc_p)
+os.unlink(os.path.join(D, "rpaused"))
+clear("claude")
+runner("flaky", {"STUB_RC": "1"}); f1 = argv("claude"); clear("claude")
+runner("flaky"); f2 = argv("claude"); clear("claude")
+runner("flaky"); f3 = argv("claude")
+check("19 session continue: a run that failed before a conversation existed is not resumed — the next run starts a new session id; only a run that reached the conversation is resumed",
+      len(f1) == 1 and "--session-id" in f1[0] and len(f2) == 1 and "--session-id" in f2[0] and f2[0] != f1[0] and "--resume" not in f2[0]
+      and len(f3) == 1 and f3[0].endswith("--resume " + f2[0].split("--session-id ")[1].strip()), repr((f1, f2, f3)))
+try:
+    os.unlink(D + "/fired")
+except OSError:
+    pass
+jobs({"name": "two-a", "cron": "0 2 * * *", "prompt": "p"}, {"name": "two-b", "cron": "0 2 * * *", "prompt": "p"})
+tick("2026-09-12T02:00")
+time.sleep(0.3)
+sm = [(e, cs.matches(cs.parse("0 0 */2 * mon"), T(2026, 9, d))) for e, d in (("mon-even", 14), ("tue-odd", 15), ("mon-odd", 21))]
+check("20 two jobs sharing a minute both fire, in order (one detached shell runs them one after another — the runner's lock is not a race the loser silently loses); Vixie's either/both rule reads `*/2` as a star: `0 0 */2 * mon` is odd-day Mondays only",
+      fired() == ["two-a", "two-b"] and sm == [("mon-even", False), ("tue-odd", False), ("mon-odd", True)],
+      "fired=%r sm=%r" % (fired(), sm))
+
+# ── 21. the wiring ───────────────────────────────────────────────────────
 cron = open(os.path.join(REPO, "overlay/etc/crontabs/root")).read()
 lbu = [l.strip() for l in open(os.path.join(REPO, "overlay/etc/apk/protected_paths.d/lbu.list")) if not l.startswith("#")]
 settings = [open(os.path.join(REPO, p)).read() for p in ("overlay/etc/pipeos/pipebox-settings.json", "overlay/usr/local/share/pipeos/card/pipebox-settings.json.tmpl")]
-check("16 the per-minute tick line is in the shipped crontab, schedule.json persists via lbu.list, the runner is fenced from the agent",
+check("21 the per-minute tick line is in the shipped crontab, schedule.json persists via lbu.list, the runner is fenced from the agent",
       "* * * * * /usr/local/bin/pipeos-schedule-tick" in cron and "+etc/pipeos/schedule.json" in lbu
       and all('"Bash(pipeos-schedule-*)"' in s for s in settings), "")
 
