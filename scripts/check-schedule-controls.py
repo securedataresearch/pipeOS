@@ -31,7 +31,22 @@ BREAKS = [
     ("G  session continue never resumes", RUNNER,
      '[ "$session" = continue ] && [ -f "$STATE_DIR/sessions/.started-$sid" ] && resume_args="--resume $sid"', ''),
     ("H  a cwd outside /work is accepted", RUNNER,
-     'case "$cwd" in "$WORKROOT"/*) ;; *) log "job $job: cwd $cwd is not under $WORKROOT — refusing"; exit 2 ;; esac', ''),
+     'case "$cwd" in "$WORKROOT"|"$WORKROOT"/*) ;; *) refuse "cwd $cwd is not under $WORKROOT" ;; esac', ''),
+    ("I  a blank cwd is kept as \"\" instead of the default", RUNNER,
+     'if $1 == null or $1 == \\"\\" then', 'if $1 == null then'),
+    ("J  the runner ignores the pause marker", RUNNER,
+     'if [ -f "$PAUSED" ]; then', 'if false; then'),
+    ("K  a failed first run still gets the resume marker", RUNNER,
+     '    ok|"cut off") touch "$STATE_DIR/sessions/.started-$sid" ;;\n    *) [ "$session" = continue ] && [ ! -f "$STATE_DIR/sessions/.started-$sid" ] && rm -f "$sid_file" ;;',
+     '    *) touch "$STATE_DIR/sessions/.started-$sid" ;;'),
+    ("L  a refusal is not recorded", RUNNER,
+     '    dm "job $job: refused — $1"\n    exit 2', '    exit 2'),
+    ("M  */2 in the day field is read as a plain *", CRONSPEC,
+     '    if spec.day_star or spec.weekday_star:\n        return dom_ok and dow_ok',
+     '    if spec.day_star and spec.weekday_star:\n        return True\n    if spec.day_star:\n        return dow_ok\n    if spec.weekday_star:\n        return dom_ok'),
+    ("N  same-minute jobs race instead of running in order", TICK,
+     '    script = "; ".join("%s %s" % (RUN_BIN, name) for name in fire)',
+     '    script = " & ".join("%s %s" % (RUN_BIN, name) for name in fire) + " & wait"'),
 ]
 
 ENV_FOR = {CRONSPEC: "CHECK_CRONSPEC", TICK: "CHECK_TICK", RUNNER: "CHECK_RUNNER"}

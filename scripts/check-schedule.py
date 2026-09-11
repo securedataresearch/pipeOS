@@ -90,8 +90,8 @@ def jobs(*js):
     json.dump({"v": 1, "jobs": list(js)}, open(CONF, "w"))
 
 
-def tick(now):
-    env = dict(os.environ, PIPEOS_SCHED_CONF=CONF, PIPEOS_SCHED_STATE_DIR=STATE_DIR, PIPEOS_SCHED_RUN_BIN=RUN_STUB,
+def tick(now, run_bin=RUN_STUB):
+    env = dict(os.environ, PIPEOS_SCHED_CONF=CONF, PIPEOS_SCHED_STATE_DIR=STATE_DIR, PIPEOS_SCHED_RUN_BIN=run_bin,
                PIPEOS_SCHED_LOG=os.path.join(LOGDIR, "schedule.log"), PIPEOS_SCHED_LOGDIR=LOGDIR, PIPEOS_SCHED_PAUSED=PAUSED,
                PIPEOS_SCHED_NOW=now)
     p = subprocess.run([sys.executable, os.path.join(D, "schedtick.py")], capture_output=True, text=True, env=env)
@@ -293,11 +293,15 @@ try:
 except OSError:
     pass
 jobs({"name": "two-a", "cron": "0 2 * * *", "prompt": "p"}, {"name": "two-b", "cron": "0 2 * * *", "prompt": "p"})
-tick("2026-09-12T02:00")
-time.sleep(0.3)
+SLOW_STUB = os.path.join(D, "run-slow")   # a run that takes time: start/end order tells sequential from racing
+with open(SLOW_STUB, "w") as f:
+    f.write("#!/bin/sh\necho \"start-$1\" >> " + D + "/fired\nsleep 0.4\necho \"end-$1\" >> " + D + "/fired\n")
+os.chmod(SLOW_STUB, 0o755)
+tick("2026-09-12T02:00", SLOW_STUB)
+time.sleep(1.2)
 sm = [(e, cs.matches(cs.parse("0 0 */2 * mon"), T(2026, 9, d))) for e, d in (("mon-even", 14), ("tue-odd", 15), ("mon-odd", 21))]
 check("20 two jobs sharing a minute both fire, in order (one detached shell runs them one after another — the runner's lock is not a race the loser silently loses); Vixie's either/both rule reads `*/2` as a star: `0 0 */2 * mon` is odd-day Mondays only",
-      fired() == ["two-a", "two-b"] and sm == [("mon-even", False), ("tue-odd", False), ("mon-odd", True)],
+      fired() == ["start-two-a", "end-two-a", "start-two-b", "end-two-b"] and sm == [("mon-even", False), ("tue-odd", False), ("mon-odd", True)],
       "fired=%r sm=%r" % (fired(), sm))
 
 # ── 21. the wiring ───────────────────────────────────────────────────────
