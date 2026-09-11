@@ -37,6 +37,15 @@ reset passwords, disable or delete accounts. Viewers see everything and can
 change nothing — the server enforces it, the grey controls are just the
 honest signal.
 
+## Schedule
+
+Jobs the Machine runs on its own: a time (cron, box clock = UTC), a
+prompt, a working dir under `/work`, which assistant. One job at a time;
+each run DMs you over pipe when it starts and ends and writes its own log
+(`Log` on the row, or Logs under System as `schedule-<job>`). Pause,
+resume, run now, edit, delete. When the monthly usage cap is reached
+nothing starts until the cap is raised.
+
 ## Secrets
 
 Everything the Machine keeps to itself, in one sealed file: listed by

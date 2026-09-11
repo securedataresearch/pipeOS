@@ -394,6 +394,29 @@ if [ "$SERVICE_CLAUDE" = on ]; then
     fi
 fi
 
+# ---- 3cs. scheduled runs (#242). crond is the clock; the per-minute tick
+# line in /etc/crontabs/root is what turns the owner's job list into runs.
+# Both are unconditional (the runlevel, the overlay), so their absence is a
+# defect, not a choice. A job failing run after run is a WARN with the log
+# to open — the runner already DMs each failure; this is the boot-report
+# line for an owner who did not read the DMs.
+if ! rc-service crond status >/dev/null 2>&1; then
+    if [ "$BOOT" = yes ] && rc-service crond start >/dev/null 2>&1; then
+        fixed "crond was down; started (scheduled jobs and the maintenance crons need it)"
+    else
+        crit "crond is not running — no scheduled job, no cron maintenance fires"
+    fi
+fi
+if [ -s /etc/pipeos/schedule.json ] && ! grep -q 'pipeos-schedule-tick' /etc/crontabs/root 2>/dev/null; then
+    warnn "scheduled jobs exist but the tick line is missing from /etc/crontabs/root — jobs will not fire (redeploy the overlay)"
+fi
+if [ -s /work/.pipeos/schedule/state.json ] && command -v jq >/dev/null 2>&1; then
+    jq -r '.jobs | to_entries[] | select((.value.consecutive_failures // 0) >= 3) | "\(.key) \(.value.consecutive_failures)"' \
+        /work/.pipeos/schedule/state.json 2>/dev/null | while read -r _jn _jf; do
+        [ -n "$_jn" ] && warnn "scheduled job $_jn failed its last $_jf runs — open schedule-$_jn.log in the dashboard (Schedule → Log)"
+    done
+fi
+
 # ---- 3cv. the vault (#244). The services read their secrets from
 # /run/pipeos/secrets, which pipeos-vault writes at boot from the sealed
 # store. Locked = this stick's secrets were sealed in another chassis: the

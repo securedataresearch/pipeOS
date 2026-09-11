@@ -7,3 +7,5 @@
 0	5	1	*	*	run-parts /etc/periodic/monthly
 
 */2 * * * * /usr/local/bin/pipebox-cohort-watch >/dev/null 2>&1
+# the box's own scheduled jobs (#242): the tick decides, pipeos-schedule-run does
+* * * * * /usr/local/bin/pipeos-schedule-tick >/dev/null 2>&1

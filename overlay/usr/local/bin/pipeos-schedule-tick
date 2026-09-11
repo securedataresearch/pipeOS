@@ -1,0 +1,5 @@
+#!/bin/sh
+# pipeos-schedule-tick — the per-minute dispatcher for scheduled runs (#242);
+# the logic is share/pipeos/web/schedtick.py (a .py under usr/local/bin reds
+# shellcheck). Called from /etc/crontabs/root.
+exec python3 /usr/local/share/pipeos/web/schedtick.py "$@"

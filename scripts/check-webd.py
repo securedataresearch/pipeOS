@@ -45,6 +45,17 @@ webd.vault.ETC = tmp
 webd.vault.ITER = 1500
 webd.vault.ident = lambda: {"mac": "aa:bb:cc:dd:7f:3a", "serial": "PC1", "product": "Test Box"}
 webd.VAULT_PHRASE = tmp + "/vault-phrase"
+# scheduled runs (#242): the job list, the runtime state, a stub runner
+webd.SCHEDULE_CONF = tmp + "/schedule.json"
+webd.SCHEDULE_STATE_DIR = tmp + "/sched"
+webd.SCHEDULE_LOCK = tmp + "/schedule.lock"
+webd.SCHEDULE_LOGDIR = tmp + "/logs"
+webd.LEDGER_PAUSED = tmp + "/paused"
+webd.SCHEDULE_RUN_BIN = tmp + "/sched-run-stub"
+with open(webd.SCHEDULE_RUN_BIN, "w") as f:
+    f.write("#!/bin/sh\nprintf '%s\\n' \"$@\" >> " + tmp + "/sched.argv\n")
+os.chmod(webd.SCHEDULE_RUN_BIN, 0o755)
+os.makedirs(tmp + "/logs", exist_ok=True)
 webd.VAULT_STATUS = tmp + "/vault.status"
 webd.CLAUDE_AUTH = tmp + "/secrets/claude.env"
 webd.CLAUDE_AUTH_LEGACY = tmp + "/claude-auth.env"
@@ -210,6 +221,7 @@ _no_save = {
     "/api/wake": "a packet on the wire, no state (#241)",
     "/api/secrets/reveal": "a read that re-auths (#244)",
     "/api/secrets/phrase-ack": "forgets a tmpfs copy (#244)",
+    "/api/schedule/run": "starts a run; its record lives on /work (#242)",
 }
 _missing = []
 for _path, _fn in _table.items():
@@ -468,6 +480,66 @@ assert req("/api/secrets")["phrase_pending"] is True and req("/api/secrets")["ph
 req("/api/secrets/phrase-ack", {})
 assert req("/api/secrets")["phrase_pending"] is False and not os.path.exists(webd.VAULT_PHRASE)
 ok("secrets: init is refused while a vault exists; a parked phrase shows until the owner acknowledges it")
+# ---- scheduled runs (#242): the job list, saved; hostile input refused; run-now; logs
+_work_ok = os.access("/work", os.W_OK) if os.path.isdir("/work") else False
+r = req("/api/schedule/set", {"name": "nightly", "cron": "0 2 * * *", "prompt": "run the tests", "backend": "claude", "notify": True})
+assert r["ok"] and r["job"]["cron"] == "0 2 * * *" and r["job"]["session"] == "fresh"
+sc = req("/api/schedule")
+assert [j["name"] for j in sc["jobs"]] == ["nightly"] and sc["jobs"][0]["human"] == "every day at 02:00" \
+    and sc["jobs"][0]["next_run"] and sc["jobs"][0]["enabled"] is True and sc["paused"] == "" and sc["running"] is False
+assert json.load(open(webd.SCHEDULE_CONF))["jobs"][0]["prompt"] == "run the tests"
+ok("schedule: a job is created, saved, and listed with its human schedule and next run")
+r = req("/api/schedule/set", {"name": "nightly", "enabled": False})
+assert r["ok"] and req("/api/schedule")["jobs"][0]["enabled"] is False and req("/api/schedule")["jobs"][0]["next_run"] == ""
+r = req("/api/schedule/set", {"name": "nightly", "cron": "@hourly", "session": "continue"})
+assert r["job"]["cron"] == "0 * * * *" and r["job"]["prompt"] == "run the tests" and r["job"]["session"] == "continue"
+ok("schedule: pause is an edit that saves; a partial edit keeps the rest; an alias normalises")
+for bad in ("* * * * * ; rm -rf /", "60 * * * *", "*/0 * * * *", "1 2 3 4 5 6", "x" * 3000, "$(id)"):
+    req("/api/schedule/set", {"name": "evil", "cron": bad, "prompt": "x"}, expect=400)
+req("/api/schedule/set", {"name": "Bad Name", "cron": "* * * * *", "prompt": "x"}, expect=400)
+req("/api/schedule/set", {"name": "noprompt", "cron": "* * * * *", "prompt": ""}, expect=400)
+req("/api/schedule/set", {"name": "long", "cron": "* * * * *", "prompt": "x" * 9000}, expect=400)
+req("/api/schedule/set", {"name": "etc", "cron": "* * * * *", "prompt": "x", "cwd": "/etc"}, expect=400)
+req("/api/schedule/set", {"name": "dots", "cron": "* * * * *", "prompt": "x", "cwd": "/work/../etc"}, expect=400)
+req("/api/schedule/set", {"name": "skynet", "cron": "* * * * *", "prompt": "x", "backend": "skynet"}, expect=400)
+req("/api/schedule/set", {"name": "sess", "cron": "* * * * *", "prompt": "x", "session": "forever"}, expect=400)
+assert [j["name"] for j in req("/api/schedule")["jobs"]] == ["nightly"]
+ok("schedule: hostile cron strings, names, prompts, a cwd outside /work, an unknown assistant and a bad session mode are all refused and change nothing")
+# the handler detaches the runner (start_new_session); the probe wraps Popen
+# so the child is reaped before the row reads its record — a detached child
+# under a CI sandbox may not get scheduled until someone waits on it
+_orig_popen = webd.subprocess.Popen
+_spawned = []
+def _wait_popen(*a, **k):
+    pr = _orig_popen(*a, **k); _spawned.append(list(a[0])); pr.wait(); return pr
+webd.subprocess.Popen = _wait_popen
+r = req("/api/schedule/run", {"name": "nightly"})
+assert r["started"] and _spawned == [[webd.SCHEDULE_RUN_BIN, "nightly"]], _spawned
+assert open(tmp + "/sched.argv").read().split() == ["nightly"]
+req("/api/schedule/run", {"name": "nope"}, expect=404)
+import fcntl as _fcntl
+_lk = open(webd.SCHEDULE_LOCK, "a+")
+_fcntl.flock(_lk, _fcntl.LOCK_EX)
+req("/api/schedule/run", {"name": "nightly"}, expect=409)
+assert req("/api/schedule")["running"] is True
+_fcntl.flock(_lk, _fcntl.LOCK_UN); _lk.close()
+webd.subprocess.Popen = _orig_popen
+ok("schedule: run-now starts the runner with the job name; unknown is 404; while the lock is held it is 409 and the list says running")
+with open(tmp + "/logs/schedule-nightly.log", "w") as f:
+    f.write("=== run job=nightly ===\nthe reply\n")
+assert "the reply" in req("/api/logs?name=schedule-nightly")["text"]
+req("/api/logs?name=schedule-nope", expect=400)
+req("/api/logs?name=schedule-../../etc/passwd", expect=400)
+assert "text" in req("/api/logs?name=schedule")
+ok("schedule: a job's own log is readable by schedule-<job>, an unknown or hostile name is not; the dispatch log is on the allow-list")
+with open(webd.LEDGER_PAUSED, "w") as f:
+    f.write("monthly cap USD 40 reached 2026-09-10\n")
+assert "monthly cap" in req("/api/schedule")["paused"]
+os.unlink(webd.LEDGER_PAUSED)
+r = req("/api/schedule/del", {"name": "nightly"})
+assert r["ok"] and req("/api/schedule")["jobs"] == []
+req("/api/schedule/del", {"name": "nightly"}, expect=404)
+ok("schedule: the ledger's pause marker shows in the list; delete removes the job and saves")
 req("/api/login", {"password": "hunter22hunter"})
 req("/api/logs?name=../../etc/shadow", expect=400)
 req("/api/logs?name=nope", expect=400)
@@ -784,6 +856,7 @@ req("/api/flash", {"mode": "inplace", "confirm": "x"}, expect=403)
 req("/api/wake", {"id": "4d4d"}, expect=403)
 req("/api/secrets", expect=403)
 req("/api/secrets/set", {"name": "jobs.x", "value": "y"}, expect=403)
+req("/api/schedule/set", {"name": "x", "cron": "* * * * *", "prompt": "x"}, expect=403)
 r = req("/api/password", {"current": "peekpassword", "new": "peekpassword2"})
 assert r["ok"]
 assert req("/api/docs")["pages"], "viewer must be able to read the docs"
