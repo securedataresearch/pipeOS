@@ -171,7 +171,9 @@ if [ "$_wol" != off ] && command -v ethtool >/dev/null 2>&1; then
     if [ -n "$_wdev" ]; then
         _eth=$(ethtool "$_wdev" 2>/dev/null)
         if ! printf '%s' "$_eth" | grep -q 'Supports Wake-on:.*g'; then
-            warnn "wake-on-lan: $_wdev cannot wake on a magic packet (driver) — a sibling's Wake button will not reach this Machine"
+            # A NIC that cannot do it is a fact about the hardware, not a fault to
+            # fix (the M920q's SFP+ port; Sam, 2026-09-11: "forget WoL") — one note, no WARN
+            noten "wake-on-lan: $_wdev cannot wake on a magic packet (driver); Wake from a sibling will not reach this Machine"
         elif ! printf '%s' "$_eth" | grep -q '^[[:space:]]*Wake-on: g'; then
             if [ "$BOOT" = yes ] && ethtool -s "$_wdev" wol g >/dev/null 2>&1 \
                && ethtool "$_wdev" 2>/dev/null | grep -q '^[[:space:]]*Wake-on: g'; then
