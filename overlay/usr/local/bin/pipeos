@@ -22,6 +22,11 @@
 #   pipeos unclaim [--yes]     nobody's box again: drop the claim, name, users; reboot
 #   pipeos wake NAME|ID|--all|--list|--forget ID   magic packet to a Machine this box has seen
 #   pipeos vault status|list|set|get|del|export|unlock|rephrase   the sealed secret store
+#   pipeos schedule ls|add|set|rm|enable|disable|run|log   the Machine's scheduled jobs (what the dashboard's Schedule view edits)
+#   pipeos usage [totals|cap N|cap none]   the ledger's totals; the monthly cap (card, saved, enforced now)
+#   pipeos card set KEY=VALUE...   a card field, regenerated and saved (what the dashboard's forms write)
+#   pipeos secrets phrase [--ack]  the vault's pending recovery phrase; --ack forgets the tmpfs copy
+#   pipeos assistant password      the assistant terminal's password from stdin -> vault, restarted, saved
 #
 # Read-only verbs (status/verify/diff/snapshot) are open to the resident
 # agent; mutating verbs are root/human territory (pipebox-settings.json).
@@ -33,6 +38,12 @@ KNOWN_GOOD=$MEDIA/pipeos.known-good.tar.gz
 OVERLAY=/work/repos/pipeOS/overlay
 REPO=${PIPEOS_REPO:-/work/repos/pipeOS}
 STAMP=/etc/pipeos/.overlay-stamp
+# operator-verb seams (the probe): the card, its generator, the saver, the ledger, the phrase file
+CARD=${PIPEOS_CARD:-/etc/pipeos/card.conf}
+CARD_GEN=${PIPEOS_CARD_GEN:-/usr/local/bin/pipebox-card}
+SAVE_BIN=${PIPEOS_SAVE_BIN:-/usr/local/bin/pipeos-save}
+LEDGER_PY=${PIPEOS_LEDGER:-/usr/local/share/pipeos/web/ledger.py}
+VAULT_PHRASE=${PIPEOS_VAULT_PHRASE:-/run/pipeos/vault-phrase}
 BASE_REF=${PIPEOS_BASE_REF:-origin/main}
 
 ok()   { printf 'ok    %s\n' "$*"; }
@@ -425,6 +436,74 @@ cmd_unclaim() {
     sleep 2; reboot
 }
 
+# ---------------------------------------------------------------- operator verbs (#259)
+# The dashboard's forms, as verbs: the same file, the same validation, the
+# same save. An operator over ssh — or the owner's agent on a workstation —
+# drives a Machine with these instead of hand-editing /etc (which the fence
+# and the deploy rules both forbid, for the reason CLAUDE.md gives: a hand
+# edit is a change nobody can find later).
+cmd_card_set() {
+    [ $# -ge 1 ] || { echo "usage: pipeos card set KEY=VALUE..." >&2; exit 2; }
+    [ -f "$CARD" ] || { echo "no card at $CARD" >&2; exit 1; }
+    for kv in "$@"; do
+        k=${kv%%=*}; v=${kv#*=}
+        case "$k" in
+            ''|*[!A-Z0-9_]*) echo "card set: KEY is [A-Z0-9_]: '$k'" >&2; exit 2 ;;
+        esac
+        [ "$kv" != "$k" ] || { echo "card set: $k needs =VALUE (empty is allowed: $k=)" >&2; exit 2; }
+        case "$v" in *"
+"*|*'|'*) echo "card set: a value is one line, no |" >&2; exit 2 ;; esac
+        # a box claimed before the key existed has no KEY= line: add the generator's empty default
+        grep -q "^$k=" "$CARD" || printf '%s=\n' "$k" >> "$CARD"
+        sed -i "s|^$k=.*|$k=$v|" "$CARD"
+        echo "card: $k=$v"
+    done
+    "$CARD_GEN" generate --card "$CARD" >/dev/null || { echo "card set: regeneration FAILED — the card is edited but the derived files are stale; fix the value (pipebox-card generate says what)" >&2; exit 1; }
+    "$SAVE_BIN" >/dev/null && echo "saved" || { echo "saved: NO — run pipeos save" >&2; exit 1; }
+}
+
+cmd_usage() {
+    case "${1:-totals}" in
+        totals) [ $# -gt 0 ] && shift; exec python3 "$LEDGER_PY" totals "$@" ;;
+        cap)
+            v=${2:-}
+            case "$v" in
+                none|0) cmd_card_set "MONTHLY_CAP_USD=" ;;
+                ''|*[!0-9]*) echo "usage: pipeos usage cap N|none   (whole dollars, 1-100000)" >&2; exit 2 ;;
+                *) [ "$v" -ge 1 ] && [ "$v" -le 100000 ] || { echo "the cap is 1-100000 dollars (or none)" >&2; exit 2; }
+                   cmd_card_set "MONTHLY_CAP_USD=$v" ;;
+            esac
+            # enforce now: lowering under this month's spend pauses jobs at once, raising lifts it
+            python3 "$LEDGER_PY" enforce ;;
+        *) echo "usage: pipeos usage [totals [--json]|cap N|cap none]" >&2; exit 2 ;;
+    esac
+}
+
+cmd_secrets() {
+    case "${1:-}" in
+        phrase)
+            if [ -s "$VAULT_PHRASE" ]; then
+                cat "$VAULT_PHRASE"
+                if [ "${2:-}" = --ack ]; then rm -f "$VAULT_PHRASE"; echo "acked — the tmpfs copy is gone; keep the phrase somewhere that is not this box"; fi
+            else
+                echo "no recovery phrase pending (already acked, or the vault was never migrated here)"; exit 1
+            fi ;;
+        *) echo "usage: pipeos secrets phrase [--ack]" >&2; exit 2 ;;
+    esac
+}
+
+cmd_assistant() {
+    case "${1:-}" in
+        password)
+            [ ! -t 0 ] || { echo "usage: printf '%s' PASSWORD | pipeos assistant password" >&2; exit 2; }
+            /usr/local/bin/pipeos-vault set assistant_pass assistant >/dev/null || exit 1
+            echo "assistant password: set in the vault"
+            rc-service pipeos-assistant restart >/dev/null 2>&1 9>&- && echo "pipeos-assistant restarted" || echo "pipeos-assistant did not start — rc-service pipeos-assistant status" >&2
+            "$SAVE_BIN" >/dev/null && echo "saved" || { echo "saved: NO — run pipeos save" >&2; exit 1; } ;;
+        *) echo "usage: pipeos assistant password   (the password on stdin)" >&2; exit 2 ;;
+    esac
+}
+
 # ---------------------------------------------------------------- main
 case "$1" in
     status)      cmd_status ;;
@@ -443,8 +522,13 @@ case "$1" in
     unclaim)     shift; cmd_unclaim "$@" ;;
     wake)        shift; exec /usr/local/bin/pipeos-wake "$@" ;;
     vault)       shift; exec /usr/local/bin/pipeos-vault "$@" ;;
+    schedule)    shift; exec python3 /usr/local/share/pipeos/web/schedctl.py "$@" ;;
+    usage)       shift; cmd_usage "$@" ;;
+    card)        [ "${2:-}" = set ] || { echo "usage: pipeos card set KEY=VALUE..." >&2; exit 2; }; shift 2; cmd_card_set "$@" ;;
+    secrets)     shift; cmd_secrets "$@" ;;
+    assistant)   shift; cmd_assistant "$@" ;;
     *)
-        sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'
         exit 1
         ;;
 esac
