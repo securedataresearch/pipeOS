@@ -512,6 +512,7 @@ function chart(elm, series, opts) {
   const Y = v => H * (1 - Math.min(v, ymax) / ymax);
   const fmtY = v => opts.unit === "bps" ? fmtBps(v)
     : opts.unit === "%" ? v + "%"
+    : opts.unit === "$" ? "$" + (v >= 100 ? Math.round(v) : +v.toFixed(2))
     : (v >= 100 ? Math.round(v) : +v.toFixed(1)) + (opts.unit || "");
   const parts = [];
   parts.push([1 / 3, 2 / 3].map(f =>
@@ -601,6 +602,7 @@ async function dashboard() {
     users: '<svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
     secrets: '<svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
     schedule: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
+    usage: '<svg viewBox="0 0 24 24"><path d="M12 2v20M17 6.5a4 4 0 0 0-3.5-2.5h-3a3 3 0 0 0 0 6h3a3 3 0 0 1 0 6h-3A4 4 0 0 1 7 13.5"/></svg>',
     docs: '<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
     setup: '<svg viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
   };
@@ -625,6 +627,7 @@ async function dashboard() {
         ${isAdmin ? navItem("schedule", "Schedule") : ""}
         ${isAdmin ? navItem("secrets", "Secrets") : ""}
         ${isAdmin ? navItem("setup", "Setup") : ""}
+        ${navItem("usage", "Usage")}
         ${navItem("network", "Network")}
         ${navItem("system", "System")}
         ${navItem("docs", "Docs")}
@@ -649,6 +652,7 @@ async function dashboard() {
           <div class="tile"><div class="k">Disk</div><div class="val">${st.work_pct == null ? "?" : st.work_pct + "%"}</div><div class="note">${st.work_free_mb != null ? Math.round(st.work_free_mb / 1024) + " GB free" : "used"}</div></div>
           <div class="tile"><div class="k">CPU</div><div class="val" id="ovload">…</div><div class="note" id="ovloadn"></div></div>
           <div class="tile"><div class="k">CPU temp</div><div class="val" id="ovtemp">…</div></div>
+          <div class="tile"><div class="k">Spend today</div><div class="val">$${(st.spend_today_usd || 0).toFixed(2)}</div><div class="note">${st.usage_cap && st.usage_cap.usd ? "$" + (st.spend_month_usd || 0).toFixed(2) + " of $" + st.usage_cap.usd + " this month" : "$" + (st.spend_month_usd || 0).toFixed(2) + " this month · estimate"}</div></div>
         </div>
         ${showStream ? `
         <div class="card">
@@ -991,6 +995,29 @@ async function dashboard() {
         <p class="note">The manual is under Docs on this box, and at <a href="https://pipe.online/docs/pipeos/" target="_blank" rel="noopener">pipe.online/docs/pipeos</a>.</p>
       </section>
 
+      <section data-view="usage" hidden>
+        <div class="viewhead"><h1>Usage</h1></div>
+        <div id="usbanner"></div>
+        <div class="stats" id="ustiles"><div class="tile"><div class="k">Usage</div><div class="val small">loading…</div></div></div>
+        <div class="card">
+          <div class="cardhead"><h2>Last 30 days</h2><span class="note" id="usnote"></span></div>
+          <div class="ch" id="ch-usage"></div>
+        </div>
+        <div class="card">
+          <div class="cardhead"><h2>Who spent it</h2><span class="note">30 days</span></div>
+          <div id="usactors" class="note">loading…</div>
+        </div>
+        ${isAdmin ? `
+        <div class="card">
+          <div class="cardhead"><h2>Monthly cap</h2><span class="pill" id="uscappill"></span></div>
+          <p class="note">Whole dollars; 0 = no cap. At 80% you get one DM; at 100% scheduled jobs pause until you raise it or the month turns. A session you are sitting in is only ever warned.</p>
+          <label for="uscap">Cap (USD / month)</label>
+          <input id="uscap" type="number" min="0" max="100000" step="1">
+          <button id="uscapsave" type="button">Save</button>
+          <p class="err" id="userr" hidden></p>
+        </div>` : ""}
+        <p class="note">Every number here is an <b>estimate</b> from the published rates shipped with this Machine (<span id="usrates"></span>); the provider's bill is authoritative.</p>
+      </section>
       <section data-view="network" hidden>
         <div class="viewhead"><h1>Network</h1></div>
         <div class="card">
@@ -1169,6 +1196,8 @@ async function dashboard() {
     Object.entries(st.running).forEach(([k, ok]) => {
       if (!ok) alertItems.push(["bad", k + " is enabled but not running"]);
     });
+    if (st.usage_paused) alertItems.push(["bad", "monthly usage cap reached — scheduled jobs are paused (Usage)"]);
+    else if (st.usage_cap && st.usage_cap.usd && st.usage_cap.pct >= 80) alertItems.push(["warn", st.usage_cap.pct + "% of the monthly usage cap (Usage)"]);
     renderAlerts();
     if (st.services.pipe) api("/api/pipe").then(p => {
       if (!p.authed) return;
@@ -2114,6 +2143,39 @@ async function dashboard() {
     } catch (e) {}
   };
   // ---- docs: list the box's own pages, render markdown on pick ----
+  // ---- usage (#246) ----
+  const loadUsage = async () => {
+    const tiles = v.querySelector("#ustiles"); if (!tiles) return;
+    let r;
+    try { r = await api("/api/usage"); } catch (e) { tiles.innerHTML = `<div class="tile"><div class="k">Usage</div><div class="val small">${esc(e.message)}</div></div>`; return; }
+    const usd = x => "$" + (x || 0).toFixed(2);
+    const tile = (k, val, note) => `<div class="tile"><div class="k">${k}</div><div class="val">${val}</div>${note ? `<div class="note">${note}</div>` : ""}</div>`;
+    const cap = r.cap || {};
+    tiles.innerHTML = tile("Today", usd(r.today.usd), r.today.calls + " calls")
+      + tile("7 days", usd(r.d7.usd), r.d7.calls + " calls")
+      + tile("30 days", usd(r.d30.usd), r.d30.calls + " calls")
+      + tile("This month", usd(r.month.usd), cap.usd ? `${cap.pct}% of $${cap.usd}` : "no cap");
+    const banner = v.querySelector("#usbanner");
+    banner.innerHTML = cap.paused ? `<div class="alert bad">${esc(cap.paused)}</div>`
+      : (cap.usd && cap.pct >= 80 ? `<div class="alert warn">${cap.pct}% of the monthly cap — scheduled jobs pause at 100%.</div>` : "");
+    const now = Math.floor(Date.now() / 1000);
+    chart(v.querySelector("#ch-usage"), [{ data: r.daily, color: "var(--accent)", fill: true, label: "per day" }], { t0: now - 30 * 86400, interval: 86400, unit: "$" });
+    v.querySelector("#usnote").textContent = (r.unpriced ? r.unpriced + " calls unpriced (model not in the rate table) · " : "") + (r.last_row_ts ? "last call " + new Date(r.last_row_ts).toLocaleString() : "no calls yet");
+    const act = v.querySelector("#usactors");
+    const rows = Object.entries(r.by_actor || {});
+    act.className = rows.length ? "" : "note";
+    act.innerHTML = rows.length ? rows.map(([k, d]) => `<div class="row"><div><div class="name">${esc(k)}</div><div class="desc">${d.calls} calls · ${d.in + d.cache_read} in · ${d.out} out</div></div><div><b>${usd(d.usd)}</b></div></div>`).join("") : "No calls in the last 30 days.";
+    const ratesEl = v.querySelector("#usrates"); if (ratesEl) ratesEl.textContent = "rates as of " + (r.rates_updated || "?");
+    const capIn = v.querySelector("#uscap"), pill = v.querySelector("#uscappill");
+    if (capIn && document.activeElement !== capIn) capIn.value = cap.usd || 0;
+    if (pill) { pill.textContent = cap.usd ? (cap.paused ? "paused" : cap.pct + "%") : "none"; pill.className = "pill " + (cap.paused ? "status-bad" : cap.usd && cap.pct >= 80 ? "status-warn" : "status-ok"); }
+  };
+  const capSave = v.querySelector("#uscapsave");
+  if (capSave) capSave.onclick = async () => {
+    const err = v.querySelector("#userr"); err.hidden = true;
+    try { await api("/api/usage/cap", { usd: parseInt(v.querySelector("#uscap").value || "0", 10) }); loadUsage(); }
+    catch (e) { err.textContent = e.message; err.hidden = false; }
+  };
   // ---- scheduled runs (#242) ----
   const SCH_PRESETS = [["every hour", "0 * * * *"], ["every day 02:00", "0 2 * * *"], ["weekdays 08:00", "0 8 * * mon-fri"], ["every 15 min", "*/15 * * * *"], ["Sundays 03:00", "0 3 * * sun"]];
   let schEditing = null;
@@ -2333,7 +2395,7 @@ async function dashboard() {
   // ---- view router: show one section at a time, driven by the URL hash ----
   // Views with live data register a poller (runs only while on screen) or a
   // lazy loader (runs on first visit).
-  const POLLERS = { system: pollSystem, network: pollNetwork, schedule: loadSchedule };
+  const POLLERS = { system: pollSystem, network: pollNetwork, schedule: loadSchedule, usage: loadUsage };
   const LAZY = { files: () => { loadFiles(""); loadFiles._disks(); }, pipe: loadPipe, users: loadUsers, secrets: loadSecrets, docs: loadDocs, setup: loadSetup };
   const seen = {};
   let viewTimer = null;

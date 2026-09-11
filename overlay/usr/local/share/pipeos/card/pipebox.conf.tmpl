@@ -82,3 +82,7 @@ CLEAN_AFTER_RUN="@@CLEAN_AFTER_RUN@@"
 # Wake-on-lan armed at boot (#241): on|off, empty = on. Read by pipeos-wol
 # from the card itself; here for anything that sources this file.
 WOL="@@WOL@@"
+
+# Monthly spend cap in whole USD (#246): empty/0 = none. Read by the usage
+# ledger (webd, pipeos-ledger-ingest) for the 80% DM and the 100% pause.
+MONTHLY_CAP_USD="@@MONTHLY_CAP_USD@@"

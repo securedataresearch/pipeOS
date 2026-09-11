@@ -666,6 +666,31 @@ else
     fi
 fi
 
+# ---- 5i. the usage ledger (#246). webd ingests the transcripts every
+# minute; a ledger that stopped moving while sessions ran is a blind box
+# again. The cap rows are the boot-report copy of the DMs: an owner who
+# did not read the DM sees it here.
+if mountpoint -q /work && [ -x /usr/local/bin/pipeos-ledger-ingest ]; then
+    [ "$BOOT" = yes ] && mkdir -p /work/.pipeos/ledger 2>/dev/null
+    if [ -d /work/.pipeos/ledger ] && [ ! -w /work/.pipeos/ledger ]; then
+        warnn "usage ledger: /work/.pipeos/ledger is not writable — spend is not being recorded"
+    elif _lt=$(/usr/local/bin/pipeos-ledger-ingest totals --json 2>/dev/null) && [ -n "$_lt" ] && command -v jq >/dev/null 2>&1; then
+        _li=$(printf '%s' "$_lt" | jq -r '.last_ingest_ts // 0')
+        _now=$(date +%s)
+        if rc-service pipeos-web status >/dev/null 2>&1 && [ "${_li:-0}" -gt 0 ] && [ $((_now - _li)) -gt 1800 ]; then
+            warnn "usage ledger: nothing ingested for $(( (_now - _li) / 60 )) min while the dashboard is up — rc-service pipeos-web restart"
+        fi
+        _lc=$(printf '%s' "$_lt" | jq -r '.cap.usd // 0'); _lp=$(printf '%s' "$_lt" | jq -r '.cap.pct // 0'); _ls=$(printf '%s' "$_lt" | jq -r '.cap.spent // 0')
+        if [ "${_lc:-0}" -gt 0 ] 2>/dev/null; then
+            if [ -f /work/.pipeos/ledger/paused ]; then
+                warnn "usage: the monthly cap (USD $_lc) is reached — scheduled jobs are paused until it is raised under Usage or the month turns"
+            elif [ "${_lp:-0}" -ge 80 ] 2>/dev/null; then
+                warnn "usage: USD $_ls of the USD $_lc monthly cap ($_lp%) — scheduled jobs pause at 100%"
+            fi
+        fi
+    fi
+fi
+
 # ---- 5d. cohort-watch could-not-start vs nothing-to-do (pipeOS#44)
 #
 # `pipebox-cohort-watch` (cron, every 2 min) drops a timestamp in
