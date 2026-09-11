@@ -193,8 +193,10 @@ check("13 secrets phrase prints the pending recovery phrase and leaves it; --ack
 # ── assistant password (the shape only: the vault and rc-service are the box's) ──
 src = open(PIPEOS).read()
 rc_tty, out_tty = pipeos("assistant", "bogus")
-check("14 assistant password reads stdin into the vault as assistant_pass for the assistant, restarts pipeos-assistant with the lock fd closed, and saves; a bogus verb is rc 2",
-      "pipeos-vault set assistant_pass assistant" in src and "rc-service pipeos-assistant restart" in src and "9>&-" in src.split("cmd_assistant()")[1].split("# ----")[0]
+check("14 assistant password reads stdin into the vault as assistant_pass for the assistant, EXPORTS it to /run (the service reads the export, which only the boot start wrote — two/three 2026-09-11), restarts pipeos-assistant with the lock fd closed, and saves; the init script no longer demands the pre-vault assistant.conf; a bogus verb is rc 2",
+      "pipeos-vault set assistant_pass assistant" in src and "pipeos-vault export" in src.split("cmd_assistant()")[1].split("# ----")[0]
+      and "rc-service pipeos-assistant restart" in src
+      and 'eerror "the assistant terminal is enabled but $CONF does not exist' not in open(os.path.join(REPO, "overlay/etc/init.d/pipeos-assistant")).read() and "9>&-" in src.split("cmd_assistant()")[1].split("# ----")[0]
       and rc_tty == 2, "rc=%s out=%s" % (rc_tty, out_tty))
 
 # ── the wiring: every verb in the help, the skill names every verb ────────
