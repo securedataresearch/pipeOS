@@ -123,6 +123,7 @@ protected() {
         /work/cargo-home|/work/cargo-home/*) return 0 ;;
         /work/keys|/work/keys/*)             return 0 ;;
         /work/pipebox|/work/pipebox/*)       return 0 ;;
+        /work/.pipeos|/work/.pipeos/*)       return 0 ;;   # the box's own state: ledger, schedule, stamps (#246)
         /work/repos/pipeOS/out/keys|/work/repos/pipeOS/out/keys/*) return 0 ;;
         /work/*) return 1 ;;
         *) return 0 ;;   # anything outside /work is not ours to touch

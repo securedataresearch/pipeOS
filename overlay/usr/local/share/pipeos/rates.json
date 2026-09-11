@@ -1,0 +1,11 @@
+{
+  "updated": "2026-09-10",
+  "source": "the published Anthropic API price list, per million tokens, USD; cache reads 10% of input, 5-minute cache writes 1.25x input, 1-hour writes 2x input, except where the model's own line says otherwise",
+  "note": "An ESTIMATE. The provider's bill is authoritative; these numbers ride the overlay and drift when prices change — a model missing here is counted but shown as unpriced.",
+  "per_mtok": {
+    "claude-fable-5-1": {"in": 10, "out": 50, "cache_read": 0.25, "cache_w5m": 12.5, "cache_w1h": 20},
+    "claude-opus-5":    {"in": 5,  "out": 25, "cache_read": 0.5,  "cache_w5m": 6.25, "cache_w1h": 10},
+    "claude-sonnet-5":  {"in": 2,  "out": 10, "cache_read": 0.2,  "cache_w5m": 2.5,  "cache_w1h": 4},
+    "claude-haiku-4-5": {"in": 1,  "out": 5,  "cache_read": 0.1,  "cache_w5m": 1.25, "cache_w1h": 2}
+  }
+}

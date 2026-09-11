@@ -61,6 +61,13 @@ Release under test: `________`   Box: `________`   Date: `________`
       up. **Rehome drill**: this stick in another chassis → the boot
       report says *chassis mismatch* and *vault is LOCKED*, the dashboard
       is reachable, Secrets → phrase → the services start; `pipeos save`.
+- [ ] **Scheduled run** (#242): a job added from Schedule fired at its
+      minute with nobody attached; the started/done DMs arrived; the log
+      opened from the row; a second Run now while it ran was refused.
+- [ ] **Usage** (#246): one dashboard chat and one assistant prompt showed
+      as two rows under Usage within a minute, costed; a $1 cap produced
+      the 80% DM, then the pause banner and a skipped job; raising it
+      lifted the pause.
 - [ ] **Wake** (#241, docs/hardware.md): shut one Machine down; on a
       sibling's Network view it went grey ("off · last seen") in ____ s;
       Wake → back in the lobby in ____ s. `pipeos wake <name>` from a

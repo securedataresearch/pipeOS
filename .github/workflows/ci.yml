@@ -96,6 +96,15 @@ jobs:
           python3 scripts/check-schedule.py
           python3 scripts/check-schedule-controls.py
 
+      # #246. Nobody on a Machine could say what it spent. The ledger tails
+      # the transcripts Claude Code already writes; the rows are the dedupe
+      # (one id per API turn, written many times), the pricing, who spent
+      # it, the cursor, and the cap's once-per-month DMs and pause.
+      - name: the usage ledger — every call once, costed, attributed; the cap warns once and pauses
+        run: |
+          python3 scripts/check-ledger.py
+          python3 scripts/check-ledger-controls.py
+
       - name: the shipped verify-repo.sh is the build's verify-repo.sh
         run: |
           # Client boxes carry no checkout, so the overlay ships its own copy

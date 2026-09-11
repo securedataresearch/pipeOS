@@ -51,6 +51,18 @@ webd.SCHEDULE_STATE_DIR = tmp + "/sched"
 webd.SCHEDULE_LOCK = tmp + "/schedule.lock"
 webd.SCHEDULE_LOGDIR = tmp + "/logs"
 webd.LEDGER_PAUSED = tmp + "/paused"
+# the usage ledger (#246): rows, transcripts, rates, the conf with the cap,
+# and the dashboard chat's own session id, all in the tempdir
+webd.LEDGER_DIR = tmp + "/ledger"
+webd.LEDGER_PAUSED = tmp + "/ledger/paused"
+webd.LEDGER_TRANSCRIPTS = tmp + "/projects"
+webd.LEDGER_CONF = tmp + "/pipebox.conf"
+webd.LEDGER_SESSIONS = tmp + "/psessions"
+webd.WEBCHAT_DIR = tmp + "/webchat"
+webd.WEBCHAT_SID = tmp + "/webchat/.dashboard-sid"
+os.makedirs(tmp + "/ledger"); os.makedirs(tmp + "/projects"); os.makedirs(tmp + "/webchat")
+with open(webd.LEDGER_CONF, "w") as f:
+    f.write('NICK=""\nOWNER_NICK=""\nMONTHLY_CAP_USD=""\n')
 webd.SCHEDULE_RUN_BIN = tmp + "/sched-run-stub"
 with open(webd.SCHEDULE_RUN_BIN, "w") as f:
     f.write("#!/bin/sh\nprintf '%s\\n' \"$@\" >> " + tmp + "/sched.argv\n")
@@ -540,6 +552,48 @@ r = req("/api/schedule/del", {"name": "nightly"})
 assert r["ok"] and req("/api/schedule")["jobs"] == []
 req("/api/schedule/del", {"name": "nightly"}, expect=404)
 ok("schedule: the ledger's pause marker shows in the list; delete removes the job and saves")
+# ---- usage (#246): a seeded month file, the cap, hostile caps, the chat's own session
+import datetime as _dt
+_today = _dt.datetime.now(_dt.timezone.utc)
+with open(tmp + "/ledger/" + _today.strftime("%Y-%m") + ".jsonl", "w") as f:
+    for i, (kind, usd) in enumerate((("assistant", 1.25), ("dashboard", 0.5), ("job", 2.0))):
+        f.write(json.dumps({"ts": _today.strftime("%Y-%m-%dT%H:%M:%SZ"), "sid": "s%d" % i, "id": "m%d" % i, "source": "transcript",
+                            "actor": {"kind": kind, "name": "nightly" if kind == "job" else ""}, "backend": "claude", "provider": "anthropic",
+                            "model": "claude-opus-5", "in": 100, "out": 10, "cache_read": 0, "cache_w5m": 0, "cache_w1h": 0,
+                            "cost_usd": usd, "est": True}) + "\n")
+u = req("/api/usage")
+assert abs(u["today"]["usd"] - 3.75) < 1e-6 and u["today"]["calls"] == 3 and u["estimate"] is True and u["cap"]["usd"] == 0
+assert set(u["by_actor"]) == {"assistant", "dashboard", "job:nightly"} and len(u["daily"]) == 30 and abs(u["daily"][29] - 3.75) < 1e-6
+assert u["rates_updated"]
+ok("usage: the view sums the month file — today, by actor, the daily series — and says it is an estimate")
+st = req("/api/status")
+assert abs(st["spend_today_usd"] - 3.75) < 1e-6 and st["usage_paused"] is False
+ok("usage: status carries today's spend for the overview tile")
+for bad in ("40; rm -rf /", -1, 1e9, 4.5, "abc", [], True, None):
+    req("/api/usage/cap", {"usd": bad}, expect=400)
+assert "MONTHLY_CAP_USD" not in open(webd.CARD).read() or "MONTHLY_CAP_USD=\n" in open(webd.CARD).read()
+ok("usage: a hostile cap is refused and the card is untouched")
+_card_set, webd.card_set = webd.card_set, (lambda updates: open(webd.LEDGER_CONF, "w").write('NICK=""\nOWNER_NICK=""\nMONTHLY_CAP_USD="%s"\n' % updates["MONTHLY_CAP_USD"]))
+r = req("/api/usage/cap", {"usd": 40})
+assert r["ok"] and r["cap"] == 40 and req("/api/usage")["cap"]["usd"] == 40 and req("/api/usage")["cap"]["pct"] == 9
+assert "MONTHLY_CAP_USD=" in open(webd.CARD).read()   # the key line was added to a card that predates it
+r = req("/api/usage/cap", {"usd": 3})
+assert r["ok"] and r["state"]["paused"] is True and os.path.exists(webd.LEDGER_PAUSED) and req("/api/status")["usage_paused"] is True
+assert "monthly cap" in req("/api/schedule")["paused"]
+r = req("/api/usage/cap", {"usd": 0})
+assert r["ok"] and not os.path.exists(webd.LEDGER_PAUSED) and req("/api/usage")["cap"]["usd"] == 0
+webd.card_set = _card_set
+ok("usage: setting the cap writes the card (adding the key to an older card), saves, and enforces at once — under the spend pauses the schedule, 0 lifts it")
+# the dashboard chat: its own session id, --session-id first then --resume
+req("/api/services", {"claude": True})
+os.unlink(tmp + "/claude.argv") if os.path.exists(tmp + "/claude.argv") else None
+r = req("/api/chat", {"message": "hello"})
+assert r["reply"] == "ok"
+r = req("/api/chat", {"message": "again"})
+_cargv = [l for l in open(tmp + "/claude.argv").read().splitlines() if l.startswith("-p ")]
+_sid = open(webd.WEBCHAT_SID).read().strip()
+assert len(_cargv) == 2 and _cargv[0].endswith("--session-id " + _sid) and _cargv[1].endswith("--resume " + _sid) and "--continue" not in "".join(_cargv), _cargv
+ok("chat: the dashboard chat has its own Claude session — --session-id on the first turn, --resume after — never --continue into the master session's transcript")
 req("/api/login", {"password": "hunter22hunter"})
 req("/api/logs?name=../../etc/shadow", expect=400)
 req("/api/logs?name=nope", expect=400)
@@ -857,6 +911,8 @@ req("/api/wake", {"id": "4d4d"}, expect=403)
 req("/api/secrets", expect=403)
 req("/api/secrets/set", {"name": "jobs.x", "value": "y"}, expect=403)
 req("/api/schedule/set", {"name": "x", "cron": "* * * * *", "prompt": "x"}, expect=403)
+assert "today" in req("/api/usage")   # a viewer may read what the box spends
+req("/api/usage/cap", {"usd": 5}, expect=403)
 r = req("/api/password", {"current": "peekpassword", "new": "peekpassword2"})
 assert r["ok"]
 assert req("/api/docs")["pages"], "viewer must be able to read the docs"

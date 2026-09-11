@@ -1,0 +1,5 @@
+#!/bin/sh
+# pipeos-ledger-ingest — the usage ledger's hand runner (#246): ingest | totals
+# [--json] | enforce. The logic is share/pipeos/web/ledger.py (a .py under
+# usr/local/bin reds shellcheck); webd runs the same code every minute.
+exec python3 /usr/local/share/pipeos/web/ledger.py "$@"

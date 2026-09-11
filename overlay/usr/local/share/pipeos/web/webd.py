@@ -54,6 +54,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lanid  # noqa: E402  — LAN identity + the mDNS wire, shared with mdnsd.py
 import vault  # noqa: E402  — the sealed secret store (#244)
 import cronspec  # noqa: E402  — the cron expression a scheduled job carries (#242)
+import ledger  # noqa: E402  — every model call, costed (#246)
 
 ETC = "/etc/pipeos"
 ADMIN_CONF = ETC + "/web-admin.conf"
@@ -1422,6 +1423,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/support": self.api_support_get,
             "/api/secrets": self.api_secrets,
             "/api/schedule": self.api_schedule,
+            "/api/usage": self.api_usage,
             "/api/pipe": self.api_pipe_get,
             "/api/pipe-contacts": self.api_pipe_contacts,
             "/api/pipe-board": self.api_pipe_board,
@@ -1518,6 +1520,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/schedule/set": self.api_schedule_set,
             "/api/schedule/del": self.api_schedule_del,
             "/api/schedule/run": self.api_schedule_run,
+            "/api/usage/cap": self.api_usage_cap,
         }
         fn = handlers.get(path)
         if fn is None:
@@ -1609,6 +1612,39 @@ class Handler(BaseHTTPRequestHandler):
         unclaimed one."""
         rows, ok = lobby_entries()
         self.send(200, {"machines": rows, "discovery_ok": ok, "lan_name": lanid.lan_name()})
+
+    # -- usage (#246) -----------------------------------------------------------
+
+    def api_usage(self):
+        ledger_refresh()
+        try:
+            t = ledger_obj().totals()
+        except Exception as e:
+            return self.err(500, "ledger: %s" % e)
+        t["rates_updated"] = ""
+        try:
+            with open(LEDGER_RATES) as f:
+                t["rates_updated"] = json.load(f).get("updated", "")
+        except (OSError, ValueError):
+            pass
+        self.send(200, t)
+
+    def api_usage_cap(self, body):
+        v = body.get("usd")
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0 or v > 100000:
+            return self.err(400, "the cap is a whole number of dollars, 0 (none) to 100000")
+        try:
+            card_ensure_key("MONTHLY_CAP_USD")
+            card_set({"MONTHLY_CAP_USD": str(v) if v else ""})
+        except RuntimeError as e:
+            return self.err(500, str(e))
+        saved, detail = save_state()
+        # lowering under this month's spend pauses now; raising above it resumes now
+        try:
+            state = ledger_obj().enforce_cap()
+        except Exception as e:
+            state = {"error": str(e)}
+        self.send(200, {"ok": True, "cap": v, "state": state, "saved": saved, "save_detail": "" if saved else detail})
 
     # -- scheduled runs (#242) --------------------------------------------------
 
@@ -1953,6 +1989,10 @@ class Handler(BaseHTTPRequestHandler):
             rc, _ = run(["rc-service", svc, "status"], timeout=15)
             running[svc] = rc == 0
         sess = self.authed() or {}
+        try:
+            spend = ledger_obj().totals()
+        except Exception:
+            spend = {}
         self.send(200, {
             "user": sess.get("user"),
             "role": sess.get("role"),
@@ -1967,6 +2007,10 @@ class Handler(BaseHTTPRequestHandler):
             "services": svcs,
             "running": running,
             "boot_report": boot_report(),
+            "spend_today_usd": spend.get("today", {}).get("usd", 0),
+            "spend_month_usd": spend.get("month", {}).get("usd", 0),
+            "usage_cap": spend.get("cap", {}),
+            "usage_paused": bool(spend.get("cap", {}).get("paused")),
         })
 
     # -- files: an explorer over /work plus any mounted external drive.
@@ -2904,7 +2948,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(400, "the assistant service is switched off")
         backend = read_conf_values(ASSISTANT_CONF, ["ASSISTANT_BACKEND"])["ASSISTANT_BACKEND"] or "claude"
         env = dict(os.environ, HOME="/root")
-        os.makedirs("/work/pipebox/webchat", exist_ok=True)
+        os.makedirs(WEBCHAT_DIR, exist_ok=True)
         stdin = None
         if backend == "hermes":
             # -z = one-shot; a named --continue session keeps one conversation
@@ -2914,14 +2958,25 @@ class Handler(BaseHTTPRequestHandler):
             name, value = claude_auth_env()
             if name:
                 env[name] = value
+            # The chat's OWN session (#246; Sam, 2026-09-10): --continue picked
+            # up whatever transcript was newest in this dir — the master
+            # session's — so the chat silently extended the assistant's
+            # conversation and the ledger could not tell the two apart.
+            try:
+                with open(WEBCHAT_SID) as f:
+                    sid = f.read().strip()
+            except OSError:
+                sid = ""
+            if not re.fullmatch(r"[0-9a-f-]{36}", sid):
+                sid = str(uuid.uuid4())
+                write_private(WEBCHAT_SID, sid + "\n")
             argv = ["claude", "-p", "--settings", "/etc/pipeos/pipebox-settings.json"]
-            if os.path.exists("/work/pipebox/webchat/.started"):
-                argv.append("--continue")
+            argv += ["--resume", sid] if os.path.exists(os.path.join(WEBCHAT_DIR, ".started")) else ["--session-id", sid]
             stdin = msg
         try:
             p = subprocess.run(
                 argv, input=stdin, capture_output=True, text=True,
-                timeout=180, env=env, cwd="/work/pipebox/webchat",
+                timeout=180, env=env, cwd=WEBCHAT_DIR,
             )
         except subprocess.TimeoutExpired:
             return self.err(504, "the assistant took longer than 3 minutes — try again")
@@ -2929,7 +2984,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(500, "%s is not installed on this image" % backend)
         if p.returncode != 0:
             return self.err(502, "%s errored: %s" % (backend, (p.stderr or p.stdout or "")[-300:].strip()))
-        with open("/work/pipebox/webchat/.started", "a"):
+        with open(os.path.join(WEBCHAT_DIR, ".started"), "a"):
             pass
         self.send(200, {"reply": (p.stdout or "").strip()})
 
@@ -3015,8 +3070,20 @@ SCHEDULE_LOCK = "/run/pipeos/schedule.lock"
 SCHEDULE_LOGDIR = "/work/logs"
 SCHEDULE_MAX_JOBS = 32
 JOB_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
-# the ledger's pause marker (#246 writes it; the tick and this only read it)
-LEDGER_PAUSED = "/work/.pipeos/ledger/paused"
+# The usage ledger (#246): rows on /work, the shipped rate table, the card's
+# conf for the cap and the owner, the schedule's runs.log and the listener's
+# sessions for attribution, the dashboard chat's own session id.
+LEDGER_DIR = "/work/.pipeos/ledger"
+LEDGER_PAUSED = LEDGER_DIR + "/paused"
+LEDGER_TRANSCRIPTS = "/work/claude/projects"
+LEDGER_RATES = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rates.json"))
+LEDGER_CONF = ETC + "/pipebox.conf"
+LEDGER_SESSIONS = "/work/pipebox/sessions"
+WEBCHAT_DIR = "/work/pipebox/webchat"
+WEBCHAT_SID = WEBCHAT_DIR + "/.dashboard-sid"
+LEDGER_INGEST_S = 60
+LEDGER_LOCK = threading.Lock()
+LEDGER_STATE = {"obj": None, "last": 0}
 SELFUPDATE_CONF = ETC + "/selfupdate.conf"
 UPDATE_STAMP = "/work/.pipeos/selfupdate.applied"
 
@@ -3031,6 +3098,53 @@ def tail_file(path, lines):
     except OSError:
         return None
     return "\n".join(data.splitlines()[-lines:])
+
+
+def ledger_obj():
+    """One Ledger over the module's constants — built lazily so a probe
+    that repoints the constants gets its own."""
+    with LEDGER_LOCK:
+        L = LEDGER_STATE["obj"]
+        if L is None or L.dir != LEDGER_DIR or L.transcripts != LEDGER_TRANSCRIPTS:
+            L = ledger.Ledger(dir=LEDGER_DIR, transcripts=LEDGER_TRANSCRIPTS, rates=LEDGER_RATES, conf=LEDGER_CONF,
+                              runs_log=os.path.join(SCHEDULE_STATE_DIR, "runs.log"), sessions_dir=LEDGER_SESSIONS,
+                              webchat_sid=WEBCHAT_SID)
+            LEDGER_STATE["obj"] = L
+        return L
+
+
+def ledger_refresh(force=False):
+    """Ingest + enforce, at most once per LEDGER_INGEST_S unless forced.
+    Never raises: the ledger is a view of the box, not the box."""
+    now = time.time()
+    if not force and now - LEDGER_STATE["last"] < LEDGER_INGEST_S:
+        return
+    LEDGER_STATE["last"] = now
+    try:
+        L = ledger_obj()
+        L.ingest()
+        L.enforce_cap()
+    except Exception as e:  # a bad transcript line must never kill the dashboard
+        sys.stderr.write("pipeos-webd: ledger: %s\n" % e)
+
+
+def ledger_worker():
+    while True:
+        ledger_refresh()
+        time.sleep(LEDGER_INGEST_S)
+
+
+def card_ensure_key(key):
+    """A box claimed before a card key existed has no KEY= line for
+    card_set to rewrite; add an empty one (the generator's default)."""
+    try:
+        with open(CARD) as f:
+            text = f.read()
+    except OSError:
+        return
+    if not re.search(r"^%s=" % re.escape(key), text, re.M):
+        write_private(CARD, text.rstrip("\n") + "\n%s=\n" % key)
+        os.chmod(CARD, 0o644)
 
 
 def read_schedule():
@@ -3585,6 +3699,7 @@ def main():
     os.makedirs(SESS_DIR, mode=0o700, exist_ok=True)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     threading.Thread(target=metrics_sampler, daemon=True).start()
+    threading.Thread(target=ledger_worker, daemon=True).start()
     start_https()
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     srv.daemon_threads = True

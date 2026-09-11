@@ -62,6 +62,7 @@ OVERLAY_CRIT_DAYS=
 AGENT_TIMEOUT_MIN=
 CLEAN_AFTER_RUN=
 WOL=
+MONTHLY_CAP_USD=
 
 # pipe#650 item 9. The capabilities a card is ALLOWED to grant the agent —
 # every other spelling in pipe's vocabulary is refused here, by this script,
@@ -109,6 +110,7 @@ read_card() {
             AGENT_TIMEOUT_MIN) ;;
             CLEAN_AFTER_RUN) ;;
             WOL) ;;
+            MONTHLY_CAP_USD) ;;
             *) die "unknown card key: $key" ;;
         esac
         # Values land in sed expressions and in a shell-sourced conf file.
@@ -154,7 +156,7 @@ read_card() {
             # pipeOS#41 / #101 / #97: digits-only, octal-aware, one arm for
             # every numeric key — a split here is how the octal guard got
             # shadowed once already during a merge.
-            DISK_WARN_PCT|DISK_CRIT_PCT|GC_INTERVAL_HOURS|OVERLAY_CRIT_DAYS|AGENT_TIMEOUT_MIN|CLEAN_AFTER_RUN|WORKSWEEP_PCT)
+            DISK_WARN_PCT|DISK_CRIT_PCT|GC_INTERVAL_HOURS|OVERLAY_CRIT_DAYS|AGENT_TIMEOUT_MIN|CLEAN_AFTER_RUN|WORKSWEEP_PCT|MONTHLY_CAP_USD)
                 case "$val" in
                     '') ;;
                     *[!0-9]*) die "card value for $key must be a plain integer: $val" ;;
@@ -242,6 +244,12 @@ read_card() {
     # #241: on|off, empty = on. Anything else is a typo that would silently
     # arm — a card is data arriving with a machine, so it dies here instead.
     case "${WOL:-}" in ''|on|off) ;; *) die "WOL must be on or off: $WOL" ;; esac
+    # #246: whole dollars, 0 = no cap. The ceiling is a typo guard, not a
+    # product limit — nobody sets a six-figure monthly cap on one Machine.
+    if [ -n "$MONTHLY_CAP_USD" ]; then
+        [ "$MONTHLY_CAP_USD" -ge 0 ] 2>/dev/null && [ "$MONTHLY_CAP_USD" -le 100000 ] 2>/dev/null || \
+            die "MONTHLY_CAP_USD must be 0-100000: $MONTHLY_CAP_USD"
+    fi
     if [ -n "$AGENT_TIMEOUT_MIN" ]; then
         [ "$AGENT_TIMEOUT_MIN" -ge 5 ] 2>/dev/null && [ "$AGENT_TIMEOUT_MIN" -le 120 ] 2>/dev/null || \
             die "AGENT_TIMEOUT_MIN must be 5-120 (minutes): $AGENT_TIMEOUT_MIN"
@@ -491,6 +499,7 @@ s|@@OVERLAY_CRIT_DAYS@@|$OVERLAY_CRIT_DAYS|g
 s|@@AGENT_TIMEOUT_MIN@@|$AGENT_TIMEOUT_MIN|g
 s|@@CLEAN_AFTER_RUN@@|$CLEAN_AFTER_RUN|g
 s|@@WOL@@|$WOL|g
+s|@@MONTHLY_CAP_USD@@|$MONTHLY_CAP_USD|g
 s|@@CARD_SHA@@|$CARD_SHA|g"
     # Block markers occupy a line of their own and expand to generated text.
     # There are three now (#35 added the role charter, #39 the Foreman's), so
@@ -692,7 +701,7 @@ cmd_show() {
     echo "card:        $CARD (sha256:$CARD_SHA)"
     for k in NICK ROLE OWNER_NICK FOREMAN_NICK COHORT_ID GH_OWNER MAC \
              DISK_WARN_PCT DISK_CRIT_PCT GC_INTERVAL_HOURS WORKSWEEP_PCT \
-             OVERLAY_CRIT_DAYS AGENT_TIMEOUT_MIN CLEAN_AFTER_RUN WOL; do
+             OVERLAY_CRIT_DAYS AGENT_TIMEOUT_MIN CLEAN_AFTER_RUN WOL MONTHLY_CAP_USD; do
         eval "v=\$$k"
         printf '%-12s %s\n' "$k:" "${v:-<unset>}"
     done

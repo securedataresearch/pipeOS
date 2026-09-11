@@ -54,6 +54,16 @@ your password; delete one. If the stick booted in a different box the page
 says *locked* and asks for the recovery phrase. The manual's Secrets page
 has the whole story.
 
+## Usage
+
+What this Machine spent on its assistant: today, 7 days, 30 days, this
+month; a chart per day; who spent it (the assistant, the dashboard chat,
+each scheduled job, each pipe peer's conversation). Every figure is an
+estimate from the published rates shipped with the box; the provider's
+bill is authoritative. Admins set a **monthly cap**: one DM at 80%, and
+at 100% scheduled jobs pause (a session you are sitting in is only
+warned) until the cap is raised or the month turns.
+
 ## Network and System
 
 **Machines on this network** lists every Machine that answers on the LAN,
