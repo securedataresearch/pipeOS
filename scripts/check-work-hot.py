@@ -89,7 +89,7 @@ check("8 wiring: hot.list names logs, the roster, the ledger and the schedule st
       and "+etc/init.d/pipeos-hot" in lbu and "pipeos-workspace pipeos-hot " in build and os.access(hourly, os.X_OK) and "pipeos-work flush" in open(hourly).read(),
       repr(hotlist))
 check("9 /work mounts with commit=120,lazytime,noatime; pipeos save flushes the hot set first; the schedule runner unparks a parked /work for the run and re-parks after (also on the one-at-a-time refusal)",
-      "noatime,lazytime,commit=120" in ws and "pipeos-work flush" in save and save.index("pipeos-work flush") < save.index("tar ")
+      "noatime,lazytime,commit=120" in ws and "pipeos-work flush" in save and save.index("pipeos-work flush") < save.index("pipeos-worksweep")
       and "pipeos-work unpark" in runner and runner.count("repark") >= 3 and "mount -o remount" not in runner, "")
 check("10 the listener idles an hour on a policy denial (rc 5) and writes /run/pipeos/listener.status, instead of exiting into supervise-daemon's respawn loop (#258); selfcheck WARNs on that status and on a hot path that is not a mountpoint, and notes a parked /work",
       "sleep 3600; continue" in listener and "policy-denied" in listener and 'exit 1 ;;' not in listener.split('5) # terminal')[1].split('0) ;;')[0]

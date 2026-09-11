@@ -44,6 +44,9 @@ fi
 # Garbage-collect before we persist, so the box's storage stays lean on EVERY
 # save rather than only on the weekly sweep (operator request: "GC before every
 # persist so the drive stays healthy all the time"). We reuse the bounded,
+# the hot set first (logs, roster, ledger, schedule state live in RAM — pipeos-work):
+# a save is the moment the owner expects the disk to hold everything
+[ -x /usr/local/bin/pipeos-work ] && /usr/local/bin/pipeos-work flush >/dev/null 2>&1 || true
 # allowlist-based worksweep — it only ever reclaims rebuildable build output on
 # /work, never source — and never let a slow or failing sweep block the save it
 # precedes: a save that does not happen is far worse than a sweep that is
@@ -78,9 +81,6 @@ if [ -f "$OVL" ] && \
 fi
 
 mount -o remount,rw "$MEDIA" || { logger -s -t pipeos-save "cannot remount media rw"; exit 1; }
-# the hot set first (logs, roster, ledger, schedule state live in RAM — pipeos-work):
-# a save is the moment the owner expects the disk to hold everything
-[ -x /usr/local/bin/pipeos-work ] && /usr/local/bin/pipeos-work flush >/dev/null 2>&1 || true
 trap 'rm -f "$tmp" "$OVL.new"; sync; mount -o remount,ro "$MEDIA" 2>/dev/null' EXIT
 
 cp "$tmp" "$OVL.new" || { logger -s -t pipeos-save "write to media failed"; exit 1; }
