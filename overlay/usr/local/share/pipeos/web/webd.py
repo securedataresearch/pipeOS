@@ -82,6 +82,7 @@ CARD = ETC + "/card.conf"
 # which external drives to re-mount after a reboot, by filesystem UUID.
 NAS_CONF = ETC + "/nas.conf"
 NAS_RENDERED_CONF = "/run/pipeos/smb.conf"   # the init renders it from nas.conf at every start
+NAS_MINI_CONF = "/run/pipeos/smbpasswd.conf"  # just the private dir, for smbpasswd/pdbedit when smbd is off
 SUPPORT_CONF = ETC + "/support.conf"
 SUPPORT_KEY = SECRETS_DIR + "/support_key"
 SUPPORT_PUB = ETC + "/support_key.pub"
@@ -739,6 +740,16 @@ def _read_phrase():
             return f.read().strip()
     except OSError:
         return ""
+
+
+def nas_restart_if_running():
+    """Bounce smbd so it reopens the passdb (a share change, or a password
+    set — sealing writes the db as a new inode, pipeOS#268). Returns the
+    problem string, or "" when it restarted or was not running."""
+    rc, out = run(["rc-service", "-i", "pipeos-nas", "restart"], timeout=60)
+    if rc != 0:
+        return "network storage did not restart: " + out.strip()[-200:]
+    return ""
 
 
 def restart_secret_consumers():
@@ -2413,13 +2424,11 @@ class Handler(BaseHTTPRequestHandler):
         smb_users = []
         # pdbedit must be pointed at OUR private dir; -s /dev/null read
         # samba's compiled-in one and this list was always empty (#268)
-        for conf in (NAS_RENDERED_CONF,
-                     os.path.join(os.path.dirname(SECRETS_DIR.rstrip("/")), "smbpasswd.conf")):
-            if os.path.exists(conf):
-                rc2, out2 = run(["pdbedit", "-L", "-s", conf], timeout=15)
-                if rc2 == 0:
-                    smb_users = [l.split(":")[0] for l in out2.splitlines() if ":" in l]
-                break
+        conf = NAS_RENDERED_CONF if os.path.exists(NAS_RENDERED_CONF) else NAS_MINI_CONF
+        if os.path.exists(conf):
+            rc2, out2 = run(["pdbedit", "-L", "-s", conf], timeout=15)
+            if rc2 == 0:
+                smb_users = [l.split(":")[0] for l in out2.splitlines() if ":" in l]
         ids = blkid_all()
         roots = [{"key": "work", "label": "work (the box's data drive)"}]
         for key, path in sorted(self._file_roots().items()):
@@ -2499,9 +2508,9 @@ class Handler(BaseHTTPRequestHandler):
             problems += apply_services(svcs)
         elif svcs.get("nas"):
             if shares:
-                rc, out = run(["rc-service", "pipeos-nas", "restart"], timeout=60)
-                if rc != 0:
-                    problems.append("network storage did not restart: " + out.strip()[-200:])
+                why = nas_restart_if_running()
+                if why:
+                    problems.append(why)
             else:
                 svcs["nas"] = False
                 write_services(svcs)
@@ -2535,7 +2544,7 @@ class Handler(BaseHTTPRequestHandler):
         except (vault.VaultError, OSError, ValueError) as e:
             return self.err(500, "the vault is not open (%s) — unlock it under Secrets first" % e)
         os.makedirs(private, mode=0o700, exist_ok=True)
-        mini = os.path.join(os.path.dirname(SECRETS_DIR.rstrip("/")), "smbpasswd.conf")
+        mini = NAS_MINI_CONF
         with open(mini, "w") as f:
             f.write("[global]\nprivate dir = %s\npassdb backend = tdbsam:%s/passdb.tdb\n"
                     % (private, private))
@@ -2548,18 +2557,13 @@ class Handler(BaseHTTPRequestHandler):
                 vault_put("nas_passdb", f.read(), by=(self.authed() or {}).get("user", ""))
         except (OSError, RuntimeError) as e:
             return self.err(500, "could not seal the SMB password db: %s" % e)
-        problems = []
-        # Sealing re-exports the db as a NEW file (temp + rename). A running
-        # smbd parent keeps the old inode open and hands that handle to every
-        # forked child, so logons fail with "error fetching database" until
-        # the daemon is restarted — the first share ever made on the cluster
-        # hardware died exactly here (pipeOS#268). api_nas_set already
-        # restarts on a share change; a password set must too.
-        rc, _out = run(["rc-service", "pipeos-nas", "status"], timeout=15)
-        if rc == 0:
-            rc, out = run(["rc-service", "pipeos-nas", "restart"], timeout=60)
-            if rc != 0:
-                problems.append("network storage did not restart: " + out.strip()[-200:])
+        # Sealing re-exports the db as a NEW file (the bytes changed, so the
+        # vault's same-bytes shortcut does not apply). A running smbd parent
+        # keeps the old inode open and hands that handle to every forked
+        # child, so logons fail with "error fetching database" until the
+        # daemon is restarted — the first share ever made on the cluster
+        # hardware died exactly here (pipeOS#268).
+        problems = [p for p in [nas_restart_if_running()] if p]
         saved, detail = save_state()
         self.send(200, {"ok": True, "problems": problems, "saved": saved,
                         "save_detail": "" if saved else detail})

@@ -332,10 +332,22 @@ def _sq(v):
 
 
 def _write_file(path, data, mode=0o600):
+    data = data if isinstance(data, bytes) else data.encode()
+    # Unchanged bytes keep their inode. export() rewrites every consumer's
+    # file on every vault write, and a daemon holding one open — smbd and
+    # its passdb.tdb — would otherwise be left on a deleted file after any
+    # unrelated secret change (pipeOS#268).
+    try:
+        with open(path, "rb") as f:
+            if f.read() == data:
+                os.chmod(path, mode)
+                return
+    except OSError:
+        pass
     tmp = path + ".new"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
     with os.fdopen(fd, "wb") as f:
-        f.write(data if isinstance(data, bytes) else data.encode())
+        f.write(data)
     os.chmod(tmp, mode)
     os.replace(tmp, path)
 
