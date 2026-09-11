@@ -193,7 +193,17 @@ while :; do
         6) log "rate limited"; sleep 60; continue ;;
         7) log "needs human approval"; sleep 120; continue ;;
         8) log "not signed in"; sleep 600; continue ;;
-        5) log "policy denied — terminal, halting"; exit 1 ;;
+        5) # terminal for THIS policy — but exiting made supervise-daemon respawn
+           # us every 13 s forever, two log lines a time, on every GENERIC
+           # Machine (pipeOS#258): the card grants the agent nothing on pipe.
+           # Idle instead, say so once where selfcheck can see it, and look
+           # again in an hour in case the card was regenerated.
+           if [ "${_denied_said:-}" != yes ]; then
+               log "policy denied — idling; the card grants this agent no pipe capability (selfcheck WARNs; regenerate the card to resume)"
+               _denied_said=yes
+           fi
+           mkdir -p /run/pipeos && echo "policy-denied $(date -u +%Y-%m-%dT%H:%M:%SZ)" > /run/pipeos/listener.status
+           sleep 3600; continue ;;
         0) ;;
         *) log "pipe wait rc=$rc"; sleep 30; continue ;;
     esac

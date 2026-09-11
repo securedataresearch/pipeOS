@@ -20,7 +20,10 @@ mkdir -p /work
 # is not a recommended IO charset") and failed — /work then never mounted
 # and every /work-dependent service stayed down. Measured on the pilot box,
 # 2026-08-16. PIPEWORK is always ext4 (grow.sh makes it); say so.
-mountpoint -q /work || mount -t ext4 -o noatime "$dev" /work || exit 0
+# commit=120,lazytime: the stick is /work on these Machines — a journal flush
+# every 5 s and an mtime write per touch are heat (pipeos-work's header). The
+# hot set is in RAM anyway; this is for what stays on disk.
+mountpoint -q /work || mount -t ext4 -o noatime,lazytime,commit=120 "$dev" /work || exit 0
 mkdir -p /work/repos /work/logs /work/cache /work/claude /work/pipebox /work/backup /work/home
 # Agent memory belongs on ext4 from the box's FIRST boot (pipeOS#80): if
 # /root/.claude/projects does not exist yet, lay the symlink before claude's

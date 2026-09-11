@@ -1,0 +1,5 @@
+#!/bin/sh
+# The hot set's hourly write-back (pipeos-work). A parked /work is skipped:
+# nothing changed on it that the flush could carry, and unparking it here
+# would defeat the park.
+exec /usr/local/bin/pipeos-work flush >/dev/null 2>&1
