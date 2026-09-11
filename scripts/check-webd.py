@@ -301,9 +301,41 @@ for nick, frag in (("studio", "already a Machine"), ("STUDIO", "already a Machin
     assert frag in r["error"], (nick, r)
 _seen = {}
 webd.card_set = lambda updates: _seen.update(updates)
+# the name is a SAN on the server cert; the rename must re-issue it and hand
+# the live :443 context the new file, not leave it for the next boot (#234)
+webd.TLS_INIT = tmp + "/tls-init-stub"
+webd.SRV_CRT, webd.SRV_KEY = tmp + "/server.crt", tmp + "/server.key"
+with open(webd.TLS_INIT, "w") as f:
+    f.write("#!/bin/sh\necho ran >> " + tmp + "/tls-init.ran\n")
+os.chmod(webd.TLS_INIT, 0o755)
+
+
+class _Ctx:
+    loaded = []
+
+    def load_cert_chain(self, crt, key):
+        self.loaded.append((crt, key))
+
+
+webd.HTTPS["ctx"] = _Ctx()
 r = req("/api/name", {"name": "Attic"})
 assert r["ok"] and _seen == {"NAME": "attic"}, (r, _seen)
+assert r["tls"] is True and os.path.exists(tmp + "/tls-init.ran"), r
+assert _Ctx.loaded == [(webd.SRV_CRT, webd.SRV_KEY)], _Ctx.loaded
+_seen.clear()
+r = req("/api/name", {"owner": "sam"})
+assert r["ok"] and _seen == {"OWNER_NICK": "sam"} and r["tls_detail"] == "", r
+assert open(tmp + "/tls-init.ran").read().count("ran") == 1, "owner-only change re-issued the cert"
+os.chmod(webd.TLS_INIT, 0o644)
+with open(webd.TLS_INIT, "w") as f:
+    f.write("#!/bin/sh\necho boom >&2; exit 3\n")
+os.chmod(webd.TLS_INIT, 0o755)
+r = req("/api/name", {"name": "Attic"})
+assert r["ok"] and r["tls"] is False and "rc=3" in r["tls_detail"] and r["saved"], r
+assert len(_Ctx.loaded) == 1, "a failed re-issue must not reload the old files as if new"
+webd.HTTPS["ctx"] = None
 webd.card_set, webd.save_state = _card_set, _save
+ok("a rename re-issues the server cert and reloads the live TLS context at once — not at next boot; an owner-only change does not; a failed re-issue is reported and still saves")
 os.unlink(webd.MDNS_CACHE)
 ok("a rename refuses a sibling's name (any case), any pipeos-xxxx chassis id, a name that answers on the LAN, and plain pipeos; a free name lands in NAME= lowercased, never in NICK")
 seed_peers(PEERS)

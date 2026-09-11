@@ -2109,8 +2109,13 @@ class Handler(BaseHTTPRequestHandler):
             card_set(updates)
         except RuntimeError as e:
             return self.err(500, str(e))
+        # the name rides the server cert as a SAN (pipeos-tls-init); until
+        # #234 it only got there at the next boot, so https://<name>.local/
+        # warned for the rest of the day the box was named
+        tls_ok, tls_detail = (True, "") if "NAME" not in updates else tls_reissue()
         saved, detail = save_state()
         self.send(200, {"ok": True, "hostname": socket.gethostname(), "name": box_name(),
+                        "tls": tls_ok, "tls_detail": tls_detail,
                         "saved": saved, "save_detail": "" if saved else detail})
 
     def api_name_suggest(self):
@@ -2999,16 +3004,45 @@ for _n in dir(PhaseB):
         setattr(Handler, _n, getattr(PhaseB, _n))
 
 
-def start_https():
+TLS_INIT = "/usr/local/bin/pipeos-tls-init"
+# the one SSLContext behind :443. load_cert_chain on it again swaps the cert
+# for every connection accepted from then on — no listener restart, no
+# dropped sessions — which is how a rename gets its SAN at once (#234).
+HTTPS = {"ctx": None}
+
+
+def tls_reissue():
+    """Re-run pipeos-tls-init (it re-issues server.crt only when a SAN it wants
+    — the name, the IP — is missing) and hand the live listener the result.
+    Returns (ok, detail). Best-effort, like start_https: HTTP on :80 never
+    depends on it."""
+    rc, out = run([TLS_INIT], timeout=30)
+    if rc != 0:
+        return False, "pipeos-tls-init rc=%d: %s" % (rc, out.strip()[-300:])
+    ctx = HTTPS["ctx"]
+    if ctx is None:
+        # no :443 at boot (first boot before the CA existed, say) — bring it
+        # up now that a cert exists rather than wait for the next reboot
+        start_https(init=False)
+        return HTTPS["ctx"] is not None, "https listener started"
+    try:
+        ctx.load_cert_chain(SRV_CRT, SRV_KEY)
+    except Exception as e:
+        return False, "reload cert: %s" % e
+    return True, "cert reloaded"
+
+
+def start_https(init=True):
     """Serve HTTPS on :443 in a background thread if the box CA + server cert
     exist. HTTP on :80 keeps working regardless, so a TLS problem can never lock
     the owner out of the wizard — HTTPS is strictly additive until they install
     the CA and choose to use it. Best-effort: any failure just means no :443."""
-    try:
-        subprocess.run(["/usr/local/bin/pipeos-tls-init"], timeout=30,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
+    if init:
+        try:
+            subprocess.run([TLS_INIT], timeout=30,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
     if not (os.path.exists(SRV_CRT) and os.path.exists(SRV_KEY)):
         return
     try:
@@ -3020,6 +3054,7 @@ def start_https():
     except Exception as e:
         sys.stderr.write("pipeos-webd: HTTPS not started: %s\n" % e)
         return
+    HTTPS["ctx"] = ctx
     threading.Thread(target=httpsd.serve_forever, daemon=True).start()
     sys.stderr.write("pipeos-webd listening on :443 (TLS)\n")
 
