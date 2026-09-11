@@ -318,6 +318,7 @@ etc/init.d
 etc/doas.d
 etc/profile.d
 etc/apk/protected_paths.d/lbu.list
+etc/crontabs/root
 root/.claude/CLAUDE.md"
 
 NEVER="etc/pipeos root/.pipe etc/profile.d/10-pipebox-env.sh"

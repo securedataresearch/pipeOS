@@ -57,6 +57,10 @@ ROOT=${PIPEOS_DEPLOY_ROOT:-}
 NO_PERSIST=${PIPEOS_DEPLOY_NO_PERSIST:-0}
 
 # What a deploy carries: code and declarations, never per-box generated state.
+# etc/crontabs/root is repo-owned whole (the maintenance crons and the
+# schedule tick, #242): zero got #250's overlay on 2026-09-11 and its tick line
+# was simply not there — selfcheck's WARN said "redeploy the overlay" and a
+# redeploy could not have fixed it.
 # lbu.list is a single file rather than the whole of etc/apk — repositories and
 # world are box state, and a wrong /etc/apk/repositories is a brick (CLAUDE.md
 # §4), so this list names the one file in there that is repo-owned.
@@ -68,6 +72,7 @@ etc/init.d
 etc/doas.d
 etc/profile.d
 etc/apk/protected_paths.d/lbu.list
+etc/crontabs/root
 root/.claude/CLAUDE.md"
 
 # Second gate. Anything whose overlay-relative path starts with one of these
@@ -431,9 +436,10 @@ svc_files() {
         pipeos-mdns)      echo "etc/init.d/pipeos-mdns usr/local/bin/pipeos-mdnsd usr/local/share/pipeos/web/mdnsd.py usr/local/share/pipeos/web/lanid.py" ;;
         pipeos-stream)    echo "etc/init.d/pipeos-stream" ;;
         pipeos-support)   echo "etc/init.d/pipeos-support" ;;
+        crond)            echo "etc/crontabs/root" ;;
     esac
 }
-for svc in pipe-daemon pipebox-listener pipeos-web pipeos-mdns pipeos-stream pipeos-support; do
+for svc in pipe-daemon pipebox-listener pipeos-web pipeos-mdns pipeos-stream pipeos-support crond; do
     hit=no
     for f in $(svc_files "$svc"); do
         grep -qxF "$f" "$installed_rels" 2>/dev/null && hit=yes
@@ -451,6 +457,42 @@ for svc in pipe-daemon pipebox-listener pipeos-web pipeos-mdns pipeos-stream pip
             || { log "RESTART FAILED: $svc after deploy"; die "$svc restart failed after deploy — the box is running old code under a new stamp"; }
     else
         say "note: $svc changed but is not running — nothing restarted"
+    fi
+done
+
+# ---- 5c. a new service is enrolled where the image build puts it ----------
+# Runlevels are not in overlay/: scripts/40-build-apkovl.sh generates them
+# (its mk_runlevel lines, CLAUDE.md). An image gets them at build time; a live
+# box that receives a NEW etc/init.d/<svc> by deploy got nothing — the file
+# sat there and the service never ran (pipeos-vault and pipeos-wol on zero,
+# 2026-09-11). So: every init script this deploy installed that no runlevel
+# holds yet is added to the level the build names for it, and started once,
+# the way the next boot would. A script the build names in no level is left
+# alone and said so (the wizard enrols pipe-daemon at claim time).
+build_levels=$REPO/scripts/40-build-apkovl.sh
+for f in $(grep '^etc/init\.d/' "$installed_rels" 2>/dev/null); do
+    svc=${f#etc/init.d/}
+    rc-update show 2>/dev/null | grep -q "^ *$svc |" && continue
+    level=$(git -C "$REPO" show "$commit:scripts/40-build-apkovl.sh" 2>/dev/null \
+        | grep -E "^mk_runlevel +[a-z]+ .*( |\\$)$svc( |\\$)" | head -1 | awk '{print $2}')
+    if [ -z "$level" ]; then
+        say "note: $svc is new but the image build names it in no runlevel — not enrolled"
+        continue
+    fi
+    if rc-update add "$svc" "$level" >/dev/null 2>&1; then
+        say "enrolled $svc in the $level runlevel (where the image build puts it)"
+        log "enrolled $svc in $level after deploy"
+    else
+        die "rc-update add $svc $level failed — the service is installed but would not start at boot"
+    fi
+    if rc-service "$svc" status >/dev/null 2>&1; then
+        continue
+    fi
+    if rc-service "$svc" start >/dev/null 2>&1 9>&-; then
+        say "started $svc (its first run on this box; the next boot starts it from $level)"
+        log "started $svc after deploy"
+    else
+        die "$svc start failed after enrolment — see rc-service $svc status"
     fi
 done
 rm -f "$installed_rels"

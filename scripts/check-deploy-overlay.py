@@ -303,6 +303,17 @@ c12.run()
 check("14 a symlink in the overlay stops the deploy with a reason",
       c12.rc != 0 and "regular files only" in c12.log, "rc=%d" % c12.rc)
 
+# ── 15. the crontab is repo-owned and deployed whole ─────────────────────
+fx = dict(FIXTURE)
+fx["overlay/etc/crontabs/root"] = ("# crons\n* * * * * /usr/local/bin/pipeos-schedule-tick\n", 0o600)
+c15 = case(fixture=fx).run()
+check("15 etc/crontabs/root is deployed (the schedule tick line reached zero by hand on 2026-09-11 because it was not)",
+      c15.rc == 0 and c15.live("etc/crontabs/root") == fx["overlay/etc/crontabs/root"][0] and c15.mode("etc/crontabs/root") in ("0o600", "0o644"),
+      "rc=%d live=%r" % (c15.rc, c15.live("etc/crontabs/root")))
+src = open(SCRIPT).read()
+check("15b a new init script is enrolled in the runlevel the image build names for it, and started once; crond restarts when its table changes",
+      'rc-update add "$svc" "$level"' in src and "mk_runlevel" in src and 'crond)            echo "etc/crontabs/root"' in src, "")
+
 for c in CASES:
     shutil.rmtree(c.dir, ignore_errors=True)
 
