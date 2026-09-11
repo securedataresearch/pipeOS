@@ -437,9 +437,11 @@ svc_files() {
         pipeos-stream)    echo "etc/init.d/pipeos-stream" ;;
         pipeos-support)   echo "etc/init.d/pipeos-support" ;;
         crond)            echo "etc/crontabs/root" ;;
+        pipeos-vault)     echo "etc/init.d/pipeos-vault usr/local/bin/pipeos-vault usr/local/share/pipeos/web/vault.py" ;;
+        pipeos-wol)       echo "etc/init.d/pipeos-wol usr/local/bin/pipeos-wake usr/local/share/pipeos/web/wake.py" ;;
     esac
 }
-for svc in pipe-daemon pipebox-listener pipeos-web pipeos-mdns pipeos-stream pipeos-support crond; do
+for svc in pipe-daemon pipebox-listener pipeos-web pipeos-mdns pipeos-stream pipeos-support crond pipeos-vault pipeos-wol; do
     hit=no
     for f in $(svc_files "$svc"); do
         grep -qxF "$f" "$installed_rels" 2>/dev/null && hit=yes
