@@ -60,7 +60,8 @@ for e, dt, want in table:
         bad.append((e, dt, want))
 check("1 the cron table: steps, ranges, lists, names, 0 and 7 as Sunday, the aliases, Vixie's either-day rule, Feb 30 never", not bad, repr(bad))
 refused = []
-for e in ("* * * * * ; rm -rf /", "60 * * * *", "*/0 * * * *", "* * * * * *", "* * * *", "x" * 70, "$(id)", "`id`", "5-1 * * * *", "", "0 25 * * *", "0 0 32 * *", "0 0 * 13 *", "0 0 * * 8", "a * * * *", 12, None):
+# the fullwidth digit is the one only the charset catches: int() accepts it
+for e in ("* * * * * ; rm -rf /", "60 * * * *", "*/0 * * * *", "* * * * * *", "* * * *", "x" * 70, "$(id)", "`id`", "5-1 * * * *", "", "0 25 * * *", "0 0 32 * *", "0 0 * 13 *", "0 0 * * 8", "a * * * *", "\uff10 2 * * *", 12, None):
     try:
         cs.parse(e)
         refused.append(e)
