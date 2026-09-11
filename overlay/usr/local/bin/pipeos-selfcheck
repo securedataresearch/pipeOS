@@ -389,9 +389,34 @@ fi
 # its job — a WARN, not a crit: the wizard's sign-in step is skippable and
 # the dashboard says how to finish.
 if [ "$SERVICE_CLAUDE" = on ]; then
-    if [ ! -s /etc/pipeos/claude-auth.env ] && [ ! -s /root/.claude/.credentials.json ]; then
-        warnn "Claude is enabled but has no credential (no claude-auth.env, no /root/.claude/.credentials.json) — finish the Claude step in the web wizard"
+    if [ ! -s /run/pipeos/secrets/claude.env ] && [ ! -s /etc/pipeos/claude-auth.env ] && [ ! -s /root/.claude/.credentials.json ]; then
+        warnn "Claude is enabled but has no credential (nothing in the vault, no /root/.claude/.credentials.json) — finish the Claude step in the web wizard"
     fi
+fi
+
+# ---- 3cv. the vault (#244). The services read their secrets from
+# /run/pipeos/secrets, which pipeos-vault writes at boot from the sealed
+# store. Locked = this stick's secrets were sealed in another chassis: the
+# owner types the recovery phrase under Secrets in the dashboard, which is
+# why the dashboard itself keeps its credential outside the vault. A
+# claimed box with no vault is the deploy window before the first boot with
+# #244 — or a migration that failed, which the status file says.
+if [ -s /etc/pipeos/web-admin.conf ]; then
+    _vst=$(cat /run/pipeos/vault.status 2>/dev/null)
+    case "$_vst" in
+    open*) ;;
+    "locked chassis"*)
+        warnn "vault is LOCKED: this stick's secrets were sealed to another chassis — Claude, the support tunnel, the stream keys, the terminal password and the NAS logins are unavailable until the recovery phrase is entered under Secrets (pairs with the chassis-mismatch line above)" ;;
+    locked*)
+        warnn "vault did not open: ${_vst#locked } — pipeos vault status" ;;
+    none*|"")
+        if [ -f /etc/pipeos/vault.sealed ]; then
+            warnn "vault present but pipeos-vault did not run this boot — rc-service pipeos-vault start"
+        else
+            warnn "no vault yet: secrets are still plain files under /etc/pipeos — rc-service pipeos-vault start seals them (it runs at every boot)"
+        fi ;;
+    esac
+    [ -s /run/pipeos/vault-phrase ] && noten "the vault's recovery phrase is waiting under Secrets in the dashboard — write it down, then dismiss it"
 fi
 
 # ---- 3d. update-path health (#116). The last outage ran five days with zero

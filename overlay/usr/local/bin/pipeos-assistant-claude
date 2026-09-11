@@ -3,7 +3,8 @@
 # (see pipeos-assistant-run). Runs as root with HOME=/root in the dashboard
 # chat's working dir. --continue only when there is something to continue.
 set -u
-AUTH=/etc/pipeos/claude-auth.env
+AUTH=/run/pipeos/secrets/claude.env
+[ -r "$AUTH" ] || AUTH=/etc/pipeos/claude-auth.env
 SETTINGS=/etc/pipeos/pipebox-settings.json
 WORKDIR=/work/pipebox/webchat
 export HOME=/root

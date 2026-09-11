@@ -15,8 +15,14 @@ export PIPE_NO_SPAWN=1
 # Agent auth token (secret; provisioned into the box's env file, never in git)
 # and the build toolchain on PATH, so a BUILD/TEST box's agent can run
 # cargo/rustc/cc from /work/buildroot when present.
-if [ -r /etc/pipeos/claude-auth.env ]; then
-    . /etc/pipeos/claude-auth.env
+# The Claude credential comes from the vault's export under /run (#244);
+# the /etc file is the pre-vault location, read only until the first boot
+# that migrates it, so a deploy-overlay without a reboot keeps working.
+AUTH=/run/pipeos/secrets/claude.env
+[ -r "$AUTH" ] || AUTH=/etc/pipeos/claude-auth.env
+if [ -r "$AUTH" ]; then
+    # shellcheck disable=SC1090
+    . "$AUTH"
     # sourcing sets a shell variable; claude -p needs it in the environment
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && export CLAUDE_CODE_OAUTH_TOKEN
     [ -n "${ANTHROPIC_API_KEY:-}" ] && export ANTHROPIC_API_KEY

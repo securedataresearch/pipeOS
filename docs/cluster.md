@@ -158,6 +158,10 @@ ROLE) are named where the design reuses them.
 
 → #213
 
+The second box's secrets are its own: claiming it mints its own vault and
+recovery phrase (#244). A stick moved between Machines needs the phrase
+once, then belongs to the chassis it is in.
+
 ## Order of work
 
 1. §1 identity (hostname = id, alias = name, suggester) — small, unblocks

@@ -26,7 +26,6 @@ spec.loader.exec_module(webd)
 tmp = tempfile.mkdtemp(prefix="check-webd.")
 webd.ADMIN_CONF = tmp + "/web-admin.conf"
 webd.SERVICES_CONF = tmp + "/services.conf"
-webd.CLAUDE_AUTH = tmp + "/claude-auth.env"
 webd.CARD = tmp + "/card.conf"
 webd.PROVISIONED = tmp + "/provisioned"
 webd.SESS_DIR = tmp + "/sessions"
@@ -38,7 +37,19 @@ webd.ASSISTANT_CONF = tmp + "/assistant.conf"
 webd.SELFUPDATE_CONF = tmp + "/selfupdate.conf"
 webd.NAS_CONF = tmp + "/nas.conf"
 webd.SUPPORT_CONF = tmp + "/support.conf"
-webd.SUPPORT_KEY = tmp + "/support_key"
+# the vault (#244): the sealed file, its export dir and the hardware
+# identity all live in the tempdir; a small PBKDF2 count for speed
+webd.VAULT = webd.vault.VAULT_FILE = tmp + "/vault.sealed"
+webd.SECRETS_DIR = webd.vault.RUN_DIR = tmp + "/secrets"
+webd.vault.ETC = tmp
+webd.vault.ITER = 1500
+webd.vault.ident = lambda: {"mac": "aa:bb:cc:dd:7f:3a", "serial": "PC1", "product": "Test Box"}
+webd.VAULT_PHRASE = tmp + "/vault-phrase"
+webd.VAULT_STATUS = tmp + "/vault.status"
+webd.CLAUDE_AUTH = tmp + "/secrets/claude.env"
+webd.CLAUDE_AUTH_LEGACY = tmp + "/claude-auth.env"
+webd.SUPPORT_KEY = tmp + "/secrets/support_key"
+webd.SUPPORT_PUB = tmp + "/support_key.pub"
 # the LAN lobby: mdnsd's cache stands in as a file; identity and the
 # one-shot LAN question are stubbed on the lanid module webd imported
 webd.MDNS_CACHE = tmp + "/peers.json"
@@ -197,6 +208,8 @@ _no_save = {
     "/api/flash": "pipeos-flash writes the media directly",
     "/api/save": "is the save",
     "/api/wake": "a packet on the wire, no state (#241)",
+    "/api/secrets/reveal": "a read that re-auths (#244)",
+    "/api/secrets/phrase-ack": "forgets a tmpfs copy (#244)",
 }
 _missing = []
 for _path, _fn in _table.items():
@@ -258,6 +271,9 @@ ok("cross-origin claim refused")
 r = req("/api/claim", {"password": "hunter22hunter"})
 assert r["ok"] and os.path.exists(webd.PROVISIONED)
 ok("claim sets the provisioned marker")
+_phrase = r["recovery_phrase"]
+assert len(_phrase.split("-")) == 8 and os.path.exists(webd.VAULT) and (os.stat(webd.VAULT).st_mode & 0o077) == 0
+ok("claim mints the box's vault (0600) and hands the wizard the recovery phrase once")
 req("/api/claim", {"password": "another-pass"}, expect=403)
 ok("second claim refused")
 st = req("/api/status")
@@ -295,7 +311,9 @@ r = req("/api/claude-token", {"token": "sk-ant-oat01-" + "t" * 60})
 assert r["method"] == "token" and open(webd.CLAUDE_AUTH).read().startswith("CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-")
 assert req("/api/claude")["method"] == "token"
 req("/api/claude-token", {"token": "short"}, expect=400)
-ok("an API key and a setup-token each land as their own variable; the file wins over the sign-in; junk is refused")
+assert not os.path.exists(webd.CLAUDE_AUTH_LEGACY) and webd.vault.get("claude_token") == "sk-ant-oat01-" + "t" * 60
+assert "sk-ant" not in open(webd.VAULT).read()
+ok("an API key and a setup-token each land as their own variable in the vault's export, never in /etc, and the sealed file does not contain them; the file wins over the sign-in; junk is refused")
 req("/api/claude-login/start", {"billing": "claude"})
 r = req("/api/claude-login/code", {"code": "good#code"})
 assert r["method"] == "login" and not os.path.exists(webd.CLAUDE_AUTH)
@@ -316,8 +334,9 @@ sp = req("/api/support")
 assert sp["enabled"] and sp["pubkey"].startswith("ssh-ed25519 ") and sp["relay"] == "tunnel@relay.example"
 assert sp["configured"] is False and os.path.exists(webd.SUPPORT_KEY)
 assert (os.stat(webd.SUPPORT_KEY).st_mode & 0o077) == 0
+assert webd.vault.get("support_key").startswith(b"-----BEGIN OPENSSH PRIVATE KEY") and not os.path.exists(tmp + "/support_key")
 first_key = sp["pubkey"]
-ok("support on: an ed25519 key is made once (owner-only), the pubkey and relay are shown, no port = not configured")
+ok("support on: an ed25519 key is made once — the private half in the vault and its export (owner-only), the public half beside the conf; the pubkey and relay are shown, no port = not configured")
 with open(webd.SUPPORT_CONF, "w") as f:
     f.write("SUPPORT_RELAY=tunnel@relay.example\nSUPPORT_PORT=42001\n")
 req("/api/services", {"support": False})
@@ -406,6 +425,49 @@ ok("wrong password refused")
 req("/api/login", {"password": "hunter22hunter"})
 req("/api/status", expect=200)
 ok("login grants a working session")
+# ---- the Secrets surface (#244): names never values, reserved names refused,
+# reveal re-auths, unlock/rephrase/init/ack
+sec = req("/api/secrets")
+names = {r["name"]: r for r in sec["secrets"]}
+assert sec["status"] == "open" and "claude_token" not in names, names  # signed out above: the token is gone from the vault too
+assert "support_key" in names and names["support_key"]["kind"] == "bytes" and names["support_key"]["consumer"] == "support" \
+    and names["support_key"]["by"] == "system" and names["support_key"]["set_at"] > 0, names
+assert "value" not in json.dumps(sec) and "sk-ant" not in json.dumps(sec) and "BEGIN OPENSSH" not in json.dumps(sec)
+ok("secrets: the list names what the box holds, who set it and for what — never a value")
+req("/api/secrets/set", {"name": "claude_token", "value": "x"}, expect=400)
+req("/api/secrets/set", {"name": "stream_key_1", "value": "x"}, expect=400)
+req("/api/secrets/set", {"name": "Bad Name", "value": "x"}, expect=400)
+req("/api/secrets/set", {"name": "jobs.gh", "value": ""}, expect=400)
+req("/api/secrets/set", {"name": "jobs.gh", "value": "x" * 9000}, expect=400)
+r = req("/api/secrets/set", {"name": "jobs.gh_token", "value": "ghp_custom"})
+assert r["ok"] and open(tmp + "/secrets/jobs.env").read() == "GH_TOKEN='ghp_custom'\n"
+ok("secrets: a service's own secret is refused here (its card sets it); hostile names and sizes refused; a custom job secret lands in the vault and its jobs.env export")
+req("/api/secrets/reveal", {"name": "jobs.gh_token", "password": "nope"}, expect=403)
+r = req("/api/secrets/reveal", {"name": "jobs.gh_token", "password": "hunter22hunter"})
+assert r["value"] == "ghp_custom"
+req("/api/secrets/reveal", {"name": "support_key", "password": "hunter22hunter"}, expect=400)
+req("/api/secrets/reveal", {"name": "nope", "password": "hunter22hunter"}, expect=404)
+ok("secrets: reveal needs the admin's own password, shows a text value, refuses a key file")
+r = req("/api/secrets/del", {"name": "jobs.gh_token"})
+assert r["ok"] and not os.path.exists(tmp + "/secrets/jobs.env")
+req("/api/secrets/del", {"name": "jobs.gh_token"}, expect=404)
+ok("secrets: delete removes the secret and its export at once")
+req("/api/secrets/unlock", {"phrase": "0000-0000-0000-0000-0000-0000-0000-0000"}, expect=403)
+req("/api/secrets/unlock", {"phrase": "short"}, expect=400)
+r = req("/api/secrets/unlock", {"phrase": _phrase})
+assert r["ok"] and req("/api/secrets")["status"] == "open"
+r = req("/api/secrets/rephrase", {})
+assert len(r["phrase"].split("-")) == 8 and r["phrase"] != _phrase
+req("/api/secrets/unlock", {"phrase": _phrase}, expect=403)
+req("/api/secrets/unlock", {"phrase": r["phrase"]})
+ok("secrets: the wrong phrase is refused, the right one re-seals; rephrase retires the old phrase")
+req("/api/secrets/init", {}, expect=409)
+with open(webd.VAULT_PHRASE, "w") as f:
+    f.write("aaaa-bbbb\n")
+assert req("/api/secrets")["phrase_pending"] is True and req("/api/secrets")["phrase"] == "aaaa-bbbb"
+req("/api/secrets/phrase-ack", {})
+assert req("/api/secrets")["phrase_pending"] is False and not os.path.exists(webd.VAULT_PHRASE)
+ok("secrets: init is refused while a vault exists; a parked phrase shows until the owner acknowledges it")
 req("/api/login", {"password": "hunter22hunter"})
 req("/api/logs?name=../../etc/shadow", expect=400)
 req("/api/logs?name=nope", expect=400)
@@ -444,15 +506,18 @@ assert t1["key_set"] is True and t2["key_set"] is True, g["targets"]
 assert all("key" not in t for t in g["targets"]), "raw keys must never be returned"
 with open(webd.STREAM_CONF) as f:
     conf = f.read()
-assert "STREAM_T1_KEY='yt-secret'" in conf and "STREAM_T2_KEY='tw-secret'" in conf
+assert "STREAM_T1_KEY=''" in conf and "STREAM_T2_KEY=''" in conf and "yt-secret" not in conf and "tw-secret" not in conf
+assert webd.vault.get("stream_key_1") == "yt-secret" and webd.vault.get("stream_key_2") == "tw-secret"
+assert open(tmp + "/secrets/stream.env").read() == "STREAM_T1_KEY='yt-secret'\nSTREAM_T2_KEY='tw-secret'\n"
 assert "STREAM_T1_NAME='YouTube'" in conf and "STREAM_T2_ON='1'" in conf
-ok("stream config round-trips multi-provider targets and hides the keys")
+ok("stream config round-trips multi-provider targets; the keys go to the vault and its export, the conf carries blanks")
 # a blank key with keep_key preserves what was saved for that provider slot
 req("/api/stream-config", {"mode": "browser", "url": "https://basho.dev",
     "targets": [{"name": "YouTube", "url": "rtmp://a.rtmp.youtube.com/live2", "on": True, "keep_key": True}]})
 g2 = req("/api/stream")
-assert g2["targets"][0]["key_set"] is True, g2["targets"]
-ok("blank provider key with keep_key preserves the saved key")
+assert g2["targets"][0]["key_set"] is True and g2["targets"][1]["key_set"] is False, g2["targets"]
+assert webd.vault.get("stream_key_1") == "yt-secret" and "stream_key_2" not in {r["name"] for r in webd.vault.list_()}
+ok("blank provider key with keep_key preserves the saved key; a target posted without keep_key drops its key from the vault")
 # assistant terminal: guards injection + port, and refuses an open terminal
 req("/api/assistant-config", {"password": "x'; rm -rf /"}, expect=400)
 req("/api/assistant-config", {"port": "notaport", "password": "p"}, expect=400)
@@ -462,6 +527,8 @@ r = req("/api/assistant-config", {"password": "hunter2pass", "port": "7681"})
 assert r["ok"]
 a = req("/api/assistant")
 assert a["pass_set"] is True and a["port"] == "7681" and "password" not in a, a
+assert webd.vault.get("assistant_pass") == "hunter2pass" and "hunter2pass" not in open(webd.ASSISTANT_CONF).read()
+assert open(tmp + "/secrets/assistant.env").read() == "ASSISTANT_PASS='hunter2pass'\n"
 # backend selection: allowlisted, install-checked, and a backend-only flip
 # keeps the saved password and port
 req("/api/assistant-config", {"backend": "skynet"}, expect=400)
@@ -476,7 +543,7 @@ if any(b["id"] == "hermes" and b["installed"] for b in a["backends"]):
     req("/api/assistant-config", {"backend": "claude", "keep_pass": True})
 ok("assistant backend allowlist + lossless backend-only flips")
 with open(webd.ASSISTANT_CONF) as f:
-    assert "ASSISTANT_PASS='hunter2pass'" in f.read()
+    assert "ASSISTANT_PASS=''" in f.read() and webd.vault.get("assistant_pass") == "hunter2pass"
 ok("assistant config round-trips and hides the password")
 r = req("/api/update")
 assert r["state"] in ("self-update disabled", "origin unreachable", "current", "update available", "unknown")
@@ -715,6 +782,8 @@ req("/api/nas-password", {"name": "peek", "password": "whatever12"}, expect=403)
 req("/api/backup", {"dest": "ext/sdx1"}, expect=403)
 req("/api/flash", {"mode": "inplace", "confirm": "x"}, expect=403)
 req("/api/wake", {"id": "4d4d"}, expect=403)
+req("/api/secrets", expect=403)
+req("/api/secrets/set", {"name": "jobs.x", "value": "y"}, expect=403)
 r = req("/api/password", {"current": "peekpassword", "new": "peekpassword2"})
 assert r["ok"]
 assert req("/api/docs")["pages"], "viewer must be able to read the docs"
@@ -737,7 +806,9 @@ req("/api/flash", {"mode": "inplace", "confirm": "x"}, expect=403)
 req("/api/claude-login/start", {"billing": "claude"}, expect=403)
 req("/api/claude-token", {"token": "sk-ant-api03-" + "k" * 60}, expect=403)
 req("/api/wake", {"id": "4d4d"}, expect=403)
-ok("role user: file-op allowed; services/nas/users/name/backup/flash/claude/wake refused")
+req("/api/secrets", expect=403)
+req("/api/secrets/reveal", {"name": "claude_token", "password": "moverpassword"}, expect=403)
+ok("role user: file-op allowed; services/nas/users/name/backup/flash/claude/wake/secrets refused")
 cookie["v"] = saved_admin2
 req("/api/users/del", {"name": "mover"})
 

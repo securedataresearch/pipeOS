@@ -211,7 +211,7 @@ function step1(state) {
     try {
       const r = await api("/api/claim", { password: p1 });
       if (!r.saved) alert("Claimed, but saving to the boot media failed:\n" + r.save_detail);
-      step2(state);
+      if (r.recovery_phrase) phraseStep(state, r.recovery_phrase); else step2(state);
     } catch (e) {
       err.textContent = e.message; err.hidden = false;
       busy(v.querySelector("#go"), false);
@@ -219,6 +219,23 @@ function step1(state) {
   };
   app.replaceChildren(v);
   v.querySelector("#pw1").focus();
+}
+
+// The vault's recovery phrase (#244): shown here and never again. It is
+// what opens the box's secrets if the stick ever boots in another chassis.
+function phraseStep(state, phrase, next) {
+  const v = el(`<div>
+    <p class="steps">Write this down</p>
+    <h1>Your recovery phrase</h1>
+    <p class="sub">This Machine keeps its secrets sealed to its own hardware. If its boot stick ever ends up in a different box, this phrase is the only way to open them again. It is shown once and stored nowhere.</p>
+    <div class="card">
+      <pre class="report" style="font-size:1.15rem;letter-spacing:.04em;user-select:all">${esc(phrase)}</pre>
+      <button id="go">I wrote it down</button>
+      <p class="note">Losing it does not lock you out of this page — only of the secrets, on another machine.</p>
+    </div>
+  </div>`);
+  v.querySelector("#go").onclick = () => (next ? next() : step2(state));
+  app.replaceChildren(v);
 }
 
 function step2(state) {
@@ -582,6 +599,7 @@ async function dashboard() {
     network: '<svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
     system: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="2" x2="9" y2="4"/><line x1="15" y1="2" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="22"/><line x1="15" y1="20" x2="15" y2="22"/><line x1="20" y1="9" x2="22" y2="9"/><line x1="20" y1="15" x2="22" y2="15"/><line x1="2" y1="9" x2="4" y2="9"/><line x1="2" y1="15" x2="4" y2="15"/></svg>',
     users: '<svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+    secrets: '<svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
     docs: '<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
     setup: '<svg viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
   };
@@ -603,6 +621,7 @@ async function dashboard() {
         ${st.services.pipe ? navItem("pipe", "pipe") : ""}
         ${navItem("services", "Services")}
         ${isAdmin ? navItem("users", "Users") : ""}
+        ${isAdmin ? navItem("secrets", "Secrets") : ""}
         ${isAdmin ? navItem("setup", "Setup") : ""}
         ${navItem("network", "Network")}
         ${navItem("system", "System")}
@@ -886,6 +905,31 @@ async function dashboard() {
         </div>
       </section>` : ""}
 
+      ${isAdmin ? `
+      <section data-view="secrets" hidden>
+        <div class="viewhead"><h1>Secrets</h1></div>
+        <div id="secbanner"></div>
+        <div class="card">
+          <div class="cardhead"><h2>What this Machine keeps</h2><span class="pill" id="secstate">…</span></div>
+          <p class="note">Sealed to this hardware in one file; the services read it through memory only. The Claude token, support key, stream keys, terminal password and SMB logins are set from their own cards — this page lists them and can remove them.</p>
+          <div id="seclist" class="note">loading…</div>
+          <p class="err" id="secerr" hidden></p>
+        </div>
+        <div class="card">
+          <h2>Add a secret</h2>
+          <label for="secname">Name</label>
+          <input id="secname" type="text" autocomplete="off" placeholder="jobs.github_token — reaches jobs as GITHUB_TOKEN">
+          <label for="secval">Value</label>
+          <input id="secval" type="password" autocomplete="new-password">
+          <button id="secadd" type="button">Add</button>
+        </div>
+        <div class="card">
+          <h2>Recovery phrase</h2>
+          <p class="note">Opens the secrets on another machine. Shown once when made.</p>
+          <button id="secrephrase" class="ghost" type="button">New phrase</button>
+          <pre class="report" id="secphrase" hidden style="user-select:all"></pre>
+        </div>
+      </section>` : ""}
       <section data-view="docs" hidden>
         <div class="viewhead"><h1>Docs</h1></div>
         <div class="docgrid">
@@ -2038,6 +2082,87 @@ async function dashboard() {
     } catch (e) {}
   };
   // ---- docs: list the box's own pages, render markdown on pick ----
+  // ---- secrets (#244): names never values; locked -> the phrase box ----
+  const loadSecrets = async () => {
+    const list = v.querySelector("#seclist"), err = v.querySelector("#secerr"), banner = v.querySelector("#secbanner"), state = v.querySelector("#secstate");
+    if (!list) return;
+    err.hidden = true;
+    let r;
+    try { r = await api("/api/secrets"); } catch (e) { err.textContent = e.message; err.hidden = false; return; }
+    state.className = "pill " + (r.status === "open" ? "status-ok" : r.status === "locked" ? "status-bad" : "status-warn");
+    state.textContent = r.status === "open" ? "sealed · open" : r.status === "locked" ? "locked" : "no vault yet";
+    banner.innerHTML = "";
+    if (r.status === "locked") {
+      banner.appendChild(el(`<div class="card">
+        <div class="cardhead"><h2>Locked</h2><span class="pill status-bad">another chassis</span></div>
+        <p class="note">${esc(r.detail || "")}</p>
+        <label for="secunlock">Recovery phrase</label>
+        <input id="secunlock" type="text" autocomplete="off" placeholder="xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx">
+        <button id="secunlockgo" type="button">Unlock and seal to this Machine</button>
+        <p class="err" id="secunlockerr" hidden></p></div>`));
+      banner.querySelector("#secunlockgo").onclick = async () => {
+        const e2 = banner.querySelector("#secunlockerr"); e2.hidden = true;
+        try {
+          const w = await api("/api/secrets/unlock", { phrase: banner.querySelector("#secunlock").value.trim() });
+          if (w.problems && w.problems.length) alert("Unlocked. Some services did not start:\n" + w.problems.join("\n"));
+          loadSecrets();
+        } catch (e) { e2.textContent = e.message; e2.hidden = false; }
+      };
+    } else if (r.status === "none") {
+      banner.appendChild(el(`<div class="card"><h2>No vault yet</h2>
+        <p class="note">This Machine's secrets are still plain files. Sealing them makes the vault, moves them in and shows the recovery phrase once. (This happens on its own at the next boot.)</p>
+        <button id="secinit" type="button">Seal the secrets now</button><p class="err" id="seciniterr" hidden></p></div>`));
+      banner.querySelector("#secinit").onclick = async () => {
+        const e2 = banner.querySelector("#seciniterr"); e2.hidden = true;
+        try { const w = await api("/api/secrets/init", {}); showPhrase(w.phrase); loadSecrets(); }
+        catch (e) { e2.textContent = e.message; e2.hidden = false; }
+      };
+    }
+    if (r.phrase_pending) {
+      banner.appendChild(el(`<div class="card"><div class="cardhead"><h2>Your recovery phrase</h2><span class="pill status-warn">write it down</span></div>
+        <p class="note">Made when this Machine sealed its secrets. Shown until you dismiss it; stored nowhere after that.</p>
+        <pre class="report" style="font-size:1.15rem;letter-spacing:.04em;user-select:all">${esc(r.phrase)}</pre>
+        <button id="secack" type="button">I wrote it down</button></div>`));
+      banner.querySelector("#secack").onclick = async () => { await api("/api/secrets/phrase-ack", {}); loadSecrets(); };
+    }
+    const rows = r.secrets || [];
+    if (!rows.length) { list.className = "note"; list.textContent = r.status === "open" ? "Nothing yet." : ""; }
+    else {
+      list.className = "";
+      list.innerHTML = rows.map(x => `<div class="row">
+        <div><div class="name">${esc(x.name)}</div>
+        <div class="desc">${esc(x.consumer || "custom")} · ${esc(x.kind)} · ${x.set_at ? new Date(x.set_at * 1000).toLocaleString() : ""}${x.by ? " · by " + esc(x.by) : ""}</div></div>
+        <div>${x.kind === "text" ? `<button class="btn ghost" type="button" data-reveal="${esc(x.name)}">Reveal</button>` : ""}
+             <button class="btn ghost" type="button" data-del="${esc(x.name)}">Delete</button></div></div>`).join("");
+      list.querySelectorAll("[data-reveal]").forEach(b => b.onclick = async () => {
+        const pw = prompt("Your password, to show " + b.dataset.reveal + ":");
+        if (!pw) return;
+        try { const w = await api("/api/secrets/reveal", { name: b.dataset.reveal, password: pw }); alert(b.dataset.reveal + ":\n\n" + w.value); }
+        catch (e) { err.textContent = e.message; err.hidden = false; }
+      });
+      list.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+        if (!confirm("Delete " + b.dataset.del + "? The service that uses it stops working until it is set again.")) return;
+        try { await api("/api/secrets/del", { name: b.dataset.del }); loadSecrets(); }
+        catch (e) { err.textContent = e.message; err.hidden = false; }
+      });
+    }
+  };
+  const showPhrase = (p) => { const pre = v.querySelector("#secphrase"); if (pre) { pre.textContent = p; pre.hidden = false; } };
+  const secadd = v.querySelector("#secadd");
+  if (secadd) secadd.onclick = async () => {
+    const err = v.querySelector("#secerr"); err.hidden = true;
+    try {
+      await api("/api/secrets/set", { name: v.querySelector("#secname").value.trim(), value: v.querySelector("#secval").value });
+      v.querySelector("#secname").value = ""; v.querySelector("#secval").value = "";
+      loadSecrets();
+    } catch (e) { err.textContent = e.message; err.hidden = false; }
+  };
+  const secre = v.querySelector("#secrephrase");
+  if (secre) secre.onclick = async () => {
+    if (!confirm("Make a new recovery phrase? The old one stops working.")) return;
+    try { const w = await api("/api/secrets/rephrase", {}); showPhrase(w.phrase); }
+    catch (e) { const err = v.querySelector("#secerr"); err.textContent = e.message; err.hidden = false; }
+  };
   const loadDocs = async () => {
     const list = v.querySelector("#doclist"), body = v.querySelector("#docbody");
     let pages;
@@ -2099,7 +2224,7 @@ async function dashboard() {
   // Views with live data register a poller (runs only while on screen) or a
   // lazy loader (runs on first visit).
   const POLLERS = { system: pollSystem, network: pollNetwork };
-  const LAZY = { files: () => { loadFiles(""); loadFiles._disks(); }, pipe: loadPipe, users: loadUsers, docs: loadDocs, setup: loadSetup };
+  const LAZY = { files: () => { loadFiles(""); loadFiles._disks(); }, pipe: loadPipe, users: loadUsers, secrets: loadSecrets, docs: loadDocs, setup: loadSetup };
   const seen = {};
   let viewTimer = null;
   const views = v.querySelectorAll("[data-view]");

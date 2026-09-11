@@ -21,6 +21,7 @@
 #   pipeos deploy-overlay      install a repo commit's overlay onto this box
 #   pipeos unclaim [--yes]     nobody's box again: drop the claim, name, users; reboot
 #   pipeos wake NAME|ID|--all|--list|--forget ID   magic packet to a Machine this box has seen
+#   pipeos vault status|list|set|get|del|export|unlock|rephrase   the sealed secret store
 #
 # Read-only verbs (status/verify/diff/snapshot) are open to the resident
 # agent; mutating verbs are root/human territory (pipebox-settings.json).
@@ -275,6 +276,23 @@ cmd_verify() {
         fail "canonical apkovl missing or unreadable"
     fi
 
+    # (f) no secret in the clear once the vault exists (#244). A plaintext
+    # copy beside the vault is the leak the vault closes; one INSIDE the
+    # canonical apkovl means the next boot puts it back. A claimed box with
+    # no vault yet is the deploy window before pipeos-vault's first run.
+    if [ -f /etc/pipeos/vault.sealed ]; then
+        _left=$(/usr/local/bin/pipeos-vault plaintext-left 2>/dev/null)
+        if [ "$_left" != none ] && [ -n "$_left" ]; then
+            fail "secrets still in the clear beside the vault: $(echo "$_left" | tr '\n' ' ')"
+        elif [ -f "$OVL" ] && tar -tzf "$OVL" 2>/dev/null | grep -qE '^etc/pipeos/(claude-auth\.env|support_key|nas-private/)'; then
+            fail "the canonical apkovl still carries a plaintext secret — pipeos save"
+        else
+            ok "secrets sealed: nothing in the clear, on disk or in the apkovl"
+        fi
+    elif [ -s /etc/pipeos/web-admin.conf ]; then
+        warn "claimed, but no vault yet — pipeos-vault seals the secrets at the next boot (or: rc-service pipeos-vault start)"
+    fi
+
     rm -rf "$tmpd"
     if [ "$FAILED" = 0 ]; then
         echo "verify: PASS — a reboot reproduces this state"
@@ -393,7 +411,9 @@ cmd_unclaim() {
     pipebox-card generate --card "$_card" >/dev/null || { echo "card regeneration failed" >&2; return 1; }
     rm -f /etc/pipeos/web-admin.conf /etc/pipeos/users.json /etc/pipeos/terminals.conf \
           /etc/pipeos/services.conf
-    rm -rf /run/pipeos/web-sessions
+    # nobody's box has nobody's secrets: the vault and its export go too (#244)
+    rm -f /etc/pipeos/vault.sealed /etc/pipeos/support_key.pub
+    rm -rf /run/pipeos/web-sessions /run/pipeos/secrets
     # save BEFORE the provisioned marker goes: pipeos-save is a no-op without
     # it, and the removal itself is what has to reach the media
     /usr/local/bin/pipeos-save || { echo "save failed — the box is still claimed on the media" >&2; return 1; }
@@ -422,8 +442,9 @@ case "$1" in
     selfupdate)  shift; exec /usr/local/bin/pipeos-selfupdate "$@" ;;
     unclaim)     shift; cmd_unclaim "$@" ;;
     wake)        shift; exec /usr/local/bin/pipeos-wake "$@" ;;
+    vault)       shift; exec /usr/local/bin/pipeos-vault "$@" ;;
     *)
-        sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
         exit 1
         ;;
 esac

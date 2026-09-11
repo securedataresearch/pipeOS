@@ -13,12 +13,17 @@
 set -u
 
 CONF=/etc/pipeos/assistant.conf
-AUTH=/etc/pipeos/claude-auth.env
 SETTINGS=/etc/pipeos/pipebox-settings.json
 WORKDIR=/work/pipebox/webchat
+# the password and the Claude credential come from the vault's export (#244)
+SECRETS=/run/pipeos/secrets
+AUTH=$SECRETS/claude.env
+[ -r "$AUTH" ] || AUTH=/etc/pipeos/claude-auth.env
 
 # shellcheck disable=SC1090
 [ -r "$CONF" ] && . "$CONF"
+# shellcheck disable=SC1090
+[ -r "$SECRETS/assistant.env" ] && . "$SECRETS/assistant.env"
 # shellcheck disable=SC1090
 # one line, one of two variables: a setup-token (the owner's subscription)
 # or an Anthropic Console key. A browser sign-in leaves no file — claude

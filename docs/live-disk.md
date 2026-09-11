@@ -132,6 +132,14 @@ box's runtime state: flash staging, stamps, clean-shutdown marks), `/logs`
 `claude/projects` it lays down needs `--force`; the refusal names the first
 entry it found.
 
+### The vault on a moved stick
+
+The box's secrets ride the apkovl sealed to the chassis (#244). A stick
+that boots in a different machine comes up with the dashboard and a locked
+vault; the owner types the recovery phrase under Secrets and the vault
+re-seals to the new chassis. `pipeos flash apply --to` and `restore-identity`
+carry the sealed file unchanged.
+
 ## Power loss, and the two apkovls
 
 **Mid-write** (step 10, or the `--to` dd): p1 is unbootable. Nothing else

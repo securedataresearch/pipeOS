@@ -36,8 +36,11 @@ start_pre() {
 	fi
 	# shellcheck disable=SC1090
 	. "$CONF"
+	# the password lives in the vault; its export is the file here (#244)
+	# shellcheck disable=SC1091
+	[ -r /run/pipeos/secrets/assistant.env ] && . /run/pipeos/secrets/assistant.env
 	if [ -z "${ASSISTANT_PASS:-}" ]; then
-		eerror "the assistant terminal has no password (ASSISTANT_PASS empty in $CONF) — set one in the web UI"
+		eerror "the assistant terminal has no password (none in the vault, none in $CONF) — set one in the web UI"
 		return 1
 	fi
 	command -v ttyd >/dev/null 2>&1 || { eerror "ttyd is not installed on this image"; return 1; }

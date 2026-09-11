@@ -7,11 +7,14 @@
 # What lands under DEST/pipeos-backup/<nick>/:
 #   identity/pipeos.apkovl.tar.gz   a fresh `lbu package` — THE identity:
 #                                   every path in lbu.list plus /etc (pipe
-#                                   keys, ssh, tokens, users, the box's
-#                                   config). It is what a boot restores and
-#                                   what `pipeos flash restore-identity`
-#                                   consumes. The previous one is kept as
-#                                   pipeos.apkovl.prev.tar.gz.
+#                                   keys, ssh, users, the box's config, and
+#                                   the sealed vault — the Claude token and
+#                                   the other service secrets are inside it,
+#                                   openable only in this chassis or with
+#                                   the recovery phrase, #244). It is what a
+#                                   boot restores and what `pipeos flash
+#                                   restore-identity` consumes. The previous
+#                                   one is kept as pipeos.apkovl.prev.tar.gz.
 #   identity/pipe/{identity,credentials}.dat   plain copies of the pipe keys,
 #                                   so a human can find them without untarring
 #   identity/MANIFEST               what this is, from which box, when, sha256
@@ -116,6 +119,7 @@ write_manifest() {
         echo "bundle_sha256=$(sha256sum "$_bundle" | cut -d' ' -f1)"
         echo "bundle_bytes=$(wc -c < "$_bundle")"
         echo "encrypted=$_enc"
+        echo "vault=$([ -f "$ETC/vault.sealed" ] && echo 1 || echo 0)"
         echo "overlay_commit=$(sed -n 's/^commit //p' "$ETC/.overlay-stamp" 2>/dev/null | head -1)"
         echo "image=$(sed -n 's/^built=//p' "$MEDIA/pipeos-image.txt" 2>/dev/null | head -1)"
         echo "world_count=$(tar -xzOf "$_bundle" etc/apk/world 2>/dev/null | grep -c .)"

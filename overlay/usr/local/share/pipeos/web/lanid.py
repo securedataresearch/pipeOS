@@ -125,6 +125,14 @@ def model():
     return " ".join(" ".join(parts).split())
 
 
+def serial():
+    """The DMI product serial (0400 — root only; "" for anyone else and
+    when the firmware left an OEM placeholder). One of the chassis inputs
+    the vault's key is derived from (#244)."""
+    v = _read(os.path.join(DMI, "product_serial"))
+    return "" if v.lower() in _OEM or not v else v
+
+
 def image_info(path="/media/usb/pipeos-image.txt"):
     """variant/commit/built from the media's pipeos-image.txt; empty strings
     when it is missing or unreadable (a vfat umask can hide it from an

@@ -1,0 +1,4 @@
+#!/bin/sh
+# pipeos-vault — the box's sealed secret store (#244). The logic is
+# share/pipeos/web/vault.py (a .py under usr/local/bin reds shellcheck).
+exec python3 /usr/local/share/pipeos/web/vault.py "$@"

@@ -1,0 +1,85 @@
+#!/sbin/openrc-run
+# pipeos-vault — open the box's sealed secrets into /run before anything
+# that reads them starts (#244).
+#
+# /etc/pipeos/vault.sealed is the one file the box's secrets live in; the
+# services read plain files under /run/pipeos/secrets (tmpfs, 0700, root),
+# which this writes at every boot. Three cases:
+#
+#   a vault, and it opens      -> export; the consumers find their files
+#   a vault sealed elsewhere   -> the stick is in another chassis. Say so
+#                                 (/run/pipeos/vault.status), start nothing
+#                                 that needs a secret (they refuse on their
+#                                 own — no file), keep the dashboard up: the
+#                                 owner types the recovery phrase there.
+#   no vault, box claimed      -> the first boot of this overlay on a box
+#                                 claimed before #244: MIGRATE. Make the
+#                                 vault, move the plaintext secrets in, shred
+#                                 them, SAVE (or the next boot restores the
+#                                 plaintext from the old apkovl), and park the
+#                                 recovery phrase in /run/pipeos/vault-phrase
+#                                 for the dashboard to show once.
+#   no vault, unclaimed        -> nothing to do; the claim makes one.
+#
+# Never fails the boot: rc 0 always, the state is in the status file and the
+# boot report (selfcheck 3e).
+description="open the sealed secret store into /run/pipeos/secrets"
+
+depend() {
+	need localmount
+	after pipeos-identity pipeos-workspace
+	before pipeos-web pipe-daemon pipebox-listener pipeos-nas pipeos-stream pipeos-assistant pipeos-support pipeos-terminals
+}
+
+VAULT=/etc/pipeos/vault.sealed
+STATUS=/run/pipeos/vault.status
+PHRASE=/run/pipeos/vault-phrase
+
+start() {
+	checkpath -d -m 0755 /run/pipeos || return 1
+	checkpath -d -m 0700 /run/pipeos/secrets || return 1
+	rm -f "$STATUS"
+	if [ ! -f "$VAULT" ]; then
+		if [ -s /etc/pipeos/web-admin.conf ]; then
+			ebegin "Sealing this box's secrets into a vault (first boot with #244)"
+			_phrase=$(/usr/local/bin/pipeos-vault init) || { eend 1 "vault init failed"; echo "none init-failed" > "$STATUS"; return 0; }
+			_moved=$(/usr/local/bin/pipeos-vault migrate 2>&1) || { eend 1 "migrate failed: $_moved"; echo "open migrate-failed" > "$STATUS"; return 0; }
+			/usr/local/bin/pipeos-vault export >/dev/null 2>&1
+			# the shred is only real once the media no longer carries the
+			# plaintext: without this save the next boot restores it
+			if /usr/local/bin/pipeos-save >/dev/null 2>&1; then
+				eend 0
+			else
+				eend 1 "saved nothing — the plaintext is still in the apkovl on the media (pipeos save)"
+			fi
+			( umask 077; printf '%s\n' "$_phrase" > "$PHRASE" )
+			einfo "$_moved — the recovery phrase is waiting in the dashboard (Secrets)"
+			echo "open migrated" > "$STATUS"
+		else
+			echo "none unclaimed" > "$STATUS"
+		fi
+		return 0
+	fi
+	ebegin "Opening the secret store"
+	if _out=$(/usr/local/bin/pipeos-vault export 2>&1); then
+		eend 0
+		echo "open" > "$STATUS"
+	else
+		case "$_out" in
+		*"another chassis"*|*"integrity"*)
+			eend 1 "LOCKED: $_out"
+			echo "locked chassis" > "$STATUS"
+			;;
+		*)
+			eend 1 "$_out"
+			echo "locked $_out" > "$STATUS"
+			;;
+		esac
+	fi
+	return 0
+}
+
+stop() {
+	rm -rf /run/pipeos/secrets
+	return 0
+}
