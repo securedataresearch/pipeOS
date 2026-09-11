@@ -29,6 +29,8 @@ import collections
 import glob
 import hmac
 import html
+import fcntl
+import datetime
 import json
 import os
 import random
@@ -51,6 +53,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lanid  # noqa: E402  — LAN identity + the mDNS wire, shared with mdnsd.py
 import vault  # noqa: E402  — the sealed secret store (#244)
+import cronspec  # noqa: E402  — the cron expression a scheduled job carries (#242)
 
 ETC = "/etc/pipeos"
 ADMIN_CONF = ETC + "/web-admin.conf"
@@ -1418,6 +1421,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/claude": self.api_claude_get,
             "/api/support": self.api_support_get,
             "/api/secrets": self.api_secrets,
+            "/api/schedule": self.api_schedule,
             "/api/pipe": self.api_pipe_get,
             "/api/pipe-contacts": self.api_pipe_contacts,
             "/api/pipe-board": self.api_pipe_board,
@@ -1511,6 +1515,9 @@ class Handler(BaseHTTPRequestHandler):
             "/api/secrets/rephrase": self.api_secrets_rephrase,
             "/api/secrets/init": self.api_secrets_init,
             "/api/secrets/phrase-ack": self.api_secrets_phrase_ack,
+            "/api/schedule/set": self.api_schedule_set,
+            "/api/schedule/del": self.api_schedule_del,
+            "/api/schedule/run": self.api_schedule_run,
         }
         fn = handlers.get(path)
         if fn is None:
@@ -1602,6 +1609,133 @@ class Handler(BaseHTTPRequestHandler):
         unclaimed one."""
         rows, ok = lobby_entries()
         self.send(200, {"machines": rows, "discovery_ok": ok, "lan_name": lanid.lan_name()})
+
+    # -- scheduled runs (#242) --------------------------------------------------
+
+    def api_schedule(self):
+        jobs = read_schedule()
+        st = schedule_state()
+        now = datetime.datetime.now()
+        out = []
+        for j in jobs:
+            row = {k: j.get(k) for k in ("name", "cron", "prompt", "cwd", "backend", "notify", "enabled", "session")}
+            try:
+                spec = cronspec.parse(j.get("cron", ""))
+                nxt = cronspec.next_run(spec, now) if j.get("enabled", True) else None
+                row["human"] = cronspec.describe(spec)
+                row["next_run"] = nxt.strftime("%Y-%m-%dT%H:%M") if nxt else ""
+            except cronspec.CronError as e:
+                row["human"] = "invalid: %s" % e
+                row["next_run"] = ""
+            row["last"] = {k: v for k, v in st.get(j["name"], {}).items() if k != "running_pid"}
+            out.append(row)
+        rc, _ = run(["rc-service", "crond", "status"], timeout=10)
+        paused = ""
+        try:
+            with open(LEDGER_PAUSED) as f:
+                paused = f.read().strip() or "the monthly cap is reached"
+        except OSError:
+            pass
+        self.send(200, {"jobs": out, "running": schedule_running(), "crond_up": rc == 0,
+                        "paused": paused, "now": now.strftime("%Y-%m-%dT%H:%M"),
+                        "backends": [{"id": b, "installed": shutil.which(b) is not None} for b in ASSISTANT_BACKENDS]})
+
+    def api_schedule_set(self, body):
+        name = (body.get("name") or "").strip().lower()
+        if not JOB_NAME_RE.match(name):
+            return self.err(400, "job names: lowercase letters, digits and dashes, up to 32")
+        jobs = read_schedule()
+        cur = next((j for j in jobs if j["name"] == name), None)
+        job = dict(cur) if cur else {"name": name, "cwd": "", "backend": "claude", "notify": True,
+                                     "enabled": True, "session": "fresh", "prompt": "", "cron": ""}
+        if "cron" in body or not cur:
+            try:
+                spec = cronspec.parse(body.get("cron") or "")
+            except cronspec.CronError as e:
+                return self.err(400, "schedule: %s" % e)
+            job["cron"] = spec.text
+        if "prompt" in body or not cur:
+            prompt = body.get("prompt")
+            if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 8000 or "\0" in prompt:
+                return self.err(400, "a prompt, up to 8000 characters")
+            job["prompt"] = prompt.strip()
+        if "cwd" in body:
+            cwd = (body.get("cwd") or "").strip()
+            if cwd:
+                real = os.path.realpath(cwd)
+                if not (real == "/work" or real.startswith("/work/")) or any(c in cwd for c in "\n\r\0'\""):
+                    return self.err(400, "the working dir must be under /work")
+                job["cwd"] = real
+            else:
+                job["cwd"] = ""
+        if "backend" in body:
+            backend = (body.get("backend") or "claude").strip()
+            if backend not in ASSISTANT_BACKENDS:
+                return self.err(400, "assistant must be one of: " + ", ".join(ASSISTANT_BACKENDS))
+            if shutil.which(backend) is None:
+                return self.err(400, "%s is not installed on this image" % backend)
+            job["backend"] = backend
+        for k in ("notify", "enabled"):
+            if k in body:
+                job[k] = bool(body[k])
+        if "session" in body:
+            if body.get("session") not in ("fresh", "continue"):
+                return self.err(400, "session is fresh or continue")
+            job["session"] = body["session"]
+        if cur is None:
+            if len(jobs) >= SCHEDULE_MAX_JOBS:
+                return self.err(400, "at most %d jobs on one Machine" % SCHEDULE_MAX_JOBS)
+            jobs.append(job)
+        else:
+            jobs[jobs.index(cur)] = job
+        write_schedule(jobs)
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "job": job, "saved": saved, "save_detail": "" if saved else detail})
+
+    def api_schedule_del(self, body):
+        name = (body.get("name") or "").strip().lower()
+        jobs = read_schedule()
+        keep = [j for j in jobs if j["name"] != name]
+        if len(keep) == len(jobs):
+            return self.err(404, "no job named %s" % name)
+        write_schedule(keep)
+        # its runtime leftovers on /work: the session, the state row
+        for p in (os.path.join(SCHEDULE_STATE_DIR, "sessions", name),):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+        # under the same lock the tick and the runner hold for their
+        # read-modify-write, or a stale copy could rename over their commit
+        try:
+            sp = os.path.join(SCHEDULE_STATE_DIR, "state.json")
+            with open(os.path.join(SCHEDULE_STATE_DIR, ".state.lock"), "a+") as lk:
+                fcntl.flock(lk, fcntl.LOCK_EX)
+                with open(sp) as f:
+                    st = json.load(f)
+                st.get("jobs", {}).pop(name, None)
+                write_private(sp, json.dumps(st))
+        except (OSError, ValueError):
+            pass
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "saved": saved, "save_detail": "" if saved else detail})
+
+    def api_schedule_run(self, body):
+        """Run now. Detached, like the tick does it; refused while another
+        job runs (one at a time). Writes nothing the apkovl carries."""
+        name = (body.get("name") or "").strip().lower()
+        if not any(j["name"] == name for j in read_schedule()):
+            return self.err(404, "no job named %s" % name)
+        if schedule_running():
+            return self.err(409, "another job is running on this Machine — one at a time; try again when it finishes")
+        if os.path.exists(LEDGER_PAUSED):
+            return self.err(409, "scheduled runs are paused — the monthly cap is reached; raise it under Usage")
+        try:
+            subprocess.Popen([SCHEDULE_RUN_BIN, name], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError as e:
+            return self.err(500, "could not start the runner: %s" % e)
+        self.send(200, {"ok": True, "started": True})
 
     # -- secrets (#244) -------------------------------------------------------
 
@@ -2866,6 +3000,7 @@ class Handler(BaseHTTPRequestHandler):
 
 LOG_ALLOW = {
     "selfcheck": "/work/logs/selfcheck.log",
+    "schedule": "/work/logs/schedule.log",
     "pipe-daemon": "/work/logs/pipe-daemon.log",
     "pipebox-listener": "/work/logs/pipebox-listener.log",
     "pipeos-web": "/work/logs/pipeos-web.log",
@@ -2877,6 +3012,17 @@ LOG_ALLOW = {
 }
 STREAM_CONF = ETC + "/stream.conf"
 ASSISTANT_CONF = ETC + "/assistant.conf"
+# Scheduled runs (#242): the job list is owner intent and rides the apkovl;
+# the runtime state (last rc, failures, sessions, runs.log) is on /work.
+SCHEDULE_CONF = ETC + "/schedule.json"
+SCHEDULE_STATE_DIR = "/work/.pipeos/schedule"
+SCHEDULE_RUN_BIN = "/usr/local/bin/pipeos-schedule-run"
+SCHEDULE_LOCK = "/run/pipeos/schedule.lock"
+SCHEDULE_LOGDIR = "/work/logs"
+SCHEDULE_MAX_JOBS = 32
+JOB_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+# the ledger's pause marker (#246 writes it; the tick and this only read it)
+LEDGER_PAUSED = "/work/.pipeos/ledger/paused"
 SELFUPDATE_CONF = ETC + "/selfupdate.conf"
 UPDATE_STAMP = "/work/.pipeos/selfupdate.applied"
 
@@ -2891,6 +3037,43 @@ def tail_file(path, lines):
     except OSError:
         return None
     return "\n".join(data.splitlines()[-lines:])
+
+
+def read_schedule():
+    try:
+        with open(SCHEDULE_CONF) as f:
+            d = json.load(f)
+        jobs = d.get("jobs", []) if isinstance(d, dict) else []
+        return [j for j in jobs if isinstance(j, dict) and j.get("name")]
+    except (OSError, ValueError):
+        return []
+
+
+def write_schedule(jobs):
+    write_private(SCHEDULE_CONF, json.dumps({"v": 1, "jobs": jobs}, indent=1) + "\n")
+
+
+def schedule_state():
+    try:
+        with open(os.path.join(SCHEDULE_STATE_DIR, "state.json")) as f:
+            return json.load(f).get("jobs", {})
+    except (OSError, ValueError):
+        return {}
+
+
+def schedule_running():
+    """Is a job running right now? The runner holds SCHEDULE_LOCK for the
+    duration; a non-blocking try tells."""
+    try:
+        with open(SCHEDULE_LOCK, "a+") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+            fcntl.flock(f, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    return False
 
 
 def read_conf_values(path, keys):
@@ -2914,6 +3097,10 @@ class PhaseB:
         q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         name = (q.get("name") or ["selfcheck"])[0]
         path = LOG_ALLOW.get(name)
+        # a scheduled job's own log (#242): schedule-<job>, for a job that exists
+        if path is None and name.startswith("schedule-") and JOB_NAME_RE.match(name[9:]) \
+                and any(j["name"] == name[9:] for j in read_schedule()):
+            path = os.path.join(SCHEDULE_LOGDIR, name + ".log")
         if path is None:
             return self.err(400, "unknown log (choose: %s)" % ", ".join(sorted(LOG_ALLOW)))
         try:

@@ -1,0 +1,213 @@
+#!/bin/sh
+# pipeos-schedule-run — one scheduled job, headless, to completion (#242).
+#
+#   pipeos-schedule-run <job>
+#
+# The job comes from /etc/pipeos/schedule.json (the dashboard writes it):
+# a cron expression, a prompt, a working dir under /work, which assistant
+# (claude | hermes), whether to DM the owner, and whether the conversation
+# continues across runs. This runs the assistant EXACTLY the way the pipe
+# listener does — headless `claude -p`, the prompt on stdin, the box's
+# fence (pipebox-settings.json), the card's run budget — and never touches
+# the owner's attached terminal or the master session (#235): a job's
+# output belongs in its log, not in someone's tmux.
+#
+# One job at a time per Machine: a global lock, and a run that finds it
+# held exits 75 with a line in the log. Runtime state (last rc, status,
+# session, consecutive failures) lives on /work in state.json, written
+# atomically under its own lock; every run appends one line to runs.log —
+# `<ts> <sid> <job> <status>` — which is how the usage ledger (#246) knows
+# which transcript was which job.
+#
+# Seams (the probe, never production): PIPEOS_SCHED_CONF, _STATE_DIR, _LOCK,
+# _LOGDIR, _PIPEBOX_CONF, _SETTINGS, _SECRETS, _WORK (the /work root).
+set -u
+
+CONF=${PIPEOS_SCHED_CONF:-/etc/pipeos/schedule.json}
+STATE_DIR=${PIPEOS_SCHED_STATE_DIR:-/work/.pipeos/schedule}
+LOCK=${PIPEOS_SCHED_LOCK:-/run/pipeos/schedule.lock}
+LOGDIR=${PIPEOS_SCHED_LOGDIR:-/work/logs}
+SETTINGS=${PIPEOS_SCHED_SETTINGS:-/etc/pipeos/pipebox-settings.json}
+SECRETS=${PIPEOS_SCHED_SECRETS:-/run/pipeos/secrets}
+WORKROOT=${PIPEOS_SCHED_WORK:-/work}
+PAUSED=${PIPEOS_SCHED_PAUSED:-/work/.pipeos/ledger/paused}
+
+job=${1:-}
+case "$job" in
+    ''|*[!a-z0-9-]*) echo "usage: pipeos-schedule-run <job>" >&2; exit 2 ;;
+esac
+
+# the card's conf first — the run budget below is resolved from it, and
+# check-agent-timeout.py asserts this ORDER (pipeOS#101)
+if [ -n "${PIPEOS_SCHED_PIPEBOX_CONF:-}" ]; then
+    # shellcheck disable=SC1090
+    . "$PIPEOS_SCHED_PIPEBOX_CONF"
+else
+    . /etc/pipeos/pipebox.conf 2>/dev/null || true
+fi
+export HOME=/root
+export PIPE_AGENT=pipebox
+export PIPE_NO_SPAWN=1
+
+# The Claude credential from the vault's export (#244); the /etc file only
+# until the first boot that migrates it. Export only what is set.
+AUTH=$SECRETS/claude.env
+[ -r "$AUTH" ] || AUTH=/etc/pipeos/claude-auth.env
+if [ -r "$AUTH" ]; then
+    # shellcheck disable=SC1090
+    . "$AUTH"
+    [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && export CLAUDE_CODE_OAUTH_TOKEN
+    [ -n "${ANTHROPIC_API_KEY:-}" ] && export ANTHROPIC_API_KEY
+fi
+# secrets the owner added for jobs (jobs.* in the vault -> jobs.env)
+if [ -r "$SECRETS/jobs.env" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$SECRETS/jobs.env"
+    set +a
+fi
+[ -d /work/buildroot/usr/bin ] && export PATH="/work/buildroot/usr/bin:$PATH"
+# The generated shell environment: nothing on this path is a login shell
+# (crond -> tick -> this -> claude -p), so source it here like the listener.
+[ -r /etc/profile.d/10-pipebox-env.sh ] && . /etc/profile.d/10-pipebox-env.sh
+
+# The card's run budget, resolved BELOW the conf source, the same block as
+# pipebox-listener and pipebox-cohort-watch carry (pipeOS#101/#106 — the
+# octal guard and the range are theirs; check-agent-timeout.py probes all
+# three files so none can drift back to a hardcode).
+case "${AGENT_TIMEOUT_MIN:-}" in
+    ''|*[!0-9]*) _agent_timeout_s=1800 ;;
+    0*)          _agent_timeout_s=1800 ;;
+    *)           if [ "$AGENT_TIMEOUT_MIN" -ge 5 ] && [ "$AGENT_TIMEOUT_MIN" -le 120 ]; then
+                     _agent_timeout_s=$(( AGENT_TIMEOUT_MIN * 60 ))
+                 else
+                     _agent_timeout_s=1800
+                 fi ;;
+esac
+CLAUDE_TIMEOUT="${CLAUDE_TIMEOUT:-$_agent_timeout_s}"
+
+LOG=$LOGDIR/schedule-$job.log
+mkdir -p "$LOGDIR" "$STATE_DIR/sessions" || exit 1
+log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG"; }
+
+notify=true
+dm() {
+    [ "$notify" = true ] || return 0
+    [ -n "${OWNER_NICK:-}" ] || return 0
+    pipe dm "$OWNER_NICK" "$1" >/dev/null 2>&1 || true
+}
+
+state_set() {
+    # state.json: one atomic read-modify-write under the state lock; jq does
+    # the merge so a torn write is impossible and a missing file is {}
+    ( flock 8
+      _cur=$(cat "$STATE_DIR/state.json" 2>/dev/null); [ -n "$_cur" ] || _cur='{}'
+      printf '%s' "$_cur" | jq --arg n "$job" --argjson p "$1" '.jobs[$n] = ((.jobs[$n] // {}) + $p)' \
+          > "$STATE_DIR/state.json.new" && mv "$STATE_DIR/state.json.new" "$STATE_DIR/state.json"
+    ) 8>> "$STATE_DIR/.state.lock"
+}
+
+# A refusal before the run is still a run that did not happen: it is
+# logged, counted as failed(2) in state.json, appended to runs.log and
+# DMed, so a misconfigured job reaches the dashboard's failure pill and
+# the selfcheck WARN instead of showing "never run" forever.
+refuse() {
+    log "job $job: $1 — refusing"
+    _ts=$(date -u +%s)
+    _f=$(jq -r --arg n "$job" '(.jobs[$n].consecutive_failures // 0) + 1' "$STATE_DIR/state.json" 2>/dev/null); [ -n "$_f" ] || _f=1
+    state_set "{\"last_start\": $_ts, \"last_end\": $_ts, \"last_rc\": 2, \"last_status\": \"failed(2)\", \"last_error\": $(printf '%s' "$1" | jq -Rs .), \"consecutive_failures\": $_f, \"running_pid\": 0}"
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) - $job failed(2)" >> "$STATE_DIR/runs.log"
+    dm "job $job: refused — $1"
+    exit 2
+}
+
+# ---- the job
+jq -e --arg n "$job" '.jobs[] | select(.name == $n)' "$CONF" > "$STATE_DIR/.job-$job.json" 2>/dev/null \
+    || { echo "no job named $job in $CONF" >&2; log "no job named $job in $CONF"; exit 2; }
+J=$STATE_DIR/.job-$job.json
+# `if == null` rather than jq's `//`: `//` reads a literal false as absent,
+# which turned notify:false into the default (the probe caught it)
+# ("" is absent too: the dashboard stores a blank working dir as "")
+jf() { jq -r --arg d "${2:-}" "if $1 == null or $1 == \"\" then \$d else $1 end" "$J"; }
+prompt=$(jf '.prompt' '')
+cwd=$(jf '.cwd' "$WORKROOT/pipebox/jobs/$job")
+backend=$(jf '.backend' 'claude')
+notify=$(jf '.notify' 'true')
+session=$(jf '.session' 'fresh')
+rm -f "$J"
+[ -n "$prompt" ] || refuse "no prompt — nothing to run"
+case "$cwd" in "$WORKROOT"|"$WORKROOT"/*) ;; *) refuse "cwd $cwd is not under $WORKROOT" ;; esac
+mkdir -p "$cwd" 2>/dev/null || refuse "cannot create $cwd"
+case "$backend" in claude|hermes) ;; *) refuse "unknown assistant '$backend'" ;; esac
+command -v "$backend" >/dev/null 2>&1 || refuse "$backend is not installed on this image"
+# The monthly cap (#246): the tick skips, and so does every other way in —
+# Run now, an agent's `pipeos-schedule-run` — this is the one choke point.
+if [ -f "$PAUSED" ]; then
+    log "job $job: scheduled runs are paused — $(cat "$PAUSED" 2>/dev/null || echo "the monthly cap is reached") (raise it under Usage)"
+    exit 75
+fi
+
+# ---- one at a time
+exec 9> "$LOCK"
+if ! flock -n 9; then
+    log "refused: another scheduled job is running on this Machine (one at a time) — this run is skipped, not queued"
+    exit 75
+fi
+
+# ---- the session: fresh = a new conversation every run (bounded cost);
+# continue = the same one, resumed, like the listener's per-peer sessions
+sid_file=$STATE_DIR/sessions/$job
+if [ "$session" = continue ] && [ -s "$sid_file" ]; then
+    sid=$(cat "$sid_file")
+else
+    sid=$(cat /proc/sys/kernel/random/uuid)
+    echo "$sid" > "$sid_file"
+fi
+resume_args="--session-id $sid"
+[ "$session" = continue ] && [ -f "$STATE_DIR/sessions/.started-$sid" ] && resume_args="--resume $sid"
+
+start_ts=$(date -u +%s)
+log "=== run $(date -u +%Y-%m-%dT%H:%M:%SZ) job=$job sid=$sid backend=$backend cwd=$cwd timeout=${CLAUDE_TIMEOUT}s ==="
+state_set "{\"last_start\": $start_ts, \"last_status\": \"running\", \"last_sid\": \"$sid\", \"running_pid\": $$}"
+dm "job $job: started"
+
+rc=0
+if [ "$backend" = hermes ]; then
+    (cd "$cwd" && timeout "$CLAUDE_TIMEOUT" hermes -z "$prompt" --continue "job-$job" >> "$LOG" 2>&1 9>&-) || rc=$?
+else
+    # Prompt on STDIN, not argv (a long prompt would exceed MAX_ARG_STRLEN);
+    # the fd-9 close keeps the lock out of the agent's hands.
+    # shellcheck disable=SC2086
+    (cd "$cwd" && printf '%s' "$prompt" | timeout "$CLAUDE_TIMEOUT" claude -p \
+            --settings "$SETTINGS" $resume_args >> "$LOG" 2>&1 9>&-) || rc=$?
+fi
+end_ts=$(date -u +%s)
+
+# 126/127: never started (exec error) — a failure to count. 124/143: the
+# clock ran out on a run that was working — NOT a failure (listener, #106).
+case "$rc" in
+    0)        status=ok ;;
+    124|143)  log "claude was CUT OFF after ${CLAUDE_TIMEOUT}s (rc=$rc) — not a failure: the run was working when the clock ran out. Raise AGENT_TIMEOUT_MIN on this box's card if this repeats."
+              status="cut off" ;;
+    *)        status="failed($rc)" ;;
+esac
+# The resume marker only after a run that reached the conversation (ok or
+# cut off while working): a run that died before claude made a session
+# would otherwise be resumed forever (pipebox-cohort-watch, pipeOS#51).
+case "$status" in
+    ok|"cut off") touch "$STATE_DIR/sessions/.started-$sid" ;;
+    *) [ "$session" = continue ] && [ ! -f "$STATE_DIR/sessions/.started-$sid" ] && rm -f "$sid_file" ;;
+esac
+case "$status" in
+    ok|"cut off") fails=0 ;;
+    *) fails=$(jq -r --arg n "$job" '(.jobs[$n].consecutive_failures // 0) + 1' "$STATE_DIR/state.json" 2>/dev/null); [ -n "$fails" ] || fails=1 ;;
+esac
+log "=== end job=$job status=$status rc=$rc took=$((end_ts - start_ts))s ==="
+state_set "{\"last_end\": $end_ts, \"last_rc\": $rc, \"last_status\": \"$status\", \"consecutive_failures\": $fails, \"running_pid\": 0}"
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $sid $job $status" >> "$STATE_DIR/runs.log"
+case "$status" in
+    ok)        dm "job $job: done in $((end_ts - start_ts))s — log: schedule-$job.log" ;;
+    "cut off") dm "job $job: cut off after ${CLAUDE_TIMEOUT}s (it was working; raise AGENT_TIMEOUT_MIN on the card if this repeats) — log: schedule-$job.log" ;;
+    *)         dm "job $job: $status — log: schedule-$job.log" ;;
+esac
+case "$status" in ok|"cut off") exit 0 ;; *) exit 1 ;; esac

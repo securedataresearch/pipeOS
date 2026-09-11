@@ -87,6 +87,15 @@ jobs:
           python3 scripts/check-vault.py
           python3 scripts/check-vault-controls.py
 
+      # #242. A Machine runs its own jobs with nobody attached: the cron
+      # parser's refusals, the tick's once-per-minute rule and the pause
+      # marker, and the runner's session/rc/lock behaviour with stubbed
+      # assistants — the runner rows bind a tempdir over /work (unshare).
+      - name: scheduled runs — the parser, the tick, the runner, one at a time
+        run: |
+          python3 scripts/check-schedule.py
+          python3 scripts/check-schedule-controls.py
+
       - name: the shipped verify-repo.sh is the build's verify-repo.sh
         run: |
           # Client boxes carry no checkout, so the overlay ships its own copy

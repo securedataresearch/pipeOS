@@ -44,6 +44,9 @@ CARDS = os.path.join(HERE, "..", "docs", "cards")
 PATHS = [
     ("pipebox-cohort-watch", "900"),
     ("pipebox-listener", "1800"),
+    # #242: the scheduled-job runner is the third headless launcher; same
+    # block, same key, the listener's fallback
+    ("pipeos-schedule-run", "1800"),
 ]
 
 results = []

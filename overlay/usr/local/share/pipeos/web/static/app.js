@@ -600,6 +600,7 @@ async function dashboard() {
     system: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="2" x2="9" y2="4"/><line x1="15" y1="2" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="22"/><line x1="15" y1="20" x2="15" y2="22"/><line x1="20" y1="9" x2="22" y2="9"/><line x1="20" y1="15" x2="22" y2="15"/><line x1="2" y1="9" x2="4" y2="9"/><line x1="2" y1="15" x2="4" y2="15"/></svg>',
     users: '<svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
     secrets: '<svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
+    schedule: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
     docs: '<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
     setup: '<svg viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
   };
@@ -621,6 +622,7 @@ async function dashboard() {
         ${st.services.pipe ? navItem("pipe", "pipe") : ""}
         ${navItem("services", "Services")}
         ${isAdmin ? navItem("users", "Users") : ""}
+        ${isAdmin ? navItem("schedule", "Schedule") : ""}
         ${isAdmin ? navItem("secrets", "Secrets") : ""}
         ${isAdmin ? navItem("setup", "Setup") : ""}
         ${navItem("network", "Network")}
@@ -906,6 +908,36 @@ async function dashboard() {
       </section>` : ""}
 
       ${isAdmin ? `
+      <section data-view="schedule" hidden>
+        <div class="viewhead"><h1>Schedule</h1></div>
+        <div id="schbanner"></div>
+        <div class="card">
+          <div class="cardhead"><h2>Jobs</h2><span class="note" id="schnote"></span></div>
+          <p class="note">This Machine runs these on its own, nobody attached: the assistant, headless, under the same fence as the pipe listener, one job at a time. Times are the box clock (UTC). Each run DMs you over pipe and lands in its own log.</p>
+          <div id="schlist" class="note">loading…</div>
+          <p class="err" id="scherr" hidden></p>
+          <pre class="report" id="schlog" hidden></pre>
+        </div>
+        <div class="card">
+          <h2 id="schformhead">Add a job</h2>
+          <label for="schname">Name</label>
+          <input id="schname" type="text" autocomplete="off" placeholder="nightly-tests">
+          <label for="schcron">When</label>
+          <div class="chips" id="schpresets"></div>
+          <input id="schcron" type="text" autocomplete="off" placeholder="0 2 * * *  (minute hour day month weekday)">
+          <p class="note" id="schnext"></p>
+          <label for="schprompt">Prompt</label>
+          <textarea id="schprompt" rows="4" style="width:100%;font-family:inherit" placeholder="What should the assistant do?"></textarea>
+          <label for="schcwd">Working dir (under /work; blank = /work/pipebox/jobs/&lt;name&gt;)</label>
+          <input id="schcwd" type="text" autocomplete="off" placeholder="/work/repos/myproject">
+          <label for="schbackend">Assistant</label>
+          <select id="schbackend"></select>
+          <label class="note" style="display:flex;align-items:center;gap:.5rem;margin-top:.6rem"><input id="schnotify" type="checkbox" checked style="width:auto"> DM me when it starts and finishes</label>
+          <label class="note" style="display:flex;align-items:center;gap:.5rem"><input id="schcontinue" type="checkbox" style="width:auto"> Continue the same conversation across runs (default: a fresh one each time)</label>
+          <button id="schsave" type="button">Save job</button>
+          <button id="schcancel" class="ghost" type="button" hidden>Cancel</button>
+        </div>
+      </section>
       <section data-view="secrets" hidden>
         <div class="viewhead"><h1>Secrets</h1></div>
         <div id="secbanner"></div>
@@ -1015,7 +1047,7 @@ async function dashboard() {
         <div class="card">
           <h2>Logs</h2>
           <select id="logsel">
-            ${["selfcheck", "pipeos-web", "pipeos-mdns", "pipe-daemon", "pipebox-listener", "pipeos-stream", "pipeos-assistant", "selfupdate", "worksweep"].map(l => `<option>${l}</option>`).join("")}
+            ${["selfcheck", "pipeos-web", "pipeos-mdns", "pipe-daemon", "pipebox-listener", "pipeos-stream", "pipeos-assistant", "schedule", "selfupdate", "worksweep"].map(l => `<option>${l}</option>`).join("")}
           </select>
           <button id="logview" class="ghost" data-vok style="margin-top:.4rem">View</button>
           <pre class="report" id="logbox" hidden></pre>
@@ -2082,6 +2114,84 @@ async function dashboard() {
     } catch (e) {}
   };
   // ---- docs: list the box's own pages, render markdown on pick ----
+  // ---- scheduled runs (#242) ----
+  const SCH_PRESETS = [["every hour", "0 * * * *"], ["every day 02:00", "0 2 * * *"], ["weekdays 08:00", "0 8 * * mon-fri"], ["every 15 min", "*/15 * * * *"], ["Sundays 03:00", "0 3 * * sun"]];
+  let schEditing = null;
+  const schForm = () => ({
+    name: v.querySelector("#schname"), cron: v.querySelector("#schcron"), prompt: v.querySelector("#schprompt"),
+    cwd: v.querySelector("#schcwd"), backend: v.querySelector("#schbackend"), notify: v.querySelector("#schnotify"),
+    cont: v.querySelector("#schcontinue"), save: v.querySelector("#schsave"), cancel: v.querySelector("#schcancel"), head: v.querySelector("#schformhead"),
+  });
+  const schReset = () => {
+    const f = schForm(); if (!f.name) return;
+    schEditing = null; f.name.value = ""; f.name.disabled = false; f.cron.value = ""; f.prompt.value = ""; f.cwd.value = "";
+    f.notify.checked = true; f.cont.checked = false; f.head.textContent = "Add a job"; f.save.textContent = "Save job"; f.cancel.hidden = true;
+    v.querySelector("#schnext").textContent = "";
+  };
+  const loadSchedule = async () => {
+    const list = v.querySelector("#schlist"), err = v.querySelector("#scherr"), note = v.querySelector("#schnote"), banner = v.querySelector("#schbanner");
+    if (!list) return;
+    let r;
+    try { r = await api("/api/schedule"); } catch (e) { err.textContent = e.message; err.hidden = false; return; }
+    banner.innerHTML = (r.paused ? `<div class="card"><div class="cardhead"><h2>Paused</h2><span class="pill status-warn">monthly cap</span></div><p class="note">${esc(r.paused)} — nothing starts until the cap is raised under Usage or the month turns.</p></div>` : "")
+      + (r.crond_up ? "" : `<div class="card"><div class="cardhead"><h2>The clock is not running</h2><span class="pill status-bad">crond down</span></div><p class="note">Jobs will not fire until crond is up — the boot report says why.</p></div>`);
+    note.textContent = (r.running ? "a job is running now · " : "") + "now " + r.now + " UTC";
+    const sel = v.querySelector("#schbackend");
+    if (sel && !sel.options.length) (r.backends || []).forEach(b => { const o = document.createElement("option"); o.value = b.id; o.textContent = b.id + (b.installed ? "" : " (not installed)"); o.disabled = !b.installed; sel.appendChild(o); });
+    const jobs = r.jobs || [];
+    if (!jobs.length) { list.className = "note"; list.textContent = "No jobs yet."; }
+    else {
+      list.className = "";
+      list.innerHTML = jobs.map(j => {
+        const l = j.last || {};
+        const st = l.last_status || "never run";
+        const cls = st === "ok" ? "status-ok" : st === "running" ? "" : st === "never run" ? "" : st === "cut off" ? "status-warn" : "status-bad";
+        const when = l.last_end ? new Date(l.last_end * 1000).toLocaleString() : "";
+        return `<div class="row${j.enabled ? "" : " off"}">
+          <div><div class="name">${esc(j.name)} ${j.enabled ? "" : '<span class="pill">paused</span>'} <span class="pill ${cls}">${esc(st)}</span>${(l.consecutive_failures || 0) >= 3 ? ` <span class="pill status-bad">${l.consecutive_failures} failures in a row</span>` : ""}</div>
+          <div class="desc">${esc(j.human || j.cron)} · ${esc(j.backend || "claude")}${j.next_run ? " · next " + esc(j.next_run) : ""}${when ? " · last " + esc(when) : ""}</div></div>
+          <div>
+            <button class="btn ghost" type="button" data-schrun="${esc(j.name)}">Run now</button>
+            <button class="btn ghost" type="button" data-schtoggle="${esc(j.name)}" data-on="${j.enabled ? 0 : 1}">${j.enabled ? "Pause" : "Resume"}</button>
+            <button class="btn ghost" type="button" data-schlog="${esc(j.name)}">Log</button>
+            <button class="btn ghost" type="button" data-schedit="${esc(j.name)}">Edit</button>
+            <button class="btn ghost" type="button" data-schdel="${esc(j.name)}">Delete</button>
+          </div></div>`;
+      }).join("");
+      const post = async (path, body) => { err.hidden = true; try { await api(path, body); loadSchedule(); } catch (e) { err.textContent = e.message; err.hidden = false; } };
+      list.querySelectorAll("[data-schrun]").forEach(b => b.onclick = () => post("/api/schedule/run", { name: b.dataset.schrun }));
+      list.querySelectorAll("[data-schtoggle]").forEach(b => b.onclick = () => post("/api/schedule/set", { name: b.dataset.schtoggle, enabled: b.dataset.on === "1" }));
+      list.querySelectorAll("[data-schdel]").forEach(b => b.onclick = () => { if (confirm("Delete job " + b.dataset.schdel + "?")) post("/api/schedule/del", { name: b.dataset.schdel }); });
+      list.querySelectorAll("[data-schlog]").forEach(b => b.onclick = async () => {
+        const pre = v.querySelector("#schlog");
+        try { const rr = await fetch("/api/logs?name=schedule-" + encodeURIComponent(b.dataset.schlog) + "&lines=150").then(x => x.json()); pre.textContent = rr.text || rr.error || ""; pre.hidden = false; }
+        catch (e) { pre.textContent = e.message; pre.hidden = false; }
+      });
+      list.querySelectorAll("[data-schedit]").forEach(b => b.onclick = () => {
+        const j = jobs.find(x => x.name === b.dataset.schedit); if (!j) return;
+        const f = schForm(); schEditing = j.name;
+        f.name.value = j.name; f.name.disabled = true; f.cron.value = j.cron; f.prompt.value = j.prompt || ""; f.cwd.value = j.cwd || "";
+        if (f.backend) f.backend.value = j.backend || "claude"; f.notify.checked = j.notify !== false; f.cont.checked = j.session === "continue";
+        f.head.textContent = "Edit " + j.name; f.save.textContent = "Save changes"; f.cancel.hidden = false;
+        f.name.scrollIntoView({ behavior: "smooth" });
+      });
+    }
+  };
+  const schf = schForm();
+  if (schf.save) {
+    const box = v.querySelector("#schpresets");
+    SCH_PRESETS.forEach(([label, cron]) => { const c = el(`<button type="button" class="chip">${esc(label)}</button>`); c.onclick = () => { schf.cron.value = cron; schf.cron.dispatchEvent(new Event("input")); }; box.appendChild(c); });
+    schf.cron.addEventListener("input", () => { v.querySelector("#schnext").textContent = schf.cron.value.trim() ? "checked when you save" : ""; });
+    schf.save.onclick = async () => {
+      const err = v.querySelector("#scherr"); err.hidden = true;
+      try {
+        await api("/api/schedule/set", { name: schf.name.value.trim(), cron: schf.cron.value.trim(), prompt: schf.prompt.value, cwd: schf.cwd.value.trim(),
+          backend: schf.backend.value || "claude", notify: schf.notify.checked, session: schf.cont.checked ? "continue" : "fresh" });
+        schReset(); loadSchedule();
+      } catch (e) { err.textContent = e.message; err.hidden = false; }
+    };
+    schf.cancel.onclick = schReset;
+  }
   // ---- secrets (#244): names never values; locked -> the phrase box ----
   const loadSecrets = async () => {
     const list = v.querySelector("#seclist"), err = v.querySelector("#secerr"), banner = v.querySelector("#secbanner"), state = v.querySelector("#secstate");
@@ -2223,7 +2333,7 @@ async function dashboard() {
   // ---- view router: show one section at a time, driven by the URL hash ----
   // Views with live data register a poller (runs only while on screen) or a
   // lazy loader (runs on first visit).
-  const POLLERS = { system: pollSystem, network: pollNetwork };
+  const POLLERS = { system: pollSystem, network: pollNetwork, schedule: loadSchedule };
   const LAZY = { files: () => { loadFiles(""); loadFiles._disks(); }, pipe: loadPipe, users: loadUsers, secrets: loadSecrets, docs: loadDocs, setup: loadSetup };
   const seen = {};
   let viewTimer = null;

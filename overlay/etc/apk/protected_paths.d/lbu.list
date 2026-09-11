@@ -51,6 +51,8 @@
 +etc/pipeos/services.conf
 +etc/pipeos/stream.conf
 +etc/pipeos/assistant.conf
+# the owner's scheduled jobs (#242) — dashboard-written, a custom /etc file
++etc/pipeos/schedule.json
 # the box's local CA + server cert (HTTPS). The CA is what the owner installs on
 # their devices to trust this box, so it MUST persist — regenerating it would
 # break every device that trusted the old one. Keys are mode 600.
