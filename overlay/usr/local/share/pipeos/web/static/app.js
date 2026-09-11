@@ -1134,6 +1134,8 @@ async function dashboard() {
       try {
         const r = await api("/api/services", picked);
         if (r.problems && r.problems.length) { serr.textContent = r.problems.join("; "); serr.hidden = false; }
+        // a toggle the box declined (nothing to share, no terminal slot) comes back off
+        if (r.services && c.dataset.k in r.services) c.checked = !!r.services[c.dataset.k];
       } catch (e) {
         serr.textContent = e.message; serr.hidden = false;
         c.checked = !c.checked;

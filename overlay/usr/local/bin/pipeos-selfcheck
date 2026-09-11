@@ -262,6 +262,54 @@ if [ -r /etc/pipeos/services.conf ] && command -v rc-update >/dev/null 2>&1; the
             || warnn "$svc enabled in services.conf but not in the default runlevel — a reboot will not start it (re-toggle it in the web UI, or rc-update add $svc default)"
     done
 fi
+# Opt-in services that refuse to start until configured (a password, a relay,
+# stream targets, a share, a terminal slot). "Enabled but not set up yet" is a
+# WARN that names what is missing, not a box-down CRITICAL — it matches how
+# the wizard's apply_services treats the same refusal, and it is the same
+# answer from a hand run and from --boot (the dashboard runs this bare). A
+# genuinely broken one — configured, still down — stays CRITICAL. Prints the
+# reason, or nothing when the service is configured (pipeOS#266).
+svc_unconfigured() {
+    case "$1" in
+        pipeos-support|pipeos-stream|pipeos-assistant)
+            echo "$1 is enabled but not configured yet — set it up in the web UI, or turn it off" ;;
+        pipeos-terminals)
+            grep -qsE "^TERM_[0-9]+_USER='[^']+'" /etc/pipeos/terminals.conf \
+                || echo "user terminals are on but no user has one configured — give an account a terminal under Users, or turn them off" ;;
+        pipeos-nas)
+            # declared is not usable: the init skips a share whose drive is
+            # not attached or whose folder is gone, and refuses when none is
+            # left. An unplugged drive is the owner's doing, not a fault
+            # (the #263 precedent), so it is a WARN that says which.
+            if ! grep -qsE "^NAS_S[0-9]+_NAME='[^']+'" /etc/pipeos/nas.conf; then
+                echo "network storage is on but no share is configured — add one under Files → Network storage, or turn it off"
+            elif ! nas_share_usable; then
+                echo "network storage is on but none of its shares is reachable — its drive is not attached or the folder is gone; plug it in, or remove the share under Files → Network storage"
+            fi ;;
+    esac
+}
+nas_share_usable() {
+    # mirrors resolve_root in /etc/init.d/pipeos-nas: 'work' is /work, anything
+    # else a filesystem UUID that must resolve to a mounted device
+    _n=1
+    while [ $_n -le 8 ]; do
+        _name=$(sed -n "s/^NAS_S${_n}_NAME='\([^']*\)'.*/\1/p" /etc/pipeos/nas.conf 2>/dev/null)
+        _root=$(sed -n "s/^NAS_S${_n}_ROOT='\([^']*\)'.*/\1/p" /etc/pipeos/nas.conf 2>/dev/null)
+        _rel=$(sed -n "s/^NAS_S${_n}_REL='\([^']*\)'.*/\1/p" /etc/pipeos/nas.conf 2>/dev/null)
+        _n=$((_n + 1))
+        [ -n "$_name" ] && [ -n "$_root" ] || continue
+        if [ "$_root" = work ]; then
+            _base=/work
+        else
+            _dev=$(findfs "UUID=$_root" 2>/dev/null || blkid -U "$_root" 2>/dev/null) || continue
+            [ -n "$_dev" ] || continue
+            _base=$(awk -v d="$_dev" '$1 == d { print $2; exit }' /proc/mounts)
+            [ -n "$_base" ] || continue
+        fi
+        [ -d "$_base${_rel:+/$_rel}" ] && return 0
+    done
+    return 1
+}
 # `status` observes; `start` mutates. Only the second waits for --boot, so a
 # hand-run still reports a down daemon — which is the thing an operator ran
 # this for.
@@ -269,8 +317,13 @@ for svc in $want_svcs; do
     if rc-service "$svc" status >/dev/null 2>&1; then
         :
     elif [ "$BOOT" != yes ]; then
-        crit "$svc down"
-        would "start $svc"
+        _why=$(svc_unconfigured "$svc")
+        if [ -n "$_why" ]; then
+            warnn "$_why"
+        else
+            crit "$svc down"
+            would "start $svc"
+        fi
     elif svc_settles "$svc"; then
         :  # it was still starting when first probed — parallel boot, alive now
     elif rc-service "$svc" start >/dev/null 2>&1; then
@@ -281,21 +334,12 @@ for svc in $want_svcs; do
         # box-down CRITICAL — it matches how the wizard's apply_services treats
         # the same refusal. A genuinely broken one still surfaces (as a warn),
         # and pipeos-stream's frame-flow probe below catches configured-but-black.
-        case "$svc" in
-            pipeos-support|pipeos-stream|pipeos-assistant)
-                warnn "$svc is enabled but not configured yet — set it up in the web UI, or turn it off" ;;
-            pipeos-nas)
-                # No share declared = not configured (the Services toggle
-                # could turn it on bare until pipeOS#266); a declared share
-                # that still will not serve is a real failure.
-                if grep -qsE "^NAS_S[0-9]+_NAME='[^']+'" /etc/pipeos/nas.conf; then
-                    crit "$svc down and would not start (a share is configured — see rc-service $svc start)"
-                else
-                    warnn "$svc is on but no share is configured — add one under Files → Network storage, or turn it off"
-                fi ;;
-            *)
-                crit "$svc down and would not start" ;;
-        esac
+        _why=$(svc_unconfigured "$svc")
+        if [ -n "$_why" ]; then
+            warnn "$_why"
+        else
+            crit "$svc down and would not start"
+        fi
     fi
 done
 
