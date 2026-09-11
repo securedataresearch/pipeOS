@@ -468,9 +468,10 @@ done
 # 2026-09-11). So: every init script this deploy installed that no runlevel
 # holds yet is added to the level the build names for it, and started once,
 # the way the next boot would. A script the build names in no level is left
-# alone and said so (the wizard enrols pipe-daemon at claim time).
-build_levels=$REPO/scripts/40-build-apkovl.sh
-for f in $(grep '^etc/init\.d/' "$installed_rels" 2>/dev/null); do
+# alone and said so (the wizard enrols pipe-daemon at claim time). Every
+# init script the REF ships is considered, not only the ones this run
+# installed: zero got the files in one deploy and the fix in the next.
+for f in $(cut -f2- "$listing" | sed 's|^overlay/||' | grep '^etc/init\.d/' | sort -u); do
     svc=${f#etc/init.d/}
     rc-update show 2>/dev/null | grep -q "^ *$svc |" && continue
     level=$(git -C "$REPO" show "$commit:scripts/40-build-apkovl.sh" 2>/dev/null \
