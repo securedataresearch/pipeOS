@@ -477,7 +477,7 @@ for f in $(cut -f2- "$listing" | sed 's|^overlay/||' | grep '^etc/init\.d/' | so
     level=$(git -C "$REPO" show "$commit:scripts/40-build-apkovl.sh" 2>/dev/null \
         | grep -E "^mk_runlevel +[a-z]+ .*( |\\$)$svc( |\\$)" | head -1 | awk '{print $2}')
     if [ -z "$level" ]; then
-        say "note: $svc is new but the image build names it in no runlevel — not enrolled"
+        say "note: $svc is in no runlevel and the image build names it in none — left alone (a service the wizard or the owner turns on)"
         continue
     fi
     if rc-update add "$svc" "$level" >/dev/null 2>&1; then
