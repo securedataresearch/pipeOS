@@ -102,6 +102,11 @@ jobs:
       - name: operator verbs — schedule, usage cap, card set, secrets phrase, assistant password
         run: python3 scripts/check-operator-verbs.py
 
+      # #264. The stick is /work: the churn is staged in RAM and flushed on a
+      # cadence; park remounts /work read-only between operations.
+      - name: /work's hot set — staged in RAM, flushed, parked; the listener idles on a policy denial
+        run: python3 scripts/check-work-hot.py
+
       # #246. Nobody on a Machine could say what it spent. The ledger tails
       # the transcripts Claude Code already writes; the rows are the dedupe
       # (one id per API turn, written many times), the pricing, who spent
