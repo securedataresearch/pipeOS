@@ -96,6 +96,12 @@ jobs:
           python3 scripts/check-schedule.py
           python3 scripts/check-schedule-controls.py
 
+      # #259. The dashboard's forms as verbs, so an operator (or the owner's
+      # agent on a workstation) drives a Machine over ssh with no hand edit
+      # of /etc: same file, same refusals, same save.
+      - name: operator verbs — schedule, usage cap, card set, secrets phrase, assistant password
+        run: python3 scripts/check-operator-verbs.py
+
       # #246. Nobody on a Machine could say what it spent. The ledger tails
       # the transcripts Claude Code already writes; the rows are the dedupe
       # (one id per API turn, written many times), the pricing, who spent
