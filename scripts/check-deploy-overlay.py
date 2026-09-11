@@ -314,9 +314,10 @@ src = open(SCRIPT).read()
 check("15b a new init script is enrolled in the runlevel the image build names for it, and started once; crond restarts when its table changes",
       'rc-update add "$svc" "$level"' in src and "mk_runlevel" in src and 'crond)            echo "etc/crontabs/root"' in src, "")
 
-modes = subprocess.run(GIT + ["-C", REPO, "ls-files", "-s", "overlay/etc/init.d"], capture_output=True, text=True).stdout.split("\n")
+modes = subprocess.run(GIT + ["-C", REPO, "ls-files", "-s", "overlay/etc/init.d", "overlay/usr/local/bin", "overlay/etc/local.d", "overlay/etc/periodic"],
+                       capture_output=True, text=True).stdout.split("\n")
 bad = [l.split()[-1] for l in modes if l and not l.startswith("100755")]
-check("16 every shipped init script is executable in git — a deploy installs git's mode (the image build's blanket chmod hid pipeos-vault at 644; rc-update add and rc-service both refused it on zero, 2026-09-11)",
+check("16 every shipped init script, binary, local.d hook and periodic job is executable in git — a deploy installs git's mode (the image build's blanket chmod hid pipeos-vault's init script AND binary at 644; zero refused both, 2026-09-11)",
       not bad, repr(bad))
 
 for c in CASES:
