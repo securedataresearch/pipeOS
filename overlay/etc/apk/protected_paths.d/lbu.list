@@ -10,6 +10,8 @@
 # package-owned), so without these + lines the runlevel symlinks commit but
 # the scripts vanish on reboot — the chronyd dangling-symlink failure again
 +etc/init.d/pipeos-identity
+# wake-on-lan is armed at every boot (#241): tmpfs forgets an ethtool setting
++etc/init.d/pipeos-wol
 +etc/init.d/pipeos-workspace
 +etc/init.d/pipe-daemon
 +etc/init.d/pipebox-listener

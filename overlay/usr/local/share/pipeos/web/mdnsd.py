@@ -18,9 +18,16 @@ restart choreography). Announce twice on start and on a rename or claim,
 goodbye (TTL 0) on SIGTERM, expiry at 3×INTERVAL for a Machine that just
 vanished.
 
+The roster (#241): the cache forgets a Machine 30 s after it goes quiet,
+which is right for "who is on the LAN now" and useless for "wake the one
+that is off". So every sighting is also folded into a roster on /work —
+id, name, host, last ip, MAC, model, last_seen — that nothing here ever
+prunes. The dashboard shows a rostered Machine that is not in the cache as
+a grey row with a Wake button; `pipeos wake --forget` is the only eraser.
+
 Seams for the probe (scripts/check-mdns.py), never set in production:
-PIPEOS_MDNS_PORT/_GROUP/_TTL/_INTERVAL/_CACHE, PIPEOS_MDNS_IDENT (a JSON
-file standing in for read_ident, re-read each tick), PIPEOS_MDNS_LOOP=1
+PIPEOS_MDNS_PORT/_GROUP/_TTL/_INTERVAL/_CACHE/_ROSTER, PIPEOS_MDNS_IDENT (a
+JSON file standing in for read_ident, re-read each tick), PIPEOS_MDNS_LOOP=1
 (SO_REUSEPORT + IP_MULTICAST_LOOP so two instances share a port on
 loopback).
 """
@@ -42,6 +49,7 @@ MCAST_TTL = int(os.environ.get("PIPEOS_MDNS_TTL", 255))
 INTERVAL = float(os.environ.get("PIPEOS_MDNS_INTERVAL", 10))
 EXPIRE = 3 * INTERVAL
 CACHE = os.environ.get("PIPEOS_MDNS_CACHE", "/run/pipeos/mdns/peers.json")
+ROSTER = os.environ.get("PIPEOS_MDNS_ROSTER", "/work/pipeos/mdns/machines.json")
 IDENT_FILE = os.environ.get("PIPEOS_MDNS_IDENT", "")
 LOOP = os.environ.get("PIPEOS_MDNS_LOOP") == "1"
 TTL = 120
@@ -86,14 +94,15 @@ def read_ident():
         name = (d.get("name") or "").lower()
         ident = {"id": m4, "hostname": hn, "claimed": bool(d.get("claimed")),
                  "verdict": d.get("verdict", ""), "commit": d.get("commit", ""),
-                 "built": d.get("built", ""), "model": d.get("model", "")}
+                 "built": d.get("built", ""), "model": d.get("model", ""),
+                 "mac": d.get("mac", "")}
     else:
         hn = socket.gethostname().lower()
         name = card_name()
         img = lanid.image_info(IMAGE_TXT)
         ident = {"id": lanid.mac4(), "hostname": hn, "claimed": os.path.exists(PROVISIONED),
                  "verdict": lanid.verdict_line(BOOT_REPORT), "commit": img["commit"][:12],
-                 "built": img["built"], "model": lanid.model()}
+                 "built": img["built"], "model": lanid.model(), "mac": lanid.mac()}
     ident["lan_name"] = lanid.lan_name(ident["id"])
     # The name on the wire: the owner's alias; failing that a legacy hostname
     # that was itself a name (pre-cluster boxes); nothing when the box is
@@ -158,7 +167,8 @@ def answer_for(questions, ident, ip):
 
 def _txt(ident):
     return {"id": ident["id"], "n": ident["nick"], "c": "1" if ident["claimed"] else "0",
-            "v": ident["verdict"][:120], "i": ident["commit"], "b": ident["built"], "m": ident["model"]}
+            "v": ident["verdict"][:120], "i": ident["commit"], "b": ident["built"], "m": ident["model"],
+            "mac": ident.get("mac", "")}
 
 
 # ---- the peers -----------------------------------------------------------------
@@ -185,7 +195,8 @@ def absorb_response(records, src_ip, state):
         a = next((r for r in records if r[1] == 1 and r[0] == host), None)
         entry = {"id": pid, "name": kv.get("n", ""), "host": host, "ip": a[3] if a else src_ip,
                  "claimed": kv.get("c") == "1", "verdict": kv.get("v", ""), "commit": kv.get("i", ""),
-                 "built": kv.get("b", ""), "model": kv.get("m", ""), "last_seen": int(time.time())}
+                 "built": kv.get("b", ""), "model": kv.get("m", ""), "mac": kv.get("mac", ""),
+                 "last_seen": int(time.time())}
         old = state["peers"].get(pid)
         if old is None or any(old.get(k) != v for k, v in entry.items() if k != "last_seen"):
             changed = True
@@ -207,6 +218,51 @@ def write_cache(state):
         os.replace(tmp, CACHE)
     except OSError as e:
         log("cannot write %s: %s" % (CACHE, e))
+
+
+ROSTER_KEYS = ("id", "name", "host", "ip", "claimed", "mac", "model", "last_seen")
+
+
+def read_roster():
+    try:
+        with open(ROSTER) as f:
+            d = json.load(f)
+        return d.get("machines", {}) if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def roster_upsert(state):
+    """Fold every live peer into the roster on /work. Never prunes; a peer
+    with no MAC on the wire (an older image) is kept too, so the row shows
+    and the Wake button can say why it cannot. Silent when /work is not
+    there yet — the next tick tries again, and a roster is a convenience."""
+    if not state["peers"]:
+        return
+    ros = read_roster()
+    changed = False
+    for pid, e in state["peers"].items():
+        row = {k: e.get(k, "") for k in ROSTER_KEYS}
+        old = ros.get(pid)
+        # a sighting without a MAC must not erase one a previous image sent
+        if old and not row["mac"]:
+            row["mac"] = old.get("mac", "")
+        if old is None or any(old.get(k) != v for k, v in row.items() if k != "last_seen") \
+                or int(row["last_seen"]) - int(old.get("last_seen", 0)) >= 60:
+            ros[pid] = row
+            changed = True
+    if not changed:
+        return
+    d = os.path.dirname(ROSTER)
+    try:
+        os.makedirs(d, exist_ok=True)
+        tmp = ROSTER + ".new"
+        with open(tmp, "w") as f:
+            json.dump({"v": 1, "self": state["ident"]["id"], "written": int(time.time()), "machines": ros}, f)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, ROSTER)
+    except OSError:
+        pass
 
 
 def prune(state):
@@ -329,6 +385,7 @@ def main():
                 send(sock, lanid.build_query(SERVICE, 12))
                 prune(state)
                 write_cache(state)
+                roster_upsert(state)
             except Exception as e:
                 log("tick failed: %s" % e)
 

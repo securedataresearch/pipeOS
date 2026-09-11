@@ -135,23 +135,41 @@ function lobby(state) {
 // One row per Machine the responder has heard — the lobby and the
 // dashboard's Network view draw the same list (Sam, 2026-09-10: claiming
 // the next box should start from the network page of the one you own).
-// An unclaimed Machine gets a Claim link straight to its wizard.
-function machineRows(ms) {
+// An unclaimed Machine gets a Claim link straight to its wizard. A Machine
+// on the roster but not answering (awake === false) is a grey row: last
+// seen, last address, and — when opts.wake (the Network view, an admin) —
+// a Wake button that sends the magic packet (#241).
+function machineRows(ms, opts = {}) {
   return ms.map(m => {
     const label = m.name || (m.host || "").replace(/\.local$/, "") || m.ip || "?";
-    const [vcls, vtxt] = verdictClass(m.verdict ? "verdict: " + m.verdict : "");
-    const href = m.host ? "http://" + m.host + "/" : (m.ip ? "http://" + m.ip + "/" : "");
+    const off = m.awake === false;
+    const [vcls, vtxt] = off ? ["status-warn", "off · last seen " + agoShort(m.last_seen)]
+      : verdictClass(m.verdict ? "verdict: " + m.verdict : "");
+    const href = off ? "" : (m.host ? "http://" + m.host + "/" : (m.ip ? "http://" + m.ip + "/" : ""));
     const pills = (m.self ? '<span class="pill">this one</span>' : "")
       + (m.claimed ? "" : '<span class="pill status-warn">unclaimed</span>')
       + `<span class="pill ${vcls}">${esc(vtxt)}</span>`;
-    const act = (!m.claimed && !m.self && href) ? `<a class="btn" href="${esc(href)}" target="_blank" rel="noopener">Claim ↗</a>`
+    const act = off
+      ? (opts.wake ? (m.mac ? `<button class="btn" type="button" data-wake="${esc(m.id)}">Wake</button>`
+                            : `<span class="note">no MAC on record</span>`) : "")
+      : (!m.claimed && !m.self && href) ? `<a class="btn" href="${esc(href)}" target="_blank" rel="noopener">Claim ↗</a>`
       : (!m.self && href ? `<a class="btn ghost" href="${esc(href)}" target="_blank" rel="noopener">Open ↗</a>` : "");
-    return `<div class="row">
+    const desc = [m.model || "", m.ip || "", (m.host && m.ip) ? m.host : "", off && m.mac ? m.mac : ""].filter(Boolean);
+    return `<div class="row${off ? " off" : ""}">
       <div><div class="name">${href ? `<a href="${esc(href)}">${esc(label)}</a>` : esc(label)} ${pills}</div>
-      <div class="desc">${esc(m.model || "")}${m.model && m.ip ? " · " : ""}${esc(m.ip || "")}${m.host && m.ip ? " · " + esc(m.host) : ""}</div></div>
+      <div class="desc">${desc.map(esc).join(" · ")}</div></div>
       <div>${act}</div>
     </div>`;
   }).join("");
+}
+
+function agoShort(ts) {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - (ts || 0)));
+  if (!ts) return "never";
+  if (s < 90) return "just now";
+  if (s < 3600) return Math.round(s / 60) + " min ago";
+  if (s < 86400) return Math.round(s / 3600) + " h ago";
+  return Math.round(s / 86400) + " d ago";
 }
 
 /* ---------- wizard ---------- */
@@ -1984,11 +2002,22 @@ async function dashboard() {
       const r = await api("/api/lobby");
       const rows = v.querySelector("#nmrows"), note = v.querySelector("#nmnote");
       const ms = r.machines || [];
-      if (ms.length) { rows.className = ""; rows.innerHTML = machineRows(ms); }
+      if (ms.length) {
+        rows.className = ""; rows.innerHTML = machineRows(ms, { wake: isAdmin });
+        rows.querySelectorAll("[data-wake]").forEach(b => b.onclick = async () => {
+          b.disabled = true;
+          try {
+            const w = await api("/api/wake", { id: b.dataset.wake });
+            note.textContent = w.detail || "magic packet sent";
+          } catch (e) { note.textContent = e.message; b.disabled = false; }
+        });
+      }
       else { rows.className = "note"; rows.textContent = "No Machines answered yet."; }
-      const un = ms.filter(m => !m.claimed).length;
+      const un = ms.filter(m => !m.claimed && m.awake !== false).length;
+      const off = ms.filter(m => m.awake === false).length;
       note.textContent = !r.discovery_ok ? "discovery is not running here"
-        : (un ? `${un} unclaimed — Claim opens its setup wizard` : `${ms.length} Machine${ms.length === 1 ? "" : "s"}`);
+        : (un ? `${un} unclaimed — Claim opens its setup wizard`
+          : off ? `${off} off — Wake sends a magic packet` : `${ms.length} Machine${ms.length === 1 ? "" : "s"}`);
     } catch (e) {}
     try {
       const m = await api("/api/metrics");

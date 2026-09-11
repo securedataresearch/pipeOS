@@ -70,6 +70,14 @@ jobs:
       - name: the web wizard claims, refuses, and forgets sessions correctly
         run: python3 scripts/check-webd.py
 
+      # #241. A Machine that is off has no row in the live cache, so waking
+      # it needs the roster mdnsd keeps on /work and a packet built right;
+      # the arming service must pick the NIC the chassis id came from.
+      - name: wake-on-lan — the packet, the roster, the arming, and the fence
+        run: |
+          python3 scripts/check-wake.py
+          python3 scripts/check-wake-controls.py
+
       - name: the shipped verify-repo.sh is the build's verify-repo.sh
         run: |
           # Client boxes carry no checkout, so the overlay ships its own copy

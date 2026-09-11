@@ -1,0 +1,69 @@
+#!/sbin/openrc-run
+# pipeos-wol — arm wake-on-lan on the primary NIC, every boot (#241).
+#
+# The root fs is RAM: an `ethtool -s eth0 wol g` typed once is gone at the
+# next boot, so this is a service, not a setting. Boot runlevel, after
+# networking, so it is armed whether or not anything in the default runlevel
+# came up — the whole point is reaching a Machine that is otherwise dead.
+# The card says WOL=on|off (default on); `off` disarms, which is what a box
+# on a metered or shared segment might want.
+#
+# Same interface rule as pipeos-identity and lanid.primary_iface: sysfs,
+# not lo, a real MAC, up beats down, then name. The magic packet has to
+# reach the NIC the chassis id came from, and that is this one.
+#
+# Seams for the probe (scripts/check-wake.py), never set in production:
+# PIPEOS_WOL_ETHTOOL, PIPEOS_WOL_CARD, PIPEOS_WOL_SYS.
+description="arm wake-on-lan on the primary NIC"
+
+depend() {
+	after networking
+	before pipeos-workspace
+}
+
+_ethtool=${PIPEOS_WOL_ETHTOOL:-ethtool}
+_card=${PIPEOS_WOL_CARD:-/etc/pipeos/card.conf}
+_sys=${PIPEOS_WOL_SYS:-/sys/class/net}
+
+primary_iface() {
+	_best= _bestup=1
+	for _d in "$_sys"/*; do
+		_n=${_d##*/}
+		[ "$_n" = lo ] && continue
+		_mac=$(cat "$_d/address" 2>/dev/null | tr 'A-F' 'a-f')
+		[ -n "$_mac" ] && [ "$_mac" != 00:00:00:00:00:00 ] || continue
+		_up=1; [ "$(cat "$_d/operstate" 2>/dev/null)" = up ] && _up=0
+		if [ -z "$_best" ] || [ "$_up" -lt "$_bestup" ]; then
+			_best=$_n; _bestup=$_up
+		fi
+	done
+	printf '%s' "$_best"
+}
+
+start() {
+	# parsed, never sourced — same rule as every other card read
+	_wol=$(sed -n 's/^WOL=["]*\([^"]*\)["]*$/\1/p' "$_card" 2>/dev/null | head -1 | tr 'A-Z' 'a-z')
+	_if=$(primary_iface)
+	if [ -z "$_if" ]; then
+		ewarn "wake-on-lan: no NIC with a MAC — nothing to arm"
+		return 0
+	fi
+	if [ "$_wol" = off ]; then
+		ebegin "Disarming wake-on-lan on $_if (card: WOL=off)"
+		"$_ethtool" -s "$_if" wol d >/dev/null 2>&1
+		eend $?
+		return 0
+	fi
+	ebegin "Arming wake-on-lan on $_if"
+	if "$_ethtool" -s "$_if" wol g >/dev/null 2>&1; then
+		eend 0
+	else
+		# a NIC that cannot do it is not a boot failure; selfcheck says why
+		eend 0 "wake-on-lan: $_if would not take 'wol g' (driver or BIOS) — see the boot report"
+	fi
+	return 0
+}
+
+stop() {
+	return 0
+}

@@ -27,6 +27,10 @@ BREAKS = [
      '    send(sock, lanid.build_response(our_records(ident, ip, ttl=0)))', '    send(sock, lanid.build_response(our_records(ident, ip)))'),
     ("F  compression pointers are not followed", LANID,
      '        if n & 0xC0 == 0xC0:', '        if False:'),
+    ("G  the roster is never written (#241)", MDNSD,
+     '                roster_upsert(state)', '                pass'),
+    ("H  the TXT carries no MAC (#241)", MDNSD,
+     '            "mac": ident.get("mac", "")}', '            "mac": ""}'),
 ]
 
 failed = False

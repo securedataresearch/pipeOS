@@ -37,6 +37,16 @@ start_pre() {
 	else
 		checkpath -d -m 0755 /run/pipeos/mdns || return 1
 	fi
+	# the roster (#241): every Machine ever seen, with its MAC, on /work so a
+	# powered-off one still has a row and a Wake button. Owned by the user
+	# like the cache; skipped without /work (the responder retries each tick)
+	if mountpoint -q /work; then
+		if getent passwd svc-mdns >/dev/null 2>&1; then
+			checkpath -d -m 0755 -o svc-mdns:svc-mdns /work/pipeos /work/pipeos/mdns || return 1
+		else
+			checkpath -d -m 0755 /work/pipeos /work/pipeos/mdns || return 1
+		fi
+	fi
 	# no /work is not fatal for discovery — log to nowhere and answer anyway
 	if ! mountpoint -q /work; then
 		output_log=/dev/null

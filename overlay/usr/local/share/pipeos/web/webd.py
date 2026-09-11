@@ -81,6 +81,8 @@ SESS_DIR = "/run/pipeos/web-sessions"
 BOOT_REPORT = "/run/pipeos/boot-report"
 # The LAN lobby (#lobby): mdnsd's peer cache, and how stale a row may be
 # before the lobby stops showing it (3× the responder's 10 s interval).
+MACHINES_ROSTER = "/work/pipeos/mdns/machines.json"
+WAKE_BIN = "/usr/local/bin/pipeos-wake"
 MDNS_CACHE = "/run/pipeos/mdns/peers.json"
 MDNS_EXPIRE_S = 30
 LAN_QUERY_S = 1.0
@@ -403,6 +405,19 @@ def peers():
     return out, True
 
 
+def roster():
+    """Every Machine the responder has ever seen on this LAN (#241), keyed
+    by id, with the MAC it advertised. Kept on /work by mdnsd and never
+    pruned there — a Machine that is off is one that is here and not in
+    peers(). Empty when /work has no roster yet."""
+    try:
+        with open(MACHINES_ROSTER) as f:
+            d = json.load(f)
+        return d.get("machines", {}) if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def box_hostname():
     return socket.gethostname().lower()
 
@@ -434,9 +449,21 @@ def self_entry():
 
 
 def lobby_entries():
+    """Self, the live peers, then every rostered Machine that is not live —
+    a grey row (awake False) with its last address and MAC, so the Network
+    view can offer Wake (#241). Awake first, claimed first, then by name."""
     ps, ok = peers()
-    rows = [self_entry()] + [dict(p, self=False) for p in ps]
-    rows.sort(key=lambda r: (not r.get("claimed"), (r.get("name") or r.get("host") or "").lower()))
+    me = self_entry()
+    rows = [dict(me, awake=True)] + [dict(p, self=False, awake=True) for p in ps]
+    live = {r["id"] for r in rows}
+    for pid, r in roster().items():
+        if pid in live or pid == me["id"]:
+            continue
+        rows.append({"id": pid, "name": r.get("name", ""), "host": r.get("host", ""), "ip": r.get("ip", ""),
+                     "claimed": bool(r.get("claimed")), "verdict": "", "commit": "", "built": "",
+                     "model": r.get("model", ""), "mac": r.get("mac", ""), "last_seen": r.get("last_seen", 0),
+                     "self": False, "awake": False})
+    rows.sort(key=lambda r: (not r.get("awake"), not r.get("claimed"), (r.get("name") or r.get("host") or "").lower()))
     return rows, ok
 
 
@@ -1378,6 +1405,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/cohort": self.api_cohort,
             "/api/update-now": self.api_update_now,
             "/api/flash": self.api_flash,
+            "/api/wake": self.api_wake,
         }
         fn = handlers.get(path)
         if fn is None:
@@ -1469,6 +1497,23 @@ class Handler(BaseHTTPRequestHandler):
         unclaimed one."""
         rows, ok = lobby_entries()
         self.send(200, {"machines": rows, "discovery_ok": ok, "lan_name": lanid.lan_name()})
+
+    def api_wake(self, body):
+        """A magic packet to a rostered Machine (#241). Admin only — the
+        role gate lets every admin POST in, but powering hardware on is an
+        owner's act, so it is said here too. Writes nothing: no save."""
+        if self._user_admin_guard() is None:
+            return
+        mid = (body.get("id") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{4}", mid):
+            return self.err(400, "which Machine? (its id)")
+        rc, out = run([WAKE_BIN, mid], timeout=20)
+        if rc == 2:
+            return self.err(404, out.strip() or "not a Machine this box has seen")
+        if rc != 0:
+            return self.err(409, out.strip()[-300:] or "could not send the packet")
+        r = roster().get(mid, {})
+        self.send(200, {"ok": True, "id": mid, "mac": r.get("mac", ""), "detail": out.strip()})
 
     def api_claim(self, body):
         if claimed():

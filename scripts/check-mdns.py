@@ -77,7 +77,8 @@ check("2 a forward or looping pointer is refused, not followed", ok2, "")
 
 # ── 3. the four record types round-trip ──────────────────────────────────
 identB = {"hostname": "studio", "mac4": "9c21", "claimed": True, "verdict": "all green",
-          "commit": "abc1234def01", "built": "2026-09-01T00:00:00Z", "model": "Test Box"}
+          "commit": "abc1234def01", "built": "2026-09-01T00:00:00Z", "model": "Test Box",
+          "mac": "aa:bb:cc:dd:9c:21"}
 json.dump(identB, open(os.path.join(LANDIR, "idB.json"), "w"))
 iB = mdnsd.read_ident()
 rrs = mdnsd.our_records(iB, "10.1.1.2")
@@ -89,7 +90,7 @@ check("3 PTR, SRV, TXT and A round-trip through the parser with the right fields
       by.get(("_pipeos._tcp.local", 12), (0, 0, 0, ""))[3] == "9c21._pipeos._tcp.local"
       and srv and srv[3][2] == 80 and srv[3][3] == "studio.local"
       and txt and txt[3].get("id") == "9c21" and txt[3].get("n") == "studio" and txt[3].get("c") == "1"
-      and txt[3].get("v") == "all green" and txt[3].get("m") == "Test Box"
+      and txt[3].get("v") == "all green" and txt[3].get("m") == "Test Box" and txt[3].get("mac") == "aa:bb:cc:dd:9c:21"
       and by.get(("studio.local", 1), (0, 0, 0, ""))[3] == "10.1.1.2"
       and by[("_pipeos._tcp.local", 12)][2] == 120,
       repr(recs)[:400])
@@ -126,7 +127,8 @@ json.dump(identB, open(D + "/idB.json", "w"))
 
 
 def spawn(tag):
-    env = dict(os.environ, PIPEOS_MDNS_IDENT=D + "/id%s.json" % tag, PIPEOS_MDNS_CACHE=D + "/cache%s.json" % tag)
+    env = dict(os.environ, PIPEOS_MDNS_IDENT=D + "/id%s.json" % tag, PIPEOS_MDNS_CACHE=D + "/cache%s.json" % tag,
+               PIPEOS_MDNS_ROSTER=D + "/roster%s/machines.json" % tag)
     return subprocess.Popen([sys.executable, os.path.join(LANDIR, "mdnsd.py")], env=env,
                             stderr=open(D + "/log%s" % tag, "w"))
 
@@ -134,6 +136,13 @@ def spawn(tag):
 def cache(tag):
     try:
         return json.load(open(D + "/cache%s.json" % tag)).get("peers", {})
+    except (OSError, ValueError):
+        return {}
+
+
+def roster(tag):
+    try:
+        return json.load(open(D + "/roster%s/machines.json" % tag)).get("machines", {})
     except (OSError, ValueError):
         return {}
 
@@ -157,7 +166,7 @@ peerA = b.get("7f3a", {})
 check("6 two Machines find each other within two intervals, every field carried; the unnamed one is reachable as pipeos-7f3a.local",
       found and peerB.get("name") == "studio" and peerB.get("host") == "studio.local" and peerB.get("claimed") is True
       and peerB.get("verdict") == "all green" and peerB.get("commit") == "abc1234def01" and peerB.get("model") == "Test Box"
-      and peerB.get("ip") == "127.0.0.1"
+      and peerB.get("ip") == "127.0.0.1" and peerB.get("mac") == "aa:bb:cc:dd:9c:21"
       and peerA.get("name") == "" and peerA.get("host") == "pipeos-7f3a.local" and peerA.get("claimed") is False,
       "A=%r B=%r logA=%s" % (a, b, open(D + "/logA").read()[-300:]))
 check("7 each Machine excludes itself from its own cache", "7f3a" not in a and "9c21" not in b, repr((sorted(a), sorted(b))))
@@ -190,6 +199,14 @@ still = wait_for(lambda: "9c21" not in cache("A"), 1.5)   # must NOT be gone yet
 gone = wait_for(lambda: "9c21" not in cache("A"), 6)
 check("11 a Machine that vanishes without goodbye expires after three intervals, not before two",
       (not still) and gone and 2.0 <= time.time() - t0 <= 6.5, "still=%s gone=%s dt=%.1f" % (still, gone, time.time() - t0))
+
+# ── 11b. the roster remembers what the cache forgot (#241) ───────────────
+rB = roster("A").get("9c21", {})
+check("11b the expired Machine is still on the roster with its MAC, name, last address and last_seen; the roster never lists this box",
+      rB.get("mac") == "aa:bb:cc:dd:9c:21" and rB.get("name") == "attic" and rB.get("ip")
+      and rB.get("last_seen", 0) >= int(t0) - 10 and "7f3a" not in roster("A")
+      and not os.path.exists(D + "/rosterA/machines.json.new"),
+      repr(roster("A")))
 
 # ── 12. atomic, world-readable cache ─────────────────────────────────────
 st = os.stat(D + "/cacheA.json")

@@ -20,6 +20,7 @@
 #   pipeos restore-work SRC [--force] [--onto DEV]   /work back from a backup dir or an old stick's p2
 #   pipeos deploy-overlay      install a repo commit's overlay onto this box
 #   pipeos unclaim [--yes]     nobody's box again: drop the claim, name, users; reboot
+#   pipeos wake NAME|ID|--all|--list|--forget ID   magic packet to a Machine this box has seen
 #
 # Read-only verbs (status/verify/diff/snapshot) are open to the resident
 # agent; mutating verbs are root/human territory (pipebox-settings.json).
@@ -420,8 +421,9 @@ case "$1" in
     deploy-overlay) shift; exec /usr/local/bin/pipeos-deploy-overlay "$@" ;;
     selfupdate)  shift; exec /usr/local/bin/pipeos-selfupdate "$@" ;;
     unclaim)     shift; cmd_unclaim "$@" ;;
+    wake)        shift; exec /usr/local/bin/pipeos-wake "$@" ;;
     *)
-        sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
         exit 1
         ;;
 esac

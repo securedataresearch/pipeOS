@@ -58,9 +58,35 @@ def seed_peers(peers, written=None):
 
 PEERS = [
     {"id": "9c21", "name": "studio", "host": "studio.local", "ip": "10.0.0.2", "claimed": True,
-     "verdict": "all green", "commit": "abc1234", "built": "2026-09-01T00:00:00Z", "model": "Test Box"},
+     "verdict": "all green", "commit": "abc1234", "built": "2026-09-01T00:00:00Z", "model": "Test Box",
+     "mac": "aa:bb:cc:dd:9c:21"},
     {"id": "1a2b", "name": "", "host": "pipeos-1a2b.local", "ip": "10.0.0.3", "claimed": False,
-     "verdict": "", "commit": "", "built": "", "model": ""},
+     "verdict": "", "commit": "", "built": "", "model": "", "mac": ""},
+]
+# the roster (#241): every Machine ever seen, on /work; a rostered id that is
+# not in the live cache is a grey row with a Wake button
+webd.MACHINES_ROSTER = tmp + "/machines.json"
+webd.WAKE_BIN = tmp + "/wake-stub"
+with open(webd.WAKE_BIN, "w") as f:
+    f.write("#!/bin/sh\nprintf '%s\\n' \"$@\" >> " + tmp + "/wake.argv\n"
+            "case \"$1\" in 4d4d) echo 'magic packet sent to attic (aa:bb:cc:dd:4d:4d)';; "
+            "ffff) echo 'ffff: not a Machine this box has ever seen' >&2; exit 2;; "
+            "*) echo 'no MAC on record' >&2; exit 1;; esac\n")
+os.chmod(webd.WAKE_BIN, 0o755)
+
+
+def seed_roster(rows):
+    with open(webd.MACHINES_ROSTER, "w") as f:
+        json.dump({"v": 1, "self": "7f3a", "written": 1, "machines": {r["id"]: r for r in rows}}, f)
+
+
+ROSTER = [
+    {"id": "9c21", "name": "studio", "host": "studio.local", "ip": "10.0.0.2", "claimed": True,
+     "mac": "aa:bb:cc:dd:9c:21", "model": "Test Box", "last_seen": 1700000000},
+    {"id": "4d4d", "name": "attic", "host": "attic.local", "ip": "10.0.0.4", "claimed": True,
+     "mac": "aa:bb:cc:dd:4d:4d", "model": "Old Box", "last_seen": 1700000000},
+    {"id": "7f3a", "name": "", "host": "pipeos-7f3a.local", "ip": "127.0.0.1", "claimed": False,
+     "mac": "", "model": "", "last_seen": 1700000000},
 ]
 webd.MOUNTS_CONF = tmp + "/mounts.conf"
 webd.UPDATE_STAMP = tmp + "/selfupdate.applied"
@@ -170,6 +196,7 @@ _no_save = {
     "/api/update-now": "pipeos-selfupdate saves itself",
     "/api/flash": "pipeos-flash writes the media directly",
     "/api/save": "is the save",
+    "/api/wake": "a packet on the wire, no state (#241)",
 }
 _missing = []
 for _path, _fn in _table.items():
@@ -206,6 +233,20 @@ s = req("/api/state"); lb = req("/api/lobby")
 assert s["siblings"] == 0 and lb["discovery_ok"] is False and len(lb["machines"]) == 1
 ok("a cache the responder stopped writing counts for nothing, and the page says discovery is down")
 os.unlink(webd.MDNS_CACHE)
+# ---- the roster: a Machine seen before but not answering now is a grey row (#241)
+seed_peers(PEERS)
+seed_roster(ROSTER)
+ms = req("/api/lobby")["machines"]
+byid = {m["id"]: m for m in ms}
+assert len(ms) == 4 and [m["id"] for m in ms] == ["9c21", "1a2b", "7f3a", "4d4d"], [m["id"] for m in ms]
+assert byid["9c21"]["awake"] is True and byid["9c21"]["mac"] == "aa:bb:cc:dd:9c:21"
+assert byid["4d4d"]["awake"] is False and byid["4d4d"]["mac"] == "aa:bb:cc:dd:4d:4d" \
+    and byid["4d4d"]["name"] == "attic" and byid["4d4d"]["ip"] == "10.0.0.4" and byid["4d4d"]["last_seen"] == 1700000000 \
+    and byid["4d4d"]["self"] is False
+assert byid["7f3a"]["self"] is True and byid["7f3a"]["awake"] is True
+ok("a rostered Machine that is not answering is a grey row after the live ones — its name, last address and MAC through; this box is never its own grey row")
+os.unlink(webd.MDNS_CACHE)
+os.unlink(webd.MACHINES_ROSTER)
 assert b"<title>pipeOS</title>" in req("/")
 ok("/ serves the app shell")
 req("/api/status", expect=401)
@@ -344,6 +385,17 @@ assert len(r["names"]) == 5 and "studio" not in r["names"] and all(n in webd.CAR
 assert r["names"] == req("/api/name-suggest")["names"]
 os.unlink(webd.MDNS_CACHE)
 ok("the suggester offers five cars not on the network, the same five each time")
+# ---- wake (#241): admin sends the packet; the roster's word on the Machine is the answer
+seed_roster(ROSTER)
+r = req("/api/wake", {"id": "4d4d"})
+assert r["ok"] and r["mac"] == "aa:bb:cc:dd:4d:4d" and "magic packet" in r["detail"], r
+assert open(tmp + "/wake.argv").read().split() == ["4d4d"]
+req("/api/wake", {"id": "ffff"}, expect=404)
+req("/api/wake", {"id": "1a2b"}, expect=409)
+req("/api/wake", {"id": "../x"}, expect=400)
+req("/api/wake", {}, expect=400)
+os.unlink(webd.MACHINES_ROSTER)
+ok("wake: the admin's click runs pipeos-wake with the id and reports the MAC; unknown is 404, a Machine with no MAC 409, a hostile id 400")
 cookie["v"] = "0" * 64
 req("/api/status", expect=401)
 ok("bogus session refused")
@@ -662,6 +714,7 @@ req("/api/nas", {"shares": []}, expect=403)
 req("/api/nas-password", {"name": "peek", "password": "whatever12"}, expect=403)
 req("/api/backup", {"dest": "ext/sdx1"}, expect=403)
 req("/api/flash", {"mode": "inplace", "confirm": "x"}, expect=403)
+req("/api/wake", {"id": "4d4d"}, expect=403)
 r = req("/api/password", {"current": "peekpassword", "new": "peekpassword2"})
 assert r["ok"]
 assert req("/api/docs")["pages"], "viewer must be able to read the docs"
@@ -683,7 +736,8 @@ req("/api/backup", {"dest": "ext/sdx1"}, expect=403)
 req("/api/flash", {"mode": "inplace", "confirm": "x"}, expect=403)
 req("/api/claude-login/start", {"billing": "claude"}, expect=403)
 req("/api/claude-token", {"token": "sk-ant-api03-" + "k" * 60}, expect=403)
-ok("role user: file-op allowed; services/nas/users/name/backup/flash/claude refused")
+req("/api/wake", {"id": "4d4d"}, expect=403)
+ok("role user: file-op allowed; services/nas/users/name/backup/flash/claude/wake refused")
 cookie["v"] = saved_admin2
 req("/api/users/del", {"name": "mover"})
 
