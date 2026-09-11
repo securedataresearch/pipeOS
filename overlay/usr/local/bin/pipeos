@@ -497,7 +497,10 @@ cmd_assistant() {
         password)
             [ ! -t 0 ] || { echo "usage: printf '%s' PASSWORD | pipeos assistant password" >&2; exit 2; }
             /usr/local/bin/pipeos-vault set assistant_pass assistant >/dev/null || exit 1
-            echo "assistant password: set in the vault"
+            # `set` writes the sealed store; the service reads the /run export, which
+            # only the vault's boot start writes — export now or the restart sees the old one
+            /usr/local/bin/pipeos-vault export >/dev/null || exit 1
+            echo "assistant password: set in the vault, exported to /run/pipeos/secrets"
             rc-service pipeos-assistant restart >/dev/null 2>&1 9>&- && echo "pipeos-assistant restarted" || echo "pipeos-assistant did not start — rc-service pipeos-assistant status" >&2
             "$SAVE_BIN" >/dev/null && echo "saved" || { echo "saved: NO — run pipeos save" >&2; exit 1; } ;;
         *) echo "usage: pipeos assistant password   (the password on stdin)" >&2; exit 2 ;;

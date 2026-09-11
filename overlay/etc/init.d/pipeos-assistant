@@ -30,13 +30,12 @@ depend() {
 }
 
 start_pre() {
-	if [ ! -r "$CONF" ]; then
-		eerror "the assistant terminal is enabled but $CONF does not exist — set a password in the web UI"
-		return 1
-	fi
+	# The password lives in the vault; its export is the /run file (#244).
+	# $CONF is the pre-vault file, still read when present — but not
+	# required: a box whose password was only ever set through the vault
+	# (two and three, 2026-09-11) has no $CONF and must still start.
 	# shellcheck disable=SC1090
-	. "$CONF"
-	# the password lives in the vault; its export is the file here (#244)
+	[ -r "$CONF" ] && . "$CONF"
 	# shellcheck disable=SC1091
 	[ -r /run/pipeos/secrets/assistant.env ] && . /run/pipeos/secrets/assistant.env
 	if [ -z "${ASSISTANT_PASS:-}" ]; then
