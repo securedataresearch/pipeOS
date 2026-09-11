@@ -134,6 +134,25 @@ if [ -n "$_card_mac" ]; then
     fi
 fi
 
+# ---- 1cc. the server cert names this box (#234). pipeos-tls-init puts the
+# hostname and the owner's alias on server.crt as SANs; a rename used to
+# reach the cert only at the next boot, and nothing said so — the padlock
+# just failed on https://<name>.local/ for the rest of the day. WARN: the
+# fix is a re-issue (webd does it on rename now; a reboot does it too), and
+# HTTP on :80 is unaffected either way.
+_crt=/etc/pipeos/tls/server.crt
+if [ -f "$_crt" ] && command -v openssl >/dev/null 2>&1; then
+    _san=$(openssl x509 -in "$_crt" -noout -ext subjectAltName 2>/dev/null)
+    _host=$(hostname)
+    _alias=$(sed -n 's/^NAME=["]*\([^"]*\)["]*$/\1/p' /etc/pipeos/card.conf 2>/dev/null | head -1 | tr 'A-Z' 'a-z')
+    _miss=""
+    echo "$_san" | grep -q "DNS:$_host.local" || _miss="$_miss $_host.local"
+    if [ -n "$_alias" ] && [ "$_alias" != "$_host" ]; then
+        echo "$_san" | grep -q "DNS:$_alias.local" || _miss="$_miss $_alias.local"
+    fi
+    [ -n "$_miss" ] && warnn "tls: server.crt does not name$_miss — https://<name>.local/ warns until pipeos-tls-init re-issues it (rc-service pipeos-webd restart, or rename again from the dashboard)"
+fi
+
 # ---- 1d. provisioning is a DISPLAYED state, not an inference (appliance
 # plan, decision 3). pipeos-save exits 0 without /etc/pipeos/provisioned, so
 # a box abandoned mid-walkthrough never persists anything — and used to
