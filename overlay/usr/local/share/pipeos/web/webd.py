@@ -2618,13 +2618,41 @@ class Handler(BaseHTTPRequestHandler):
         rnd.shuffle(pool)
         self.send(200, {"names": pool[:5]})
 
+    def _unconfigured(self, key):
+        """Why turning KEY on would be an empty gesture, or "" if it is
+        configured. Two services mean nothing without their configuration:
+        network storage without a share, terminals without a slot. Their
+        inits refuse to start in that state, so a bare toggle-on wrote
+        SERVICE_X=on that failed at every boot and the box sat DEGRADED
+        (zero, 2026-09-11, pipeOS#266). Adding the configuration turns each
+        on by itself (api_nas_set, _apply_terminals)."""
+        if key == "nas" and not self._nas_read_shares():
+            return ("network storage stays off until there is something to share — "
+                    "add a share under Files → Network storage; adding one turns it on")
+        if key == "terminals" and not any(
+                u.get("terminal") and u.get("unix") and u.get("term_pass")
+                and u.get("term_port") and not u.get("disabled") for u in read_users()):
+            return ("user terminals stay off until a user has one — give an account a "
+                    "browser terminal under Users; that turns them on")
+        return ""
+
     def api_services(self, body):
         svcs = read_services()
+        problems = []
         for k in SVC_KEYS:
             if k in body:
-                svcs[k] = bool(body[k])
+                want = bool(body[k])
+                if want and not svcs.get(k):
+                    why = self._unconfigured(k)
+                    if why:
+                        # not an error: the wizard posts every toggle in one
+                        # body and the rest must still land. The response's
+                        # services map says what actually took.
+                        problems.append(why)
+                        continue
+                svcs[k] = want
         write_services(svcs)
-        problems = apply_services(svcs)
+        problems += apply_services(svcs)
         saved, detail = save_state()
         self.send(200, {"ok": True, "services": svcs, "problems": problems,
                         "saved": saved, "save_detail": "" if saved else detail})

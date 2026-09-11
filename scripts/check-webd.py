@@ -888,6 +888,32 @@ req("/api/nas-password", {"name": "smbuser", "password": "short"}, expect=400)
 req("/api/nas-password", {"name": "nobody-here", "password": "longenough1"}, expect=400)
 ok("nas: empty share list disables; password endpoint validates first")
 webd.write_users([u for u in webd.read_users() if u["name"] != "smbuser"])
+# the bare Services toggle (pipeOS#266): with no share there is nothing to
+# serve, so nas:true is declined — not an error, the wizard posts every
+# toggle in one body and the rest must land — reported in problems[], and
+# the services map says what took. With a share it is a plain toggle.
+r = req("/api/services", {"nas": True, "claude": True})
+assert r["ok"] and r["services"]["nas"] is False and r["services"]["claude"] is True
+assert any("Network storage" in p for p in r["problems"])
+assert webd.read_services()["nas"] is False
+_us = webd.read_users()
+_us.append({"name": "smbuser", "role": "viewer", "hash": "x", "unix": True, "created": 0})
+webd.write_users(_us)
+r = req("/api/nas", {"shares": [{"name": "music", "path": "work/music", "users": ["smbuser"]}]})
+assert r["ok"] and webd.read_services()["nas"] is True
+r = req("/api/services", {"nas": False})
+assert r["ok"] and webd.read_services()["nas"] is False
+r = req("/api/services", {"nas": True})
+assert r["ok"] and r["services"]["nas"] is True  # a share exists: plain toggle
+assert webd.read_services()["nas"] is True
+req("/api/nas", {"shares": []})
+assert webd.read_services()["nas"] is False
+webd.write_users([u for u in webd.read_users() if u["name"] != "smbuser"])
+# terminals: the same shape — no slot, no toggle-on
+r = req("/api/services", {"terminals": True})
+assert r["services"]["terminals"] is False and any("terminal" in p for p in r["problems"])
+assert webd.read_services()["terminals"] is False
+ok("services declines nas/terminals on with nothing configured, applies the rest; on with a share is a plain toggle")
 
 r = req("/api/users/add", {"name": "peek", "password": "peekpassword", "role": "viewer"})
 assert r["ok"]
