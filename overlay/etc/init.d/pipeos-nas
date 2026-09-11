@@ -38,7 +38,9 @@ PRIVATE=/run/pipeos/secrets/nas
 depend() {
 	need net localmount
 	use pipeos-workspace
-	after chronyd
+	# the passdb is a vault export; start after it lands, or smbd opens an
+	# empty db that the export then replaces underneath it (pipeOS#268)
+	after chronyd pipeos-vault
 }
 
 resolve_root() {
