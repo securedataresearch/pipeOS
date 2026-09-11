@@ -1,0 +1,176 @@
+#!/bin/sh
+# pipeos-work — /work's hot set lives in RAM; the disk sees a flush, not a
+# stream (pipeOS#264).
+#
+#   pipeos work status         what is staged, when it was last flushed, parked or not
+#   pipeos work flush          RAM -> disk now (rsync, --delete), one sync
+#   pipeos work park           flush, then remount /work read-only: the stick idles
+#   pipeos work unpark         remount /work read-write
+#   pipeos-work hot-up|hot-down   the init script's start/stop (not for hands)
+#
+# WHY: the Machines have no internal disk — the boot stick IS /work — and a
+# stick that takes a log line every few seconds and a journal flush every
+# five runs hot (Sam, 2026-09-11: "kill the write churn; unmount /work in
+# between operations; do more in RAM"). So the paths that churn — logs, the
+# mDNS roster, the ledger, the schedule state; the list is hot.list — are
+# bind-mounted from a tmpfs at boot, seeded from the disk copy, and written
+# back by `flush`: hourly (periodic), before every pipeos save, at shutdown
+# (pipeos-hot stop), and before `park`. Everything else on /work (Claude's
+# transcripts, repos, homes, backups) stays on the disk: large, and the
+# source of truth for `--resume`.
+#
+# What a power loss costs: whatever landed in the hot set since the last
+# flush — at most an hour of logs, a roster that re-discovers itself in ten
+# seconds, a ledger the next ingest re-derives (rows are deduped by message
+# id), a schedule state whose worst case is one job firing a second time in
+# the same minute. Nothing here is the only copy of anything that matters.
+#
+# park: with the hot set in RAM, an idle Machine holds nothing open for
+# writing on /work, so `mount -o remount,ro` succeeds and the stick stops
+# taking writes altogether. A Machine that is busy (a session, a job) says
+# who is holding it and stays rw. The schedule runner unparks for a run and
+# re-parks after (pipeos-schedule-run); pipeos save flushes first.
+#
+# Seams (the probe): PIPEOS_WORK, PIPEOS_HOT, PIPEOS_WORK_DISK, PIPEOS_HOT_LIST,
+# PIPEOS_WORK_NO_MOUNT=1 (directories only — no tmpfs, no binds, no remount).
+set -u
+WORK=${PIPEOS_WORK:-/work}
+HOT=${PIPEOS_HOT:-/run/pipeos/hot}
+DISK=${PIPEOS_WORK_DISK:-/run/pipeos/work-disk}
+LIST=${PIPEOS_HOT_LIST:-/usr/local/share/pipeos/hot.list}
+NOMOUNT=${PIPEOS_WORK_NO_MOUNT:-0}
+RUN=${PIPEOS_WORK_RUN:-/run/pipeos}
+STATUS=$RUN/work.status
+LOCK=$RUN/work.lock
+HOT_SIZE=${PIPEOS_HOT_SIZE:-256m}
+
+say() { echo "pipeos-work: $*"; }
+die() { echo "pipeos-work: $*" >&2; exit 1; }
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+entries() {
+    # one relative path per line; comments and blanks dropped
+    grep -vE '^\s*(#|$)' "$LIST"
+}
+
+check_list() {
+    # up front and in THIS shell: a die inside $(entries) would only leave the
+    # subshell, and a verb would carry on with an empty list (the probe caught it)
+    [ -r "$LIST" ] || die "no hot list at $LIST"
+    for e in $(entries); do
+        case "$e" in /*|*..*|*' '*) die "hot.list: refusing '$e'" ;; esac
+    done
+}
+
+work_is_ro() { awk -v w="$WORK" '$2 == w { print $4 }' /proc/mounts | grep -qE '(^|,)ro(,|$)'; }
+work_mounted() { [ "$NOMOUNT" = 1 ] || mountpoint -q "$WORK"; }
+
+# ---- hot-up: tmpfs, the raw-disk view, seed, bind ----------------------
+hot_up() {
+    work_mounted || die "$WORK is not mounted — nothing to stage"
+    mkdir -p "$HOT" "$DISK" "$RUN"
+    if [ "$NOMOUNT" != 1 ]; then
+        mountpoint -q "$HOT" || mount -t tmpfs -o "size=$HOT_SIZE,mode=0755" tmpfs "$HOT" || die "cannot mount the hot tmpfs"
+        # the disk as it is under the binds: flush writes here, never through /work
+        mountpoint -q "$DISK" || mount --bind "$WORK" "$DISK" || die "cannot bind $WORK at $DISK"
+        mount --make-private "$DISK" 2>/dev/null || true
+    fi
+    for e in $(entries); do
+        mkdir -p "$DISK/$e" "$HOT/$e" "$WORK/$e"
+        if [ "$NOMOUNT" != 1 ] && mountpoint -q "$WORK/$e"; then
+            continue   # already staged (a restart)
+        fi
+        # seed: the disk copy is the truth at boot
+        cp -a "$DISK/$e/." "$HOT/$e/" 2>/dev/null || true
+        if [ "$NOMOUNT" != 1 ]; then
+            mount --bind "$HOT/$e" "$WORK/$e" || die "cannot bind $HOT/$e over $WORK/$e"
+        fi
+    done
+    printf 'hot %s\n' "$(now)" > "$STATUS"
+    say "hot set staged in RAM: $(entries | tr '\n' ' ')"
+}
+
+# ---- flush: RAM -> disk, under the lock, one sync ----------------------
+flush() {
+    [ -f "$STATUS" ] || { say "hot set not staged — nothing to flush"; return 0; }
+    work_is_ro && { say "$WORK is parked (read-only) — unpark first"; return 1; }
+    mkdir -p "$RUN"
+    (
+        flock 9 || exit 1
+        _n=0
+        for e in $(entries); do
+            mkdir -p "$DISK/$e"
+            rsync -a --delete "$HOT/$e/" "$DISK/$e/" 2>&1 | sed 's/^/pipeos-work: rsync: /' >&2
+            _n=$((_n + 1))
+        done
+        [ "$NOMOUNT" = 1 ] || sync
+        printf 'hot %s flushed %s\n' "$(sed -n 's/^hot \([^ ]*\).*/\1/p' "$STATUS" 2>/dev/null)" "$(now)" > "$STATUS"
+        say "flushed $_n path(s) to disk"
+    ) 9>> "$LOCK"
+}
+
+# ---- hot-down: flush, unbind, drop the tmpfs ----------------------------
+hot_down() {
+    [ -f "$STATUS" ] || return 0
+    work_is_ro && unpark
+    flush || say "flush failed at hot-down — the RAM copy is about to go; disk keeps the last flush"
+    if [ "$NOMOUNT" != 1 ]; then
+        for e in $(entries); do mountpoint -q "$WORK/$e" && umount "$WORK/$e"; done
+        mountpoint -q "$DISK" && umount "$DISK"
+        mountpoint -q "$HOT" && umount "$HOT"
+    fi
+    rm -f "$STATUS"
+    say "hot set released"
+}
+
+# ---- park / unpark -------------------------------------------------------
+park() {
+    work_mounted || die "$WORK is not mounted"
+    if work_is_ro; then say "already parked"; return 0; fi
+    flush || die "flush failed — not parking on top of unflushed state"
+    [ "$NOMOUNT" = 1 ] && { say "(no-mount seam) would remount $WORK read-only"; return 0; }
+    sync
+    if mount -o remount,ro "$WORK" 2>/dev/null; then
+        say "parked: $WORK is read-only; the stick takes no writes until unpark (a scheduled run unparks itself)"
+        return 0
+    fi
+    _who=$(fuser -m "$WORK" 2>/dev/null | tr -s ' ' | head -c 200)
+    _names=""
+    for _p in $_who; do _names="$_names $(tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null | cut -c1-40 | sed 's/ *$//')"; done
+    die "cannot park: something holds $WORK for writing —${_names:- (unknown)}. Wait for it, or stop it, and park again."
+}
+
+unpark() {
+    work_mounted || die "$WORK is not mounted"
+    work_is_ro || { say "not parked"; return 0; }
+    [ "$NOMOUNT" = 1 ] && { say "(no-mount seam) would remount $WORK read-write"; return 0; }
+    mount -o remount,rw "$WORK" || die "remount rw failed"
+    say "unparked: $WORK is read-write"
+}
+
+status() {
+    if work_mounted; then
+        if work_is_ro; then say "$WORK: mounted, PARKED (read-only)"; else say "$WORK: mounted, read-write"; fi
+    else
+        say "$WORK: not mounted"
+    fi
+    if [ -f "$STATUS" ]; then
+        say "hot set: $(cat "$STATUS")"
+        for e in $(entries); do
+            printf '  %-20s %s\n' "$e" "$(du -sh "$HOT/$e" 2>/dev/null | cut -f1)"
+        done
+    else
+        say "hot set: not staged (pipeos-hot has not started)"
+    fi
+}
+
+check_list
+case "${1:-}" in
+    hot-up)   hot_up ;;
+    hot-down) hot_down ;;
+    flush)    flush ;;
+    park)     park ;;
+    unpark)   unpark ;;
+    status)   status ;;
+    *) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

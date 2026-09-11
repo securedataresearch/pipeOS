@@ -74,7 +74,12 @@ pipeos secrets phrase [--ack]                   # the vault's pending recovery p
 printf '%s' PW | pipeos assistant password      # -> vault assistant_pass, pipeos-assistant restarted, saved
 pipeos vault status|list|get|set|export         # the sealed store; set reads stdin: printf '%s' V | pipeos vault set NAME [CONSUMER]
 pipeos wake NAME|ID|--all|--list                # magic packet to a Machine this box has seen
+pipeos work status|flush|park|unpark            # the RAM-staged hot set; park = flush + /work read-only so the stick idles
 ```
+
+The stick is `/work` on these Machines (no internal disk yet). `pipeos work
+park` between operations keeps it cool; a job or session unparks as needed.
+Before pulling a stick: `pipeos work flush` (or `pipeos save`, which flushes).
 
 Box clocks are UTC; cron expressions are box-local, so UTC.
 

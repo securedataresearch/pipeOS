@@ -147,10 +147,20 @@ if [ -f "$PAUSED" ]; then
     exit 75
 fi
 
+# ---- a parked /work (pipeos work park: read-only so the stick idles) is
+# unparked for the run — claude writes its transcript there — and re-parked
+# after. Only the real /work: the probe's WORKROOT is a tempdir.
+_reparked=no
+if [ "$WORKROOT" = /work ] && awk '$2 == "/work" { print $4 }' /proc/mounts | grep -qE '(^|,)ro(,|$)'; then
+    /usr/local/bin/pipeos-work unpark >/dev/null 2>&1 && _reparked=yes
+fi
+repark() { [ "$_reparked" = yes ] && /usr/local/bin/pipeos-work park >/dev/null 2>&1; }
+
 # ---- one at a time
 exec 9> "$LOCK"
 if ! flock -n 9; then
     log "refused: another scheduled job is running on this Machine (one at a time) — this run is skipped, not queued"
+    repark
     exit 75
 fi
 
@@ -210,4 +220,5 @@ case "$status" in
     "cut off") dm "job $job: cut off after ${CLAUDE_TIMEOUT}s (it was working; raise AGENT_TIMEOUT_MIN on the card if this repeats) — log: schedule-$job.log" ;;
     *)         dm "job $job: $status — log: schedule-$job.log" ;;
 esac
+repark
 case "$status" in ok|"cut off") exit 0 ;; *) exit 1 ;; esac

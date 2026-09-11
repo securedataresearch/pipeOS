@@ -78,6 +78,9 @@ if [ -f "$OVL" ] && \
 fi
 
 mount -o remount,rw "$MEDIA" || { logger -s -t pipeos-save "cannot remount media rw"; exit 1; }
+# the hot set first (logs, roster, ledger, schedule state live in RAM — pipeos-work):
+# a save is the moment the owner expects the disk to hold everything
+[ -x /usr/local/bin/pipeos-work ] && /usr/local/bin/pipeos-work flush >/dev/null 2>&1 || true
 trap 'rm -f "$tmp" "$OVL.new"; sync; mount -o remount,ro "$MEDIA" 2>/dev/null' EXIT
 
 cp "$tmp" "$OVL.new" || { logger -s -t pipeos-save "write to media failed"; exit 1; }

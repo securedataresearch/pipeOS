@@ -40,6 +40,7 @@ when host keys have changed (every reflash). Clocks are UTC.
 | `pipeos assistant password` (stdin) | Assistant → password | vault `assistant_pass`; restarts `pipeos-assistant` | yes |
 | `pipeos vault status\|list\|get\|set\|del\|export\|unlock\|rephrase` | Secrets view | the sealed store | set/del: the store is in `/etc`, save after |
 | `pipeos wake NAME\|ID\|--all\|--list` | Network → Wake | — | — |
+| `pipeos work status\|flush\|park\|unpark` | — (operator) | flush: the RAM-staged hot set → the stick; park: remount `/work` read-only | flush is the save |
 | `pipeos backup`, `flash`, `restore-work`, `pkg`, `rollback`, `unclaim` | Files, System | see each verb's header | yes |
 
 `pipeos` with no verb prints the list; each verb refuses with rc 2 and
@@ -82,6 +83,19 @@ acceptance sheet (`docs/first-boot-acceptance.md`) lists the rows.
   not.** selfcheck WARNs when the wakeable port is not the one in use.
 - **Reboot:** `verify` PASS → `reboot` → selfcheck green, known-good
   matches.
+
+## The stick is /work: heat, RAM staging, park
+
+Until a Machine has an internal disk the boot stick is also `/work`. The
+churn — `logs`, `pipeos/mdns`, `.pipeos/ledger`, `.pipeos/schedule`
+(`usr/local/share/pipeos/hot.list`) — is staged in a tmpfs by `pipeos-hot`
+at boot and written back by `pipeos work flush`: hourly, before every
+`pipeos save`, at shutdown, before `park`. `pipeos work park` flushes and
+remounts `/work` read-only so the stick takes nothing until `unpark`; a
+scheduled run unparks itself and re-parks. If park says something holds
+`/work`, that is a session or a job: wait, or stop it. `/work` mounts
+`commit=120,lazytime`. Add a path to `hot.list` when something new churns;
+never one that is the only copy of anything.
 
 ## What stays human
 

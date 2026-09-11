@@ -423,6 +423,30 @@ if [ -s /work/.pipeos/schedule/state.json ] && command -v jq >/dev/null 2>&1; th
     done
 fi
 
+# ---- 3ch. /work's hot set (#264). pipeos-hot binds the churny paths from a
+# tmpfs; a writer that started before it, or a bind that did not come up,
+# means the stick is taking the stream again. Parked = read-only on purpose.
+if mountpoint -q /work 2>/dev/null && [ -r /usr/local/share/pipeos/hot.list ]; then
+    _hot_missing=""
+    for _e in $(grep -vE '^\s*(#|$)' /usr/local/share/pipeos/hot.list); do
+        mountpoint -q "/work/$_e" 2>/dev/null || _hot_missing="$_hot_missing $_e"
+    done
+    if [ -n "$_hot_missing" ]; then
+        if [ "$BOOT" = yes ] && rc-service pipeos-hot restart >/dev/null 2>&1 && ! [ -n "$(for _e in $_hot_missing; do mountpoint -q "/work/$_e" || echo x; done)" ]; then
+            fixed "hot set re-staged in RAM:$_hot_missing"
+        else
+            warnn "hot set not staged in RAM:$_hot_missing — the stick is taking every write (rc-service pipeos-hot restart)"
+        fi
+    fi
+    if awk '$2 == "/work" { print $4 }' /proc/mounts | grep -qE '(^|,)ro(,|$)'; then
+        noten "/work is parked (read-only, pipeos work park) — the stick idles; a scheduled run unparks itself"
+    fi
+fi
+# the listener idling on a policy denial (#258): one WARN, not a respawn loop
+if [ -r /run/pipeos/listener.status ] && grep -q '^policy-denied' /run/pipeos/listener.status; then
+    warnn "pipe listener idle: the card grants this agent no pipe capability (policy.json allow is empty) — it looks again hourly; regenerate the card with pipe capabilities to resume (pipeOS#258)"
+fi
+
 # ---- 3cv. the vault (#244). The services read their secrets from
 # /run/pipeos/secrets, which pipeos-vault writes at boot from the sealed
 # store. Locked = this stick's secrets were sealed in another chassis: the

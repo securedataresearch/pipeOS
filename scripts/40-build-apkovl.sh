@@ -152,7 +152,7 @@ mk_runlevel boot     modules sysctl pipeos-identity hostname bootmisc syslog net
 # wizard turns on (rc-update at claim time), not the box's spine. Fleet sticks
 # (CARD with a NICK) get it back via FLEET_SVCS above.
 # shellcheck disable=SC2086
-mk_runlevel default  crond chronyd sshd local pipeos-workspace pipeos-vault pipeos-web pipeos-mdns $FLEET_SVCS pipeos-selfcheck
+mk_runlevel default  crond chronyd sshd local pipeos-workspace pipeos-hot pipeos-vault pipeos-web pipeos-mdns $FLEET_SVCS pipeos-selfcheck
 mk_runlevel shutdown killprocs mount-ro savecache
 
 chmod +x "$STAGE/etc/local.d/"*.start "$STAGE/etc/local.d/"*.stop \
