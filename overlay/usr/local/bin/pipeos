@@ -464,7 +464,7 @@ cmd_card_set() {
 
 cmd_usage() {
     case "${1:-totals}" in
-        totals) shift; exec python3 "$LEDGER_PY" totals "$@" ;;
+        totals) [ $# -gt 0 ] && shift; exec python3 "$LEDGER_PY" totals "$@" ;;
         cap)
             v=${2:-}
             case "$v" in
