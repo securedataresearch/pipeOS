@@ -153,6 +153,36 @@ if [ -f "$_crt" ] && command -v openssl >/dev/null 2>&1; then
     [ -n "$_miss" ] && warnn "tls: server.crt does not name$_miss — https://<name>.local/ warns until pipeos-tls-init re-issues it (rc-service pipeos-webd restart, or rename again from the dashboard)"
 fi
 
+# ---- 1cw. wake-on-lan is armed (#241). pipeos-wol runs `ethtool -s IF wol g`
+# at every boot; the two ways it silently is not: the driver cannot (no `g`
+# in "Supports Wake-on") or the BIOS has its own switch off (the setting
+# takes but the box will not come back from S5). Only the first shows in
+# ethtool; the second is a drill (docs/hardware.md). WARN, never CRIT — a
+# box that cannot be woken is still a working box — and re-armed on --boot.
+_wol=$(sed -n 's/^WOL=["]*\([^"]*\)["]*$/\1/p' /etc/pipeos/card.conf 2>/dev/null | head -1 | tr 'A-Z' 'a-z')
+if [ "$_wol" != off ] && command -v ethtool >/dev/null 2>&1; then
+    _wif=$(hostname | sed -n 's/^pipeos-\([0-9a-f]\{4\}\)$/\1/p')
+    _wdev=""
+    for _d in /sys/class/net/*; do
+        _n=${_d##*/}; [ "$_n" = lo ] && continue
+        _m=$(cat "$_d/address" 2>/dev/null | tr -cd '0-9a-f')
+        case "$_m" in *"$_wif") [ -n "$_wif" ] && _wdev=$_n ;; esac
+    done
+    if [ -n "$_wdev" ]; then
+        _eth=$(ethtool "$_wdev" 2>/dev/null)
+        if ! printf '%s' "$_eth" | grep -q 'Supports Wake-on:.*g'; then
+            warnn "wake-on-lan: $_wdev cannot wake on a magic packet (driver) — a sibling's Wake button will not reach this Machine"
+        elif ! printf '%s' "$_eth" | grep -q '^[[:space:]]*Wake-on: g'; then
+            if [ "$BOOT" = yes ] && ethtool -s "$_wdev" wol g >/dev/null 2>&1 \
+               && ethtool "$_wdev" 2>/dev/null | grep -q '^[[:space:]]*Wake-on: g'; then
+                fixed "wake-on-lan re-armed on $_wdev"
+            else
+                warnn "wake-on-lan not armed on $_wdev — the usual cause is Wake on LAN off in the BIOS (docs/hardware.md); rc-service pipeos-wol restart re-arms the NIC side"
+            fi
+        fi
+    fi
+fi
+
 # ---- 1d. provisioning is a DISPLAYED state, not an inference (appliance
 # plan, decision 3). pipeos-save exits 0 without /etc/pipeos/provisioned, so
 # a box abandoned mid-walkthrough never persists anything — and used to

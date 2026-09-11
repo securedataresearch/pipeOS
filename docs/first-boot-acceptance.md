@@ -54,6 +54,11 @@ Release under test: `________`   Box: `________`   Date: `________`
       appeared; key sent; port pinned on the relay; pill went "tunnel up"
       in ____ s; operator reached the box with `ssh -J`; toggle off; the
       tunnel died in ____ s.
+- [ ] **Wake** (#241, docs/hardware.md): shut one Machine down; on a
+      sibling's Network view it went grey ("off · last seen") in ____ s;
+      Wake → back in the lobby in ____ s. `pipeos wake <name>` from a
+      third Machine did the same. With Wake on LAN off in the BIOS the
+      boot report still read green and the packet did nothing (expected).
 
 ## First run — 2026-09-09, two Lenovo 10RR Machines, release 35f697b
 

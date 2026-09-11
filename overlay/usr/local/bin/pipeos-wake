@@ -1,0 +1,4 @@
+#!/bin/sh
+# pipeos-wake — magic packet to a Machine on the roster (#241). The logic is
+# share/pipeos/web/wake.py (a .py under usr/local/bin reds shellcheck).
+exec python3 /usr/local/share/pipeos/web/wake.py "$@"

@@ -72,6 +72,28 @@ def mac4(iface=None):
     return hexs[-4:] if len(hexs) >= 4 else "0000"
 
 
+def mac(iface=None):
+    """The primary NIC's full address, lowercase, "" never raises. What a
+    magic packet needs (#241): mac4 is the id on the wire, this is the whole
+    thing. When the hostname carries the id, the NIC whose address ends in
+    it is the one — so a box with two links names the same NIC here that
+    pipeos-identity picked at boot, whichever is up now."""
+    if iface is None:
+        m = re.fullmatch(r"pipeos-([0-9a-f]{4})", _hostname().lower())
+        if m:
+            try:
+                names = sorted(os.listdir(SYS_NET))
+            except OSError:
+                names = []
+            for n in names:
+                a = _read(os.path.join(SYS_NET, n, "address")).lower()
+                if n != "lo" and re.sub(r"[^0-9a-f]", "", a).endswith(m.group(1)):
+                    return a
+    n = iface or primary_iface()
+    a = _read(os.path.join(SYS_NET, n, "address")).lower() if n else ""
+    return a if re.fullmatch(r"([0-9a-f]{2}:){5}[0-9a-f]{2}", a) else ""
+
+
 def _hostname():
     try:
         import socket

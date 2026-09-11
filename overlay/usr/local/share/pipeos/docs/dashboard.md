@@ -39,6 +39,13 @@ honest signal.
 
 ## Network and System
 
+**Machines on this network** lists every Machine that answers on the LAN,
+with a **Claim** link on the unclaimed ones. A Machine this box has seen
+before but that is not answering now shows grey — *off · last seen …* —
+with its last address and MAC and a **Wake** button, which sends a
+magic packet (wake-on-lan). The box is back in the list within a minute
+if its BIOS allows waking; the manual's hardware page has the switch.
+
 Live metrics: addresses, throughput, CPU/memory/disk history as 24-hour
 charts. **Save state now** (System) writes the current config to the boot
 media without waiting for the 15-minute autosave.
