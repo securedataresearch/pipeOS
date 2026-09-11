@@ -87,6 +87,9 @@ start() {
 	set -a
 	# shellcheck disable=SC1090
 	. "$CONF"
+	# the stream keys live in the vault; its export is the file here (#244)
+	# shellcheck disable=SC1091
+	[ -r /run/pipeos/secrets/stream.env ] && . /run/pipeos/secrets/stream.env
 	set +a
 	_user=$(svc_user)
 	if [ "${STREAM_MODE:-media}" = browser ]; then

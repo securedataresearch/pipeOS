@@ -78,6 +78,15 @@ jobs:
           python3 scripts/check-wake.py
           python3 scripts/check-wake-controls.py
 
+      # #244. Every service secret used to be a plain file in the apkovl;
+      # now one sealed store, chassis-bound, opened into /run at boot. The
+      # rows are the binding, the phrase, the integrity check, the
+      # migration's shred, and the wiring that keeps plaintext out of lbu.
+      - name: the secrets vault — sealed to the chassis, opened by the phrase, nothing in the clear
+        run: |
+          python3 scripts/check-vault.py
+          python3 scripts/check-vault-controls.py
+
       - name: the shipped verify-repo.sh is the build's verify-repo.sh
         run: |
           # Client boxes carry no checkout, so the overlay ships its own copy

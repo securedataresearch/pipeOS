@@ -37,6 +37,14 @@ reset passwords, disable or delete accounts. Viewers see everything and can
 change nothing — the server enforces it, the grey controls are just the
 honest signal.
 
+## Secrets
+
+Everything the Machine keeps to itself, in one sealed file: listed by
+name, never by value. Add a secret a job needs; reveal one after re-typing
+your password; delete one. If the stick booted in a different box the page
+says *locked* and asks for the recovery phrase. The manual's Secrets page
+has the whole story.
+
 ## Network and System
 
 **Machines on this network** lists every Machine that answers on the LAN,

@@ -54,6 +54,13 @@ Release under test: `________`   Box: `________`   Date: `________`
       appeared; key sent; port pinned on the relay; pill went "tunnel up"
       in ____ s; operator reached the box with `ssh -J`; toggle off; the
       tunnel died in ____ s.
+- [ ] **Secrets sealed** (#244): after claim the wizard showed the
+      recovery phrase once; `grep -r sk-ant /etc /media/usb` on the box
+      finds nothing; `pipeos verify` says *secrets sealed*; after a reboot
+      Claude is still signed in, the support tunnel and the terminal come
+      up. **Rehome drill**: this stick in another chassis → the boot
+      report says *chassis mismatch* and *vault is LOCKED*, the dashboard
+      is reachable, Secrets → phrase → the services start; `pipeos save`.
 - [ ] **Wake** (#241, docs/hardware.md): shut one Machine down; on a
       sibling's Network view it went grey ("off · last seen") in ____ s;
       Wake → back in the lobby in ____ s. `pipeos wake <name>` from a

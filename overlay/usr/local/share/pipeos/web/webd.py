@@ -50,11 +50,21 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lanid  # noqa: E402  — LAN identity + the mDNS wire, shared with mdnsd.py
+import vault  # noqa: E402  — the sealed secret store (#244)
 
 ETC = "/etc/pipeos"
 ADMIN_CONF = ETC + "/web-admin.conf"
 SERVICES_CONF = ETC + "/services.conf"
-CLAUDE_AUTH = ETC + "/claude-auth.env"
+# The vault (#244): every service secret lives sealed in VAULT and is
+# materialised into SECRETS_DIR at boot (init.d/pipeos-vault) and after
+# every dashboard change (vault.export). CLAUDE_AUTH is that export; the
+# legacy /etc path is read only until the first boot that migrates it.
+VAULT = ETC + "/vault.sealed"
+SECRETS_DIR = "/run/pipeos/secrets"
+VAULT_PHRASE = "/run/pipeos/vault-phrase"
+VAULT_STATUS = "/run/pipeos/vault.status"
+CLAUDE_AUTH = SECRETS_DIR + "/claude.env"
+CLAUDE_AUTH_LEGACY = ETC + "/claude-auth.env"
 # The Claude credential, three ways (#192). A browser sign-in lands where
 # `claude` itself keeps it (and refreshes it); an API key or a setup-token
 # is one line in CLAUDE_AUTH. The env file wins when both exist — claude
@@ -68,7 +78,8 @@ CARD = ETC + "/card.conf"
 # which external drives to re-mount after a reboot, by filesystem UUID.
 NAS_CONF = ETC + "/nas.conf"
 SUPPORT_CONF = ETC + "/support.conf"
-SUPPORT_KEY = ETC + "/support_key"
+SUPPORT_KEY = SECRETS_DIR + "/support_key"
+SUPPORT_PUB = ETC + "/support_key.pub"
 MOUNTS_CONF = ETC + "/mounts.conf"
 NAS_MAX_SHARES = 8
 NAS_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
@@ -94,7 +105,7 @@ DOCS_DIR = os.path.normpath(
 DOC_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 # Display order; pages not listed here sort alphabetically after these.
 DOCS_ORDER = ("getting-started", "dashboard", "streaming", "nas", "users",
-              "files-and-backup", "persistence", "fence")
+              "secrets", "files-and-backup", "persistence", "fence")
 
 USERS_CONF = ETC + "/users.json"
 TERMINALS_CONF = ETC + "/terminals.conf"
@@ -245,13 +256,51 @@ ANSI_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-z]"
 
 
 def claude_auth_env():
-    """(name, value) of the line in CLAUDE_AUTH, or (None, None)."""
+    """(name, value) of the line in CLAUDE_AUTH (the vault's export), or in
+    the legacy plaintext file until the first boot migrates it, or (None, None)."""
+    for path in (CLAUDE_AUTH, CLAUDE_AUTH_LEGACY):
+        try:
+            with open(path) as f:
+                m = re.search(r"^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=(\S+)", f.read(), re.M)
+        except OSError:
+            continue
+        if m:
+            return m.group(1), m.group(2)
+    return None, None
+
+
+def vault_put(name, value, by=""):
+    """Store one secret and re-export. Raises RuntimeError with the owner's
+    sentence when the vault is locked or absent."""
     try:
-        with open(CLAUDE_AUTH) as f:
-            m = re.search(r"^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=(\S+)", f.read(), re.M)
-    except OSError:
-        return None, None
-    return (m.group(1), m.group(2)) if m else (None, None)
+        vault.set_(name, value, by=by)
+        vault.export()
+    except vault.Locked as e:
+        raise RuntimeError("the vault is locked (%s) — unlock it under Secrets first" % e)
+    except (vault.VaultError, OSError, ValueError) as e:
+        raise RuntimeError("vault: %s" % e)
+
+
+def vault_drop(name):
+    try:
+        vault.delete(name)
+        vault.export()
+    except (vault.VaultError, OSError, ValueError):
+        pass
+
+
+def vault_names():
+    try:
+        return {r["name"] for r in vault.list_()}
+    except (vault.VaultError, OSError, ValueError):
+        return set()
+
+
+def vault_get(name):
+    try:
+        return vault.get(name)
+    except (vault.VaultError, OSError, ValueError):
+        return None
 
 
 def claude_env(extra=None):
@@ -679,25 +728,73 @@ def daemons_for(svcs):
     return out
 
 
+def _read_phrase():
+    try:
+        with open(VAULT_PHRASE) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def restart_secret_consumers():
+    """After an unlock the exports exist for the first time this boot:
+    start what the owner has on and what refused to start without them."""
+    problems = []
+    for svc in daemons_for(read_services()):
+        if svc in ("pipebox-listener", "pipeos-support", "pipeos-assistant", "pipeos-stream", "pipeos-nas"):
+            rc, out = run(["rc-service", svc, "restart"], timeout=120)
+            if rc != 0:
+                problems.append("%s: %s" % (svc, out.strip()[-160:]))
+    return problems
+
+
 def support_ensure_key():
     """The box's tunnel identity, made on first enable (ed25519, no
-    passphrase — a supervised daemon cannot type one). Idempotent."""
-    if os.path.exists(SUPPORT_KEY) and os.path.exists(SUPPORT_KEY + ".pub"):
+    passphrase — a supervised daemon cannot type one). The private half
+    lives in the vault and is exported to SUPPORT_KEY; the public half is
+    a plain file under /etc (it is public). Idempotent."""
+    if "support_key" in vault_names() and os.path.exists(SUPPORT_PUB):
+        if not os.path.exists(SUPPORT_KEY):
+            try:
+                vault.export()
+            except (vault.VaultError, OSError, ValueError):
+                return False
         return True
+    os.makedirs(os.path.dirname(SUPPORT_KEY), mode=0o700, exist_ok=True)
+    tmp = SUPPORT_KEY + ".gen"
+    for p in (tmp, tmp + ".pub"):
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
     rc, _ = run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C",
                  "pipeos-support-" + (card_get("NICK") or socket.gethostname()),
-                 "-f", SUPPORT_KEY], timeout=30)
+                 "-f", tmp], timeout=30)
+    if rc != 0 or not os.path.exists(tmp + ".pub"):
+        return False
     try:
-        os.chmod(SUPPORT_KEY, 0o600)
-    except OSError:
-        pass
-    return rc == 0 and os.path.exists(SUPPORT_KEY + ".pub")
+        with open(tmp, "rb") as f:
+            priv = f.read()
+        with open(tmp + ".pub") as f:
+            pub = f.read()
+        vault_put("support_key", priv, by="system")
+        write_private(SUPPORT_PUB, pub)
+        os.chmod(SUPPORT_PUB, 0o644)
+    except (OSError, RuntimeError):
+        return False
+    finally:
+        for p in (tmp, tmp + ".pub"):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+    return os.path.exists(SUPPORT_KEY)
 
 
 def support_info():
     conf = read_conf_values(SUPPORT_CONF, ["SUPPORT_RELAY", "SUPPORT_PORT"])
     try:
-        with open(SUPPORT_KEY + ".pub") as f:
+        with open(SUPPORT_PUB) as f:
             pub = f.read().strip()
     except OSError:
         pub = ""
@@ -1320,6 +1417,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/assistant": self.api_assistant_get,
             "/api/claude": self.api_claude_get,
             "/api/support": self.api_support_get,
+            "/api/secrets": self.api_secrets,
             "/api/pipe": self.api_pipe_get,
             "/api/pipe-contacts": self.api_pipe_contacts,
             "/api/pipe-board": self.api_pipe_board,
@@ -1406,6 +1504,13 @@ class Handler(BaseHTTPRequestHandler):
             "/api/update-now": self.api_update_now,
             "/api/flash": self.api_flash,
             "/api/wake": self.api_wake,
+            "/api/secrets/set": self.api_secrets_set,
+            "/api/secrets/del": self.api_secrets_del,
+            "/api/secrets/reveal": self.api_secrets_reveal,
+            "/api/secrets/unlock": self.api_secrets_unlock,
+            "/api/secrets/rephrase": self.api_secrets_rephrase,
+            "/api/secrets/init": self.api_secrets_init,
+            "/api/secrets/phrase-ack": self.api_secrets_phrase_ack,
         }
         fn = handlers.get(path)
         if fn is None:
@@ -1498,6 +1603,145 @@ class Handler(BaseHTTPRequestHandler):
         rows, ok = lobby_entries()
         self.send(200, {"machines": rows, "discovery_ok": ok, "lan_name": lanid.lan_name()})
 
+    # -- secrets (#244) -------------------------------------------------------
+
+    def api_secrets(self):
+        """Names, never values. Admin only — the reader gate lets every
+        role in, and a viewer has no business with the list of what the
+        box holds."""
+        if self._user_admin_guard() is None:
+            return
+        st, why = vault.status()
+        rows = []
+        if st == "open":
+            try:
+                rows = vault.list_()
+            except (vault.VaultError, OSError, ValueError):
+                rows = []
+        self.send(200, {"status": st, "detail": why, "secrets": rows,
+                        "phrase_pending": os.path.exists(VAULT_PHRASE),
+                        "phrase": _read_phrase() if os.path.exists(VAULT_PHRASE) else ""})
+
+    def api_secrets_set(self, body):
+        if self._user_admin_guard() is None:
+            return
+        name = (body.get("name") or "").strip().lower()
+        value = body.get("value")
+        if not vault.NAME_RE.match(name):
+            return self.err(400, "secret names are lowercase letters, digits, _ and . — up to 64")
+        if name in vault.CONSUMER_OF or name.startswith("stream_key_"):
+            return self.err(400, "%s is set from its own card (Setup, Streaming, Services…), not here" % name)
+        if not isinstance(value, str) or not value or len(value) > 8192 or "\0" in value:
+            return self.err(400, "a value, up to 8 KB, no NUL")
+        try:
+            vault_put(name, value, by=(self.authed() or {}).get("user", ""))
+        except RuntimeError as e:
+            return self.err(500, str(e))
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "saved": saved, "save_detail": "" if saved else detail})
+
+    def api_secrets_del(self, body):
+        if self._user_admin_guard() is None:
+            return
+        name = (body.get("name") or "").strip().lower()
+        if not vault.NAME_RE.match(name):
+            return self.err(400, "which secret?")
+        try:
+            gone = vault.delete(name)
+            vault.export()
+        except vault.Locked as e:
+            return self.err(409, "the vault is locked (%s)" % e)
+        except (vault.VaultError, OSError, ValueError) as e:
+            return self.err(500, "vault: %s" % e)
+        if not gone:
+            return self.err(404, "no secret named %s" % name)
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "saved": saved, "save_detail": "" if saved else detail})
+
+    def api_secrets_reveal(self, body):
+        """The value, once, to an admin who just re-typed their password.
+        No save: a read."""
+        sess = self._user_admin_guard()
+        if sess is None:
+            return
+        name = (body.get("name") or "").strip().lower()
+        u = find_user(read_users(), sess.get("user", ""))
+        if not u or not check_hash(body.get("password") or "", u.get("hash", "")):
+            time.sleep(2)
+            return self.err(403, "that is not your password")
+        v = vault_get(name)
+        if v is None:
+            return self.err(404, "no secret named %s" % name)
+        if isinstance(v, bytes):
+            return self.err(400, "%s is a binary secret (a key file) — it has no value to show" % name)
+        self.send(200, {"ok": True, "name": name, "value": v})
+
+    def api_secrets_unlock(self, body):
+        """The recovery phrase re-seals the vault to THIS chassis: a stick
+        that moved to another machine opens again."""
+        if self._user_admin_guard() is None:
+            return
+        phrase = (body.get("phrase") or "").strip()
+        if len(re.sub(r"[^0-9a-fA-F]", "", phrase)) != 32:
+            return self.err(400, "the recovery phrase is eight groups of four characters")
+        try:
+            vault.unlock(phrase)
+            vault.export()
+        except vault.Locked:
+            time.sleep(2)
+            return self.err(403, "that is not this vault's recovery phrase")
+        except (vault.VaultError, OSError, ValueError) as e:
+            return self.err(500, "vault: %s" % e)
+        try:
+            with open(VAULT_STATUS, "w") as f:
+                f.write("open unlocked\n")
+        except OSError:
+            pass
+        problems = restart_secret_consumers()
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "problems": problems, "saved": saved, "save_detail": "" if saved else detail})
+
+    def api_secrets_rephrase(self, body):
+        """A new recovery phrase; the old one stops working. Shown once."""
+        if self._user_admin_guard() is None:
+            return
+        try:
+            phrase = vault.rephrase()
+        except vault.Locked as e:
+            return self.err(409, "the vault is locked (%s)" % e)
+        except (vault.VaultError, OSError, ValueError) as e:
+            return self.err(500, "vault: %s" % e)
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "phrase": phrase, "saved": saved, "save_detail": "" if saved else detail})
+
+    def api_secrets_init(self, body):
+        """A claimed box with no vault (the boot migration did not run, or
+        failed): make one now, move the plaintext in, and show the phrase.
+        The same thing pipeos-vault does at boot, on demand."""
+        if self._user_admin_guard() is None:
+            return
+        if vault.exists():
+            return self.err(409, "this box already has a vault")
+        try:
+            phrase = vault.init()
+            moved = vault.migrate(by=(self.authed() or {}).get("user", "") or "dashboard")
+            vault.export()
+        except (vault.VaultError, OSError, ValueError) as e:
+            return self.err(500, "vault: %s" % e)
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "phrase": phrase, "moved": moved, "saved": saved,
+                        "save_detail": "" if saved else detail})
+
+    def api_secrets_phrase_ack(self, body):
+        """The owner wrote the phrase down: forget the tmpfs copy. No save."""
+        if self._user_admin_guard() is None:
+            return
+        try:
+            os.unlink(VAULT_PHRASE)
+        except OSError:
+            pass
+        self.send(200, {"ok": True})
+
     def api_wake(self, body):
         """A magic packet to a rostered Machine (#241). Admin only — the
         role gate lets every admin POST in, but powering hardware on is an
@@ -1530,13 +1774,22 @@ class Handler(BaseHTTPRequestHandler):
         # and the lockout-safety fallback
         write_users([{"name": "admin", "role": "admin", "hash": h,
                       "created": int(time.time())}])
+        # The box's secrets get their vault now (#244): sealed to this
+        # chassis, with a recovery phrase the wizard shows exactly once.
+        phrase = ""
+        try:
+            phrase = vault.init(force=True)
+            vault.export()
+        except (vault.VaultError, OSError, ValueError) as e:
+            sys.stderr.write("pipeos-webd: vault init at claim failed: %s\n" % e)
         # The claim IS the provisioning event: from here on, saves persist.
         # Save NOW — a claim that exists only in RAM is not a claim.
         with open(PROVISIONED, "a"):
             pass
         saved, detail = save_state()
         tok = new_session()
-        self.send(200, {"ok": True, "saved": saved, "save_detail": "" if saved else detail},
+        self.send(200, {"ok": True, "saved": saved, "save_detail": "" if saved else detail,
+                        "recovery_phrase": phrase},
                   cookie="session=%s; HttpOnly; SameSite=Strict; Path=/" % tok)
 
     def api_login(self, body):
@@ -2088,16 +2341,28 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(400, "SMB password: at least 8 characters, no newlines")
         if not shutil.which("smbpasswd"):
             return self.err(500, "samba is not installed yet (samba-common-tools)")
-        os.makedirs("/run/pipeos", exist_ok=True)
-        os.makedirs(NAS_CONF.rsplit("/", 1)[0] + "/nas-private", mode=0o700, exist_ok=True)
-        mini = "/run/pipeos/smbpasswd.conf"
+        # the passdb is a vault secret exported to SECRETS_DIR/nas (#244):
+        # export first so smbpasswd edits the current db, then store the
+        # result back
+        private = os.path.join(SECRETS_DIR, "nas")
+        try:
+            vault.export()
+        except (vault.VaultError, OSError, ValueError) as e:
+            return self.err(500, "the vault is not open (%s) — unlock it under Secrets first" % e)
+        os.makedirs(private, mode=0o700, exist_ok=True)
+        mini = os.path.join(os.path.dirname(SECRETS_DIR.rstrip("/")), "smbpasswd.conf")
         with open(mini, "w") as f:
             f.write("[global]\nprivate dir = %s\npassdb backend = tdbsam:%s/passdb.tdb\n"
-                    % (ETC + "/nas-private", ETC + "/nas-private"))
+                    % (private, private))
         rc, out = run(["smbpasswd", "-c", mini, "-s", "-a", name],
                       input_text=pw + "\n" + pw + "\n", timeout=30)
         if rc != 0:
             return self.err(500, "smbpasswd failed: " + out.strip()[-200:])
+        try:
+            with open(os.path.join(private, "passdb.tdb"), "rb") as f:
+                vault_put("nas_passdb", f.read(), by=(self.authed() or {}).get("user", ""))
+        except (OSError, RuntimeError) as e:
+            return self.err(500, "could not seal the SMB password db: %s" % e)
         saved, detail = save_state()
         self.send(200, {"ok": True, "saved": saved,
                         "save_detail": "" if saved else detail})
@@ -2194,7 +2459,10 @@ class Handler(BaseHTTPRequestHandler):
         # rides the owner's Claude subscription. Same file, one line, the
         # variable claude expects for each.
         name = "ANTHROPIC_API_KEY" if token.startswith("sk-ant-api") else "CLAUDE_CODE_OAUTH_TOKEN"
-        write_private(CLAUDE_AUTH, "%s=%s\n" % (name, token))
+        try:
+            vault_put("claude_token", token, by=(self.authed() or {}).get("user", ""))
+        except RuntimeError as e:
+            return self.err(500, str(e))
         run(["pipebox-claude-trust"], timeout=60)
         probe_ok, probe_out = claude_probe(claude_env({name: token}))
         saved, detail = save_state()
@@ -2225,10 +2493,12 @@ class Handler(BaseHTTPRequestHandler):
         if not ok:
             return self.err(400, why)
         # the sign-in is the credential now; a leftover token would win over it
-        try:
-            os.unlink(CLAUDE_AUTH)
-        except OSError:
-            pass
+        vault_drop("claude_token")
+        for p in (CLAUDE_AUTH, CLAUDE_AUTH_LEGACY):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
         run(["pipebox-claude-trust"], timeout=60)
         probe_ok, probe_out = claude_probe(claude_env())
         saved, detail = save_state()
@@ -2237,10 +2507,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_claude_logout(self, body):
         run([CLAUDE_BIN, "auth", "logout"], timeout=20, env=claude_env())
-        try:
-            os.unlink(CLAUDE_AUTH)
-        except OSError:
-            pass
+        vault_drop("claude_token")
+        for p in (CLAUDE_AUTH, CLAUDE_AUTH_LEGACY):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
         saved, detail = save_state()
         self.send(200, {"ok": True, "saved": saved, "save_detail": "" if saved else detail})
 
@@ -2701,12 +2973,13 @@ class PhaseB:
                    "STREAM_T%d_ON" % n, "STREAM_T%d_NAME" % n,
                    "STREAM_T%d_BR" % n]
         vals = read_conf_values(STREAM_CONF, base + tk)
+        have = vault_names()
         targets = [{
             "name": vals["STREAM_T%d_NAME" % n],
             "url": vals["STREAM_T%d_URL" % n],
             "on": vals["STREAM_T%d_ON" % n] == "1",
             "br": vals["STREAM_T%d_BR" % n],
-            "key_set": bool(vals["STREAM_T%d_KEY" % n]),
+            "key_set": ("stream_key_%d" % n) in have or bool(vals["STREAM_T%d_KEY" % n]),
         } for n in range(1, STREAM_MAX_TARGETS + 1)]
         rc, _ = run(["rc-service", "pipeos-stream", "status"], timeout=15)
         self.send(200, {
@@ -2737,20 +3010,22 @@ class PhaseB:
             targets = body.get("targets") or []
             if not isinstance(targets, list):
                 return self.err(400, "targets must be a list")
-            existing = read_conf_values(STREAM_CONF,
-                ["STREAM_T%d_KEY" % n for n in range(1, STREAM_MAX_TARGETS + 1)])
+            have = vault_names()
+            keys = {}
             for i in range(STREAM_MAX_TARGETS):
                 n = i + 1
                 t = targets[i] if i < len(targets) and isinstance(targets[i], dict) else {}
                 key = guard(t.get("key"), "target %d key" % n)
-                if not key and t.get("keep_key"):
-                    key = existing["STREAM_T%d_KEY" % n]
+                if not key and t.get("keep_key") and ("stream_key_%d" % n) in have:
+                    key = None   # keep what the vault has
+                keys[n] = key
                 br = guard(t.get("br"), "target %d bitrate" % n)
                 if br and not re.match(r"^\d{2,6}k?$", br):
                     return self.err(400, "target %d bitrate must look like 6000k" % n)
                 fields["STREAM_T%d_URL" % n] = guard(t.get("url"), "target %d url" % n)
                 fields["STREAM_T%d_NAME" % n] = guard(t.get("name"), "target %d name" % n)
-                fields["STREAM_T%d_KEY" % n] = key
+                # the key itself is in the vault (#244); the conf carries a blank
+                fields["STREAM_T%d_KEY" % n] = ""
                 fields["STREAM_T%d_ON" % n] = "1" if t.get("on") else "0"
                 fields["STREAM_T%d_BR" % n] = br
         except ValueError as e:
@@ -2765,6 +3040,18 @@ class PhaseB:
             return self.err(400, "bitrate must look like 3500k")
         fields["STREAM_VAAPI"] = "1" if body.get("vaapi") else "0"
         fields["STREAM_BOOT"] = "1" if body.get("boot", True) else "0"
+        # keys: a new value replaces, blank+keep_key keeps, blank alone deletes (#244)
+        try:
+            by = (self.authed() or {}).get("user", "")
+            for n, key in keys.items():
+                if key is None:
+                    continue
+                if key:
+                    vault_put("stream_key_%d" % n, key, by=by)
+                else:
+                    vault_drop("stream_key_%d" % n)
+        except RuntimeError as e:
+            return self.err(500, str(e))
         write_private(STREAM_CONF, "".join(
             "%s='%s'\n" % (k, v) for k, v in fields.items()))
         problems = []
@@ -2801,7 +3088,7 @@ class PhaseB:
         rc, _ = run(["rc-service", "pipeos-assistant", "status"], timeout=15)
         self.send(200, {"user": vals["ASSISTANT_USER"] or "admin",
                         "port": vals["ASSISTANT_PORT"] or "7681",
-                        "pass_set": bool(vals["ASSISTANT_PASS"]),
+                        "pass_set": "assistant_pass" in vault_names() or bool(vals["ASSISTANT_PASS"]),
                         "backend": vals["ASSISTANT_BACKEND"] or "claude",
                         "backends": [{"id": b, "installed": shutil.which(b) is not None}
                                      for b in ASSISTANT_BACKENDS],
@@ -2836,12 +3123,20 @@ class PhaseB:
             return self.err(400, "port must be a number")
         if not fields["ASSISTANT_PORT"]:
             fields["ASSISTANT_PORT"] = prev["ASSISTANT_PORT"] or "7681"
-        if not fields["ASSISTANT_PASS"] and body.get("keep_pass"):
-            fields["ASSISTANT_PASS"] = read_conf_values(ASSISTANT_CONF, ["ASSISTANT_PASS"])["ASSISTANT_PASS"]
-        if not fields["ASSISTANT_PASS"] and not (backend and body.get("keep_pass")):
+        keep = not fields["ASSISTANT_PASS"] and body.get("keep_pass") and (
+            "assistant_pass" in vault_names()
+            or read_conf_values(ASSISTANT_CONF, ["ASSISTANT_PASS"])["ASSISTANT_PASS"])
+        if not fields["ASSISTANT_PASS"] and not keep and not (backend and body.get("keep_pass")):
             # backend-only flips on a not-yet-configured terminal are fine;
             # anything that would SERVE a terminal still demands a password
             return self.err(400, "set a password — the terminal is shell access and must not be served open")
+        # the password lives in the vault (#244); the conf carries a blank
+        if fields["ASSISTANT_PASS"]:
+            try:
+                vault_put("assistant_pass", fields["ASSISTANT_PASS"], by=(self.authed() or {}).get("user", ""))
+            except RuntimeError as e:
+                return self.err(500, str(e))
+        fields["ASSISTANT_PASS"] = ""
         write_private(ASSISTANT_CONF, "".join("%s='%s'\n" % (k, v) for k, v in fields.items()))
         problems = []
         if read_services().get("assistant"):

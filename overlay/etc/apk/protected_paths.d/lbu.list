@@ -10,6 +10,9 @@
 # package-owned), so without these + lines the runlevel symlinks commit but
 # the scripts vanish on reboot — the chronyd dangling-symlink failure again
 +etc/init.d/pipeos-identity
+# the sealed secret store and the service that opens it at boot (#244)
++etc/init.d/pipeos-vault
++etc/pipeos/vault.sealed
 # wake-on-lan is armed at every boot (#241): tmpfs forgets an ethtool setting
 +etc/init.d/pipeos-wol
 +etc/init.d/pipeos-workspace
@@ -34,12 +37,13 @@
 +etc/local.d/pipeos-mounts.start
 +etc/pipeos/nas.conf
 +etc/pipeos/mounts.conf
-+etc/pipeos/nas-private
+# (nas-private, support_key and claude-auth.env are in the vault since #244;
+# their lines here are gone on purpose — a plaintext copy that persisted
+# would be the leak the vault closes)
 +etc/pipeos/users.json
 +etc/pipeos/terminals.conf
 +etc/doas.d/pipeos.conf
 +etc/pipeos/support.conf
-+etc/pipeos/support_key
 +etc/pipeos/support_key.pub
 # web wizard state: the claim credential, the enabled-services record, and the
 # streaming config are all custom /etc/pipeos files apk audit would drop
@@ -51,9 +55,6 @@
 # their devices to trust this box, so it MUST persist — regenerating it would
 # break every device that trusted the old one. Keys are mode 600.
 +etc/pipeos/tls
-# the Claude credential the listener/cohort-watch source (pipeOS#49 flagged it
-# as shared; here it is at least PERSISTED — before this line nothing kept it)
-+etc/pipeos/claude-auth.env
 # apk signing key (extra repo index) and gh auth — lose these and you re-key/re-auth
 +root/.abuild
 +root/.config/gh
