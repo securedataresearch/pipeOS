@@ -1887,9 +1887,10 @@ async function dashboard() {
       const name = v.querySelector("#npuser").value, pw = v.querySelector("#nppass").value;
       nasErr(""); nasSay("setting…");
       try {
-        await api("/api/nas-password", { name, password: pw });
+        const r = await api("/api/nas-password", { name, password: pw });
         v.querySelector("#nppass").value = "";
         nasSay("SMB password set for " + name);
+        if (r.problems && r.problems.length) nasErr(r.problems.join("; "));
         loadNas();
       } catch (e) { nasSay(""); nasErr(e.message); }
     };
