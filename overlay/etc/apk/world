@@ -66,3 +66,4 @@ usbutils
 util-linux-misc
 vim
 xvfb
+acme.sh

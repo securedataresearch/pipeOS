@@ -62,6 +62,12 @@
 # the cluster member list (#222): the box's CA (etc/pipeos/tls, above) is its
 # cluster identity; the list is what makes it a member
 +etc/pipeos/cluster.json
+# public https (#286): the conf with the public name, acme.sh's home (its
+# account key and order state — a lost account is a new one, but the daily
+# renewal must find the order), and the daily job
++etc/pipeos/public.conf
++etc/pipeos/acme
++etc/periodic/daily/pipeos-tls-public
 # apk signing key (extra repo index) and gh auth — lose these and you re-key/re-auth
 +root/.abuild
 +root/.config/gh

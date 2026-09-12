@@ -38,3 +38,5 @@ Done. The same page is your dashboard from now on.
 Your box saves its state automatically every 15 minutes and at shutdown.
 Your credentials live on the box and nowhere else. Nothing about the box
 requires an account with us; if we vanished tomorrow, it keeps working.
+
+The Machine's address is `https://<mac>.m.pipe.online/` (the wizard shows it; the box's boot report repeats it). It works on every device with nothing installed; `http://pipeos.local/` gets you there too.

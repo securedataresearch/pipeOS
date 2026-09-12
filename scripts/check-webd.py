@@ -236,6 +236,8 @@ _no_save = {
     "/api/secrets/phrase-ack": "forgets a tmpfs copy (#244)",
     "/api/schedule/run": "starts a run; its record lives on /work (#242)",
     "/api/cluster/sync": "pushes the list to the members; nothing here changes (#211)",
+    "/api/tls-public/issue": "starts pipeos-tls-public, which saves after the install (#286)",
+    "/api/tls-public/set": "the pipeos tls public on|off verb saves (#286)",
 }
 _missing = []
 for _path, _fn in _table.items():

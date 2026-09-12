@@ -1,0 +1,5 @@
+#!/bin/sh
+# Daily: the A record follows a lease change, the certificate renews when
+# due (acme.sh's own 60-day rule). No-op when public https is off or the box
+# has no name yet; a Machine with no WAN just tries again tomorrow.
+exec /usr/local/bin/pipeos-tls-public renew

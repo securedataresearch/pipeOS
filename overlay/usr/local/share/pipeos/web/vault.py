@@ -315,10 +315,11 @@ def rephrase():
 # support_key         support_key     raw bytes, 0600
 # nas_passdb          nas/passdb.tdb  raw bytes, dir 0700
 # jobs.*              jobs.env        NAME='…'  (uppercased, the dot stripped; #242)
+# machine_key         machine_key     the PEM, 0600 (#286)
 # anything else       custom.env      NAME='…'
 
 CONSUMER_OF = {"claude_token": "claude", "assistant_pass": "assistant", "support_key": "support",
-               "nas_passdb": "nas"}
+               "nas_passdb": "nas", "machine_key": "tls-public"}
 for _n in range(1, STREAM_MAX + 1):
     CONSUMER_OF["stream_key_%d" % _n] = "stream"
 
@@ -379,6 +380,9 @@ def export():
             env_file("stream.env").append("STREAM_T%s_KEY=%s\n" % (name[len("stream_key_"):], _sq(val)))
         elif name == "support_key":
             files["support_key"] = val if isinstance(val, bytes) else val.encode()
+        elif name == "machine_key":
+            # the ed25519 PEM pipeos-tls-public signs relay requests with (#286)
+            files["machine_key"] = val if isinstance(val, bytes) else val.encode()
         elif name == "nas_passdb":
             files["nas/passdb.tdb"] = val if isinstance(val, bytes) else val.encode()
         elif name.startswith("jobs."):
@@ -394,7 +398,7 @@ def export():
             os.chmod(d, 0o700)
         _write_file(path, content if isinstance(content, bytes) else "".join(content))
         written.add(fname)
-    for fname in ("claude.env", "assistant.env", "stream.env", "support_key", "nas/passdb.tdb", "jobs.env", "custom.env"):
+    for fname in ("claude.env", "assistant.env", "stream.env", "support_key", "machine_key", "nas/passdb.tdb", "jobs.env", "custom.env"):
         if fname not in written:
             try:
                 os.unlink(os.path.join(RUN_DIR, fname))

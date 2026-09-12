@@ -79,6 +79,15 @@ jobs:
           python3 scripts/check-cluster.py
           python3 scripts/check-cluster-controls.py
 
+      # #286. The Machine's public https address: the shipped script against a
+      # fake relay that verifies every signature, a fake acme.sh, then the
+      # real webd — the public name by SNI, the box CA for everything else,
+      # the redirect and where it must not fire, the hot reload.
+      - name: public https — the name, the certificate, the SNI split, the redirect, and the controls
+        run: |
+          python3 scripts/check-tls-public.py
+          python3 scripts/check-tls-public-controls.py
+
       # #241. A Machine that is off has no row in the live cache, so waking
       # it needs the roster mdnsd keeps on /work and a packet built right;
       # the arming service must pick the NIC the chassis id came from.

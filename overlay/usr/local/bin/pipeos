@@ -21,6 +21,7 @@
 #   pipeos deploy-overlay      install a repo commit's overlay onto this box
 #   pipeos unclaim [--yes]     nobody's box again: drop the claim, name, users; reboot
 #   pipeos wake NAME|ID|--all|--list|--forget ID   magic packet to a Machine this box has seen
+#   pipeos tls public status|issue|renew|on|off   the Machine's public https address (<mac>.m.pipe.online, Let's Encrypt, nothing to install) (#286)
 #   pipeos cluster init [NAME]|status|ca|add|remove|sync|call ID|NAME|IP METHOD PATH [JSON]   this Machine's cluster identity (its CA) and member list; a call to a member over mutual TLS (#222, #211)
 #   pipeos vault status|list|set|get|del|export|unlock|rephrase   the sealed secret store
 #   pipeos schedule ls|add|set|rm|enable|disable|run|log   the Machine's scheduled jobs (what the dashboard's Schedule view edits)
@@ -144,6 +145,14 @@ cmd_status() {
     # out-of-box state, not an error — but say where to go.
     if [ -s /etc/pipeos/web-admin.conf ]; then
         ok "claimed (web admin set)"
+        _pubn=$(sed -n 's/^PUBLIC_NAME=//p' /etc/pipeos/public.conf 2>/dev/null | head -1)
+        if [ -n "$_pubn" ] && [ -s /etc/pipeos/tls/public.crt ]; then
+            ok "public https: https://$_pubn/ ($(openssl x509 -in /etc/pipeos/tls/public.crt -noout -enddate 2>/dev/null | sed 's/^notAfter=/until /'))"
+        elif [ "$(sed -n 's/^PUBLIC=//p' /etc/pipeos/public.conf 2>/dev/null | head -1)" = off ]; then
+            ok "public https: off by choice (pipeos tls public on)"
+        else
+            warn "public https: not yet — pipeos tls public status"
+        fi
     else
         warn "UNCLAIMED — first visitor to http://$(hostname).local/ owns this box"
     fi
@@ -536,6 +545,7 @@ case "$1" in
     unclaim)     shift; cmd_unclaim "$@" ;;
     wake)        shift; exec /usr/local/bin/pipeos-wake "$@" ;;
     cluster)     shift; exec python3 /usr/local/share/pipeos/web/cluster.py "$@" ;;
+    tls)         [ "${2:-}" = public ] || { echo "usage: pipeos tls public status|issue|renew|on|off" >&2; exit 2; }; shift 2; exec /usr/local/bin/pipeos-tls-public "$@" ;;
     vault)       shift; exec /usr/local/bin/pipeos-vault "$@" ;;
     schedule)    shift; exec python3 /usr/local/share/pipeos/web/schedctl.py "$@" ;;
     usage)       shift; cmd_usage "$@" ;;
