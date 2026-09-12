@@ -93,6 +93,22 @@ Two more toggles ride the same services model:
   still works): no baked well-known password anymore. sshd is key-only
   (`prohibit-password`); operator sticks bake a key with
   `make stick AUTH_KEYS=...`. Fleet sticks build with `ROOT_LOGIN=password`.
+- **Plain http on the LAN, on purpose (Sam, 2026-09-12).** The dashboard's
+  one front door is `http://pipeos.local/` (then `http://<name>.local/`),
+  like the router's and the printer's. What https would add on a LAN is
+  protection of the login and the terminal against a device on the same
+  network that can see traffic — a modest risk the LAN already carries for
+  every other box in it. What a publicly trusted certificate would cost
+  (every Machine's name in public Certificate Transparency logs, its private
+  address in public DNS, every padlock depending on the relay and our DNS,
+  and a zone-write token for pipe.online in the relay) was judged a larger
+  exposure than the one it removes. Nothing in the product suggests https
+  on the LAN. Port 443 keeps serving with the box's own CA — the cluster's
+  mutual TLS lives there (#284) — and an operator who wants a padlock can
+  still install that CA (`curl -s http://<box>/install-ca.sh | sudo sh`,
+  `/ca.crt`, `/pipeos-ca.mobileconfig`); it is not a customer path. A
+  public name returns with remote access (#240), which is about reaching
+  the box from outside, not about a padlock on the LAN.
 - Sessions are random tokens in `/run/pipeos/web-sessions` (tmpfs — a reboot
   signs everyone out). Cookies are `HttpOnly; SameSite=Strict`; cross-origin
   POSTs are refused; failed logins cost a flat 2 s.
