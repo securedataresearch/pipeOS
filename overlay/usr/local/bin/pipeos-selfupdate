@@ -59,7 +59,7 @@ ARCH=x86_64
 
 # Identity paths an update must never drop. Kept in sync with the shipped
 # overlay/etc/apk/protected_paths.d/lbu.list; listed here without the leading +.
-IDENTITY_PATHS="root/.pipe root/.ssh root/.abuild root/.config/gh etc/ssh"
+IDENTITY_PATHS="root/.pipe root/.ssh root/.abuild root/.config/gh etc/ssh etc/pipeos/cluster etc/pipeos/cluster.json"
 
 UPDATE_URL=""
 UPDATE_RELEASE_URL=""

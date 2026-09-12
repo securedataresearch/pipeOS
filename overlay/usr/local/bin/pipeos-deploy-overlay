@@ -545,7 +545,7 @@ svc_files() {
     case "$1" in
         pipe-daemon)      echo "etc/init.d/pipe-daemon" ;;
         pipebox-listener) echo "etc/init.d/pipebox-listener usr/local/bin/pipebox-listener" ;;
-        pipeos-web)       echo "etc/init.d/pipeos-web usr/local/bin/pipeos-webd usr/local/share/pipeos/web/webd.py usr/local/share/pipeos/web/static/index.html usr/local/share/pipeos/web/static/app.js usr/local/share/pipeos/web/static/style.css usr/local/share/pipeos/web/lanid.py" ;;
+        pipeos-web)       echo "etc/init.d/pipeos-web usr/local/bin/pipeos-webd usr/local/share/pipeos/web/webd.py usr/local/share/pipeos/web/static/index.html usr/local/share/pipeos/web/static/app.js usr/local/share/pipeos/web/static/style.css usr/local/share/pipeos/web/lanid.py usr/local/share/pipeos/web/cluster.py" ;;
         pipeos-mdns)      echo "etc/init.d/pipeos-mdns usr/local/bin/pipeos-mdnsd usr/local/share/pipeos/web/mdnsd.py usr/local/share/pipeos/web/lanid.py" ;;
         pipeos-stream)    echo "etc/init.d/pipeos-stream" ;;
         pipeos-support)   echo "etc/init.d/pipeos-support" ;;

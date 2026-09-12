@@ -55,6 +55,7 @@ import lanid  # noqa: E402  — LAN identity + the mDNS wire, shared with mdnsd.
 import vault  # noqa: E402  — the sealed secret store (#244)
 import cronspec  # noqa: E402  — the cron expression a scheduled job carries (#242)
 import ledger  # noqa: E402  — every model call, costed (#246)
+import cluster  # noqa: E402  — the cross-box auth primitive: a member's signature is a session (#222)
 
 ETC = "/etc/pipeos"
 ADMIN_CONF = ETC + "/web-admin.conf"
@@ -1615,11 +1616,29 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         if cookie is not None:
             self.send_header("Set-Cookie", cookie)
+        # A member that signed its request gets a signed answer (#222): the
+        # status code stands in the METHOD slot, the request-target is the
+        # request's (query included), so the caller knows who answered and
+        # that the body is theirs.
+        if getattr(self, "_peer", None):
+            try:
+                for k, v in cluster.sign_headers(str(code), self.path, data).items():
+                    self.send_header(k, v)
+            except cluster.ClusterError as e:
+                sys.stderr.write("cluster: cannot sign the response: %s\n" % e)
         self.end_headers()
         self.wfile.write(data)
 
     def err(self, code, message):
         self.send(code, {"error": message})
+
+    def unauth(self):
+        """401, and when the request was a member's that failed the
+        cluster check, the reason — which check fired is the whole of what
+        the other box's log needs (skew is a clock to fix; replay is a
+        network to look at; not-a-member is a list to compare)."""
+        why = getattr(self, "_peer_reason", "")
+        return self.err(401, "cluster: " + why if why else "sign in first")
 
     def cookie_token(self):
         for part in self.headers.get("Cookie", "").split(";"):
@@ -1629,6 +1648,24 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def authed(self):
+        """The session, or a member's signature standing in for one (#222).
+        A request that names a box id is a member's or nothing: it is
+        checked against cluster.json and never falls back to the cookie, so
+        a stranger with the headers and no key learns only which check
+        refused it. A member is an admin here — the cluster is the owner's
+        decision (docs/cluster.md §3) and every member holds the same list;
+        roles (#214) refine that later."""
+        if self.headers.get(cluster.H_ID):
+            if getattr(self, "_peer", None):
+                return self._peer
+            # the whole request-target, query included — a reader's ?path=
+            # is exactly what a signature must cover
+            who, why = cluster.check(self.headers, self.command, self.path, getattr(self, "_raw", b""))
+            if not who:
+                self._peer_reason = why
+                return None
+            self._peer = {"user": "cluster:" + who, "role": "admin", "peer": who}
+            return self._peer
         return valid_session(self.cookie_token())
 
     def body_json(self):
@@ -1638,8 +1675,10 @@ class Handler(BaseHTTPRequestHandler):
             return None
         if n <= 0 or n > 65536:
             return None
+        # the raw bytes are kept: a member's signature covers them (#222)
+        self._raw = self.rfile.read(n)
         try:
-            return json.loads(self.rfile.read(n).decode())
+            return json.loads(self._raw.decode())
         except (ValueError, UnicodeDecodeError):
             return None
 
@@ -1654,8 +1693,20 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"https?://([^/:]+)", origin)
         return bool(m) and m.group(1).lower() == host
 
+    def _fresh(self):
+        """Per-request state. protocol_version is HTTP/1.1, so ONE Handler
+        instance serves every request on a keep-alive connection: anything
+        cached on self by one request is seen by the next. The review of
+        #283 found the member verdict cached that way — the second request
+        on a member's socket would have been admitted with any signature.
+        Reset at the top of every request, before anything reads them."""
+        self._peer = None
+        self._peer_reason = ""
+        self._raw = b""
+
     # -- routes --
     def do_GET(self):
+        self._fresh()
         path = self.path.split("?")[0]
         if path == "/" or path in ("/setup", "/login", "/dashboard", "/lobby"):
             return self.serve_static("index.html")
@@ -1673,11 +1724,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.serve_ca_mobileconfig()
         if path == "/install-ca.sh":
             return self.serve_ca_installer()
+        # A Machine's cluster identity is public like its CA root (#222): the
+        # public key and the box id are what another Machine needs to admit
+        # it (#211/#213), and a public key is safe to hand out.
+        if path == "/api/cluster/identity":
+            return self.api_cluster_identity()
         # /api/docs carries a slug segment, so it routes by prefix. Read-only,
         # viewer-readable like the other readers.
         if path == "/api/docs" or path.startswith("/api/docs/"):
             if not self.authed():
-                return self.err(401, "sign in first")
+                return self.unauth()
             return self.api_docs(path)
         readers = {
             "/api/status": self.api_status,
@@ -1706,24 +1762,33 @@ class Handler(BaseHTTPRequestHandler):
             "/api/pipe-board": self.api_pipe_board,
             "/api/update": self.api_update_get,
             "/api/flash": self.api_flash_get,
+            "/api/cluster": self.api_cluster_get,
         }
         fn = readers.get(path)
         if fn is not None:
             if not self.authed():
-                return self.err(401, "sign in first")
+                return self.unauth()
             return fn()
         self.err(404, "no such page")
 
     def do_POST(self):
+        self._fresh()
         # Uploads stream a raw body and may run for minutes — they skip both
         # the JSON body cap and MUTATE_LOCK (a big file must not freeze every
         # other mutation). Still same-origin + session gated like the rest.
         if self.path.split("?")[0] == "/api/file-up":
             if not self.same_origin():
                 return self.err(403, "cross-origin request refused")
+            # A member's signature covers the body, and this body is streamed
+            # past the handler unhashed — so a signed upload is refused by
+            # name rather than failing 'bad signature' for a reason the
+            # sender cannot see. Files between members go over the share or
+            # a clone (#243), not this endpoint.
+            if self.headers.get(cluster.H_ID):
+                return self.err(401, "cluster: signed uploads are not supported on /api/file-up")
             sess = self.authed()
             if not sess:
-                return self.err(401, "sign in first")
+                return self.unauth()
             if sess.get("role") == "viewer":
                 return self.err(403, "your account can view this box, not change it")
             # role "user" may transfer files — that is the role's whole point
@@ -1746,7 +1811,7 @@ class Handler(BaseHTTPRequestHandler):
         # everything below requires a session
         sess = self.authed()
         if not sess:
-            return self.err(401, "sign in first")
+            return self.unauth()
         # Three roles: viewers read; users read AND move files (the explorer's
         # mutations plus their own session/password); admins do everything.
         role = sess.get("role")
@@ -1796,6 +1861,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/secrets/rephrase": self.api_secrets_rephrase,
             "/api/secrets/init": self.api_secrets_init,
             "/api/secrets/phrase-ack": self.api_secrets_phrase_ack,
+            "/api/cluster/init": self.api_cluster_init,
             "/api/schedule/set": self.api_schedule_set,
             "/api/schedule/del": self.api_schedule_del,
             "/api/schedule/run": self.api_schedule_run,
@@ -2190,6 +2256,34 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             pass
         self.send(200, {"ok": True})
+
+    # -- the cluster primitive (#222) --
+    def api_cluster_identity(self):
+        """Public: who this Machine is to a cluster. No key yet is a fact,
+        not an error — a fresh Machine has none until it is joined."""
+        s = cluster.status_doc()
+        self.send(200, {"id": s["self"], "pub": cluster.self_pub() or None,
+                        "fingerprint": s["fingerprint"] or None, "cluster": s["cluster"]})
+
+    def api_cluster_get(self):
+        s = cluster.status_doc()
+        self.send(200, {"self": s["self"], "key": s["key"], "key_mode_ok": s["key_mode_ok"],
+                        "fingerprint": s["fingerprint"], "cluster": s["cluster"],
+                        "members_hash": s["members_hash"], "error": s["error"],
+                        "members": [{"id": mid, "name": m.get("name", ""), "added": m.get("added"),
+                                     "fingerprint": cluster.fingerprint(m.get("pub", "")),
+                                     "self": mid == s["self"]}
+                                    for mid, m in sorted(s["members"].items())]})
+
+    def api_cluster_init(self, body):
+        """A cluster of one: this Machine's key and a member list holding
+        only it. What the owner does before marking others in (#211)."""
+        try:
+            d = cluster.init(name=box_name())
+        except cluster.ClusterError as e:
+            return self.err(409, str(e))
+        saved, out = save_state()
+        self.send(200, {"ok": True, "cluster": d["id"], "saved": saved, "save_output": out})
 
     def api_wake(self, body):
         """A magic packet to a rostered Machine (#241). Admin only — the

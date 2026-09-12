@@ -59,6 +59,11 @@ ROLE) are named where the design reuses them.
 - Cluster size the UI is designed for: **four on one high-speed switch**,
   plus whatever else is kludged onto the wired network. A list, not a
   search box.
+- **The primitive** (#222, `web/cluster.py`): an ed25519 key per Machine
+  under `/etc/pipeos/cluster/`, the member list in `/etc/pipeos/cluster.json`,
+  and four `X-Pipeos-*` headers that sign every request and every answer
+  between members — clock skew over 120 s, a replay, or an unknown key is
+  refused before the session check. `pipeos cluster init|status|call`.
 
 → #211
 
