@@ -171,7 +171,13 @@ if command -v pipeos-save >/dev/null 2>&1; then
     if pipeos-save; then
         _saved=yes
     else
-        say "  pipeos-save failed; falling back to lbu commit"
+        _rc=$?
+        if [ "$_rc" = 3 ]; then
+            say "  pipeos-save REFUSED (a new image or a rollback is staged — reboot first); not falling back"
+            _saved=refused
+        else
+            say "  pipeos-save failed; falling back to lbu commit"
+        fi
     fi
 fi
 if [ "$_saved" = no ] && lbu commit; then

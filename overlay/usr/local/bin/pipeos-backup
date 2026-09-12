@@ -102,6 +102,7 @@ box_nick() {
 package_identity() {
     [ -f "$ETC/provisioned" ] || die "this box is not claimed yet — there is no identity to back up"
     [ -f "$ETC/rollback-pending" ] && die "a rollback is staged — reboot to apply it, then back up what booted"
+    [ -f /run/pipeos/flash-pending ] && die "a new image is applied — reboot to boot it, then back up what booted (RAM is still the old system)"
     $LBU "$1" >/dev/null 2>&1 || die "lbu package failed"
     if ! gzip -t "$1" 2>/dev/null || ! tar -tzf "$1" >/dev/null 2>&1; then
         die "candidate apkovl failed integrity check"

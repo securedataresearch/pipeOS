@@ -15,16 +15,25 @@
 [ -f /etc/pipeos/provisioned ] || exit 0
 [ -n "$(lbu status 2>/dev/null)" ] || exit 0
 
-if [ -f /etc/pipeos/rollback-pending ]; then
-    logger -s -t pipeos-save "refusing: rollback staged — reboot to apply it first"
-    exit 1
-fi
-if [ -f /run/pipeos/flash-pending ]; then
-    # pipeos flash apply installed a merged apkovl on the media; RAM is still
-    # the old system, and saving it would overwrite that apkovl (pipeOS#276)
-    logger -s -t pipeos-save "refusing: a new image is applied — reboot to boot it first (a save now would overwrite the merged apkovl)"
-    exit 1
-fi
+# Fences. Exit 3 = REFUSED (nothing wrong with the box; do not fall back to
+# lbu commit — pipebox-setup and the provisioner read this code). Checked
+# again after the lock below: pipeos-flash holds the save lock while it
+# applies and writes flash-pending as its last act under it, so a save that
+# queued behind the apply must re-test once it wins the lock (pipeOS#276).
+fenced() {
+    if [ -f /etc/pipeos/rollback-pending ]; then
+        logger -s -t pipeos-save "refusing: rollback staged — reboot to apply it first"
+        return 0
+    fi
+    if [ -f /run/pipeos/flash-pending ]; then
+        # pipeos flash apply installed a merged apkovl on the media; RAM is
+        # still the old system, and saving it would overwrite that apkovl
+        logger -s -t pipeos-save "refusing: a new image is applied — reboot to boot it first (a save now would overwrite the merged apkovl)"
+        return 0
+    fi
+    return 1
+}
+fenced && exit 3
 
 # one save at a time (15min cron, shutdown hook, selfcheck promotion and
 # humans all collide here); busybox flock has no -w, so poll
@@ -35,6 +44,7 @@ until flock -n 9; do
     [ "$_i" -ge 60 ] && { logger -s -t pipeos-save "lock held for 60s; giving up"; exit 1; }
     sleep 1
 done
+fenced && exit 3   # the apply that held the lock may have fenced while we waited
 
 . /etc/lbu/lbu.conf 2>/dev/null
 MEDIA=/media/usb

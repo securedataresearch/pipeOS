@@ -2295,6 +2295,11 @@ class Handler(BaseHTTPRequestHandler):
             "spend_month_usd": spend.get("month", {}).get("usd", 0),
             "usage_cap": spend.get("cap", {}),
             "usage_paused": bool(spend.get("cap", {}).get("paused")),
+            # saves are fenced: a new image applied (tmpfs marker) or a rollback
+            # staged — every change until the reboot answers saved:false
+            "save_fence": ("new image applied — reboot to boot it" if os.path.exists("/run/pipeos/flash-pending")
+                           else "rollback staged — reboot to apply it" if os.path.exists(ETC + "/rollback-pending")
+                           else ""),
         })
 
     # -- files: an explorer over /work plus any mounted external drive.

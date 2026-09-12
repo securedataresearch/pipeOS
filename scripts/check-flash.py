@@ -191,8 +191,9 @@ save_src = open(os.path.join(REPO, "overlay/usr/local/bin/pipeos-save")).read()
 stop_src = open(os.path.join(REPO, "overlay/etc/local.d/pipeos-autosave.stop")).read()
 check("6b an in-place apply leaves /run/pipeos/flash-pending (the media holds the merged apkovl, RAM is the old system), pipeos-save refuses on it, and the shutdown autosave steps aside — two rebooted into its OLD overlay off the new image once (pipeOS#276)",
       os.path.exists(fence) and open(fence).read().startswith("applied ") and "saves are fenced until the reboot" in out
-      and "if [ -f /run/pipeos/flash-pending ]; then" in save_src and "exit 1" in save_src.split("flash-pending")[1][:400]
-      and "[ -f /run/pipeos/flash-pending ] && exit 0" in stop_src,
+      and save_src.count("fenced && exit 3") == 2                      # before AND after the lock poll
+      and save_src.index("fenced && exit 3", save_src.index("until flock -n 9")) > save_src.index("done", save_src.index("until flock -n 9"))
+      and "exec /usr/local/bin/pipeos-save" in stop_src,
       "fence=%s out=%s" % (os.path.exists(fence), out[-200:]))
 
 # ── 7. the NO_MOUNT seam is fenced ───────────────────────────────────────
