@@ -13,7 +13,7 @@ pipeos-fleet skill. Every step is the plan posted on #284.
 | 3 | zero `add two` wrong password → "two refused the join: wrong password"; right password → both lists both CAs, same hash; `call two` → answered by member c2b0; from two `call zero` → answered by member a4e0 | PASS |
 | 4 | three added from the dashboard handler (`POST /api/cluster/add` with a login cookie): pushed to two (`taken`); all three show three members, one hash | PASS |
 | 5 | one (not a member) called from zero → handshake refused (CERTIFICATE_VERIFY_FAILED); a certificate-less HTTPS client gets /api/state 200 and /api/cluster 401 "sign in first" | PASS |
-| 6 | a laptop and a phone opening https://zero.local: padlock, no client-certificate prompt | **owed — Sam, a real browser**; the curl half (5) is what a browser does |
+| 6 | ~~a laptop and a phone opening https://zero.local: padlock~~ struck 2026-09-12: https is not a customer path; the front door is http://zero.local, which opens the dashboard with no warning page (decision: plain http on the LAN, docs/web-wizard.md § Security posture) | n/a |
 | 7 | reboot two: back in ~60 s, all green, still a member, cluster.status regenerated at boot, `call two` from zero works | PASS |
 | 8 | three's web stopped: `sync` from zero reports c360 unreachable (rc 1); started again: `sync` → same | PASS |
 | 9 | zero `remove c360`: three's call to zero → handshake refused (UNKNOWN_CA), three's status shows LIST DIFFERS on both; `add three` again → admitted, same CA | PASS |
