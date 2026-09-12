@@ -55,7 +55,7 @@ import lanid  # noqa: E402  — LAN identity + the mDNS wire, shared with mdnsd.
 import vault  # noqa: E402  — the sealed secret store (#244)
 import cronspec  # noqa: E402  — the cron expression a scheduled job carries (#242)
 import ledger  # noqa: E402  — every model call, costed (#246)
-import cluster  # noqa: E402  — the cross-box auth primitive: a member's signature is a session (#222)
+import cluster  # noqa: E402  — membership over mutual TLS: a member's client certificate is a session (#222, #211)
 
 ETC = "/etc/pipeos"
 ADMIN_CONF = ETC + "/web-admin.conf"
@@ -1616,16 +1616,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         if cookie is not None:
             self.send_header("Set-Cookie", cookie)
-        # A member that signed its request gets a signed answer (#222): the
-        # status code stands in the METHOD slot, the request-target is the
-        # request's (query included), so the caller knows who answered and
-        # that the body is theirs.
-        if getattr(self, "_peer", None):
-            try:
-                for k, v in cluster.sign_headers(str(code), self.path, data).items():
-                    self.send_header(k, v)
-            except cluster.ClusterError as e:
-                sys.stderr.write("cluster: cannot sign the response: %s\n" % e)
         self.end_headers()
         self.wfile.write(data)
 
@@ -1633,12 +1623,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send(code, {"error": message})
 
     def unauth(self):
-        """401, and when the request was a member's that failed the
-        cluster check, the reason — which check fired is the whole of what
-        the other box's log needs (skew is a clock to fix; replay is a
-        network to look at; not-a-member is a list to compare)."""
-        why = getattr(self, "_peer_reason", "")
-        return self.err(401, "cluster: " + why if why else "sign in first")
+        return self.err(401, "sign in first")
 
     def cookie_token(self):
         for part in self.headers.get("Cookie", "").split(";"):
@@ -1647,26 +1632,30 @@ class Handler(BaseHTTPRequestHandler):
                 return v
         return None
 
-    def authed(self):
-        """The session, or a member's signature standing in for one (#222).
-        A request that names a box id is a member's or nothing: it is
-        checked against cluster.json and never falls back to the cookie, so
-        a stranger with the headers and no key learns only which check
-        refused it. A member is an admin here — the cluster is the owner's
-        decision (docs/cluster.md §3) and every member holds the same list;
-        roles (#214) refine that later."""
-        if self.headers.get(cluster.H_ID):
-            if getattr(self, "_peer", None):
-                return self._peer
-            # the whole request-target, query included — a reader's ?path=
-            # is exactly what a signature must cover
-            who, why = cluster.check(self.headers, self.command, self.path, getattr(self, "_raw", b""))
-            if not who:
-                self._peer_reason = why
-                return None
-            self._peer = {"user": "cluster:" + who, "role": "admin", "peer": who}
+    def peer(self):
+        """The member on the other end of this connection, or None: the
+        client certificate the TLS listener accepted (it chains to a member
+        CA, or the handshake would have failed), mapped to the member whose
+        CA signed it (#222). Plain :80 has no certificate and no member."""
+        if hasattr(self, "_peer"):
             return self._peer
-        return valid_session(self.cookie_token())
+        self._peer = None
+        try:
+            leaf = self.connection.getpeercert(binary_form=True)
+        except (AttributeError, ValueError, OSError):
+            leaf = None
+        if leaf:
+            who = cluster.member_of(leaf)
+            if who:
+                self._peer = {"user": "cluster:" + who, "role": "admin", "peer": who}
+        return self._peer
+
+    def authed(self):
+        """The session, or a member's certificate standing in for one. A
+        member is an admin here — the cluster is the owner's decision
+        (docs/cluster.md §3) and every member holds the same list; roles
+        (#214) refine that later."""
+        return self.peer() or valid_session(self.cookie_token())
 
     def body_json(self):
         try:
@@ -1696,12 +1685,10 @@ class Handler(BaseHTTPRequestHandler):
     def _fresh(self):
         """Per-request state. protocol_version is HTTP/1.1, so ONE Handler
         instance serves every request on a keep-alive connection: anything
-        cached on self by one request is seen by the next. The review of
-        #283 found the member verdict cached that way — the second request
-        on a member's socket would have been admitted with any signature.
-        Reset at the top of every request, before anything reads them."""
-        self._peer = None
-        self._peer_reason = ""
+        cached on self by one request is seen by the next. The member
+        identity is NOT per request — it is the connection's client
+        certificate, the same for every request on it — so it is the one
+        thing that may be kept; the body is not."""
         self._raw = b""
 
     # -- routes --
@@ -1724,9 +1711,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.serve_ca_mobileconfig()
         if path == "/install-ca.sh":
             return self.serve_ca_installer()
-        # A Machine's cluster identity is public like its CA root (#222): the
-        # public key and the box id are what another Machine needs to admit
-        # it (#211/#213), and a public key is safe to hand out.
+        # A Machine's cluster identity IS its CA root (#222), public already
+        # at /ca.crt; this names the box id and the fingerprint beside it.
         if path == "/api/cluster/identity":
             return self.api_cluster_identity()
         # /api/docs carries a slug segment, so it routes by prefix. Read-only,
@@ -1779,13 +1765,6 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.split("?")[0] == "/api/file-up":
             if not self.same_origin():
                 return self.err(403, "cross-origin request refused")
-            # A member's signature covers the body, and this body is streamed
-            # past the handler unhashed — so a signed upload is refused by
-            # name rather than failing 'bad signature' for a reason the
-            # sender cannot see. Files between members go over the share or
-            # a clone (#243), not this endpoint.
-            if self.headers.get(cluster.H_ID):
-                return self.err(401, "cluster: signed uploads are not supported on /api/file-up")
             sess = self.authed()
             if not sess:
                 return self.unauth()
@@ -1808,6 +1787,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_claim(body)
         if path == "/api/login":
             return self.api_login(body)
+        if path == "/api/cluster/join":
+            return self.api_cluster_join(body)
         # everything below requires a session
         sess = self.authed()
         if not sess:
@@ -1862,6 +1843,10 @@ class Handler(BaseHTTPRequestHandler):
             "/api/secrets/init": self.api_secrets_init,
             "/api/secrets/phrase-ack": self.api_secrets_phrase_ack,
             "/api/cluster/init": self.api_cluster_init,
+            "/api/cluster/add": self.api_cluster_add,
+            "/api/cluster/remove": self.api_cluster_remove,
+            "/api/cluster/sync": self.api_cluster_sync,
+            "/api/cluster/members": self.api_cluster_members,
             "/api/schedule/set": self.api_schedule_set,
             "/api/schedule/del": self.api_schedule_del,
             "/api/schedule/run": self.api_schedule_run,
@@ -2259,21 +2244,90 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- the cluster primitive (#222) --
     def api_cluster_identity(self):
-        """Public: who this Machine is to a cluster. No key yet is a fact,
-        not an error — a fresh Machine has none until it is joined."""
-        s = cluster.status_doc()
-        self.send(200, {"id": s["self"], "pub": cluster.self_pub() or None,
-                        "fingerprint": s["fingerprint"] or None, "cluster": s["cluster"]})
+        """Public: who this Machine is to a cluster — its box id, the
+        fingerprint of its CA (the CA itself is /ca.crt), which cluster."""
+        v = cluster.view()
+        self.send(200, {"id": v["self"], "fingerprint": v["fingerprint"] or None, "cluster": v["cluster"]})
 
     def api_cluster_get(self):
-        s = cluster.status_doc()
-        self.send(200, {"self": s["self"], "key": s["key"], "key_mode_ok": s["key_mode_ok"],
-                        "fingerprint": s["fingerprint"], "cluster": s["cluster"],
-                        "members_hash": s["members_hash"], "error": s["error"],
-                        "members": [{"id": mid, "name": m.get("name", ""), "added": m.get("added"),
-                                     "fingerprint": cluster.fingerprint(m.get("pub", "")),
-                                     "self": mid == s["self"]}
-                                    for mid, m in sorted(s["members"].items())]})
+        """The list as the page shows it, after §3's one automatic edit: a
+        member advertising another cluster id on the LAN has joined
+        elsewhere and is dropped here (every member sees the same TXT and
+        does the same on its own — nothing propagates)."""
+        dropped = []
+        try:
+            dropped = cluster.reconcile()
+        except cluster.ClusterError:
+            pass
+        if dropped:
+            save_state()
+        v = cluster.view()
+        v["dropped"] = dropped
+        self.send(200, v)
+
+    def api_cluster_add(self, body):
+        """Mark a Machine out of the lobby (#211): its id or address and
+        ITS admin password (typed by the owner; the same password on two
+        boxes is not membership, the list is)."""
+        target = (body.get("id") or body.get("target") or "").strip()
+        pw = body.get("password") or ""
+        if not target or not pw:
+            return self.err(400, "which Machine, and its admin password")
+        try:
+            mid, report = cluster.add(target, pw, (body.get("name") or "").strip())
+        except cluster.ClusterError as e:
+            return self.err(409, str(e))
+        saved, out = save_state()
+        self.send(200, {"ok": True, "id": mid, "pushed": report, "saved": saved, "save_output": out})
+
+    def api_cluster_remove(self, body):
+        mid = (body.get("id") or "").strip()
+        try:
+            report = cluster.remove(mid)
+        except cluster.ClusterError as e:
+            return self.err(409, str(e))
+        saved, out = save_state()
+        self.send(200, {"ok": True, "id": mid, "pushed": report, "saved": saved, "save_output": out})
+
+    def api_cluster_sync(self, _body):
+        try:
+            report = cluster.sync()
+        except cluster.ClusterError as e:
+            return self.err(409, str(e))
+        self.send(200, {"ok": True, "pushed": report})
+
+    def api_cluster_join(self, body):
+        """A member's dashboard asks this Machine to join, with this
+        Machine's OWN admin password (docs/cluster.md §11: it gets the
+        list, nothing else — its identity is the CA it already has). The
+        caller cannot present a member certificate yet, by definition; the
+        password is the authorisation, checked the way login checks it,
+        one flat cost. Reachable over TLS pinned to our CA by the caller."""
+        if not claimed():
+            return self.err(403, "this Machine is not claimed yet — claim it first (or adopt it, #213)")
+        u = find_user(read_users(), "admin")
+        if u is None or not check_hash(body.get("password") or "", u.get("hash")):
+            time.sleep(2)
+            return self.err(403, "wrong password for this Machine")
+        try:
+            ans = cluster.join(body.get("cluster") or {}, name=box_name())
+        except cluster.ClusterError as e:
+            return self.err(409, str(e))
+        saved, out = save_state()
+        self.send(200, dict(ans, saved=saved, save_output=out))
+
+    def api_cluster_members(self, body):
+        """The list from a member (its client certificate admitted it).
+        Taken as it stands; a list without us means we were removed."""
+        sess = self.peer()
+        if not sess:
+            return self.err(403, "the member list arrives from a member, over mutual TLS")
+        try:
+            result = cluster.replace(body.get("cluster") or {})
+        except cluster.ClusterError as e:
+            return self.err(400, str(e))
+        saved, out = (True, "") if result in ("same", "other-cluster") else save_state()
+        self.send(200, {"ok": True, "result": result, "from": sess.get("peer"), "saved": saved, "save_output": out})
 
     def api_cluster_init(self, body):
         """A cluster of one: this Machine's key and a member list holding
@@ -4008,18 +4062,57 @@ def start_https(init=True):
             pass
     if not (os.path.exists(SRV_CRT) and os.path.exists(SRV_KEY)):
         return
-    try:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(SRV_CRT, SRV_KEY)
-        httpsd = ThreadingHTTPServer(("0.0.0.0", 443), Handler)
-        httpsd.daemon_threads = True
-        httpsd.socket = ctx.wrap_socket(httpsd.socket, server_side=True)
-    except Exception as e:
-        sys.stderr.write("pipeos-webd: HTTPS not started: %s\n" % e)
-        return
-    HTTPS["ctx"] = ctx
+    with HTTPS_LOCK:
+        old = HTTPS.pop("server", None)
+        if old is not None:
+            # a membership change: the trust store is baked into the
+            # context, so the listener comes up again with the new one
+            # (#222). Stopped first, synchronously — the port must be free
+            # before the new one binds (half a second at most; a request
+            # in flight finishes on its own thread). Safe from a handler
+            # thread: only serve_forever's own thread may not call this.
+            old.shutdown()
+            old.server_close()
+        try:
+            ctx = cluster.server_context()
+            # the same port as before: a restart is invisible to the members
+            httpsd = ThreadingHTTPServer(("0.0.0.0", HTTPS.get("port") or HTTPS_PORT), Handler)
+            httpsd.daemon_threads = True
+            httpsd.socket = ctx.wrap_socket(httpsd.socket, server_side=True)
+        except Exception as e:
+            sys.stderr.write("pipeos-webd: HTTPS not started: %s\n" % e)
+            return
+        HTTPS["ctx"] = ctx
+        HTTPS["server"] = httpsd
+        HTTPS["port"] = httpsd.server_address[1]
+        try:
+            HTTPS["bundle"] = os.stat(cluster.BUNDLE).st_mtime_ns
+        except OSError:
+            HTTPS["bundle"] = None
+        if not HTTPS.get("watcher"):
+            # `pipeos cluster add|remove|init` run in their own process: the
+            # trust store on disk changes and this process must follow it.
+            HTTPS["watcher"] = threading.Thread(target=bundle_watcher, daemon=True)
+            HTTPS["watcher"].start()
     threading.Thread(target=httpsd.serve_forever, daemon=True).start()
-    sys.stderr.write("pipeos-webd listening on :443 (TLS)\n")
+    sys.stderr.write("pipeos-webd listening on :%d (TLS%s)\n" % (HTTPS["port"], ", member certificates accepted" if ctx.verify_mode != ssl.CERT_NONE else ""))
+    return httpsd
+
+
+def bundle_watcher():
+    while True:
+        time.sleep(float(os.environ.get("PIPEOS_WEB_BUNDLE_POLL", "2")))
+        try:
+            cur = os.stat(cluster.BUNDLE).st_mtime_ns
+        except OSError:
+            cur = None
+        if HTTPS.get("server") is not None and cur != HTTPS.get("bundle"):
+            start_https(init=False)
+
+
+HTTPS_PORT = int(os.environ.get("PIPEOS_WEB_HTTPS_PORT", "443"))
+HTTPS_LOCK = threading.RLock()
+cluster.ON_CHANGE.append(lambda: HTTPS.get("server") is not None and start_https(init=False))
 
 
 def main():
@@ -4029,6 +4122,9 @@ def main():
     threading.Thread(target=metrics_sampler, daemon=True).start()
     threading.Thread(target=ledger_worker, daemon=True).start()
     start_https()
+    cluster.bundle(); cluster.publish()      # /run is empty at boot: the trust store and the TXT cl/k/h (#211)
+    if HTTPS.get("server") is not None and os.path.isfile(cluster.BUNDLE):
+        start_https(init=False)              # the first start had no bundle yet
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     srv.daemon_threads = True
     sys.stderr.write("pipeos-webd listening on :%d (claimed=%s)\n" % (port, claimed()))

@@ -608,6 +608,7 @@ async function dashboard() {
     pipe: '<svg viewBox="0 0 24 24"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg>',
     files: '<svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
     network: '<svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+    cluster: '<svg viewBox="0 0 24 24"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="5" cy="18" r="2.5"/><circle cx="19" cy="18" r="2.5"/><circle cx="12" cy="12" r="3"/><path d="M7 7.5l3 2.5M17 7.5l-3 2.5M7 16.5l3-2.5M17 16.5l-3-2.5"/></svg>',
     system: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="2" x2="9" y2="4"/><line x1="15" y1="2" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="22"/><line x1="15" y1="20" x2="15" y2="22"/><line x1="20" y1="9" x2="22" y2="9"/><line x1="20" y1="15" x2="22" y2="15"/><line x1="2" y1="9" x2="4" y2="9"/><line x1="2" y1="15" x2="4" y2="15"/></svg>',
     users: '<svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
     secrets: '<svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
@@ -639,6 +640,7 @@ async function dashboard() {
         ${isAdmin ? navItem("setup", "Setup") : ""}
         ${navItem("usage", "Usage")}
         ${navItem("network", "Network")}
+        ${isAdmin ? navItem("cluster", "Cluster") : ""}
         ${navItem("system", "System")}
         ${navItem("docs", "Docs")}
       </nav>
@@ -1035,6 +1037,24 @@ async function dashboard() {
         </div>` : ""}
         <p class="note">Every number here is an <b>estimate</b> from the published rates shipped with this Machine (<span id="usrates"></span>); the provider's bill is authoritative.</p>
       </section>
+      ${isAdmin ? `
+      <section data-view="cluster" hidden>
+        <div class="viewhead"><h1>Cluster</h1></div>
+        <p class="sub">A cluster is a decision, not a fact: the Machines you mark out of the network list. Each holds every member's key; nothing else is shared or copied between them.</p>
+        <div class="card">
+          <div class="cardhead"><h2>Members</h2><span class="note" id="clnote"></span></div>
+          <div id="clrows" class="note">looking…</div>
+          <div style="margin-top:.6rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+            <button id="clsync" class="ghost small" type="button">push the list to every member</button>
+            <span class="note" id="clmsg"></span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="cardhead"><h2>Add a Machine</h2><span class="note" id="clcnote"></span></div>
+          <p class="note">Claimed Machines on this network that are not members. Adding one needs <b>its</b> admin password — the one typed at its setup — because the list, not the password, is what makes a member.</p>
+          <div id="clcands" class="note">looking…</div>
+        </div>
+      </section>` : ""}
       <section data-view="network" hidden>
         <div class="viewhead"><h1>Network</h1></div>
         <div class="card">
@@ -2443,7 +2463,70 @@ async function dashboard() {
   // ---- view router: show one section at a time, driven by the URL hash ----
   // Views with live data register a poller (runs only while on screen) or a
   // lazy loader (runs on first visit).
-  const POLLERS = { system: pollSystem, network: pollNetwork, schedule: loadSchedule, usage: loadUsage };
+  // ---- the cluster (#211): the member list, add from the lobby, remove, push ----
+  const pollCluster = async () => {
+    const rows = v.querySelector("#clrows"), note = v.querySelector("#clnote");
+    const cands = v.querySelector("#clcands"), cnote = v.querySelector("#clcnote"), msg = v.querySelector("#clmsg");
+    if (!rows) return;
+    let c;
+    try { c = await api("/api/cluster"); } catch (e) { note.textContent = e.message; return; }
+    if (c.error) { rows.className = "note"; rows.textContent = "the member list is broken: " + c.error + " — pipeos cluster status"; return; }
+    if (!c.cluster) {
+      rows.className = "note"; rows.textContent = "This Machine is not in a cluster yet. Add a Machine below to start one, or another member can add this one.";
+      note.textContent = "";
+    } else {
+      rows.className = "";
+      rows.innerHTML = c.members.map(m => {
+        const label = m.name || m.id;
+        const pills = (m.self ? '<span class="pill">this one</span>' : "")
+          + (m.awake ? "" : '<span class="pill status-warn">off · last seen ' + esc(agoShort(m.last_seen)) + '</span>')
+          + (m.in_sync ? "" : '<span class="pill status-warn">list differs</span>')
+          + (m.awake && m.verdict ? `<span class="pill ${verdictClass("verdict: " + m.verdict)[0]}">${esc(m.verdict)}</span>` : "");
+        const href = !m.self && m.awake && (m.host || m.ip) ? "http://" + (m.host || m.ip) + "/" : "";
+        return `<div class="row${m.awake ? "" : " off"}">
+          <div><div class="name">${href ? `<a href="${esc(href)}">${esc(label)}</a>` : esc(label)} ${pills}</div>
+          <div class="desc">${esc([m.id, m.ip, "key " + m.fingerprint].filter(Boolean).join(" · "))}</div></div>
+          <div>${m.self ? "" : `<button class="btn ghost" type="button" data-clrm="${esc(m.id)}">Remove</button>`}</div>
+        </div>`;
+      }).join("");
+      const off = c.members.filter(m => !m.awake).length, diff = c.members.filter(m => !m.in_sync).length;
+      note.textContent = `cluster ${c.cluster} · ${c.members.length} member${c.members.length === 1 ? "" : "s"}` + (off ? ` · ${off} off` : "") + (diff ? ` · ${diff} out of sync` : "") + (c.dropped && c.dropped.length ? ` · dropped ${c.dropped.join(", ")} (joined another cluster)` : "");
+      rows.querySelectorAll("[data-clrm]").forEach(b => b.onclick = async () => {
+        if (!confirm("Remove " + b.dataset.clrm + " from the cluster? It keeps its key and becomes a cluster of one; add it again any time.")) return;
+        b.disabled = true;
+        try { const r = await api("/api/cluster/remove", { id: b.dataset.clrm }); msg.textContent = "removed; " + pushed(r.pushed); pollCluster(); }
+        catch (e) { msg.textContent = e.message; b.disabled = false; }
+      });
+    }
+    const cs = c.candidates || [];
+    if (!cs.length) { cands.className = "note"; cands.textContent = c.cluster ? "Every claimed Machine on this network is a member." : "No other claimed Machine answered on this network."; }
+    else {
+      cands.className = "";
+      cands.innerHTML = cs.map(m => `<div class="row">
+        <div><div class="name">${esc(m.name || m.host || m.id)} ${m.cluster ? '<span class="pill status-warn">in cluster ' + esc(m.cluster) + '</span>' : ""}</div>
+        <div class="desc">${esc([m.id, m.ip].filter(Boolean).join(" · "))}</div></div>
+        <div style="display:flex;gap:.4rem;align-items:center"><input type="password" placeholder="its admin password" data-clpw="${esc(m.id)}" style="width:12rem" autocomplete="off">
+        <button class="btn" type="button" data-cladd="${esc(m.id)}">Add</button></div>
+      </div>`).join("");
+      cands.querySelectorAll("[data-cladd]").forEach(b => b.onclick = async () => {
+        const pw = cands.querySelector(`[data-clpw="${b.dataset.cladd}"]`).value;
+        if (!pw) { cnote.textContent = "type that Machine's admin password first"; return; }
+        b.disabled = true; cnote.textContent = "joining…";
+        try { const r = await api("/api/cluster/add", { id: b.dataset.cladd, password: pw }); cnote.textContent = "added " + r.id + "; " + pushed(r.pushed); pollCluster(); }
+        catch (e) { cnote.textContent = e.message; b.disabled = false; }
+      });
+    }
+  };
+  const pushed = (p) => { const ks = Object.keys(p || {}); return ks.length ? "list pushed: " + ks.map(k => k + "=" + p[k]).join(", ") : "no other members to tell"; };
+  const clsync = v.querySelector("#clsync");
+  if (clsync) clsync.onclick = async () => {
+    const msg = v.querySelector("#clmsg"); clsync.disabled = true;
+    try { const r = await api("/api/cluster/sync", {}); msg.textContent = pushed(r.pushed); pollCluster(); }
+    catch (e) { msg.textContent = e.message; }
+    clsync.disabled = false;
+  };
+
+  const POLLERS = { system: pollSystem, network: pollNetwork, cluster: pollCluster, schedule: loadSchedule, usage: loadUsage };
   const LAZY = { files: () => { loadFiles(""); loadFiles._disks(); }, pipe: loadPipe, users: loadUsers, secrets: loadSecrets, docs: loadDocs, setup: loadSetup };
   const seen = {};
   let viewTimer = null;

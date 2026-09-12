@@ -525,24 +525,38 @@ if [ -s /etc/pipeos/web-admin.conf ]; then
     [ -s /run/pipeos/vault-phrase ] && noten "the vault's recovery phrase is waiting under Secrets in the dashboard — write it down, then dismiss it"
 fi
 
-# ---- 3cl. the cluster primitive (#222). cluster.json is the member list
-# every member holds; the key is what this Machine signs with. A list that
-# does not parse is a Machine no member can talk to, and one whose key is
-# readable by anyone is a Machine anyone can be. Both are identity: the
-# lbu include list must carry them, or a reboot forgets the cluster.
+# ---- 3cl. the cluster (#222, #211). cluster.json is the member list every
+# member holds; the box's CA (etc/pipeos/tls) is its identity and its server
+# cert is the client cert it presents. A list that does not parse is a
+# Machine no member can talk to; a server cert without clientAuth is one
+# that cannot call anyone (tls-init re-issues it at boot); the list must be
+# in the lbu include list or a reboot forgets the cluster.
 if [ -f /etc/pipeos/cluster.json ]; then
     if ! python3 -c 'import json,sys; d=json.load(open("/etc/pipeos/cluster.json")); sys.exit(0 if isinstance(d.get("members"), dict) else 1)' 2>/dev/null; then
         crit "cluster: /etc/pipeos/cluster.json does not parse — no member can reach this Machine; pipeos cluster status"
     fi
-    if [ ! -f /etc/pipeos/cluster/key.pem ]; then
-        crit "cluster: member list present but no key at /etc/pipeos/cluster/key.pem — this Machine cannot sign; its identity was lost (restore from a backup, or re-join: pipeos cluster init --force)"
-    elif [ "$(stat -c %a /etc/pipeos/cluster/key.pem 2>/dev/null)" != 600 ]; then
-        warnn "cluster: key.pem is mode $(stat -c %a /etc/pipeos/cluster/key.pem) — chmod 600 /etc/pipeos/cluster/key.pem"
+    if [ ! -f /etc/pipeos/tls/ca.crt ] || [ ! -f /etc/pipeos/tls/server.crt ]; then
+        crit "cluster: member list present but no CA/server cert under /etc/pipeos/tls — this Machine has no identity to present; rc-service pipeos-tls-init start"
+    elif ! openssl x509 -in /etc/pipeos/tls/server.crt -noout -text 2>/dev/null | grep -q "TLS Web Client Authentication"; then
+        warnn "cluster: server.crt has no clientAuth — this Machine cannot call a member until pipeos-tls-init re-issues it (next boot, or run it now)"
     fi
-    for _cp in etc/pipeos/cluster etc/pipeos/cluster.json; do
-        grep -qxF "+$_cp" /etc/apk/protected_paths.d/lbu.list 2>/dev/null \
-            || warnn "cluster: +$_cp is not in the lbu include list — a reboot forgets the cluster; redeploy the overlay"
-    done
+    grep -qxF "+etc/pipeos/cluster.json" /etc/apk/protected_paths.d/lbu.list 2>/dev/null \
+        || warnn "cluster: +etc/pipeos/cluster.json is not in the lbu include list — a reboot forgets the cluster; redeploy the overlay"
+    # every member holds the same list (#211): a live member advertising a
+    # different members hash for OUR cluster id has a list we do not — an
+    # edit that did not reach it (it was off), or one it made that did not
+    # reach us. Either way the fix is one push.
+    _cldiff=$(python3 - 2>/dev/null <<'EOF'
+import json
+try:
+    st = json.load(open("/run/pipeos/cluster.status")); c = json.load(open("/run/pipeos/mdns/peers.json"))
+    mem = json.load(open("/etc/pipeos/cluster.json")).get("members", {})
+except Exception:
+    raise SystemExit
+print(" ".join(sorted(p for p, e in c.get("peers", {}).items() if p in mem and e.get("cl") == st.get("cl") and e.get("h") and e.get("h") != st.get("h"))))
+EOF
+)
+    [ -n "$_cldiff" ] && warnn "cluster: member list differs on $_cldiff (their members hash is not ours) — pipeos cluster sync from whichever side is right"
 fi
 
 # ---- 3d. update-path health (#116). The last outage ran five days with zero

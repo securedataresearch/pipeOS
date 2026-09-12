@@ -78,7 +78,7 @@ check("2 a forward or looping pointer is refused, not followed", ok2, "")
 # ── 3. the four record types round-trip ──────────────────────────────────
 identB = {"hostname": "studio", "mac4": "9c21", "claimed": True, "verdict": "all green",
           "commit": "abc1234def01", "built": "2026-09-01T00:00:00Z", "model": "Test Box",
-          "mac": "aa:bb:cc:dd:9c:21"}
+          "mac": "aa:bb:cc:dd:9c:21", "cl": "c1d2e3f4a5b6c7d8", "k": "0123456789abcdef", "h": "fedcba9876543210"}
 json.dump(identB, open(os.path.join(LANDIR, "idB.json"), "w"))
 iB = mdnsd.read_ident()
 rrs = mdnsd.our_records(iB, "10.1.1.2")
@@ -86,11 +86,12 @@ _f, _q, recs = lanid.parse_packet(lanid.build_response(rrs))
 by = {(r[0], r[1]): r for r in recs}
 srv = by.get(("9c21._pipeos._tcp.local", 33))
 txt = by.get(("9c21._pipeos._tcp.local", 16))
-check("3 PTR, SRV, TXT and A round-trip through the parser with the right fields",
+check("3 PTR, SRV, TXT and A round-trip through the parser with the right fields (the TXT carries the cluster id, key fingerprint and members hash — #211)",
       by.get(("_pipeos._tcp.local", 12), (0, 0, 0, ""))[3] == "9c21._pipeos._tcp.local"
       and srv and srv[3][2] == 80 and srv[3][3] == "studio.local"
       and txt and txt[3].get("id") == "9c21" and txt[3].get("n") == "studio" and txt[3].get("c") == "1"
       and txt[3].get("v") == "all green" and txt[3].get("m") == "Test Box" and txt[3].get("mac") == "aa:bb:cc:dd:9c:21"
+      and txt[3].get("cl") == "c1d2e3f4a5b6c7d8" and txt[3].get("k") == "0123456789abcdef" and txt[3].get("h") == "fedcba9876543210"
       and by.get(("studio.local", 1), (0, 0, 0, ""))[3] == "10.1.1.2"
       and by[("_pipeos._tcp.local", 12)][2] == 120,
       repr(recs)[:400])

@@ -59,11 +59,18 @@ ROLE) are named where the design reuses them.
 - Cluster size the UI is designed for: **four on one high-speed switch**,
   plus whatever else is kludged onto the wired network. A list, not a
   search box.
-- **The primitive** (#222, `web/cluster.py`): an ed25519 key per Machine
-  under `/etc/pipeos/cluster/`, the member list in `/etc/pipeos/cluster.json`,
-  and four `X-Pipeos-*` headers that sign every request and every answer
-  between members — clock skew over 120 s, a replay, or an unknown key is
-  refused before the session check. `pipeos cluster init|status|call`.
+- **The primitive** (#222, `web/cluster.py`) is mutual TLS with what every
+  Machine already has: its own CA (the padlock's) is its cluster identity,
+  its server cert doubles as the client cert it presents to a member, and
+  the member list is the set of member CAs webd's :443 accepts client
+  certificates from. No new keys, no home-made signatures; the stdlib does
+  the verifying. `pipeos cluster init|status|ca|call`.
+- **Membership** (#211): every edit is pushed to every member over mutual
+  TLS and a member takes the list from any member (leaderless). A Machine
+  finding itself absent becomes a cluster of one, CA kept. Adding needs the
+  target's own admin password once, over TLS pinned to its CA; a member
+  advertising another cluster id on the LAN (TXT `cl`) is dropped by every
+  member on its own. Dashboard → Cluster; `pipeos cluster add|remove|sync`.
 
 → #211
 
