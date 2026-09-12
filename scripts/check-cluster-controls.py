@@ -23,7 +23,7 @@ controls = [
 
     ("B: the listener is not restarted when the list changes (a removed member's certificate keeps working)", W,
      lambda s: s.replace("cluster.ON_CHANGE.append(lambda: HTTPS.get(\"server\") is not None and start_https(init=False))\n", "\n")
-                .replace("        if HTTPS.get(\"server\") is not None and cur != HTTPS.get(\"bundle\"):\n", "        if False:\n"), ["4"]),
+                .replace("        if HTTPS.get(\"server\") is not None and _mtimes() != HTTPS.get(\"bundle\"):\n", "        if False:\n"), ["4"]),
 
     ("C: the member is read off the certificate's position in the list, not off which CA signed it (any member's cert is attributed to the first member)", C,
      lambda s: s.replace("                if p.returncode == 0:\n                    who = mid\n                    break\n",
