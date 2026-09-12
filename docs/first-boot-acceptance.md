@@ -18,7 +18,9 @@ Release under test: `________`   Box: `________`   Date: `________`
 ## 2. Power to the page
 
 - [ ] Cable in, power on, stopwatch started.
-- [ ] `http://pipeos.local/` answers on a **phone** in ____ s.
+- [ ] `http://pipeos.local/` answers on a **phone** in ____ s — the dashboard,
+      no warning page (http is the front door by decision, 2026-09-12; never
+      https on the LAN).
 - [ ] …on a laptop in ____ s.
 - [ ] With a second Machine up: appears in its lobby within ____ s; the
       unclaimed one is reachable by its `pipeos-xxxx.local` name.

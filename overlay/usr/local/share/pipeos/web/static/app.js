@@ -1070,23 +1070,6 @@ async function dashboard() {
           <div class="cardhead"><h2>Traffic</h2><span class="note" id="ntot"></span></div>
           <div class="ch" id="ch-net"></div>
         </div>
-        <div class="card">
-          <h2>Secure access (HTTPS)</h2>
-          <p class="note" id="tlsnote">checking…</p>
-          <a class="btn ghost" id="camobile" href="/pipeos-ca.mobileconfig">iPhone / iPad: install profile</a>
-          <a class="btn ghost" id="cadl" href="/ca.crt" download>Mac / Windows / Android: download certificate</a>
-          <p class="note" style="margin-bottom:.2rem"><b>Linux:</b> one command — installs into the system store, Chrome, and Firefox:</p>
-          <pre class="report" id="lnxcmd" style="user-select:all;margin-top:0"></pre>
-          <details><summary class="note">How to install it (once per device)</summary>
-            <p class="note" style="line-height:1.5">
-            <b>iPhone/iPad:</b> tap the profile above → Settings offers to install it → then Settings › General › About › Certificate Trust Settings → turn it on.<br>
-            <b>Mac:</b> open the .crt → Keychain Access → double-click “pipeOS … CA” → Trust → “Always Trust”.<br>
-            <b>Windows:</b> open the .crt → Install Certificate → Local Machine → Trusted Root Certification Authorities.<br>
-            <b>Android:</b> Settings › Security › Encryption &amp; credentials › Install a certificate › CA certificate → pick the .crt.<br>
-            <b>Linux (manual):</b> paste the command above into a terminal; it needs sudo and, for the browsers, the certutil tool (package <code>libnss3-tools</code> or <code>nss-tools</code>).<br>
-            Then reload over <span id="httpslink"></span> and you’ll see the padlock.</p>
-          </details>
-        </div>
       </section>
 
       <section data-view="system" hidden>
@@ -2012,20 +1995,6 @@ async function dashboard() {
       box.textContent = (await r.json()).text;
     } catch (e) { box.textContent = e.message; }
   };
-  {
-    const tlsnote = v.querySelector("#tlsnote");
-    const host = location.hostname;
-    const link = v.querySelector("#httpslink");
-    const a = el(`<a href="https://${host}/">https://${host}/</a>`);
-    link.appendChild(a);
-    v.querySelector("#lnxcmd").textContent = `curl -s http://${host}/install-ca.sh | sudo sh`;
-    if (location.protocol === "https:") {
-      tlsnote.textContent = "✓ This connection is secure.";
-      v.querySelector("#camobile").parentNode.querySelectorAll(".btn").forEach(b => b.classList.add("done"));
-    } else {
-      tlsnote.textContent = "Install this box’s certificate once per device to get a secure padlock — no more browser warnings. Pick your device below.";
-    }
-  }
   api("/api/update").then(u => {
     v.querySelector("#updstate").textContent = "updates: " + u.state + (u.applied ? ` (applied ${u.applied})` : "")
       + (u.image_pending ? " · new image applied, reboot pending" : "");

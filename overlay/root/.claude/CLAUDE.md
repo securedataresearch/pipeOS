@@ -152,3 +152,11 @@ The full remediation plan is at `/root/.claude/plans/robust-riding-mountain.md`.
 It lands at `/usr/bin/tar`, which precedes busybox's `/bin/tar` in `PATH`. `lbu`
 would start using it — changing the behaviour of the one command that can brick
 this box. Skip unless something genuinely requires it.
+
+## 9. The dashboard is http on the LAN, on purpose
+
+The owner reaches this Machine at `http://<name>.local/`. Never point them at
+`https://<name>.local` — the box's certificate is its own self-signed CA and
+the browser shows a "do not proceed" page. Port 443 is the cluster's mutual
+TLS, not the owner's front door (decision 2026-09-12, docs/web-wizard.md
+§ Security posture).
