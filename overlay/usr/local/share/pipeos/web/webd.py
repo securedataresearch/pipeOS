@@ -749,7 +749,10 @@ def nas_restart_if_running():
     """Bounce smbd so it reopens the passdb (a share change, or a password
     set — sealing writes the db as a new inode, pipeOS#268). Returns the
     problem string, or "" when it restarted or was not running."""
-    rc, out = run(["rc-service", "-i", "pipeos-nas", "restart"], timeout=60)
+    # -s = --ifstarted. NOT -i: OpenRC reads -i as --ifexists, and the first
+    # cut had it — a passdb edit then START-ed storage the owner had switched
+    # off (the re-drill on zero, 2026-09-12: "no configured share is usable").
+    rc, out = run(["rc-service", "-s", "pipeos-nas", "restart"], timeout=60)
     if rc != 0:
         return "network storage did not restart: " + out.strip()[-200:]
     return ""
