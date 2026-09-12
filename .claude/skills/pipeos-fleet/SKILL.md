@@ -38,7 +38,7 @@ command on several boxes in parallel with `&`/`wait`, one output file each.
 pipeos status            # overlay commit + how far behind origin/main, save state
 pipeos verify            # PASS = a reboot reproduces this state (run before AND after any change)
 pipeos-selfcheck         # verdict + every WARN/CRITICAL; the boot-report DM says the same
-pipebox-card verify      # derived files match the card? FAIL after a template change -> pipebox-card generate; pipeos save
+pipebox-card verify      # derived files match the card? deploy-overlay regenerates them after a template change (#281); FAIL otherwise -> pipebox-card generate; pipeos save
 ```
 
 ## Deploy a merged commit
@@ -54,9 +54,10 @@ pipeos deploy-overlay --yes        # install, restart changed services, enrol ne
 - It carries `etc/crontabs/root` and enrols new `etc/init.d/*` where
   `scripts/40-build-apkovl.sh` puts them (since #254/#255). It never
   touches `etc/pipeos/*` or `root/.pipe/policy.json`.
-- After a **template** change (`usr/local/share/pipeos/card/*.tmpl`),
-  `pipebox-card verify` FAILs until `pipebox-card generate && pipeos save`.
-  `pipeos card set` does that for you when you change a card field.
+- After a **template** change (`usr/local/share/pipeos/card/*.tmpl`) it
+  regenerates the card outputs itself, before the save (#281; `--dry-run`
+  says "would regenerate"). A box generate has never run on is left alone
+  and told so. `pipeos card set` regenerates when you change a card field.
 - Then: `pipeos verify` PASS, `pipeos-selfcheck` green, and the stamp
   (`head -1 /etc/pipeos/.overlay-stamp`) names the commit.
 

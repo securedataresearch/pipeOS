@@ -59,9 +59,10 @@ one line when the input is wrong, exactly as the dashboard answers 400.
    verifies, and stamps the commit.
 3. **If the deployer itself changed, run it again**: a running script keeps
    its old inode on purpose, so the first run executes the old copy.
-4. After a template change under `usr/local/share/pipeos/card/`,
-   `pipebox-card verify` FAILs until `pipebox-card generate && pipeos save`
-   (`pipeos card set` does both when a field changes).
+4. After a template change under `usr/local/share/pipeos/card/` the deploy
+   regenerates the card outputs itself before saving (#281); `--dry-run`
+   says "would regenerate". A box generate has never run on is left alone
+   and told so. (`pipeos card set` regenerates when a field changes.)
 5. `pipeos verify` PASS, `pipeos-selfcheck` green, and the boot-report DM
    after the next reboot says the same.
 
