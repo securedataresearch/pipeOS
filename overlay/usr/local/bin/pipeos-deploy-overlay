@@ -310,6 +310,24 @@ done < "$listing"
 ref_paths=$(mktemp)
 stale_rels=$(mktemp)
 cut -f2- "$listing" | sed 's|^overlay/||' | sort -u > "$ref_paths"
+
+# periodic scripts are OURS by name (pipeos-*, pipebox-*) and they RUN on a
+# schedule, so a copy under a cadence the ref no longer ships must go even
+# when the stamp cannot see it — a rename under a pre-#279 deployer already
+# dropped it from the stamp (daily->hourly pipeos-selfupdate orphaned the
+# daily copy on all four boxes, pipeOS#280). Only our namespace; apk's own
+# periodic scripts are never touched. Detected here, removed in the apply
+# phase with the stamp-owned stale files.
+if printf '%s\n' $DEPLOY_PATHS | grep -qx etc/periodic; then
+    for _pf in "$ROOT"/etc/periodic/*/pipeos-* "$ROOT"/etc/periodic/*/pipebox-*; do
+        [ -f "$_pf" ] || continue
+        _prel=${_pf#"$ROOT"/}; _prel=${_prel#/}
+        excluded "$_prel" && continue
+        grep -qxF "$_prel" "$ref_paths" && continue
+        printf '%s\n' "$_prel" >> "$stale_rels"
+    done
+fi
+
 if [ -f "$STAMP" ]; then
     # Stamp body lines are `<sha256>  /<rel>`; the header lines are not. A file
     # a PRIOR deploy owned (it is in the stamp) that this ref no longer ships
@@ -322,17 +340,23 @@ if [ -f "$STAMP" ]; then
         excluded "$rel" && continue
         [ -e "$ROOT/$rel" ] || continue      # already gone: not a live stale file
         grep -qxF "$rel" "$ref_paths" && continue
+        grep -qxF "$rel" "$stale_rels" && continue
         printf '%s\n' "$rel" >> "$stale_rels"
     done
-    while read -r rel; do
-        printf 'stale %s (deployed here, absent at %s — %s)\n' "$rel" "$REF" \
-            "$([ "$DRY" = yes ] && echo 'would remove' || echo 'removing')"
-    done < "$stale_rels" >> "$changes"
 else
     # Said out loud rather than left as a silent pass: on a box with no stamp
     # there is no record of what a previous deploy owned, so "no stale files"
-    # would be an answer this tool cannot actually give yet.
+    # would be an answer this tool cannot actually give yet. (The periodic
+    # namespace sweep above still runs — it does not need a stamp.)
     printf 'note  no previous deploy stamp — stale-file detection starts from this deploy\n' >> "$changes"
+fi
+# report every stale file (stamp-owned and periodic-namespace) once
+if [ -s "$stale_rels" ]; then
+    sort -u "$stale_rels" -o "$stale_rels"
+    while read -r rel; do
+        printf 'stale %s (this ref no longer ships it — %s)\n' "$rel" \
+            "$([ "$DRY" = yes ] && echo 'would remove' || echo 'removing')"
+    done < "$stale_rels" >> "$changes"
 fi
 rm -f "$ref_paths"
 

@@ -207,6 +207,23 @@ check("6a --dry-run says 'would remove' the stale file and removes nothing",
       "would remove" in c13b.log and c13b.live("usr/local/bin/pipeos-oldthing2") == "#!/bin/sh\nold\n",
       "log=%r" % c13b.log[-300:])
 
+# ── 6d. a periodic script of OURS the ref no longer ships is removed even
+# when the stamp cannot see it (a rename under a pre-#279 deployer orphaned
+# the daily pipeos-selfupdate on all four boxes — pipeOS#280); apk's own
+# periodic scripts are never touched.
+c13c = Case()
+CASES.append(c13c)
+c13c.run()   # a normal deploy so a stamp exists
+write(os.path.join(c13c.root, "etc/periodic/daily/pipeos-selfupdate"), "#!/bin/sh\nold daily\n", 0o755)
+write(os.path.join(c13c.root, "etc/periodic/weekly/logrotate"), "#!/bin/sh\napk owns me\n", 0o755)
+c13c.run()
+check("6d a stamp-invisible pipeos-* periodic orphan is removed; an apk periodic script is left alone (pipeOS#280)",
+      c13c.live("etc/periodic/daily/pipeos-selfupdate") is None
+      and "removed stale etc/periodic/daily/pipeos-selfupdate" in c13c.log
+      and c13c.live("etc/periodic/weekly/logrotate") == "#!/bin/sh\napk owns me\n"
+      and "logrotate" not in c13c.log,
+      "log=%r" % c13c.log[-300:])
+
 # ── 6b. and a file this tool never deployed is NOT reported ─────────────
 # box1's finding, as a row. usr/local/bin and etc/init.d are shared with apk:
 # on a real box the old scan printed every package-owned file as stale, and
