@@ -23,6 +23,12 @@ that user; the terminal asks for their password. In that terminal `claude`
 is the Machine's one Claude — the same session as the Assistant terminal
 and the dashboard chat — not a second sign-in. Detach with ctrl-b d.
 
+A **share-only account** (made under Files → Network storage) is the other
+kind of unix login: it exists so a network share can authenticate it, and
+nothing else — no shell, no ssh key, no terminal, no dashboard sign-in. Its
+one credential is its SMB password. Deleting any unix account also removes
+it from every share and from samba's password store.
+
 ## Lockouts
 
 Disabling an account locks it out immediately. You cannot delete your own

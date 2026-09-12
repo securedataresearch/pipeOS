@@ -1505,6 +1505,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/backup": self.api_backup,
             "/api/nas": self.api_nas_set,
             "/api/nas-password": self.api_nas_password,
+            "/api/nas-account": self.api_nas_account,
             "/api/pipe-set": self.api_pipe_set,
             "/api/pipe-logout": self.api_pipe_logout,
             "/api/password": self.api_password,
@@ -2494,20 +2495,30 @@ class Handler(BaseHTTPRequestHandler):
                 fields["NAS_S%d_USERS" % n] = " ".join(users)
         except ValueError as e:
             return self.err(400, str(e))
-        for n in range(len(shares) + 1, NAS_MAX_SHARES + 1):
+        problems = self._nas_commit(fields, bool(shares))
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "problems": problems,
+                        "saved": saved, "save_detail": "" if saved else detail})
+
+    def _nas_commit(self, fields, any_share):
+        """Write nas.conf from FIELDS (NAS_S{n}_* for the shares that exist;
+        the rest are blanked) and make the service match: configure implies
+        enable, a share change restarts, no share left disables. Shared by
+        api_nas_set and the delete path (_nas_forget_user)."""
+        for n in range(1, NAS_MAX_SHARES + 1):
             for k in ("NAME", "ROOT", "REL", "USERS"):
-                fields["NAS_S%d_%s" % (n, k)] = ""
+                fields.setdefault("NAS_S%d_%s" % (n, k), "")
         write_private(NAS_CONF, "".join(
             "%s='%s'\n" % (k, fields[k]) for k in sorted(fields)))
         problems = []
         svcs = read_services()
-        if shares and not svcs.get("nas"):
+        if any_share and not svcs.get("nas"):
             # Configure implies enable — same contract as streaming.
             svcs["nas"] = True
             write_services(svcs)
             problems += apply_services(svcs)
         elif svcs.get("nas"):
-            if shares:
+            if any_share:
                 why = nas_restart_if_running()
                 if why:
                     problems.append(why)
@@ -2515,26 +2526,80 @@ class Handler(BaseHTTPRequestHandler):
                 svcs["nas"] = False
                 write_services(svcs)
                 problems += apply_services(svcs)
-        saved, detail = save_state()
-        self.send(200, {"ok": True, "problems": problems,
-                        "saved": saved, "save_detail": "" if saved else detail})
+        return problems
+
+    def _nas_forget_user(self, name):
+        """A deleted unix account leaves samba too: its passdb entry (when
+        the mini conf exists — no samba on a dev host is not an error) and
+        every share's user list; a share with nobody left is dropped."""
+        problems = []
+        if os.path.exists(NAS_MINI_CONF) and shutil.which("smbpasswd"):
+            try:
+                vault.export()
+                rc, out = run(["smbpasswd", "-c", NAS_MINI_CONF, "-s", "-x", name], timeout=30)
+                if rc != 0 and "Failed to find" not in out and "not found" not in out.lower():
+                    problems.append("SMB password not removed: " + out.strip()[-200:])
+                private = os.path.join(SECRETS_DIR, "nas")
+                with open(os.path.join(private, "passdb.tdb"), "rb") as f:
+                    vault_put("nas_passdb", f.read(), by=(self.authed() or {}).get("user", ""))
+            except (vault.VaultError, OSError, RuntimeError, ValueError) as e:
+                problems.append("SMB password db not resealed: %s" % e)
+        shares = self._nas_read_shares()
+        if not any(name in sh["users"] for sh in shares):
+            return problems
+        fields, n = {}, 0
+        for sh in shares:
+            users = [u for u in sh["users"] if u != name]
+            if not users:
+                continue
+            n += 1
+            fields["NAS_S%d_NAME" % n] = sh["name"]
+            fields["NAS_S%d_ROOT" % n] = sh["root"]
+            fields["NAS_S%d_REL" % n] = sh["rel"]
+            fields["NAS_S%d_USERS" % n] = " ".join(users)
+        return problems + self._nas_commit(fields, n > 0)
 
     def api_nas_password(self, body):
-        """Set (or update) a user's SMB password. Samba keeps its own
+        code, payload = self._nas_set_password((body.get("name") or "").strip(), body.get("password") or "")
+        if code != 200:
+            return self.err(code, payload)
+        saved, detail = save_state()
+        payload.update({"saved": saved, "save_detail": "" if saved else detail})
+        self.send(200, payload)
+
+    def api_nas_account(self, body):
+        """One step for the Storage page (pipeOS#270): a share-only account
+        plus its SMB password. The account lands even if smbpasswd refuses
+        (samba missing) — the password half is reported in problems and can
+        be set again under SMB passwords."""
+        code, payload = self._user_add({"name": body.get("name"), "share": True})
+        if code != 200:
+            return self.err(code, payload)
+        problems = list(payload.get("problems") or [])
+        code, pw = self._nas_set_password((body.get("name") or "").strip(), body.get("password") or "")
+        if code != 200:
+            problems.append("account created, SMB password not set: " + pw)
+        else:
+            problems += pw.get("problems") or []
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "name": (body.get("name") or "").strip(), "problems": problems,
+                        "saved": saved, "save_detail": "" if saved else detail})
+
+    def _nas_set_password(self, name, pw):
+        """Set (or update) a user's SMB password. Returns (200, payload) or
+        (code, message); the caller saves. Samba keeps its own
         password db — the dashboard hash cannot be converted — so the admin
         sets it here explicitly; it lives in nas-private and survives via
         lbu. smbpasswd needs a config naming that private dir, which may
         predate the service's first start, so render a minimal one."""
-        name = (body.get("name") or "").strip()
-        pw = body.get("password") or ""
         users_known = {u["name"] for u in read_users()
                        if u.get("unix") and not u.get("disabled")}
         if name not in users_known:
-            return self.err(400, "that user has no enabled unix account")
+            return (400, "that user has no enabled unix account")
         if len(pw) < 8 or any(c in pw for c in "\n\r\0"):
-            return self.err(400, "SMB password: at least 8 characters, no newlines")
+            return (400, "SMB password: at least 8 characters, no newlines")
         if not shutil.which("smbpasswd"):
-            return self.err(500, "samba is not installed yet (samba-common-tools)")
+            return (500, "samba is not installed yet (samba-common-tools)")
         # the passdb is a vault secret exported to SECRETS_DIR/nas (#244):
         # export first so smbpasswd edits the current db, then store the
         # result back
@@ -2542,7 +2607,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             vault.export()
         except (vault.VaultError, OSError, ValueError) as e:
-            return self.err(500, "the vault is not open (%s) — unlock it under Secrets first" % e)
+            return (500, "the vault is not open (%s) — unlock it under Secrets first" % e)
         os.makedirs(private, mode=0o700, exist_ok=True)
         mini = NAS_MINI_CONF
         with open(mini, "w") as f:
@@ -2551,12 +2616,12 @@ class Handler(BaseHTTPRequestHandler):
         rc, out = run(["smbpasswd", "-c", mini, "-s", "-a", name],
                       input_text=pw + "\n" + pw + "\n", timeout=30)
         if rc != 0:
-            return self.err(500, "smbpasswd failed: " + out.strip()[-200:])
+            return (500, "smbpasswd failed: " + out.strip()[-200:])
         try:
             with open(os.path.join(private, "passdb.tdb"), "rb") as f:
                 vault_put("nas_passdb", f.read(), by=(self.authed() or {}).get("user", ""))
         except (OSError, RuntimeError) as e:
-            return self.err(500, "could not seal the SMB password db: %s" % e)
+            return (500, "could not seal the SMB password db: %s" % e)
         # Sealing re-exports the db as a NEW file (the bytes changed, so the
         # vault's same-bytes shortcut does not apply). A running smbd parent
         # keeps the old inode open and hands that handle to every forked
@@ -2564,9 +2629,7 @@ class Handler(BaseHTTPRequestHandler):
         # daemon is restarted — the first share ever made on the cluster
         # hardware died exactly here (pipeOS#268).
         problems = [p for p in [nas_restart_if_running()] if p]
-        saved, detail = save_state()
-        self.send(200, {"ok": True, "problems": problems, "saved": saved,
-                        "save_detail": "" if saved else detail})
+        return (200, {"ok": True, "problems": problems})
 
     def api_metrics(self):
         up, pct, free_mb = uptime_disk()
@@ -2820,7 +2883,7 @@ class Handler(BaseHTTPRequestHandler):
         if sess is None:
             return
         out = [{k: u.get(k) for k in
-                ("name", "role", "unix", "sudo", "terminal", "term_port", "disabled")}
+                ("name", "role", "unix", "share", "sudo", "terminal", "term_port", "disabled")}
                for u in read_users()]
         for u in out:
             u["self"] = u["name"] == sess["user"]
@@ -2835,43 +2898,64 @@ class Handler(BaseHTTPRequestHandler):
     def api_users_add(self, body):
         if self._user_admin_guard() is None:
             return
+        code, payload = self._user_add(body)
+        if code != 200:
+            return self.err(code, payload)
+        saved, detail = save_state()
+        payload.update({"saved": saved, "save_detail": "" if saved else detail})
+        self.send(200, payload)
+
+    def _user_add(self, body):
+        """Create an account. Returns (200, payload) or (code, message); the
+        caller saves. Shared by /api/users/add and /api/nas-account (#270)."""
         name = (body.get("name") or "").strip()
         if not USER_NAME_RE.fullmatch(name) or name in USER_NAME_DENY:
-            return self.err(400, "user name: a-z, digits, _ -, max 32, lowercase first")
+            return (400, "user name: a-z, digits, _ -, max 32, lowercase first")
         users = read_users()
         if find_user(users, name):
-            return self.err(400, "that user already exists")
+            return (400, "that user already exists")
         role = body.get("role") or "viewer"
         if role not in ("admin", "user", "viewer"):
-            return self.err(400, "role must be admin, user or viewer")
-        pw = body.get("password") or ""
-        if len(pw) < 8:
-            return self.err(400, "password must be at least 8 characters")
-        want_unix = bool(body.get("unix"))
+            return (400, "role must be admin, user or viewer")
+        # A share-only account (pipeOS#270) is a unix login that exists for
+        # samba's passdb and nothing else: /sbin/nologin, no key, no terminal,
+        # no sudo, and NO dashboard sign-in (no hash — api_login refuses a
+        # user without one). Made from the Storage page, next to the share.
+        want_share = bool(body.get("share"))
+        want_unix = bool(body.get("unix")) or want_share
         want_sudo = bool(body.get("sudo"))
         want_term = bool(body.get("terminal"))
         term_pass = (body.get("term_pass") or "").strip()
         key = (body.get("ssh_key") or "").strip()
+        if want_share and (want_sudo or want_term or key or body.get("password")):
+            return (400, "a share-only account has no shell — no ssh key, terminal, sudo or dashboard password; "
+                         "its only credential is the SMB password")
+        pw = body.get("password") or ""
+        if not want_share and len(pw) < 8:
+            return (400, "password must be at least 8 characters")
         if want_sudo and not want_unix:
-            return self.err(400, "sudo needs an ssh/terminal account (enable unix access)")
+            return (400, "sudo needs an ssh/terminal account (enable unix access)")
         if want_term and not want_unix:
             want_unix = True  # a terminal IS a unix login
-        if want_unix and not (key or want_term):
-            return self.err(400, "an ssh account needs a public key (or enable the browser terminal)")
+        if want_unix and not (key or want_term or want_share):
+            return (400, "an ssh account needs a public key (or enable the browser terminal)")
         if want_term and (not term_pass or any(c in term_pass for c in "'\n\r\0")):
-            return self.err(400, "the browser terminal needs its own password (no quotes/newlines)")
+            return (400, "the browser terminal needs its own password (no quotes/newlines)")
         if want_unix and name in [l.split(":")[0] for l in
                                   open("/etc/passwd").read().splitlines() if l]:
-            return self.err(400, "that name is taken by a system account")
-        try:
-            h = hash_password(pw)
-        except RuntimeError as e:
-            return self.err(500, str(e))
+            return (400, "that name is taken by a system account")
+        h = None
+        if not want_share:
+            try:
+                h = hash_password(pw)
+            except RuntimeError as e:
+                return (500, str(e))
         problems = []
         if want_unix:
-            rc, out = run(["/usr/local/bin/pipeos-user", "add", name], timeout=30)
+            rc, out = run(["/usr/local/bin/pipeos-user", "add", name] + (["--nologin"] if want_share else []),
+                          timeout=30)
             if rc != 0:
-                return self.err(500, "could not create the unix user: " + out.strip()[-200:])
+                return (500, "could not create the unix user: " + out.strip()[-200:])
             if key:
                 rc, out = run(["/usr/local/bin/pipeos-user", "set-key", name],
                               input_text=key + "\n")
@@ -2881,9 +2965,13 @@ class Handler(BaseHTTPRequestHandler):
                 run(["/usr/local/bin/pipeos-user", "grant-sudo", name])
                 run(["/usr/local/bin/pipeos-user", "set-hash", name],
                     input_text=h + "\n")
-        u = {"name": name, "role": role, "hash": h, "unix": want_unix,
+        u = {"name": name, "role": role, "unix": want_unix,
              "sudo": want_sudo, "terminal": want_term,
              "created": int(time.time())}
+        if want_share:
+            u["share"] = True     # no "hash": this account cannot sign in
+        else:
+            u["hash"] = h
         if want_term:
             ports = [x.get("term_port") or 0 for x in users]
             u["term_port"] = max([TERM_PORT_BASE - 1] + ports) + 1
@@ -2891,9 +2979,7 @@ class Handler(BaseHTTPRequestHandler):
         users.append(u)
         write_users(users)
         problems += self._apply_terminals(users)
-        saved, detail = save_state()
-        self.send(200, {"ok": True, "problems": problems, "term_port": u.get("term_port"),
-                        "saved": saved, "save_detail": "" if saved else detail})
+        return (200, {"ok": True, "problems": problems, "term_port": u.get("term_port")})
 
     def _apply_terminals(self, users):
         """Regenerate terminals.conf; keep the service running iff it should."""
@@ -2923,6 +3009,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(404, "no such user")
         if "role" in body and body["role"] not in ("admin", "user", "viewer"):
             return self.err(400, "role must be admin, user or viewer")
+        if u.get("share") and any(k in body for k in ("role", "password", "ssh_key", "term_pass", "terminal", "sudo")):
+            return self.err(400, "a share-only account has no shell or dashboard sign-in — "
+                                 "set its SMB password under Files → Network storage, or disable it")
         demote = (body.get("role") in ("user", "viewer") or body.get("disabled") is True)
         if demote and u.get("role") == "admin" and self._last_admin_guard(users, u["name"]):
             return self.err(400, "that would leave the box with no admin")
@@ -2981,6 +3070,10 @@ class Handler(BaseHTTPRequestHandler):
             rc, out = run(args, timeout=30)
             if rc != 0:
                 problems.append("unix account not fully removed: " + out.strip()[-200:])
+            # and out of samba: the passdb entry, and every share's user list
+            # (a share left with nobody goes too; no share left turns storage
+            # off) — otherwise a deleted name kept its SMB logon (pipeOS#270)
+            problems += self._nas_forget_user(name)
         users.remove(u)
         write_users(users)
         drop_user_sessions(name)

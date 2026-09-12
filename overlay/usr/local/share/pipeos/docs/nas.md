@@ -10,8 +10,10 @@ Under **Files → Network storage**:
 
 1. Pick where the folder lives — `work` (the box's own data drive) or an
    attached external drive.
-2. Name the share and tick the accounts that may connect. Only accounts
-   with unix access (set under Users) can be ticked.
+2. Name the share and tick the accounts that may connect: an existing
+   account with unix access (set under Users), or a **share-only account**
+   created right here — no dashboard sign-in, no shell; its one credential
+   is the SMB password you give it.
 3. Set an **SMB password** for each of those accounts. SMB keeps its own
    password store, so this is separate from the dashboard password — set
    it once here.

@@ -851,6 +851,31 @@ req("/api/users/add", {"name": "root", "password": "hunter22hunter"}, expect=400
 req("/api/users/add", {"name": "shorty", "password": "short"}, expect=400)
 req("/api/users/add", {"name": "sudoer", "password": "hunter22hunter", "sudo": True}, expect=400)
 ok("users/add refuses hostile names, short passwords, sudo without unix")
+# a share-only account (pipeOS#270): unix for samba's sake, no hash, no shell;
+# nothing that would give it one is accepted, and it cannot sign in. The
+# HTTP path shells out to pipeos-user, absent on a dev host, so the
+# creation itself is exercised through _user_add's validation only (500).
+req("/api/users/add", {"name": "shareonly", "share": True, "sudo": True}, expect=400)
+req("/api/users/add", {"name": "shareonly", "share": True, "terminal": True, "term_pass": "x"}, expect=400)
+req("/api/users/add", {"name": "shareonly", "share": True, "ssh_key": "ssh-ed25519 AAAA"}, expect=400)
+req("/api/users/add", {"name": "shareonly", "share": True, "password": "hunter22hunter"}, expect=400)
+_r = req("/api/users/add", {"name": "shareonly", "share": True}, expect=500)  # pipeos-user missing here
+assert "unix user" in _r["error"]
+_us = webd.read_users()
+_us.append({"name": "shareonly", "role": "viewer", "unix": True, "share": True, "created": 0})
+webd.write_users(_us)
+assert "hash" not in [u for u in webd.read_users() if u["name"] == "shareonly"][0]
+req("/api/users/set", {"name": "shareonly", "password": "hunter22hunter"}, expect=400)
+req("/api/users/set", {"name": "shareonly", "ssh_key": "ssh-ed25519 AAAA"}, expect=400)
+req("/api/users/set", {"name": "shareonly", "role": "admin"}, expect=400)
+r = req("/api/users/set", {"name": "shareonly", "disabled": True})
+assert r["ok"]
+req("/api/users/set", {"name": "shareonly", "disabled": False})
+assert any(u["name"] == "shareonly" and u.get("share") for u in req("/api/users")["users"])
+_ck = cookie["v"]; cookie["v"] = None
+req("/api/login", {"username": "shareonly", "password": "anything-at-all"}, expect=403)
+cookie["v"] = _ck
+ok("share-only account: no shell/key/sudo/password accepted, no dashboard sign-in, disable allowed")
 # network storage: the share jail (paths resolve through _files_path, names
 # validated, users must be real unix accounts), the config round-trip, and
 # the empty-post disable path. No samba on the test host, so /api/nas still
@@ -909,6 +934,33 @@ assert webd.read_services()["nas"] is True
 req("/api/nas", {"shares": []})
 assert webd.read_services()["nas"] is False
 webd.write_users([u for u in webd.read_users() if u["name"] != "smbuser"])
+# /api/nas-account (pipeOS#270): validation, then the delete path — a unix
+# account on a share is stripped from it, an emptied share is dropped, and
+# no share left turns storage off. Seeded through the store (pipeos-user
+# and smbpasswd are absent here).
+req("/api/nas-account", {"name": "Bad Name", "password": "hunter22hunter"}, expect=400)
+req("/api/nas-account", {"name": "smbonly", "password": "short"}, expect=500)  # account half needs pipeos-user
+req("/api/nas-account", {"name": "admin", "password": "hunter22hunter"}, expect=400)  # exists
+_us = webd.read_users()
+_us.append({"name": "shareonly2", "role": "viewer", "unix": True, "share": True, "created": 0})
+webd.write_users(_us)
+r = req("/api/nas", {"shares": [{"name": "music", "path": "work/music", "users": ["shareonly", "shareonly2"]},
+                                {"name": "solo", "path": "work", "users": ["shareonly2"]}]})
+assert r["ok"] and webd.read_services()["nas"] is True
+r = req("/api/users/del", {"name": "shareonly2"})
+assert r["ok"]
+with open(webd.NAS_CONF) as f:
+    nas_text = f.read()
+assert "NAS_S1_NAME='music'" in nas_text and "NAS_S1_USERS='shareonly'" in nas_text
+assert "solo" not in nas_text  # its only user is gone, so is the share
+assert webd.read_services()["nas"] is True
+r = req("/api/users/del", {"name": "shareonly"})
+assert r["ok"]
+with open(webd.NAS_CONF) as f:
+    assert "NAS_S1_NAME=''" in f.read()
+assert webd.read_services()["nas"] is False  # no share left
+assert not any(u["name"].startswith("shareonly") for u in webd.read_users())
+ok("nas-account validates; deleting a unix account strips it from shares, drops emptied shares, turns storage off")
 # terminals: the same shape — no slot, no toggle-on
 r = req("/api/services", {"terminals": True})
 assert r["services"]["terminals"] is False and any("terminal" in p for p in r["problems"])
@@ -931,6 +983,7 @@ req("/api/users", expect=403)
 req("/api/file-op", {"op": "mkdir", "path": "work", "name": "nope"}, expect=403)
 req("/api/nas", {"shares": []}, expect=403)
 req("/api/nas-password", {"name": "peek", "password": "whatever12"}, expect=403)
+req("/api/nas-account", {"name": "peek2", "password": "whatever12"}, expect=403)
 req("/api/backup", {"dest": "ext/sdx1"}, expect=403)
 req("/api/flash", {"mode": "inplace", "confirm": "x"}, expect=403)
 req("/api/wake", {"id": "4d4d"}, expect=403)
