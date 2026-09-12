@@ -76,8 +76,11 @@ of the released commit with the workstation key baked in
 (`AUTH_KEYS=~/.ssh/id_ed25519.pub make usb`, then `scripts/70-flash.sh
 --image out/pipeos-usb.img /dev/sdX`). That image is never published: a
 release asset with an operator key in it is an operator key on every
-customer box. Reused sticks get `wipefs -a` first — a leftover `PIPEWORK`
-label stops `grow.sh` from carving `/work`.
+customer box. `make release` enforces it: `scripts/verify-image-generic.sh`
+reads the image's apkovl and refuses an ssh key or a box card (the build
+prints `kind=operator` and a banner for such an image). Reused sticks get
+`wipefs -a` first — a leftover `PIPEWORK` label stops `grow.sh` from
+carving `/work`.
 
 ## Pilot delivery
 

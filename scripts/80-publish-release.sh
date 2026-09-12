@@ -43,9 +43,19 @@ sha256 in transit and every package signature at install."
 # separate, manual act (found 2026-08-30). Same-day mtime = built with this
 # release; older images are refused rather than silently republished.
 IMG_XZ="$OUT/pipeos-usb.img.xz"
+IMG_RAW="$OUT/pipeos-usb.img"
 img_assets=()
 if [ -f "$IMG_XZ" ]; then
     if [ -n "$(find "$IMG_XZ" -mtime -1 2>/dev/null)" ]; then
+        # The image must be GENERIC (pipeOS#271): the uncompressed .img the
+        # .xz was made from must still be here and no newer than the .xz,
+        # and its apkovl must carry no operator key and no box card. A
+        # refusal here is the whole point — do not work around it.
+        [ -f "$IMG_RAW" ] || { echo "REFUSING: $IMG_XZ has no $IMG_RAW beside it to inspect — rebuild (make usb + xz)" >&2; exit 2; }
+        [ "$IMG_RAW" -nt "$IMG_XZ" ] && { echo "REFUSING: $IMG_RAW is newer than $IMG_XZ — the .xz is not this image; re-run xz" >&2; exit 2; }
+        "$PIPEOS_ROOT/scripts/verify-image-generic.sh" "$IMG_RAW" || exit 2
+        grep -q '^kind=operator' "$OUT/pipeos-image.txt" 2>/dev/null \
+            && { echo "REFUSING: $OUT/pipeos-image.txt says kind=operator" >&2; exit 2; }
         sha256sum "$IMG_XZ" | sed "s|$OUT/||" > "$IMG_XZ.sha256"
         # SHA256SUMS lists the image too (#179): one digest file for every
         # asset a box may fetch. pipeos-selfupdate reads only its own line;

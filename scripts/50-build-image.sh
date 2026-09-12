@@ -121,8 +121,17 @@ MC "$OUT/.boot_repository" ::/apks/extra/.boot_repository
 # The image describes itself (#179): what a box is running, and the p1
 # geometry an on-box flasher must match before it writes. Read by
 # `pipeos status` and by pipeos-flash; harmless to everything older.
+# generic (publishable) or operator (an AUTH_KEYS / make stick build that must
+# never leave the desk, pipeOS#271) — the same rule 80-publish-release.sh
+# enforces with scripts/verify-image-generic.sh; here it is a label and a banner.
+if "$PIPEOS_ROOT/scripts/verify-image-generic.sh" --apkovl "$OUT/pipeos.apkovl.tar.gz" >/dev/null 2>&1; then
+    IMAGE_KIND=generic
+else
+    IMAGE_KIND=operator
+fi
 {
     echo "variant=$VARIANT"
+    echo "kind=$IMAGE_KIND"
     echo "commit=$(git -C "$PIPEOS_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
     echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "p1_start_sectors=$((PART_OFFSET_MB * 2048))"
@@ -135,3 +144,7 @@ dd if="$P1" of="$IMG" bs=1M seek=$PART_OFFSET_MB conv=notrunc,sparse status=none
 rm -f "$P1"   # merged into $IMG; keeping it double-books P1_SIZE_MB of scratch
 ls -lh "$IMG"
 echo "image ready: $IMG"
+if [ "$IMAGE_KIND" = operator ]; then
+    echo "==> OPERATOR IMAGE (ssh key or box card baked) — flash it, never publish it;"
+    echo "==> make release refuses it (pipeOS#271). Generic: env -u AUTH_KEYS -u CARD make usb"
+fi
