@@ -59,6 +59,10 @@
 # their devices to trust this box, so it MUST persist — regenerating it would
 # break every device that trusted the old one. Keys are mode 600.
 +etc/pipeos/tls
+# the cluster key (0600) and the member list (#222): identity — a re-minted key
+# is a Machine every other member no longer recognises
++etc/pipeos/cluster
++etc/pipeos/cluster.json
 # apk signing key (extra repo index) and gh auth — lose these and you re-key/re-auth
 +root/.abuild
 +root/.config/gh

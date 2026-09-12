@@ -38,6 +38,8 @@ when host keys have changed (every reflash). Clocks are UTC.
 | `pipeos card set KEY=VALUE…` | every card-backed form | `/etc/pipeos/card.conf` + `pipebox-card generate` | yes |
 | `pipeos secrets phrase [--ack]` | Secrets → recovery phrase | `--ack` removes the tmpfs copy | no (tmpfs) |
 | `pipeos assistant password` (stdin) | Assistant → password | vault `assistant_pass`; restarts `pipeos-assistant` | yes |
+| `pipeos cluster init [NAME]\|status\|pub` | Cluster (#212) → this Machine's key and member list | `/etc/pipeos/cluster/key.pem` (0600), `/etc/pipeos/cluster.json` | `init`: yes |
+| `pipeos cluster call ID\|NAME\|IP METHOD PATH [JSON]` | — (what the cluster page does box-to-box) | nothing here; a signed request to a member, its answer checked | no |
 | `pipeos selfupdate image on\|off\|status` | System → update automatically | `/etc/pipeos/selfupdate.conf` `IMAGE_UPDATE` | yes |
 | `pipeos nas account NAME` (SMB password on stdin) | Files → Network storage → new account for a share | `users.json` (share-only: no sign-in, no shell), `pipeos-user add --nologin`, vault `nas_passdb`; restarts `pipeos-nas` | yes |
 | `pipeos vault status\|list\|get\|set\|del\|export\|unlock\|rephrase` | Secrets view | the sealed store | set/del: the store is in `/etc`, save after |

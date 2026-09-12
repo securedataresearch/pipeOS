@@ -525,6 +525,26 @@ if [ -s /etc/pipeos/web-admin.conf ]; then
     [ -s /run/pipeos/vault-phrase ] && noten "the vault's recovery phrase is waiting under Secrets in the dashboard — write it down, then dismiss it"
 fi
 
+# ---- 3cl. the cluster primitive (#222). cluster.json is the member list
+# every member holds; the key is what this Machine signs with. A list that
+# does not parse is a Machine no member can talk to, and one whose key is
+# readable by anyone is a Machine anyone can be. Both are identity: the
+# lbu include list must carry them, or a reboot forgets the cluster.
+if [ -f /etc/pipeos/cluster.json ]; then
+    if ! python3 -c 'import json,sys; d=json.load(open("/etc/pipeos/cluster.json")); sys.exit(0 if isinstance(d.get("members"), dict) else 1)' 2>/dev/null; then
+        crit "cluster: /etc/pipeos/cluster.json does not parse — no member can reach this Machine; pipeos cluster status"
+    fi
+    if [ ! -f /etc/pipeos/cluster/key.pem ]; then
+        crit "cluster: member list present but no key at /etc/pipeos/cluster/key.pem — this Machine cannot sign; its identity was lost (restore from a backup, or re-join: pipeos cluster init --force)"
+    elif [ "$(stat -c %a /etc/pipeos/cluster/key.pem 2>/dev/null)" != 600 ]; then
+        warnn "cluster: key.pem is mode $(stat -c %a /etc/pipeos/cluster/key.pem) — chmod 600 /etc/pipeos/cluster/key.pem"
+    fi
+    for _cp in etc/pipeos/cluster etc/pipeos/cluster.json; do
+        grep -qxF "+$_cp" /etc/apk/protected_paths.d/lbu.list 2>/dev/null \
+            || warnn "cluster: +$_cp is not in the lbu include list — a reboot forgets the cluster; redeploy the overlay"
+    done
+fi
+
 # ---- 3d. update-path health (#116). The last outage ran five days with zero
 # signal because nothing asserted the path worked; this is that signal. File
 # checks only — no network at boot: the daily cron run writes the stamp and

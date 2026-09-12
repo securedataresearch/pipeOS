@@ -39,6 +39,7 @@ pipeos status            # overlay commit + how far behind origin/main, save sta
 pipeos verify            # PASS = a reboot reproduces this state (run before AND after any change)
 pipeos-selfcheck         # verdict + every WARN/CRITICAL; the boot-report DM says the same
 pipebox-card verify      # derived files match the card? deploy-overlay regenerates them after a template change (#281); FAIL otherwise -> pipebox-card generate; pipeos save
+pipeos cluster status    # this Machine's cluster key + member list (#222); `pipeos cluster call two GET /api/cluster` is a signed box-to-box call
 ```
 
 ## Deploy a merged commit

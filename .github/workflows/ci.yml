@@ -70,6 +70,15 @@ jobs:
       - name: the web wizard claims, refuses, and forgets sessions correctly
         run: python3 scripts/check-webd.py
 
+      # #222. Two Machines on loopback, each with its own key: a member's
+      # signature is a session, a stranger's is a 401 that names the check
+      # that refused it (skew, replay, not a member, bad signature); the
+      # answer is signed back. The controls put each refusal's bug back.
+      - name: the cluster primitive — signed calls between two Machines, every refusal, and the controls
+        run: |
+          python3 scripts/check-cluster.py
+          python3 scripts/check-cluster-controls.py
+
       # #241. A Machine that is off has no row in the live cache, so waking
       # it needs the roster mdnsd keeps on /work and a packet built right;
       # the arming service must pick the NIC the chassis id came from.

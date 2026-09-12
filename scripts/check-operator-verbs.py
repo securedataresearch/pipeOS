@@ -251,11 +251,40 @@ check("17 selfupdate image: absent key reads as automatic (the default); off wri
       and "pipeos-selfupdate" in src.split("selfupdate)")[1][:120],
       repr((rc_s0, out_s0, rc_off, conf_off, rc_on, conf_on, rc_bad, rc_bad2, saves() - s0)))
 
+# ── cluster (#222): the key, the member list, a refused second init ──────
+CDIR = os.path.join(D, "cluster"); CJSON = os.path.join(D, "cluster.json")
+CENV = dict(ENV, PIPEOS_CLUSTER_DIR=CDIR, PIPEOS_CLUSTER_JSON=CJSON, PIPEOS_CLUSTER_SELF="7f3a")
+CLUSTERPY = os.path.join(WEB, "cluster.py")
+
+
+def cl(*args):
+    p = subprocess.run([sys.executable, CLUSTERPY] + list(args), capture_output=True, text=True, env=CENV)
+    return p.returncode, p.stdout + p.stderr
+
+
+s0 = saves()
+rc_i, out_i = cl("init", "zero")
+try:
+    cj = json.load(open(CJSON))
+except (OSError, ValueError):
+    cj = {}
+km = oct(os.stat(os.path.join(CDIR, "key.pem")).st_mode & 0o777) if os.path.exists(os.path.join(CDIR, "key.pem")) else None
+rc_i2, out_i2 = cl("init")
+rc_st, out_st = cl("status")
+rc_pub, out_pub = cl("pub")
+check("18 cluster init mints a 0600 key and a cluster of one (self is the only member, named) and saves once; a second init refuses (rc 1) without saving; status names self, the cluster and the member; pub prints the public key",
+      rc_i == 0 and km == "0o600" and list(cj.get("members", {})) == ["7f3a"] and cj["members"]["7f3a"]["name"] == "zero"
+      and saves() - s0 == 1 and rc_i2 == 1 and "already in a cluster" in out_i2 and saves() - s0 == 1
+      and rc_st == 0 and "7f3a" in out_st and cj.get("id", "") in out_st and "(self)" in out_st
+      and rc_pub == 0 and out_pub.startswith("-----BEGIN PUBLIC KEY-----")
+      and 'cluster)     shift; exec python3 /usr/local/share/pipeos/web/cluster.py "$@" ;;' in src,
+      repr((rc_i, out_i[-200:], km, cj, saves() - s0, rc_i2, out_i2[-120:], rc_st, out_st[-200:], rc_pub, out_pub[:40])))
+
 # ── the wiring: every verb in the help, the skill names every verb ────────
 helptext = "\n".join(l for l in src.split("\n")[:40])
 skill = open(os.path.join(REPO, ".claude/skills/pipeos-fleet/SKILL.md")).read()
 doc = open(os.path.join(REPO, "docs/fleet-ops.md")).read()
-verbs = ("pipeos schedule", "pipeos usage", "pipeos card set", "pipeos secrets phrase", "pipeos assistant password", "pipeos nas account", "pipeos selfupdate image", "pipeos deploy-overlay", "pipeos vault", "pipeos wake", "pipeos work")
+verbs = ("pipeos schedule", "pipeos usage", "pipeos card set", "pipeos secrets phrase", "pipeos assistant password", "pipeos nas account", "pipeos selfupdate image", "pipeos deploy-overlay", "pipeos vault", "pipeos wake", "pipeos work", "pipeos cluster")
 check("15 every operator verb is in pipeos's help, in the fleet skill and in docs/fleet-ops.md",
       all(v in helptext for v in verbs[:7]) and all(v in skill for v in verbs) and all(v in doc for v in verbs),
       "help=%r skill=%r doc=%r" % ([v for v in verbs[:7] if v not in helptext], [v for v in verbs if v not in skill], [v for v in verbs if v not in doc]))
