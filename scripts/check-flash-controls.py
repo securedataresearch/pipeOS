@@ -12,6 +12,8 @@ BIN = os.path.join(REPO, "overlay/usr/local/bin/pipeos-flash")
 PROBE = os.path.join(HERE, "check-flash.py")
 
 BREAKS = [
+    ("0  the post-apply save fence is not written (a save before the reboot overwrites the merged apkovl)",
+     ' > "$RUN/flash-pending"', ' > /dev/null'),
     ("A  the GPT signature check is gone",
      '    [ "$_sig" = "EFI PART" ] ||', '    false &&'),
     ("B  a bigger image squeezes in anyway",

@@ -11,6 +11,16 @@ async function api(path, body) {
   let data = {};
   try { data = await res.json(); } catch (e) { /* non-JSON error page */ }
   if (!res.ok) throw new Error(data.error || ("request failed (" + res.status + ")"));
+  // every mutating handler answers saved:false when the save was refused or
+  // failed (a new image applied and not yet booted, a staged rollback, a full
+  // stick) — the change is live in RAM and dies at the reboot. Say so once,
+  // whatever page made the call, instead of each form checking on its own.
+  if (data && data.saved === false && opts.method === "POST") {
+    const n = document.getElementById("savenote") || document.body.appendChild(el('<div id="savenote" class="alert bad" style="position:fixed;left:1rem;right:1rem;bottom:1rem;z-index:99"></div>'));
+    n.textContent = "NOT saved — " + (data.save_detail || "the save was refused; this change is lost at the next reboot");
+    n.hidden = false;
+    clearTimeout(n._t); n._t = setTimeout(() => { n.hidden = true; }, 12000);
+  }
   return data;
 }
 
@@ -1206,6 +1216,7 @@ async function dashboard() {
       if (!ok) alertItems.push(["bad", k + " is enabled but not running"]);
     });
     if (st.usage_paused) alertItems.push(["bad", "monthly usage cap reached — scheduled jobs are paused (Usage)"]);
+    if (st.save_fence) alertItems.push(["bad", "saves are fenced: " + st.save_fence + " — changes made now are NOT kept"]);
     else if (st.usage_cap && st.usage_cap.usd && st.usage_cap.pct >= 80) alertItems.push(["warn", st.usage_cap.pct + "% of the monthly usage cap (Usage)"]);
     renderAlerts();
     if (st.services.pipe) api("/api/pipe").then(p => {

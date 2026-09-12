@@ -56,6 +56,10 @@ say()  { echo "pipeos-selfupdate: $*"; }
 die()  { echo "pipeos-selfupdate: $*" >&2; log "ERROR $*"; exit 1; }
 
 [ "$(id -u)" = 0 ] || die "run as root"
+if [ -f /run/pipeos/flash-pending ]; then
+    say "a new image is applied and not yet booted — nothing to do until the reboot."
+    exit 0
+fi
 
 # Both blank = off (the shipped conf points at this repo's Releases; an owner
 # blanks it to opt out). Silent success: a daily cron should not nag.

@@ -632,6 +632,18 @@ cmd_apply() {
 
     cat "$STAGE/image.digest" 2>/dev/null > "$APPLIED" || date -u +%s > "$APPLIED"
     rm -f "$STAGE/pipeos-usb.img"
+    if [ -z "$TO" ]; then
+        # The media now holds the MERGED apkovl; RAM still runs the old system.
+        # Until the reboot, any pipeos-save (the 15-min autosave, the shutdown
+        # hook, a human) would re-package RAM over it and the box would boot
+        # its old overlay off the new image — which is exactly what happened
+        # on two, 2026-09-12: applied 02:44:08, saved over at 02:44:20 by the
+        # shutdown hook of the reboot that was meant to boot it. tmpfs, so the
+        # reboot itself clears the fence (pipeOS#276).
+        mkdir -p "$RUN"
+        echo "applied $(date -u +%Y-%m-%dT%H:%M:%SZ) image $(cat "$APPLIED")" > "$RUN/flash-pending"
+        say "saves are fenced until the reboot (the media holds the merged apkovl; RAM is still the old system)."
+    fi
     state done
     say "done. Reboot to boot the new image as this box."
     say "identity copies kept at $STAGE (identity-$TS, previous-$TS)."

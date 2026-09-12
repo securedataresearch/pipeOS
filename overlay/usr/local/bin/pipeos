@@ -235,6 +235,7 @@ cmd_status() {
         ok "local checkout's overlay matches live system"
     fi
     [ -f /etc/pipeos/rollback-pending ] && warn "ROLLBACK STAGED — reboot to apply; saves are fenced"
+    [ -f /run/pipeos/flash-pending ] && warn "NEW IMAGE APPLIED — reboot to boot it; saves are fenced until then"
     return 0
 }
 
@@ -373,6 +374,10 @@ cmd_snapshot_ls() {
 
 # ---------------------------------------------------------------- rollback
 cmd_rollback() {
+    if [ -f /run/pipeos/flash-pending ] && [ -n "$1" ]; then
+        echo "rollback: a new image is applied and not yet booted — reboot first (a rollback now would stage the pre-apply apkovl on the new image; pipeOS#276)" >&2
+        return 1
+    fi
     if [ -z "$1" ]; then
         echo "stage an older apkovl as what the next boot loads:"
         [ -f "$KNOWN_GOOD" ] && echo "  pipeos rollback known-good"
@@ -409,6 +414,8 @@ cmd_rollback() {
 # the previous owner.
 cmd_unclaim() {
     [ "$(id -u)" = 0 ] || { echo "unclaim: root only" >&2; return 1; }
+    [ -f /etc/pipeos/rollback-pending ] && { echo "unclaim: a rollback is staged — reboot first" >&2; return 1; }
+    [ -f /run/pipeos/flash-pending ] && { echo "unclaim: a new image is applied and not yet booted — reboot first (pipeOS#276)" >&2; return 1; }
     _hn=$(hostname)
     if [ "$1" != "--yes" ]; then
         echo "This makes $_hn nobody's box: claim, dashboard users, name and owner are"

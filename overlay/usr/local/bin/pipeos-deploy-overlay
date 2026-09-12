@@ -115,6 +115,12 @@ if [ -z "$ROOT" ]; then
 fi
 [ -d "$REPO/.git" ] || die "no pipeOS checkout at $REPO (set PIPEOS_REPO)"
 
+if [ "$NO_PERSIST" != 1 ]; then
+    # both fences stop us BEFORE anything is touched: the final save would be
+    # refused and a deploy that is live-but-unsaved dies at the reboot anyway
+    [ -f /etc/pipeos/rollback-pending ] && die "a rollback is staged — reboot first, then deploy"
+    [ -f /run/pipeos/flash-pending ] && die "a new image is applied and not yet booted — reboot first, then deploy onto what booted (pipeOS#276)"
+fi
 if [ -n "$ROOT" ] && [ "$NO_PERSIST" != 1 ]; then
     die "PIPEOS_DEPLOY_ROOT is set but PIPEOS_DEPLOY_NO_PERSIST is not 1.
   A relocated deploy installs into $ROOT, but pipeos-save, pipeos verify and

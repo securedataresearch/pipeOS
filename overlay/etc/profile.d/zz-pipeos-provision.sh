@@ -54,6 +54,8 @@ _pipeos_provision() {
     # and the new password + ssh key silently evaporated at the next reboot.
     if command -v pipeos-save >/dev/null 2>&1 && pipeos-save; then
         echo '(state saved)'
+    elif [ $? = 3 ]; then
+        echo '(state NOT saved: pipeos-save refused — a new image or a rollback is staged; reboot, then run pipeos save)'
     elif lbu commit; then
         echo '(state saved — lbu fallback)'
     else
