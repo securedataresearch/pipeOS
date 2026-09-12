@@ -98,6 +98,14 @@ TLS_DIR = ETC + "/tls"
 CA_CRT = TLS_DIR + "/ca.crt"
 SRV_CRT = TLS_DIR + "/server.crt"
 SRV_KEY = TLS_DIR + "/server.key"
+# the public certificate (#286): Let's Encrypt's, for <mac>.m.pipe.online,
+# obtained by pipeos-tls-public; served for that name only (SNI), so the box
+# CA's pair above stays the cluster identity
+PUB_CRT = TLS_DIR + "/public.crt"
+PUB_KEY = TLS_DIR + "/public.key"
+PUBLIC_CONF = ETC + "/public.conf"
+PUBLIC_STATUS = "/run/pipeos/public.status"
+TLS_PUBLIC_BIN = "/usr/local/bin/pipeos-tls-public"
 SESS_DIR = "/run/pipeos/web-sessions"
 BOOT_REPORT = "/run/pipeos/boot-report"
 # The LAN lobby (#lobby): mdnsd's peer cache, and how stale a row may be
@@ -238,6 +246,20 @@ elif [ -n "$u" ] && [ "$u" != root ]; then
 fi
 echo "done — reload https://@HOST@.local/ and look for the padlock (restart the browser if it was open)."
 """
+
+
+def _lock_held(path):
+    """Is some process holding the flock on `path` (pipeos-tls-public's run lock)?"""
+    try:
+        with open(path, "a+") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(f, fcntl.LOCK_UN)
+                return False
+            except OSError:
+                return True
+    except OSError:
+        return False
 
 
 def run(argv, timeout=60, input_text=None, env=None):
@@ -495,6 +517,38 @@ def box_name():
     return "" if ID_NAME_RE.fullmatch(hn) else hn
 
 
+def public_conf():
+    """PUBLIC=, PUBLIC_NAME= from public.conf (#286); {} when there is none."""
+    out = {}
+    try:
+        with open(PUBLIC_CONF) as f:
+            for line in f:
+                k, _, v = line.strip().partition("=")
+                if k and not k.startswith("#"):
+                    out[k] = v.strip().strip('"')
+    except OSError:
+        pass
+    return out
+
+
+def public_status():
+    try:
+        with open(PUBLIC_STATUS) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def public_host():
+    """The public name when it is live: on, registered, a certificate on
+    disk — what every link points at. "" otherwise."""
+    c = public_conf()
+    name = c.get("PUBLIC_NAME", "")
+    if c.get("PUBLIC", "on") != "on" or not name or not os.path.exists(PUB_CRT) or not os.path.exists(PUB_KEY):
+        return ""
+    return name
+
+
 def self_entry():
     m4 = lanid.mac4()
     lan = lanid.lan_name(m4)
@@ -504,7 +558,8 @@ def self_entry():
             "host": (name or lan) + ".local",
             "ip": primary_ip()[0], "claimed": claimed(),
             "verdict": lanid.verdict_line(BOOT_REPORT), "commit": img["commit"][:12],
-            "built": img["built"], "model": lanid.model(), "self": True}
+            "built": img["built"], "model": lanid.model(), "self": True,
+            "public_host": public_host()}
 
 
 def lobby_entries():
@@ -1691,9 +1746,43 @@ class Handler(BaseHTTPRequestHandler):
         thing that may be kept; the body is not."""
         self._raw = b""
 
+    # -- the way in (#286): once the Machine has its public name and
+    # certificate, plain http lands on https://<mac>.m.pipe.online. The
+    # unclaimed wizard, the lobby's JSON and the CA downloads stay reachable
+    # on http (no name yet / a stranger finding the box / the offline
+    # fallback); and when this LAN's resolver will not answer the name
+    # (rebind protection), the redirect stops rather than strand the owner.
+    REDIRECT_EXEMPT = ("/api/state", "/api/lobby", "/lobby", "/ca.crt", "/pipeos-ca.mobileconfig",
+                       "/install-ca.sh", "/api/cluster/identity", "/api/tls-public", "/api/health")
+
+    def maybe_redirect(self):
+        if isinstance(self.connection, ssl.SSLSocket):
+            return False                      # already on :443
+        path = self.path.split("?")[0]
+        if any(path == e or path.startswith(e + "/") for e in self.REDIRECT_EXEMPT):
+            return False
+        if not claimed():
+            return False
+        name = public_host()
+        if not name:
+            return False
+        if public_status().get("resolves") == "no":
+            return False
+        host = (self.headers.get("Host") or "").split(":")[0].lower()
+        if host == name:
+            return False
+        self.send_response(307 if self.command == "POST" else 302)
+        self.send_header("Location", "https://%s%s" % (name, self.path))
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        return True
+
     # -- routes --
     def do_GET(self):
         self._fresh()
+        if self.maybe_redirect():
+            return
         path = self.path.split("?")[0]
         if path == "/" or path in ("/setup", "/login", "/dashboard", "/lobby"):
             return self.serve_static("index.html")
@@ -1715,6 +1804,10 @@ class Handler(BaseHTTPRequestHandler):
         # at /ca.crt; this names the box id and the fingerprint beside it.
         if path == "/api/cluster/identity":
             return self.api_cluster_identity()
+        # the public-https state is public (#286): the wizard polls it before
+        # the session exists, and the lobby links by it
+        if path == "/api/tls-public":
+            return self.api_tls_public_get()
         # /api/docs carries a slug segment, so it routes by prefix. Read-only,
         # viewer-readable like the other readers.
         if path == "/api/docs" or path.startswith("/api/docs/"):
@@ -1759,6 +1852,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self._fresh()
+        if self.maybe_redirect():
+            return
         # Uploads stream a raw body and may run for minutes — they skip both
         # the JSON body cap and MUTATE_LOCK (a big file must not freeze every
         # other mutation). Still same-origin + session gated like the rest.
@@ -1843,6 +1938,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/secrets/init": self.api_secrets_init,
             "/api/secrets/phrase-ack": self.api_secrets_phrase_ack,
             "/api/cluster/init": self.api_cluster_init,
+            "/api/tls-public/issue": self.api_tls_public_issue,
+            "/api/tls-public/set": self.api_tls_public_set,
             "/api/cluster/add": self.api_cluster_add,
             "/api/cluster/remove": self.api_cluster_remove,
             "/api/cluster/sync": self.api_cluster_sync,
@@ -1934,6 +2031,7 @@ class Handler(BaseHTTPRequestHandler):
             "name": box_name(),
             "lan_name": lanid.lan_name(),
             "siblings": len(ps),
+            "public_host": public_host(),
         })
 
     def api_lobby(self):
@@ -2242,6 +2340,35 @@ class Handler(BaseHTTPRequestHandler):
             pass
         self.send(200, {"ok": True})
 
+    # -- public https (#286) --
+    def api_tls_public_get(self):
+        st = public_status()
+        c = public_conf()
+        self.send(200, {"on": c.get("PUBLIC", "on") == "on", "name": c.get("PUBLIC_NAME", ""),
+                        "host": public_host(), "ready": bool(public_host()) and st.get("ready", False),
+                        "not_after": st.get("not_after", ""), "days": st.get("days", 0),
+                        "resolves": st.get("resolves", "unknown"), "error": st.get("error", ""),
+                        "running": os.path.exists("/run/pipeos-tls-public.lock") and _lock_held("/run/pipeos-tls-public.lock")})
+
+    def api_tls_public_issue(self, _body):
+        """Get the public name and certificate, detached: the wizard (and
+        the System view) poll /api/tls-public. The script saves after the
+        install, so nothing here does."""
+        if not claimed():
+            return self.err(403, "claim the box first")
+        try:
+            subprocess.Popen([TLS_PUBLIC_BIN, "issue"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+        except OSError as e:
+            return self.err(500, "cannot start pipeos-tls-public: %s" % e)
+        self.send(200, {"ok": True, "started": True})
+
+    def api_tls_public_set(self, body):
+        want = "on" if body.get("on", True) else "off"
+        rc, out = run([TLS_PUBLIC_BIN, want], timeout=120)
+        if rc != 0:
+            return self.err(500, out.strip()[-300:])
+        self.send(200, {"ok": True, "on": want == "on", "saved": "saved" in out})
+
     # -- the cluster primitive (#222) --
     def api_cluster_identity(self):
         """Public: who this Machine is to a cluster — its box id, the
@@ -2432,6 +2559,7 @@ class Handler(BaseHTTPRequestHandler):
             "hostname": socket.gethostname(),
             "id": lanid.mac4(),
             "name": box_name(),
+            "public_host": public_host(),
             "nick": card_get("NICK"),
             "owner": card_get("OWNER_NICK"),
             "uptime_s": up,
@@ -4073,8 +4201,13 @@ def start_https(init=True):
             # thread: only serve_forever's own thread may not call this.
             old.shutdown()
             old.server_close()
+        # stamped BEFORE the contexts are built: a file that changes while
+        # they are being read is a change the next poll must see, not one
+        # that is swallowed by a stamp taken after the fact
+        stamp = _mtimes()
         try:
             ctx = cluster.server_context()
+            public_sni(ctx)
             # the same port as before: a restart is invisible to the members
             httpsd = ThreadingHTTPServer(("0.0.0.0", HTTPS.get("port") or HTTPS_PORT), Handler)
             httpsd.daemon_threads = True
@@ -4085,10 +4218,7 @@ def start_https(init=True):
         HTTPS["ctx"] = ctx
         HTTPS["server"] = httpsd
         HTTPS["port"] = httpsd.server_address[1]
-        try:
-            HTTPS["bundle"] = os.stat(cluster.BUNDLE).st_mtime_ns
-        except OSError:
-            HTTPS["bundle"] = None
+        HTTPS["bundle"] = stamp
         if not HTTPS.get("watcher"):
             # `pipeos cluster add|remove|init` run in their own process: the
             # trust store on disk changes and this process must follow it.
@@ -4099,14 +4229,49 @@ def start_https(init=True):
     return httpsd
 
 
+def _mtimes():
+    """The files the listener's contexts are built from: the member trust
+    store (#222) and the public certificate (#286). A change to any one is
+    a listener restart with fresh contexts — same port, in-flight requests
+    finish on their thread."""
+    out = []
+    for p in (cluster.BUNDLE, PUB_CRT, PUB_KEY, PUBLIC_CONF):
+        try:
+            out.append(os.stat(p).st_mtime_ns)
+        except OSError:
+            out.append(None)
+    return out
+
+
+def public_sni(ctx):
+    """The public name gets the public certificate and asks for no client
+    certificate (a browser on the internet must never be prompted); every
+    other name — the chassis .local names, the alias, the IP, no SNI at all —
+    keeps the box CA's certificate and the members' trust store, which is
+    what the cluster's mutual TLS depends on (#284). Members reach each
+    other by address, so they never send the public name."""
+    name = public_host()
+    if not name:
+        return
+    try:
+        pub = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        pub.load_cert_chain(PUB_CRT, PUB_KEY)
+    except (ssl.SSLError, OSError) as e:
+        sys.stderr.write("pipeos-webd: public certificate not loaded: %s\n" % e)
+        return
+
+    def pick(sock, servername, _ctx):
+        if servername and servername.lower() == name:
+            sock.context = pub
+
+    ctx.sni_callback = pick
+    HTTPS["public"] = name
+
+
 def bundle_watcher():
     while True:
         time.sleep(float(os.environ.get("PIPEOS_WEB_BUNDLE_POLL", "2")))
-        try:
-            cur = os.stat(cluster.BUNDLE).st_mtime_ns
-        except OSError:
-            cur = None
-        if HTTPS.get("server") is not None and cur != HTTPS.get("bundle"):
+        if HTTPS.get("server") is not None and _mtimes() != HTTPS.get("bundle"):
             start_https(init=False)
 
 

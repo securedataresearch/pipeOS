@@ -559,6 +559,35 @@ EOF
     [ -n "$_cldiff" ] && warnn "cluster: member list differs on $_cldiff (their members hash is not ours) — pipeos cluster sync from whichever side is right"
 fi
 
+# ---- 3ct. public https (#286). A claimed Machine with PUBLIC=on should
+# carry https://<mac>.m.pipe.online: the conf names it, the certificate is
+# in etc/pipeos/tls, acme.sh's home persists (a lost order state is a new
+# issuance and a rate-limit line spent), and this LAN's resolver answers the
+# name with our address — when it does not (rebind protection), the box
+# stops redirecting and says which router setting.
+if [ -s /etc/pipeos/web-admin.conf ] && [ "$(sed -n 's/^PUBLIC=//p' /etc/pipeos/public.conf 2>/dev/null | head -1)" != off ]; then
+    _pname=$(sed -n 's/^PUBLIC_NAME=//p' /etc/pipeos/public.conf 2>/dev/null | head -1)
+    if [ -z "$_pname" ]; then
+        warnn "public https: no name yet — the Machine has not registered at the relay (needs internet); pipeos tls public issue, or it retries daily"
+    elif [ ! -s /etc/pipeos/tls/public.crt ]; then
+        warnn "public https: $_pname is registered but no certificate is installed — pipeos tls public issue (it retries daily)"
+    else
+        _pdays=$(python3 -c 'import json; print(json.load(open("/run/pipeos/public.status")).get("days", 0))' 2>/dev/null || echo 0)
+        if [ "${_pdays:-0}" -le 0 ]; then
+            crit "public https: the certificate for $_pname has EXPIRED — browsers warn again; pipeos tls public renew"
+        elif [ "$_pdays" -lt 14 ]; then
+            warnn "public https: the certificate for $_pname expires in $_pdays days and has not renewed — pipeos tls public renew, check the daily job and internet access"
+        fi
+        case "$(python3 -c 'import json; print(json.load(open("/run/pipeos/public.status")).get("resolves", "unknown"))' 2>/dev/null)" in
+            no) warnn "public https: this network's resolver does not answer $_pname with this Machine's address (DNS rebind protection on the router) — allow m.pipe.online there; links use the local name meanwhile" ;;
+        esac
+    fi
+    for _pp in etc/pipeos/public.conf etc/pipeos/acme etc/periodic/daily/pipeos-tls-public; do
+        grep -qxF "+$_pp" /etc/apk/protected_paths.d/lbu.list 2>/dev/null \
+            || warnn "public https: +$_pp is not in the lbu include list — a reboot forgets it; redeploy the overlay"
+    done
+fi
+
 # ---- 3d. update-path health (#116). The last outage ran five days with zero
 # signal because nothing asserted the path worked; this is that signal. File
 # checks only — no network at boot: the daily cron run writes the stamp and
@@ -1054,6 +1083,9 @@ went down: $down
 claimed: $_claimed
 services: pipe=$SERVICE_PIPE claude=$SERVICE_CLAUDE stream=$SERVICE_STREAM support=$SERVICE_SUPPORT
 verdict: $verdict"
+_pub=$(python3 -c 'import json; d=json.load(open("/run/pipeos/public.status")); print(d["name"] if d.get("ready") and d.get("on", True) else "")' 2>/dev/null)
+[ -n "$_pub" ] && msg="$msg
+dashboard: https://$_pub/"
 [ -s "$R" ] && msg="$msg
 $(cat "$R")"
 [ "$promoted" = yes ] && msg="$msg

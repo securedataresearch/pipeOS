@@ -155,7 +155,7 @@ function machineRows(ms, opts = {}) {
     const off = m.awake === false;
     const [vcls, vtxt] = off ? ["status-warn", "off · last seen " + agoShort(m.last_seen)]
       : verdictClass(m.verdict ? "verdict: " + m.verdict : "");
-    const href = off ? "" : (m.host ? "http://" + m.host + "/" : (m.ip ? "http://" + m.ip + "/" : ""));
+    const href = off ? "" : (m.public_host ? "https://" + m.public_host + "/" : (m.host ? "http://" + m.host + "/" : (m.ip ? "http://" + m.ip + "/" : "")));
     const pills = (m.self ? '<span class="pill">this one</span>' : "")
       + (m.claimed ? "" : '<span class="pill status-warn">unclaimed</span>')
       + `<span class="pill ${vcls}">${esc(vtxt)}</span>`;
@@ -221,7 +221,7 @@ function step1(state) {
     try {
       const r = await api("/api/claim", { password: p1 });
       if (!r.saved) alert("Claimed, but saving to the boot media failed:\n" + r.save_detail);
-      if (r.recovery_phrase) phraseStep(state, r.recovery_phrase); else step2(state);
+      if (r.recovery_phrase) phraseStep(state, r.recovery_phrase, () => secureStep(state)); else secureStep(state);
     } catch (e) {
       err.textContent = e.message; err.hidden = false;
       busy(v.querySelector("#go"), false);
@@ -248,6 +248,45 @@ function phraseStep(state, phrase, next) {
   app.replaceChildren(v);
 }
 
+// After the claim (#286): the Machine gets its public name and a real
+// certificate by itself. The owner watches a line change; nothing to install.
+function secureStep(state) {
+  const v = el(`<div>
+    <p class="steps">One moment</p>
+    <h1>Getting your secure address</h1>
+    <p class="sub">Your Machine is asking for its own https address — a padlock on every phone and laptop, with nothing to install.</p>
+    <div class="card">
+      <p id="smsg">starting…</p>
+      <p class="note" id="snote"></p>
+      <button id="go" hidden>Continue</button>
+    </div>
+  </div>`);
+  const msg = v.querySelector("#smsg"), note = v.querySelector("#snote"), go = v.querySelector("#go");
+  go.onclick = () => step2(state);
+  let tries = 0;
+  const poll = async () => {
+    try {
+      const s = await api("/api/tls-public");
+      if (s.ready && s.host) {
+        state.public_host = s.host;
+        msg.textContent = "Ready: https://" + s.host + "/";
+        note.textContent = s.resolves === "no" ? "Your router refused to resolve the name (it blocks names that point inside the network). The Machine keeps its local address; see Network in the dashboard for the setting to change." : "That address works from any device on this network. Bookmark it.";
+        go.hidden = false; return;
+      }
+      if (s.error && !s.running) {
+        msg.textContent = "Not yet: " + s.error;
+        note.textContent = "The Machine will keep trying every day. You can continue on the local address for now.";
+        go.hidden = false; return;
+      }
+      msg.textContent = tries < 4 ? "registering the name…" : tries < 20 ? "waiting for the certificate (this can take a minute)…" : "still waiting…";
+    } catch (e) { msg.textContent = e.message; }
+    if (++tries > 60) { note.textContent = "Taking too long. Continue on the local address; the dashboard's Network view shows progress."; go.hidden = false; return; }
+    setTimeout(poll, 3000);
+  };
+  api("/api/tls-public/issue", {}).then(poll).catch(e => { msg.textContent = e.message; go.hidden = false; });
+  app.replaceChildren(v);
+}
+
 function step2(state) {
   const id = state.lan_name || state.hostname;
   const v = el(`<div>
@@ -266,7 +305,7 @@ function step2(state) {
       <p class="err" id="err" hidden></p>
     </div>
   </div>`);
-  v.querySelector("#skip").onclick = () => step3();
+  v.querySelector("#skip").onclick = () => step3(state);
   api("/api/name-suggest").then(r => {
     const box = v.querySelector("#suggest"), inp = v.querySelector("#nick");
     (r.names || []).forEach((n, i) => {
@@ -280,11 +319,11 @@ function step2(state) {
     const nick = v.querySelector("#nick").value.trim();
     const owner = v.querySelector("#owner").value.trim();
     const err = v.querySelector("#err"); err.hidden = true;
-    if (!nick && !owner) return step3();
+    if (!nick && !owner) return step3(state);
     busy(v.querySelector("#go"), true);
     try {
       await api("/api/name", { nick: nick, owner: owner });
-      step3(nick);
+      step3(state);
     } catch (e) {
       err.textContent = e.message; err.hidden = false;
       busy(v.querySelector("#go"), false);
@@ -293,7 +332,7 @@ function step2(state) {
   app.replaceChildren(v);
 }
 
-function step3() {
+function step3(state) {
   const rows = SERVICES.map(s => `
     <div class="row">
       <div><div class="name">${esc(s.name)}</div><div class="desc">${esc(s.desc)}</div></div>
@@ -315,7 +354,7 @@ function step3() {
     busy(v.querySelector("#go"), true);
     try {
       const r = await api("/api/services", picked);
-      step4(r.services);
+      step4(r.services, state);
     } catch (e) {
       err.textContent = e.message; err.hidden = false;
       busy(v.querySelector("#go"), false);
@@ -412,7 +451,7 @@ function claudeCard(opts) {
   return v;
 }
 
-function step4(services) {
+function step4(services, state) {
   const parts = [];
   if (services.pipe) parts.push(`
     <div class="card">
@@ -444,7 +483,11 @@ function step4(services) {
     } catch (e) { msg.textContent = e.message; }
     busy(pgo, false);
   };
-  v.querySelector("#done").onclick = () => dashboard();
+  v.querySelector("#done").onclick = () => {
+    // finish on the padlock when the Machine has its public address (#286)
+    const h = (state && state.public_host) || "";
+    if (h && location.hostname !== h) location.href = "https://" + h + "/"; else dashboard();
+  };
   app.replaceChildren(v);
 }
 
@@ -1072,6 +1115,13 @@ async function dashboard() {
         </div>
         <div class="card">
           <h2>Secure access (HTTPS)</h2>
+          <p id="publine">checking…</p>
+          <p class="note" id="pubnote"></p>
+          <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin:.4rem 0">
+            <button id="pubissue" class="ghost small" type="button" hidden>get the secure address now</button>
+            <label class="switch" title="public https"><input type="checkbox" id="pubon"><span></span></label><span class="note">public address on</span>
+          </div>
+          <details><summary class="note">Without internet access: trust this Machine's own certificate instead (once per device)</summary>
           <p class="note" id="tlsnote">checking…</p>
           <a class="btn ghost" id="camobile" href="/pipeos-ca.mobileconfig">iPhone / iPad: install profile</a>
           <a class="btn ghost" id="cadl" href="/ca.crt" download>Mac / Windows / Android: download certificate</a>
@@ -1085,6 +1135,7 @@ async function dashboard() {
             <b>Android:</b> Settings › Security › Encryption &amp; credentials › Install a certificate › CA certificate → pick the .crt.<br>
             <b>Linux (manual):</b> paste the command above into a terminal; it needs sudo and, for the browsers, the certutil tool (package <code>libnss3-tools</code> or <code>nss-tools</code>).<br>
             Then reload over <span id="httpslink"></span> and you’ll see the padlock.</p>
+          </details>
           </details>
         </div>
       </section>
@@ -2012,6 +2063,28 @@ async function dashboard() {
       box.textContent = (await r.json()).text;
     } catch (e) { box.textContent = e.message; }
   };
+  const pollPublic = async () => {
+    const line = v.querySelector("#publine"), note = v.querySelector("#pubnote"), btn = v.querySelector("#pubissue"), sw = v.querySelector("#pubon");
+    if (!line) return;
+    try {
+      const s = await api("/api/tls-public");
+      sw.checked = !!s.on;
+      if (s.ready && s.host) {
+        line.innerHTML = `✓ Secure address: <a href="https://${esc(s.host)}/">https://${esc(s.host)}/</a>`;
+        note.textContent = (s.resolves === "no"
+          ? "This network's router refuses to resolve the name (DNS rebind protection). Allow the domain m.pipe.online in the router's DNS settings, or use the local address; nothing else is affected."
+          : `Certificate valid ${s.days} more days; it renews itself.`) + (location.hostname !== s.host ? " Every link from this Machine now uses it." : "");
+        btn.hidden = true;
+      } else if (!s.on) {
+        line.textContent = "Public address is off — this Machine is reachable on its local names only."; note.textContent = ""; btn.hidden = true;
+      } else {
+        line.textContent = s.running ? "Getting the secure address…" : (s.error ? "No secure address yet: " + s.error : "No secure address yet.");
+        note.textContent = "The Machine asks for one at setup and retries daily; it needs internet access."; btn.hidden = !!s.running;
+      }
+    } catch (e) { line.textContent = e.message; }
+  };
+  { const btn = v.querySelector("#pubissue"); if (btn) btn.onclick = async () => { btn.disabled = true; try { await api("/api/tls-public/issue", {}); } catch (e) { v.querySelector("#pubnote").textContent = e.message; } setTimeout(() => { btn.disabled = false; pollPublic(); }, 3000); }; }
+  { const sw = v.querySelector("#pubon"); if (sw) sw.onchange = async () => { try { await api("/api/tls-public/set", { on: sw.checked }); } catch (e) { v.querySelector("#pubnote").textContent = e.message; } pollPublic(); }; }
   {
     const tlsnote = v.querySelector("#tlsnote");
     const host = location.hostname;
@@ -2171,6 +2244,7 @@ async function dashboard() {
   });
   // ---- network tiles + traffic chart ----
   const pollNetwork = async () => {
+    pollPublic();
     try {
       const r = await api("/api/lobby");
       const rows = v.querySelector("#nmrows"), note = v.querySelector("#nmnote");

@@ -38,6 +38,7 @@ when host keys have changed (every reflash). Clocks are UTC.
 | `pipeos card set KEY=VALUE…` | every card-backed form | `/etc/pipeos/card.conf` + `pipebox-card generate` | yes |
 | `pipeos secrets phrase [--ack]` | Secrets → recovery phrase | `--ack` removes the tmpfs copy | no (tmpfs) |
 | `pipeos assistant password` (stdin) | Assistant → password | vault `assistant_pass`; restarts `pipeos-assistant` | yes |
+| `pipeos tls public status\|issue\|renew\|on\|off` | Network → Secure access | `/etc/pipeos/public.conf`, `/etc/pipeos/tls/public.{crt,key}` (Let's Encrypt via acme.sh + the relay's DNS), `/etc/pipeos/acme` | `issue`/`on`/`off`: yes |
 | `pipeos cluster init [NAME]\|status\|ca` | Cluster → this Machine's identity (its CA) and member list | `/etc/pipeos/cluster.json` | `init`: yes |
 | `pipeos cluster add ID\|NAME\|IP` (its admin password on stdin) | Cluster → Add a Machine | the target joins (takes the list), this list gains its CA, the list is pushed to every member | yes |
 | `pipeos cluster remove ID` | Cluster → Remove | the list loses it, pushed to the rest (the removed one finds out at its next call and becomes a cluster of one) | yes |

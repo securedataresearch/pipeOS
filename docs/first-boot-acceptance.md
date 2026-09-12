@@ -102,3 +102,16 @@ should have said. Each becomes a fix in the same PR or an issue.
 
 1. ____________________
 2. ____________________
+
+## 7. Public https (#286)
+
+| step | expect |
+|------|--------|
+| after the claim, "Getting your secure address" | ends "Ready: https://<mac>.m.pipe.online/" within ~2 minutes |
+| Finish setup | lands on `https://<mac>.m.pipe.online/` — padlock, no prompt |
+| the same address on an iPhone, an Android, a Mac, Windows | padlock everywhere, nothing installed |
+| `http://pipeos.local/` and `http://<name>.local/` | redirect to the secure address |
+| `pipeos status` / the boot-report DM | name the address; `pipeos tls public status` says days left, LAN resolves: yes |
+| reboot | still there; `pipeos verify` PASS |
+| a router with rebind protection (or `PIPEOS_PUBLIC_RESOLVE=no` in a drill) | selfcheck WARN names the setting; no redirect; `.local` works |
+| `pipeos tls public renew` (with `acme.sh --renew --force` in a drill) | new not-after, nothing restarted |

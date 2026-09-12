@@ -52,6 +52,8 @@ CACHE = os.environ.get("PIPEOS_MDNS_CACHE", "/run/pipeos/mdns/peers.json")
 # what webd publishes about this Machine's cluster (#211): id, key
 # fingerprint, members hash — read here because the key dir is root's
 CLUSTER_STATUS = os.environ.get("PIPEOS_CLUSTER_STATUS", "/run/pipeos/cluster.status")
+# the public https name (#286), from pipeos-tls-public's status file
+PUBLIC_STATUS = os.environ.get("PIPEOS_PUBLIC_STATUS", "/run/pipeos/public.status")
 ROSTER = os.environ.get("PIPEOS_MDNS_ROSTER", "/work/pipeos/mdns/machines.json")
 IDENT_FILE = os.environ.get("PIPEOS_MDNS_IDENT", "")
 LOOP = os.environ.get("PIPEOS_MDNS_LOOP") == "1"
@@ -98,7 +100,8 @@ def read_ident():
         ident = {"id": m4, "hostname": hn, "claimed": bool(d.get("claimed")),
                  "verdict": d.get("verdict", ""), "commit": d.get("commit", ""),
                  "built": d.get("built", ""), "model": d.get("model", ""),
-                 "mac": d.get("mac", ""), "cl": d.get("cl", ""), "k": d.get("k", ""), "h": d.get("h", "")}
+                 "mac": d.get("mac", ""), "cl": d.get("cl", ""), "k": d.get("k", ""), "h": d.get("h", ""),
+                 "p": d.get("p", "")}
     else:
         hn = socket.gethostname().lower()
         name = card_name()
@@ -107,6 +110,7 @@ def read_ident():
                  "verdict": lanid.verdict_line(BOOT_REPORT), "commit": img["commit"][:12],
                  "built": img["built"], "model": lanid.model(), "mac": lanid.mac()}
         ident.update(cluster_status())
+        ident["p"] = public_name()
     ident["lan_name"] = lanid.lan_name(ident["id"])
     # The name on the wire: the owner's alias; failing that a legacy hostname
     # that was itself a name (pre-cluster boxes); nothing when the box is
@@ -180,12 +184,24 @@ def cluster_status():
         return {"cl": "", "k": "", "h": ""}
 
 
+def public_name():
+    """The public https name when it is live (#286), else ""."""
+    try:
+        with open(PUBLIC_STATUS) as f:
+            d = json.load(f)
+        return str(d.get("name", "")) if d.get("ready") and d.get("on", True) else ""
+    except (OSError, ValueError):
+        return ""
+
+
 def _txt(ident):
     return {"id": ident["id"], "n": ident["nick"], "c": "1" if ident["claimed"] else "0",
             "v": ident["verdict"][:120], "i": ident["commit"], "b": ident["built"], "m": ident["model"],
             "mac": ident.get("mac", ""),
             # the cluster (#211): id, this key's fingerprint, the members hash
-            "cl": ident.get("cl", ""), "k": ident.get("k", ""), "h": ident.get("h", "")}
+            "cl": ident.get("cl", ""), "k": ident.get("k", ""), "h": ident.get("h", ""),
+            # the public https name (#286): what the lobby links to
+            "p": ident.get("p", "")}
 
 
 # ---- the peers -----------------------------------------------------------------
@@ -214,6 +230,7 @@ def absorb_response(records, src_ip, state):
                  "claimed": kv.get("c") == "1", "verdict": kv.get("v", ""), "commit": kv.get("i", ""),
                  "built": kv.get("b", ""), "model": kv.get("m", ""), "mac": kv.get("mac", ""),
                  "cl": kv.get("cl", ""), "k": kv.get("k", ""), "h": kv.get("h", ""),
+                 "public_host": kv.get("p", ""),
                  "port": srv[3][2] if srv else 80,
                  "last_seen": int(time.time())}
         old = state["peers"].get(pid)

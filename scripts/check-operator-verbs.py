@@ -283,11 +283,26 @@ check("18 cluster init writes a cluster of one whose only member is this box's o
       and 'cluster)     shift; exec python3 /usr/local/share/pipeos/web/cluster.py "$@" ;;' in src,
       repr((rc_i, out_i[-200:], list(cj.get("members", {})), saves() - s0, rc_i2, out_i2[-120:], rc_st, out_st[-200:], rc_ca)))
 
+# ── tls public (#286): the verb dispatches; status on a fresh box says so ──
+TP = os.path.join(REPO, "overlay/usr/local/bin/pipeos-tls-public")
+TPENV = dict(ENV, PIPEOS_PUBLIC_CONF=os.path.join(D, "public.conf"), PIPEOS_TLS_DIR=os.path.join(D, "tls-public"),
+             PIPEOS_PUBLIC_STATUS=os.path.join(D, "public.status"), PIPEOS_PUBLIC_MAC="e86a645ca4e0", PIPEOS_PUBLIC_RESOLVE="unknown")
+open(TPENV["PIPEOS_PUBLIC_CONF"], "w").write("PUBLIC=on\nPUBLIC_RELAY=http://127.0.0.1:1\nPUBLIC_ACME=letsencrypt_test\nPUBLIC_NAME=\n")
+p_st = subprocess.run(["sh", TP, "status"], capture_output=True, text=True, env=TPENV)
+s0 = saves()
+p_off = subprocess.run(["sh", TP, "off"], capture_output=True, text=True, env=TPENV)
+p_bad = subprocess.run(["sh", TP, "sideways"], capture_output=True, text=True, env=TPENV)
+check("19 tls public: status on a fresh box says on, no name yet, no certificate; off writes PUBLIC=off and saves once; a bogus verb is rc 2; the dispatcher execs the script",
+      p_st.returncode == 0 and "public https: on" in p_st.stdout and "not registered" in p_st.stdout and "certificate:  none" in p_st.stdout
+      and p_off.returncode == 0 and "PUBLIC=off" in open(TPENV["PIPEOS_PUBLIC_CONF"]).read() and saves() - s0 == 1
+      and p_bad.returncode == 2 and 'exec /usr/local/bin/pipeos-tls-public "$@"' in src,
+      repr((p_st.returncode, p_st.stdout, p_off.stdout, saves() - s0, p_bad.returncode)))
+
 # ── the wiring: every verb in the help, the skill names every verb ────────
 helptext = "\n".join(l for l in src.split("\n")[:40])
 skill = open(os.path.join(REPO, ".claude/skills/pipeos-fleet/SKILL.md")).read()
 doc = open(os.path.join(REPO, "docs/fleet-ops.md")).read()
-verbs = ("pipeos schedule", "pipeos usage", "pipeos card set", "pipeos secrets phrase", "pipeos assistant password", "pipeos nas account", "pipeos selfupdate image", "pipeos deploy-overlay", "pipeos vault", "pipeos wake", "pipeos work", "pipeos cluster")
+verbs = ("pipeos schedule", "pipeos usage", "pipeos card set", "pipeos secrets phrase", "pipeos assistant password", "pipeos nas account", "pipeos selfupdate image", "pipeos deploy-overlay", "pipeos vault", "pipeos wake", "pipeos work", "pipeos cluster", "pipeos tls public")
 check("15 every operator verb is in pipeos's help, in the fleet skill and in docs/fleet-ops.md",
       all(v in helptext for v in verbs[:7]) and all(v in skill for v in verbs) and all(v in doc for v in verbs),
       "help=%r skill=%r doc=%r" % ([v for v in verbs[:7] if v not in helptext], [v for v in verbs if v not in skill], [v for v in verbs if v not in doc]))

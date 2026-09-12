@@ -1,0 +1,236 @@
+#!/bin/sh
+# pipeos-tls-public — a publicly trusted certificate for this Machine, with
+# nothing installed on anyone's device (pipeOS#286; Sam, 2026-09-12: "it must
+# be automatic").
+#
+#   pipeos tls public status            name, certificate, days left, does the LAN resolve us
+#   pipeos tls public issue             register the name, get the certificate, install it
+#   pipeos tls public renew             the daily job: refresh the A record, renew when due
+#   pipeos tls public on|off            the redirect and the name in links (the cert stays)
+#   pipeos tls public reload            (acme.sh's --reloadcmd) hand the new cert to webd, save
+#
+# The Machine lives at https://<mac>.m.pipe.online. The name is the full MAC:
+# unique by construction, the same after a rename or a re-flash. The
+# certificate is Let's Encrypt's, obtained HERE by Alpine's acme.sh over
+# DNS-01; the relay (pipe.online, which owns the zone) does no ACME — it
+# registers the Machine and writes two records: the A record to our LAN
+# address, and the _acme-challenge TXT our hook (dns_pipe.sh) asks for.
+#
+# Identity to the relay: an ed25519 key minted here once, kept in the vault
+# (machine_key), exported to /run by pipeos-vault at boot. Every request is
+# signed the way the relay already verifies (x-pipe-* headers, the
+# pipe-machine-v1 canonical bytes). The first registration binds the MAC to
+# the key; a re-flashed Machine keeps its name because the vault keeps the key.
+#
+# What it never touches: /etc/pipeos/tls/server.crt — the box CA's cert, the
+# cluster identity (#284). The public pair is public.{crt,key} beside it,
+# served by webd for the public name only (SNI); +etc/pipeos/tls persists both.
+#
+# Failure posture: no WAN, relay down, DNS refused → say so, exit 1, keep the
+# .local certificate; nothing else on the box changes. The daily job retries.
+#
+# Seams (the check-tls-public.py probe): PIPEOS_PUBLIC_CONF, PIPEOS_TLS_DIR,
+# PIPEOS_ACME_HOME, PIPEOS_ACME_BIN, PIPEOS_MACHINE_KEY, PIPEOS_VAULT_BIN,
+# PIPEOS_SAVE_BIN, PIPEOS_PUBLIC_STATUS, PIPEOS_PUBLIC_MAC, PIPEOS_PUBLIC_IP,
+# PIPEOS_PUBLIC_HOOK, PIPEOS_PUBLIC_RESOLVE (a fixed answer for the resolver row).
+set -u
+
+CONF=${PIPEOS_PUBLIC_CONF:-/etc/pipeos/public.conf}
+TLS=${PIPEOS_TLS_DIR:-/etc/pipeos/tls}
+PUB_CRT=$TLS/public.crt
+PUB_KEY=$TLS/public.key
+ACME_HOME=${PIPEOS_ACME_HOME:-/etc/pipeos/acme}
+ACME_BIN=${PIPEOS_ACME_BIN:-acme.sh}
+KEY=${PIPEOS_MACHINE_KEY:-/run/pipeos/secrets/machine_key}
+VAULT_BIN=${PIPEOS_VAULT_BIN:-/usr/local/bin/pipeos-vault}
+SAVE_BIN=${PIPEOS_SAVE_BIN:-/usr/local/bin/pipeos-save}
+STATUS=${PIPEOS_PUBLIC_STATUS:-/run/pipeos/public.status}
+HOOK=${PIPEOS_PUBLIC_HOOK:-/usr/local/share/pipeos/acme/dns_pipe.sh}
+LOCK=${PIPEOS_PUBLIC_LOCK:-/run/pipeos-tls-public.lock}
+LOG=${PIPEOS_PUBLIC_LOG:-/work/logs/tls-public.log}
+DOMAIN_TAG=pipe-machine-v1
+LABEL=m
+
+say() { echo "tls-public: $*"; }
+log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG" 2>/dev/null; }
+die() { say "$*" >&2; log "ERROR $*"; write_status "$*"; exit 1; }
+
+# ---- the conf ---------------------------------------------------------------
+PUBLIC=on
+PUBLIC_RELAY=https://pipe.online
+PUBLIC_ACME=letsencrypt
+PUBLIC_NAME=
+[ -r "$CONF" ] && . "$CONF"
+PUBLIC_RELAY=${PUBLIC_RELAY%/}
+
+conf_set() {   # KEY VALUE — rewrite one key atomically, keeping the rest
+    _k=$1; _v=$2
+    { [ -r "$CONF" ] && grep -v "^$_k=" "$CONF"; echo "$_k=$_v"; } > "$CONF.new" \
+        && mv -f "$CONF.new" "$CONF" || die "cannot write $CONF"
+}
+
+# ---- what this Machine is ---------------------------------------------------
+mac() {
+    [ -n "${PIPEOS_PUBLIC_MAC:-}" ] && { echo "$PIPEOS_PUBLIC_MAC"; return; }
+    python3 -c 'import sys; sys.path.insert(0, "/usr/local/share/pipeos/web"); import lanid; print(lanid.mac())' 2>/dev/null \
+        | tr -d ':-' | tr 'A-F' 'a-f'
+}
+lan_ip() {
+    [ -n "${PIPEOS_PUBLIC_IP:-}" ] && { echo "$PIPEOS_PUBLIC_IP"; return; }
+    ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1
+}
+hexdump_() { od -An -tx1 | tr -d ' \n'; }
+
+# ---- the machine key: minted once, kept in the vault ------------------------
+ensure_key() {
+    [ -s "$KEY" ] && return 0
+    _pem=$(openssl genpkey -algorithm ed25519 2>/dev/null) || die "openssl cannot make an ed25519 key"
+    printf '%s\n' "$_pem" | "$VAULT_BIN" set machine_key --bytes tls-public >/dev/null 2>&1 \
+        || die "the vault refused machine_key — pipeos vault status"
+    "$VAULT_BIN" export >/dev/null 2>&1 || die "pipeos-vault export failed"
+    [ -s "$KEY" ] || die "the vault exported nothing at $KEY"
+    log "minted the machine key"
+}
+pubkey_hex() {
+    openssl pkey -in "$KEY" -pubout -outform DER 2>/dev/null | tail -c 32 | hexdump_
+}
+
+# ---- a signed request to the relay -----------------------------------------
+# signing_bytes_in: domain\npath\nsubject\nts\nnonce\n + body (pipe-protocol/http_sign.rs)
+relay_post() {   # PATH BODY -> prints "STATUS\nBODY"; the signed bytes never hit argv
+    _path=$1; _body=$2
+    _ts=$(date -u +%s); _nonce=$(head -c 16 /dev/urandom | hexdump_)
+    _msg=$(mktemp) || die "mktemp failed"
+    printf '%s\n%s\n%s\n%s\n%s\n%s' "$DOMAIN_TAG" "$_path" "$MAC" "$_ts" "$_nonce" "$_body" > "$_msg"
+    _sig=$(openssl pkeyutl -sign -inkey "$KEY" -rawin -in "$_msg" 2>/dev/null | hexdump_)
+    rm -f "$_msg"
+    [ -n "$_sig" ] || die "cannot sign with $KEY"
+    curl -sS --max-time 20 -X POST "$PUBLIC_RELAY$_path" \
+        -H "content-type: application/json" -H "x-pipe-machine: $MAC" \
+        -H "x-pipe-ts: $_ts" -H "x-pipe-nonce: $_nonce" -H "x-pipe-sig: $_sig" \
+        --data-binary "$_body" -w '\n%{http_code}' 2>&1
+}
+json_str() {   # KEY — the string value of KEY in the JSON on stdin
+    python3 -c 'import json,sys; d=json.load(sys.stdin); v=d.get(sys.argv[1], ""); print(v if isinstance(v, str) else "")' "$1" 2>/dev/null
+}
+
+# ---- the status file: what webd, mdnsd, selfcheck and the page read ---------
+write_status() {   # [ERROR]
+    _err=${1:-}
+    _ready=no; _na=""; _days=""
+    if [ -s "$PUB_CRT" ] && [ -s "$PUB_KEY" ]; then
+        _na=$(openssl x509 -in "$PUB_CRT" -noout -enddate 2>/dev/null | sed 's/^notAfter=//')
+        _exp=$(date -u -d "$_na" +%s 2>/dev/null || date -u -D '%b %d %H:%M:%S %Y %Z' -d "$_na" +%s 2>/dev/null || echo 0)
+        _days=$(( (_exp - $(date -u +%s)) / 86400 ))
+        [ -n "$PUBLIC_NAME" ] && [ "$_days" -gt 0 ] && _ready=yes
+    fi
+    _res=$(resolves)
+    mkdir -p "$(dirname "$STATUS")" 2>/dev/null
+    printf '{"name": "%s", "on": %s, "ready": %s, "not_after": "%s", "days": %s, "resolves": "%s", "error": "%s", "written": %s}\n' \
+        "$PUBLIC_NAME" "$([ "$PUBLIC" = on ] && echo true || echo false)" "$([ "$_ready" = yes ] && echo true || echo false)" \
+        "$_na" "${_days:-0}" "$_res" "$(printf '%s' "$_err" | tr -d '"\\' | cut -c1-200)" "$(date -u +%s)" > "$STATUS.new" 2>/dev/null \
+        && chmod 644 "$STATUS.new" 2>/dev/null && mv -f "$STATUS.new" "$STATUS" 2>/dev/null
+}
+resolves() {   # yes | no | unknown — does THIS LAN's resolver answer our name with our address?
+    [ -n "${PIPEOS_PUBLIC_RESOLVE:-}" ] && { echo "$PIPEOS_PUBLIC_RESOLVE"; return; }
+    [ -n "$PUBLIC_NAME" ] || { echo unknown; return; }
+    _got=$(dig +short +time=3 +tries=1 "$PUBLIC_NAME" A 2>/dev/null | grep -E '^[0-9.]+$' | head -1)
+    [ -z "$_got" ] && { echo unknown; return; }
+    [ "$_got" = "$(lan_ip)" ] && echo yes || echo no
+}
+
+# ---- the verbs --------------------------------------------------------------
+cmd_register() {
+    ensure_key
+    [ -n "$MAC" ] || die "no MAC — is there a NIC?"
+    _ip=$(lan_ip); [ -n "$_ip" ] || die "no LAN address yet"
+    _ans=$(relay_post /machines/register "{\"mac\": \"$MAC\", \"pubkey\": \"$(pubkey_hex)\", \"lan_ip\": \"$_ip\"}")
+    _code=$(printf '%s\n' "$_ans" | tail -1); _json=$(printf '%s\n' "$_ans" | sed '$d')
+    case "$_code" in
+        200) ;;
+        409) die "the relay has this MAC under another key: $(printf '%s' "$_json" | json_str error)" ;;
+        503) die "the relay cannot register Machines right now (no DNS credentials there)" ;;
+        000|"") die "the relay is unreachable: $_json" ;;
+        *)   die "the relay refused the registration ($_code): $(printf '%s' "$_json" | json_str error)" ;;
+    esac
+    _name=$(printf '%s' "$_json" | json_str name)
+    [ -n "$_name" ] || die "the relay answered without a name"
+    if [ "$_name" != "$PUBLIC_NAME" ]; then
+        conf_set PUBLIC_NAME "$_name"; PUBLIC_NAME=$_name
+        log "registered as $_name ($_ip)"
+    fi
+    say "registered: $PUBLIC_NAME -> $_ip"
+}
+
+cmd_issue() {
+    [ "$PUBLIC" = on ] || die "public https is off (pipeos tls public on)"
+    cmd_register
+    export PIPEOS_PUBLIC_RELAY="$PUBLIC_RELAY" PIPEOS_PUBLIC_MAC="$MAC" PIPEOS_MACHINE_KEY="$KEY"
+    mkdir -p "$ACME_HOME" && chmod 700 "$ACME_HOME"
+    say "asking $PUBLIC_ACME for a certificate for $PUBLIC_NAME (DNS-01 through the relay)…"
+    if ! "$ACME_BIN" --home "$ACME_HOME" --issue -d "$PUBLIC_NAME" --dns "$HOOK" --server "$PUBLIC_ACME" \
+            --keylength ec-256 --log "$LOG" >/dev/null 2>&1; then
+        # acme.sh exits 2 when the cert is fresh and no renewal is due — that is success here
+        if ! "$ACME_BIN" --home "$ACME_HOME" --list 2>/dev/null | grep -q "$PUBLIC_NAME"; then
+            die "acme.sh could not get a certificate — see $LOG"
+        fi
+    fi
+    "$ACME_BIN" --home "$ACME_HOME" --install-cert -d "$PUBLIC_NAME" --ecc \
+        --key-file "$PUB_KEY" --fullchain-file "$PUB_CRT" \
+        --reloadcmd "/usr/local/bin/pipeos-tls-public reload" >/dev/null 2>&1 \
+        || die "acme.sh could not install the certificate — see $LOG"
+    [ -s "$PUB_CRT" ] && [ -s "$PUB_KEY" ] || die "no certificate landed in $TLS"
+    cmd_reload
+    say "https://$PUBLIC_NAME/ is live — a padlock on every device, nothing installed"
+}
+
+cmd_reload() {
+    chmod 600 "$PUB_KEY" 2>/dev/null; chmod 644 "$PUB_CRT" 2>/dev/null
+    touch "$PUB_CRT"            # webd watches the mtime and picks the pair up
+    write_status
+    log "certificate installed (not after $(openssl x509 -in "$PUB_CRT" -noout -enddate 2>/dev/null | sed 's/^notAfter=//'))"
+    "$SAVE_BIN" >/dev/null 2>&1 || say "warning: pipeos-save failed — the certificate is live but not persisted"
+}
+
+cmd_renew() {
+    [ "$PUBLIC" = on ] || { say "public https is off"; return 0; }
+    [ -n "$PUBLIC_NAME" ] || { say "no name yet — pipeos tls public issue"; return 1; }
+    cmd_register                 # the A record follows a DHCP lease change
+    export PIPEOS_PUBLIC_RELAY="$PUBLIC_RELAY" PIPEOS_PUBLIC_MAC="$MAC" PIPEOS_MACHINE_KEY="$KEY"
+    "$ACME_BIN" --home "$ACME_HOME" --cron --log "$LOG" >/dev/null 2>&1   # renews when due, runs the reloadcmd
+    write_status
+    say "renewal checked"
+}
+
+cmd_status() {
+    write_status
+    _st=$(cat "$STATUS" 2>/dev/null)
+    echo "public https: $PUBLIC"
+    echo "name:         ${PUBLIC_NAME:-(not registered — pipeos tls public issue)}"
+    if [ -s "$PUB_CRT" ]; then
+        echo "certificate:  $(printf '%s' "$_st" | json_str not_after) ($(python3 -c 'import json,sys; print(json.load(sys.stdin)["days"])' <<EOF
+$_st
+EOF
+) days left)"
+    else
+        echo "certificate:  none"
+    fi
+    echo "LAN resolves: $(printf '%s' "$_st" | json_str resolves)"
+    _e=$(printf '%s' "$_st" | json_str error); [ -n "$_e" ] && echo "last error:   $_e"
+    [ -n "$PUBLIC_NAME" ] && [ -s "$PUB_CRT" ] && echo "address:      https://$PUBLIC_NAME/"
+    return 0
+}
+
+MAC=$(mac)
+verb=${1:-}; [ $# -gt 0 ] && shift
+case "$verb" in
+    status)   cmd_status ;;
+    register) cmd_register ;;
+    issue|renew)
+        mkdir -p "$(dirname "$LOG")" "$(dirname "$LOCK")" 2>/dev/null
+        exec 9> "$LOCK"; flock -n 9 || die "another tls-public run is going"
+        "cmd_$verb" ;;
+    reload)   cmd_reload ;;
+    on|off)   conf_set PUBLIC "$verb"; PUBLIC=$verb; write_status; "$SAVE_BIN" >/dev/null 2>&1 && say "public https $verb, saved" || say "public https $verb (save failed)" ;;
+    *) echo "usage: pipeos tls public status|issue|renew|on|off" >&2; exit 2 ;;
+esac

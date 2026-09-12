@@ -155,3 +155,28 @@ VM: `make vm` forwards `:8080 → :80` (and ssh on 2222). Claim at
 `http://localhost:8080/`, toggle, `reboot`, confirm everything survives and
 the boot report is not DEGRADED with pipe off. mDNS cannot traverse QEMU
 user-mode networking — test discovery on a real LAN.
+
+## Public https (#286)
+
+After the claim the wizard shows "Getting your secure address": the Machine
+registers `<mac>.m.pipe.online` at the relay (its own ed25519 key, kept in
+the vault), gets a Let's Encrypt certificate itself with `acme.sh` over
+DNS-01 (the relay writes the one TXT record), and the finish button lands on
+`https://<mac>.m.pipe.online/` — a padlock on every phone and laptop with
+nothing installed. From then on every plain-http way in (`pipeos.local`,
+`<name>.local`, the IP) redirects there; the lobby's JSON, the CA downloads
+and the unclaimed wizard stay on http.
+
+What can go wrong, and what the box does: no internet → the wizard says so
+and continues on the local address; the daily job retries. A router that
+refuses to resolve the name to a private address (DNS rebind protection —
+pfSense, dnsmasq's `stop-dns-rebind`) → selfcheck WARNs with the setting to
+change (allow `m.pipe.online`), the redirect stops, the local address keeps
+working with the box CA's certificate as before. `pipeos tls public
+status|issue|renew|on|off` is the verb; the Network view's Secure access
+card shows the same.
+
+The box CA's own certificate stays for the `.local` names and the IP (and
+is the cluster identity, #284); the "install this box's certificate" path
+is still there under a details block for a Machine that will never have
+internet.
