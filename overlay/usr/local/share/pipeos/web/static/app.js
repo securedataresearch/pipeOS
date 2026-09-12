@@ -1106,6 +1106,7 @@ async function dashboard() {
           <p class="note" id="mmsg" hidden></p>
           <div id="updrow" style="margin-top:1rem">
             <span class="pill" id="updstate">updates: checking…</span>
+            <label class="switch" title="A newer release image is applied in place and the box reboots — hourly check, held while a job or a terminal is live"><input type="checkbox" id="updauto"><span></span></label> <span class="note">update automatically</span> <span class="note" id="updlast"></span>
             <button id="updnow" class="ghost" hidden>Update now</button>
           </div>
           <div id="flashrow" style="margin-top:1rem">
@@ -2006,7 +2007,18 @@ async function dashboard() {
     }
   }
   api("/api/update").then(u => {
-    v.querySelector("#updstate").textContent = "updates: " + u.state + (u.applied ? ` (applied ${u.applied})` : "");
+    v.querySelector("#updstate").textContent = "updates: " + u.state + (u.applied ? ` (applied ${u.applied})` : "")
+      + (u.image_pending ? " · new image applied, reboot pending" : "");
+    const au = v.querySelector("#updauto");
+    if (au) {
+      au.checked = u.image_update !== "off";
+      au.onchange = async () => {
+        try { await api("/api/update-set", { image_update: au.checked ? "auto" : "off" }); }
+        catch (e) { au.checked = !au.checked; addAlert("bad", e.message); }
+      };
+      const ln = v.querySelector("#updlast");
+      if (ln) ln.textContent = u.image_last ? "last image update: " + u.image_last : "";
+    }
     if (u.state === "update available") {
       v.querySelector("#updnow").hidden = false;
       addAlert("warn", "A system update is available — install it from the System page.");

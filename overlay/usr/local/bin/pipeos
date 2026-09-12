@@ -28,6 +28,7 @@
 #   pipeos secrets phrase [--ack]  the vault's pending recovery phrase; --ack forgets the tmpfs copy
 #   pipeos assistant password      the assistant terminal's password from stdin -> vault, restarted, saved
 #   pipeos nas account NAME      share-only account + its SMB password (stdin) — Files → Network storage's form
+#   pipeos selfupdate image on|off|status   automatic image updates (default on): a newer release is applied and the box reboots
 #   pipeos work status|flush|park|unpark   /work's hot set in RAM; park = flush + read-only (the stick idles)
 #
 # Read-only verbs (status/verify/diff/snapshot) are open to the resident

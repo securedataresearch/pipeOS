@@ -1,6 +1,6 @@
 # Self-updating pipeOS boxes
 
-A box updates its own OS from a canonical signed repo, on a daily cron, with
+A box updates its own OS from a canonical signed repo, on an hourly cron, with
 the same safety the manual runbook (`docs/fleet-update-runbook.md`) uses —
 verified staging, atomic media swap, rollback, and a persistence guard.
 
@@ -90,3 +90,19 @@ The mechanism needs a canonical origin the boxes can reach. Two options:
 Publishing the repo automatically when a build lands is deliberately left to a
 follow-up — this change is the box-side consumer, which is the half that was
 being done by hand.
+
+## The image, too — automatic (#275)
+
+Sam, 2026-09-12: "any time there is an update boxes need to update themselves
+like windows" — reboot window: "frickin whenever". So the hourly run's first
+step is the **image**: if the latest release's tag names a commit other than
+the one in the running `pipeos-image.txt` (or its image digest differs from
+what a flash last applied), the box `pipeos flash fetch`es it (verified),
+`apply --yes` in place (identity merged, saves fenced until the reboot —
+docs/live-disk.md step 12), writes `/work/.pipeos/image-updated`, and
+**reboots**. The boot report then says "this boot is a self-applied image
+update". It holds, and retries next hour, while a scheduled run holds the
+schedule lock or any terminal session is live. Default **on**, client boxes
+included; `pipeos selfupdate image off` (System → update automatically) turns
+it off — packages still update, a new image then waits for `pipeos flash
+apply`. Packages-only step is unchanged and runs when no image was applied.

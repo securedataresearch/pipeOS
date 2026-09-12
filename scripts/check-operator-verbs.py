@@ -225,14 +225,40 @@ check("16 nas account: a bogus verb, a short SMB password and a hostile name are
       and 'nas)         shift; exec python3 /usr/local/share/pipeos/web/nasctl.py "$@" ;;' in src,
       repr((rc_a, out_b, out_c, out_d, saves() - s0)))
 
+# ── selfupdate image on|off|status (pipeOS#275): the System page's switch as a verb ──
+SELFUPDATE = os.path.join(REPO, "overlay/usr/local/bin/pipeos-selfupdate")
+SUCONF = os.path.join(D, "selfupdate.conf")
+open(SUCONF, "w").write("UPDATE_RELEASE_URL=https://example.invalid/releases/latest/download\nUPDATE_URL=\n")
+def su(*args):
+    p = subprocess.run(["sh", SELFUPDATE] + list(args), capture_output=True, text=True,
+                       env=dict(ENV, PIPEOS_SELFUPDATE_CONF=SUCONF))
+    return p.returncode, p.stdout + p.stderr
+s0 = saves()
+rc_s0, out_s0 = su("image", "status")
+rc_off, out_off = su("image", "off")
+conf_off = open(SUCONF).read()
+rc_s1, out_s1 = su("image", "status")
+rc_on, out_on = su("image", "on")
+conf_on = open(SUCONF).read()
+rc_bad, out_bad = su("image", "sideways")
+rc_bad2, out_bad2 = su("bogus")
+check("17 selfupdate image: absent key reads as automatic (the default); off writes IMAGE_UPDATE=off and saves once, keeping the other keys; on writes auto and saves once; a bad value and a bogus verb are rc 2 with nothing written",
+      rc_s0 == 0 and ("automatic" in out_s0 or "auto" in out_s0)
+      and rc_off == 0 and "IMAGE_UPDATE=off" in conf_off and "UPDATE_RELEASE_URL=https://example.invalid" in conf_off and conf_off.count("IMAGE_UPDATE=") == 1
+      and rc_s1 == 0 and "off" in out_s1
+      and rc_on == 0 and "IMAGE_UPDATE=auto" in conf_on and conf_on.count("IMAGE_UPDATE=") == 1
+      and rc_bad == 2 and rc_bad2 == 2 and saves() - s0 == 2
+      and "pipeos-selfupdate" in src.split("selfupdate)")[1][:120],
+      repr((rc_s0, out_s0, rc_off, conf_off, rc_on, conf_on, rc_bad, rc_bad2, saves() - s0)))
+
 # ── the wiring: every verb in the help, the skill names every verb ────────
 helptext = "\n".join(l for l in src.split("\n")[:40])
 skill = open(os.path.join(REPO, ".claude/skills/pipeos-fleet/SKILL.md")).read()
 doc = open(os.path.join(REPO, "docs/fleet-ops.md")).read()
-verbs = ("pipeos schedule", "pipeos usage", "pipeos card set", "pipeos secrets phrase", "pipeos assistant password", "pipeos nas account", "pipeos deploy-overlay", "pipeos vault", "pipeos wake", "pipeos work")
+verbs = ("pipeos schedule", "pipeos usage", "pipeos card set", "pipeos secrets phrase", "pipeos assistant password", "pipeos nas account", "pipeos selfupdate image", "pipeos deploy-overlay", "pipeos vault", "pipeos wake", "pipeos work")
 check("15 every operator verb is in pipeos's help, in the fleet skill and in docs/fleet-ops.md",
-      all(v in helptext for v in verbs[:6]) and all(v in skill for v in verbs) and all(v in doc for v in verbs),
-      "help=%r skill=%r doc=%r" % ([v for v in verbs[:6] if v not in helptext], [v for v in verbs if v not in skill], [v for v in verbs if v not in doc]))
+      all(v in helptext for v in verbs[:7]) and all(v in skill for v in verbs) and all(v in doc for v in verbs),
+      "help=%r skill=%r doc=%r" % ([v for v in verbs[:7] if v not in helptext], [v for v in verbs if v not in skill], [v for v in verbs if v not in doc]))
 
 shutil.rmtree(D, ignore_errors=True)
 print("%d/%d" % (sum(RESULTS), len(RESULTS)))
