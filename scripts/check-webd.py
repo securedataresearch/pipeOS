@@ -968,6 +968,10 @@ with open(webd.NAS_CONF) as f:
 assert webd.read_services()["nas"] is False  # no share left
 assert not any(u["name"].startswith("shareonly") for u in webd.read_users())
 ok("nas-account validates; deleting a unix account strips it from shares, drops emptied shares, turns storage off")
+# the restart helper must only ever RESTART a running smbd: OpenRC's -i is
+# --ifexists (the first cut started a stopped service); --ifstarted is -s
+assert '["rc-service", "-s", "pipeos-nas", "restart"]' in _src and '"rc-service", "-i"' not in _src
+ok("nas restart helper is rc-service --ifstarted (-s), never -i")
 # terminals: the same shape — no slot, no toggle-on
 r = req("/api/services", {"terminals": True})
 assert r["services"]["terminals"] is False and any("terminal" in p for p in r["problems"])
