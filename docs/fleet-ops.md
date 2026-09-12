@@ -42,6 +42,9 @@ when host keys have changed (every reflash). Clocks are UTC.
 | `pipeos cluster add ID\|NAME\|IP` (its admin password on stdin) | Cluster → Add a Machine | the target joins (takes the list), this list gains its CA, the list is pushed to every member | yes |
 | `pipeos cluster remove ID` | Cluster → Remove | the list loses it, pushed to the rest (the removed one finds out at its next call and becomes a cluster of one) | yes |
 | `pipeos cluster sync` | Cluster → push the list | nothing here; the list to every member | no |
+| `pipeos cluster page` | Cluster → the members card | nothing; every member's two lines and one verdict, gathered over mutual TLS | no |
+| `pipeos cluster reboot-all [--yes]` | Cluster → Reboot everything | every member reboots (this one last); refuses while something is busy unless --yes | each box's shutdown hook |
+| `pipeos cluster services KEY on\|off [ID...]` | Cluster → a service on several Machines | each member's services.conf through its own /api/services | each box saves |
 | `pipeos cluster call ID\|NAME\|IP METHOD PATH [JSON]` | — (what the cluster page does box-to-box) | nothing here; a request to a member over mutual TLS, and who answered | no |
 | `pipeos selfupdate image on\|off\|status` | System → update automatically | `/etc/pipeos/selfupdate.conf` `IMAGE_UPDATE` | yes |
 | `pipeos nas account NAME` (SMB password on stdin) | Files → Network storage → new account for a share | `users.json` (share-only: no sign-in, no shell), `pipeos-user add --nologin`, vault `nas_passdb`; restarts `pipeos-nas` | yes |

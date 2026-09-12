@@ -104,3 +104,12 @@ should have said. Each becomes a fix in the same PR or an issue.
 
 1. ____________________
 2. ____________________
+
+## 8. The cluster page (#212)
+
+| step | expect |
+|------|--------|
+| open Cluster on any member | one row per Machine, two lines: name · id · role; verdict · activity · disk · release; one verdict pill for the cluster |
+| pull the power on one member | within a minute its row is grey "off · last seen …", the cluster verdict says "1 member off"; power back → green again |
+| tick two members, switch a service on, Apply | both rows' services change; each box's own Services view agrees after a reload; `pipeos verify` PASS on both |
+| Reboot everything while a stream is live | the confirm names the busy Machine and why; on confirm every member reboots, the one you opened last; all back green |

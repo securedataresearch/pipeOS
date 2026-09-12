@@ -433,6 +433,8 @@ def resolve(target):
     address may carry a port (the probe's loopback instances do)."""
     if target in _PORTS:
         return _PORTS[target]
+    if target == "local":
+        return "127.0.0.1", int(os.environ.get("PIPEOS_WEB_HTTPS_PORT_LOCAL", TLS_PORT))
     port = TLS_PORT
     host, _, p = target.partition(":")
     if p.isdigit():
@@ -568,6 +570,108 @@ def sync():
     return push()
 
 
+# ---- the cluster page (#212): every member's summary, and the two cluster-wide acts
+
+def local():
+    """This box's own listener, as a member: 127.0.0.1:443 with our cert —
+    our CA is in the bundle, so the call is a member's like any other.
+    What the operator verbs use, so `pipeos cluster page` IS the page."""
+    return "127.0.0.1:%d" % int(os.environ.get("PIPEOS_WEB_HTTPS_PORT_LOCAL", TLS_PORT))
+
+
+def fanout(ids, method, path, body=None, timeout=8):
+    """The same request to every id, in parallel; {id: (status, body)} with
+    a ClusterError's text where a member could not be reached."""
+    out = {}
+    lock = threading.Lock()
+
+    def one(mid):
+        try:
+            st, b, who = call(mid, method, path, body, timeout=timeout)
+            r = (st, b if who else {"error": "not a member's answer"})
+        except ClusterError as e:
+            r = (0, {"error": str(e)})
+        with lock:
+            out[mid] = r
+
+    ts = [threading.Thread(target=one, args=(m,), daemon=True) for m in ids]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(timeout + 2)
+    return out
+
+
+def page(local_summary):
+    """One row per member, two lines' worth of fields each: the local box
+    from `local_summary()`, every other member from its /api/cluster/summary
+    over mutual TLS — grey (awake False) when it does not answer, with the
+    responder's last sighting. Plus one verdict for the cluster."""
+    v = view()
+    me = v["self"]
+    others = [r["id"] for r in v["members"] if not r["self"]]
+    answers = fanout(others, "GET", "/api/cluster/summary")
+    rows = []
+    for r in v["members"]:
+        if r["self"]:
+            s = dict(local_summary())
+        else:
+            st, b = answers.get(r["id"], (0, {"error": "not asked"}))
+            s = dict(b) if st == 200 and isinstance(b, dict) else {"error": (b.get("error") if isinstance(b, dict) else "") or "no answer"}
+        s.update({"id": r["id"], "name": s.get("name") or r["name"], "self": r["self"], "fingerprint": r["fingerprint"],
+                  "in_sync": r["in_sync"], "ip": s.get("ip") or r["ip"], "host": s.get("host") or r["host"],
+                  "last_seen": r["last_seen"]})
+        s["awake"] = r["self"] or "error" not in s
+        rows.append(s)
+    off = [r for r in rows if not r["awake"]]
+    bad = [r for r in rows if r["awake"] and "CRITICAL" in (r.get("verdict") or "").upper() or "DEGRADED" in (r.get("verdict") or "").upper()]
+    warn = [r for r in rows if r["awake"] and r not in bad and "warning" in (r.get("verdict") or "")]
+    busy = [r for r in rows if r["awake"] and r.get("busy")]
+    if bad:
+        verdict = "DEGRADED — %s" % ", ".join(r["name"] or r["id"] for r in bad)
+    elif off:
+        verdict = "%d member%s off" % (len(off), "" if len(off) == 1 else "s")
+    elif warn:
+        verdict = "green with warnings on %s" % ", ".join(r["name"] or r["id"] for r in warn)
+    else:
+        verdict = "all green"
+    return {"cluster": v["cluster"], "self": me, "verdict": verdict, "members": rows,
+            "busy": [{"id": r["id"], "name": r["name"], "why": r["busy"]} for r in busy],
+            "error": v["error"]}
+
+
+def reboot_all(local_reboot):
+    """Every other member first, this box last — so the page that asked
+    is the last to go and can report on the rest. Returns {id: result}."""
+    v = view()
+    others = [r["id"] for r in v["members"] if not r["self"]]
+    res = {mid: ("rebooting" if st == 200 else "%s" % ((b.get("error") if isinstance(b, dict) else "") or st))
+           for mid, (st, b) in fanout(others, "POST", "/api/reboot", {}).items()}
+    res[v["self"]] = local_reboot()
+    return res
+
+
+def services_all(ids, key, on, local_set):
+    """One service switch across several members: POST /api/services to
+    each other member, this box through `local_set`. {id: result}."""
+    v = view()
+    me = v["self"]
+    members = {r["id"] for r in v["members"]}
+    wanted = [i for i in ids if i in members]
+    res = {}
+    if me in wanted:
+        res[me] = local_set({key: bool(on)})
+    for mid, (st, b) in fanout([i for i in wanted if i != me], "POST", "/api/services", {key: bool(on)}).items():
+        if st == 200 and isinstance(b, dict):
+            res[mid] = "ok" if b.get("services", {}).get(key) == bool(on) else "refused: " + "; ".join(b.get("problems") or ["not applied"])
+        else:
+            res[mid] = (b.get("error") if isinstance(b, dict) else "") or "%s" % st
+    for i in ids:
+        if i not in members:
+            res[i] = "not a member"
+    return res
+
+
 # ---- the view ----------------------------------------------------------------------
 
 def view():
@@ -663,6 +767,39 @@ def main(argv):
             report = sync()
             print("list pushed: %s" % _report(report))
             return 0 if all(v in ("taken", "same", "removed") for v in report.values()) else 1
+        if verb == "page":
+            st, out, who = call("local", "GET", "/api/cluster/page")
+            if st != 200 or not who:
+                print("cluster: the page did not answer (%s)" % st, file=sys.stderr); return 1
+            print("cluster   %s  %s" % (out.get("cluster"), out.get("verdict")))
+            for r in out.get("members", []):
+                l1 = "%-12s %s  %s" % (r.get("name") or "", r["id"], r.get("role") or "")
+                if r.get("awake"):
+                    act = ", ".join(r.get("busy") or []) or "idle"
+                    l2 = "%s · %s · disk %s%% · %s %s" % (r.get("verdict") or "?", act, r.get("work_pct", "?"), (r.get("commit") or "")[:12], r.get("built") or "")
+                else:
+                    l2 = "off · last seen %s · %s" % (time.strftime("%Y-%m-%d %H:%MZ", time.gmtime(r.get("last_seen") or 0)), r.get("error", ""))
+                print("member    %s\n          %s" % (l1, l2))
+            return 0
+        if verb == "reboot-all":
+            st, out, who = call("local", "GET", "/api/cluster/page")
+            busy = out.get("busy", []) if st == 200 and isinstance(out, dict) else []
+            if busy and "--yes" not in argv:
+                print("cluster: busy — %s; add --yes to reboot anyway" % "; ".join("%s: %s" % (b["name"] or b["id"], ", ".join(b["why"])) for b in busy), file=sys.stderr)
+                return 1
+            st, out, who = call("local", "POST", "/api/cluster/reboot-all", {"confirm": True})
+            if st != 200 or not who:
+                print("cluster: %s" % ((out.get("error") if isinstance(out, dict) else "") or st), file=sys.stderr); return 1
+            print("rebooting: %s" % _report(out.get("results", {})))
+            return 0
+        if verb == "services":
+            if len(argv) < 3 or argv[2] not in ("on", "off"):
+                print("usage: pipeos cluster services KEY on|off [ID...]   (no ID: every member)", file=sys.stderr); return 2
+            st, out, who = call("local", "POST", "/api/cluster/services", {"key": argv[1], "on": argv[2] == "on", "ids": argv[3:]})
+            if st != 200 or not who:
+                print("cluster: %s" % ((out.get("error") if isinstance(out, dict) else "") or st), file=sys.stderr); return 1
+            print("%s %s: %s" % (argv[1], argv[2], _report(out.get("results", {}))))
+            return 0 if all(v in ("ok",) or v.startswith("ok") for v in out.get("results", {}).values()) else 1
         if verb == "call":
             if len(argv) < 4:
                 print("usage: pipeos cluster call ID|NAME|IP METHOD PATH [JSON]", file=sys.stderr); return 2
@@ -674,7 +811,7 @@ def main(argv):
     except ClusterError as e:
         print("cluster: %s" % e, file=sys.stderr)
         return 1
-    print("usage: pipeos cluster init [NAME] [--force] | status | ca | add ID|NAME|IP [NAME] | remove ID | sync | call ID|NAME|IP METHOD PATH [JSON]", file=sys.stderr)
+    print("usage: pipeos cluster init [NAME] [--force] | status | ca | add ID|NAME|IP [NAME] | remove ID | sync | page | reboot-all [--yes] | services KEY on|off [ID...] | call ID|NAME|IP METHOD PATH [JSON]", file=sys.stderr)
     return 2
 
 

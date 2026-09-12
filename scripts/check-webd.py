@@ -236,6 +236,8 @@ _no_save = {
     "/api/secrets/phrase-ack": "forgets a tmpfs copy (#244)",
     "/api/schedule/run": "starts a run; its record lives on /work (#242)",
     "/api/cluster/sync": "pushes the list to the members; nothing here changes (#211)",
+    "/api/cluster/reboot-all": "every box's shutdown hook saves; the local box reboots too (#212)",
+    "/api/cluster/services": "each box applies and saves through its own /api/services, this one via local_set which saves (#212)",
 }
 _missing = []
 for _path, _fn in _table.items():

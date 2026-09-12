@@ -40,6 +40,7 @@ pipeos verify            # PASS = a reboot reproduces this state (run before AND
 pipeos-selfcheck         # verdict + every WARN/CRITICAL; the boot-report DM says the same
 pipebox-card verify      # derived files match the card? deploy-overlay regenerates them after a template change (#281); FAIL otherwise -> pipebox-card generate; pipeos save
 pipeos cluster status    # this Machine's cluster identity (its CA) + member list (#222); `pipeos cluster call two GET /api/cluster` is a box-to-box call over mutual TLS
+pipeos cluster page      # the pilot's one page (#212): every member's two lines + one verdict; reboot-all [--yes]; services KEY on|off [ID...]
 pipeos cluster add two   # (two's admin password on stdin) marks two out of the lobby into this cluster; remove ID / sync push the list (#211)
 ```
 

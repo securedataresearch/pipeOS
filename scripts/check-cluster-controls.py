@@ -17,6 +17,9 @@ W = os.path.join(WEB, "webd.py")
 PROBE = os.path.join(HERE, "check-cluster.py")
 orig = {p: open(p).read() for p in (C, W)}
 
+OLD_H = '    res = {mid: ("rebooting" if st == 200 else "%s" % ((b.get("error") if isinstance(b, dict) else "") or st))\n           for mid, (st, b) in fanout(others, "POST", "/api/reboot", {}).items()}\n    res[v["self"]] = local_reboot()'
+NEW_H = '    res = {v["self"]: local_reboot()}\n    time.sleep(0.5)\n    res.update({mid: ("rebooting" if st == 200 else "%s" % ((b.get("error") if isinstance(b, dict) else "") or st))\n           for mid, (st, b) in fanout(others, "POST", "/api/reboot", {}).items()})'
+
 controls = [
     ("A: the listener never asks for a client certificate (no member is ever admitted)", C,
      lambda s: s.replace("        ctx.verify_mode = ssl.CERT_OPTIONAL\n", "        ctx.verify_mode = ssl.CERT_NONE\n"), ["3"]),
@@ -35,6 +38,15 @@ controls = [
     ("E: the caller does not verify the answering certificate (any server on that port is 'a member')", C,
      lambda s: s.replace("        ctx.load_verify_locations(cafile=cafile)\n        ctx.verify_mode = ssl.CERT_REQUIRED\n",
                          "        ctx.verify_mode = ssl.CERT_NONE\n"), ["2"]),
+
+    ("G: the page marks a member that did not answer as awake (a dead box reads as fine)", C,
+     lambda s: s.replace('        s["awake"] = r["self"] or "error" not in s\n', '        s["awake"] = True\n'), ["14"]),
+
+    ("H: reboot-all reboots the box that asked first (the page goes dark before the others are told)", C,
+     lambda s: s.replace(OLD_H, NEW_H), ["16"]),
+
+    ("I: the service switch answers ok for an id that is not a member", C,
+     lambda s: s.replace('            res[i] = "not a member"\n', '            res[i] = "ok"\n'), ["15"]),
 
     ("F: the reader does not drop a member seen in another cluster", C,
      lambda s: s.replace("        if pid in d[\"members\"] and pid != self_id() and p.get(\"cl\") and p[\"cl\"] != d[\"id\"]:\n",
