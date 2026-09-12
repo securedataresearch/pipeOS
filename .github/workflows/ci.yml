@@ -19,7 +19,7 @@ jobs:
 
       - name: shellcheck the shell surface
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck mtools dosfstools
           # Globs, not a file list. The three files named here before were the
           # card tooling; config.sh and the numbered build scripts — the ones
           # that decide whether a stick boots — were never linted, so a green
@@ -160,6 +160,13 @@ jobs:
         run: |
           python3 scripts/check-backup.py
           python3 scripts/check-backup-controls.py
+
+      # #271. make release must refuse an operator image (ssh key or box card
+      # baked): the guard reads the apkovl out of the image's FAT and says no.
+      - name: the release publisher refuses an operator image
+        run: |
+          python3 scripts/check-release-guard.py
+          python3 scripts/check-release-guard-controls.py
 
       # #181. pipeos-flash rewrites the boot partition of a RUNNING box; the
       # guards (geometry, merge provenance, write bounds, the fenced seams)
