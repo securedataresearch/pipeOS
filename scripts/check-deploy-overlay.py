@@ -189,10 +189,23 @@ os.remove(os.path.join(c13.repo, "overlay/usr/local/bin/pipeos-oldthing"))
 git(c13.repo, "add", "-A")
 git(c13.repo, "commit", "-qm", "drop pipeos-oldthing")
 c13.run()
-check("6 a file this tool deployed and the ref dropped is reported, NOT deleted",
-      "stale usr/local/bin/pipeos-oldthing" in c13.log
-      and c13.live("usr/local/bin/pipeos-oldthing") == "#!/bin/sh\nold\n",
+check("6 a file this tool deployed and the ref dropped is REMOVED (a moved script must not keep running old code — pipeOS#279)",
+      "stale usr/local/bin/pipeos-oldthing" in c13.log and "removing" in c13.log
+      and "removed stale usr/local/bin/pipeos-oldthing" in c13.log
+      and c13.live("usr/local/bin/pipeos-oldthing") is None,
       "log=%r" % c13.log[-300:])
+# ── 6a. --dry-run reports the stale file but removes nothing ────────────
+c13b = Case()
+CASES.append(c13b)
+write(os.path.join(c13b.repo, "overlay/usr/local/bin/pipeos-oldthing2"), "#!/bin/sh\nold\n", 0o755)
+git(c13b.repo, "add", "-A"); git(c13b.repo, "commit", "-qm", "ship oldthing2")
+c13b.run()
+os.remove(os.path.join(c13b.repo, "overlay/usr/local/bin/pipeos-oldthing2"))
+git(c13b.repo, "add", "-A"); git(c13b.repo, "commit", "-qm", "drop oldthing2")
+c13b.run("--dry-run")
+check("6a --dry-run says 'would remove' the stale file and removes nothing",
+      "would remove" in c13b.log and c13b.live("usr/local/bin/pipeos-oldthing2") == "#!/bin/sh\nold\n",
+      "log=%r" % c13b.log[-300:])
 
 # ── 6b. and a file this tool never deployed is NOT reported ─────────────
 # box1's finding, as a row. usr/local/bin and etc/init.d are shared with apk:

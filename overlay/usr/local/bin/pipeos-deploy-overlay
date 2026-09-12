@@ -247,7 +247,7 @@ excluded() {
 }
 
 listing=$(mktemp); changes=$(mktemp); stamp_body=$(mktemp)
-trap 'rm -f "$listing" "$changes" "$stamp_body" "${repo_card:-}"' EXIT
+trap 'rm -f "$listing" "$changes" "$stamp_body" "$ref_paths" "$stale_rels" "${repo_card:-}"' EXIT
 
 for p in $DEPLOY_PATHS; do
     git -C "$REPO" ls-tree -r "$commit" -- "overlay/$p" 2>/dev/null
@@ -308,16 +308,26 @@ done < "$listing"
 # this ref dropped it. Exact in both directions, and it needs no denylist of
 # things apk owns.
 ref_paths=$(mktemp)
+stale_rels=$(mktemp)
 cut -f2- "$listing" | sed 's|^overlay/||' | sort -u > "$ref_paths"
 if [ -f "$STAMP" ]; then
-    # Stamp body lines are `<sha256>  /<rel>`; the header lines are not.
+    # Stamp body lines are `<sha256>  /<rel>`; the header lines are not. A file
+    # a PRIOR deploy owned (it is in the stamp) that this ref no longer ships
+    # is stale — and the stamp is an exact predicate, so it is safe to remove
+    # (unlike a walk of etc/init.d, which apk shares). A moved cron/init file
+    # left behind runs old code on a schedule, which the stamp exists to stop
+    # (etc/periodic/daily/pipeos-selfupdate -> hourly, pipeOS#279).
     sed -n 's|^[0-9a-f]\{64\}  /||p' "$STAMP" | while read -r rel; do
         [ -n "$rel" ] || continue
         excluded "$rel" && continue
         [ -e "$ROOT/$rel" ] || continue      # already gone: not a live stale file
         grep -qxF "$rel" "$ref_paths" && continue
-        printf 'stale %s (deployed here, absent at %s — NOT removed)\n' "$rel" "$REF"
-    done >> "$changes"
+        printf '%s\n' "$rel" >> "$stale_rels"
+    done
+    while read -r rel; do
+        printf 'stale %s (deployed here, absent at %s — %s)\n' "$rel" "$REF" \
+            "$([ "$DRY" = yes ] && echo 'would remove' || echo 'removing')"
+    done < "$stale_rels" >> "$changes"
 else
     # Said out loud rather than left as a silent pass: on a box with no stamp
     # there is no record of what a previous deploy owned, so "no stale files"
@@ -332,7 +342,8 @@ say "  $subject"
 sort "$changes" | sed 's/^/  /'
 say "$n_new new, $n_mod changed, $n_same unchanged, $n_skip never-deployed"
 
-if [ "$n_new" = 0 ] && [ "$n_mod" = 0 ] && [ "$card_action" = none ]; then
+n_stale=$(wc -l < "$stale_rels" 2>/dev/null | tr -d ' '); n_stale=${n_stale:-0}
+if [ "$n_new" = 0 ] && [ "$n_mod" = 0 ] && [ "$n_stale" = 0 ] && [ "$card_action" = none ]; then
     say "already at $REF — nothing to do."
     # The stamp is still worth writing on a box that predates it: it is what
     # lets `pipeos status` and selfcheck say how old this overlay is instead
@@ -383,6 +394,20 @@ while read -r mode type blob path; do
     [ "$rel" = usr/local/bin/pipebox-cohort-watch ] && watcher_changed=yes
     printf '%s\n' "$rel" >> "$installed_rels"
 done < "$listing"
+
+# stale files a prior deploy owned and this ref dropped: remove them now, so a
+# moved script cannot keep running old code (pipeOS#279). rc-update del first
+# for an init script (only on a real box; a relocated run has no runlevels),
+# so no dangling runlevel entry is left pointing at a deleted file.
+if [ -f "$stale_rels" ]; then
+    while read -r rel; do
+        [ -n "$rel" ] || continue
+        case "$rel" in
+            etc/init.d/*) [ -z "$ROOT" ] && rc-update del "${rel#etc/init.d/}" >/dev/null 2>&1 || true ;;
+        esac
+        rm -f "$ROOT/$rel" && say "removed stale $rel" && log "removed stale $rel"
+    done < "$stale_rels"
+fi
 
 if [ "$card_action" = install ]; then
     # Carry the box's on-premises fills forward where the repo ships the

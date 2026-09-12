@@ -74,10 +74,10 @@ controls = [
     ("H: any git mode is installed as a regular file",
      lambda s: s.replace(MODEGUARD, "    case \"$mode\" in\n        100644|100755|120000) : ;;")),
 
-    ("I: stale files are deleted instead of reported",
+    ("I: a stale file is reported but never actually removed (a regression to report-only)",
      lambda s: s.replace(
-         "printf 'stale %s (deployed here, absent at %s — NOT removed)\\n' \"$rel\" \"$REF\"",
-         "rm -f \"$ROOT/$rel\"")),
+         'rm -f "$ROOT/$rel" && say "removed stale $rel" && log "removed stale $rel"',
+         'say "removed stale $rel"')),
 
     # K widens the owner-fill mask: the gate is meant to forgive a box value
     # only ATOP AN EMPTY repo value; forgiving it unconditionally means any
@@ -115,11 +115,8 @@ controls = [
     # any implementation, including the broken one.
     ("J: the stale scan walks the live tree again instead of the stamp",
      lambda s: s.replace(
-         'if [ -f "$STAMP" ]; then\n'
-         '    # Stamp body lines are `<sha256>  /<rel>`; the header lines are not.\n'
-         '    sed -n \'s|^[0-9a-f]\\{64\\}  /||p\' "$STAMP" | while read -r rel; do',
-         'if true; then\n'
-         '    for p in $DEPLOY_PATHS; do [ -d "$ROOT/$p" ] && '
+         'sed -n \'s|^[0-9a-f]\\{64\\}  /||p\' "$STAMP" | while read -r rel; do',
+         'for p in $DEPLOY_PATHS; do [ -d "$ROOT/$p" ] && '
          'find "$ROOT/$p" -type f; done | sed "s|^$ROOT/||" | while read -r rel; do')),
 ]
 
