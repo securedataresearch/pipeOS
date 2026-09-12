@@ -235,6 +235,7 @@ _no_save = {
     "/api/secrets/reveal": "a read that re-auths (#244)",
     "/api/secrets/phrase-ack": "forgets a tmpfs copy (#244)",
     "/api/schedule/run": "starts a run; its record lives on /work (#242)",
+    "/api/cluster/sync": "pushes the list to the members; nothing here changes (#211)",
 }
 _missing = []
 for _path, _fn in _table.items():

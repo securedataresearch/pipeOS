@@ -251,9 +251,12 @@ check("17 selfupdate image: absent key reads as automatic (the default); off wri
       and "pipeos-selfupdate" in src.split("selfupdate)")[1][:120],
       repr((rc_s0, out_s0, rc_off, conf_off, rc_on, conf_on, rc_bad, rc_bad2, saves() - s0)))
 
-# ── cluster (#222): the key, the member list, a refused second init ──────
-CDIR = os.path.join(D, "cluster"); CJSON = os.path.join(D, "cluster.json")
-CENV = dict(ENV, PIPEOS_CLUSTER_DIR=CDIR, PIPEOS_CLUSTER_JSON=CJSON, PIPEOS_CLUSTER_SELF="7f3a")
+# ── cluster (#222): the identity is the CA tls-init made; a refused second init
+CJSON = os.path.join(D, "cluster.json"); CTLS = os.path.join(D, "tls")
+CENV = dict(ENV, PIPEOS_CLUSTER_JSON=CJSON, PIPEOS_TLS_DIR=CTLS, PIPEOS_TLS_HOST="pipeos-7f3a", PIPEOS_CLUSTER_SELF="7f3a",
+            PIPEOS_CLUSTER_BUNDLE=os.path.join(D, "cluster-ca.pem"), PIPEOS_CLUSTER_STATUS=os.path.join(D, "cluster.status"),
+            PIPEOS_MDNS_CACHE=os.path.join(D, "peers.json"), PIPEOS_MDNS_ROSTER=os.path.join(D, "machines.json"))
+subprocess.run(["sh", os.path.join(REPO, "overlay/usr/local/bin/pipeos-tls-init")], env=CENV, capture_output=True)
 CLUSTERPY = os.path.join(WEB, "cluster.py")
 
 
@@ -268,17 +271,17 @@ try:
     cj = json.load(open(CJSON))
 except (OSError, ValueError):
     cj = {}
-km = oct(os.stat(os.path.join(CDIR, "key.pem")).st_mode & 0o777) if os.path.exists(os.path.join(CDIR, "key.pem")) else None
+ca = open(os.path.join(CTLS, "ca.crt")).read()
 rc_i2, out_i2 = cl("init")
 rc_st, out_st = cl("status")
-rc_pub, out_pub = cl("pub")
-check("18 cluster init mints a 0600 key and a cluster of one (self is the only member, named) and saves once; a second init refuses (rc 1) without saving; status names self, the cluster and the member; pub prints the public key",
-      rc_i == 0 and km == "0o600" and list(cj.get("members", {})) == ["7f3a"] and cj["members"]["7f3a"]["name"] == "zero"
+rc_ca, out_ca = cl("ca")
+check("18 cluster init writes a cluster of one whose only member is this box's own CA (the one tls-init made), named, and saves once; a second init refuses (rc 1) without saving; status names self, the cluster and the member; 'ca' prints the CA",
+      rc_i == 0 and list(cj.get("members", {})) == ["7f3a"] and cj["members"]["7f3a"]["name"] == "zero" and cj["members"]["7f3a"]["ca"] == ca
       and saves() - s0 == 1 and rc_i2 == 1 and "already in a cluster" in out_i2 and saves() - s0 == 1
-      and rc_st == 0 and "7f3a" in out_st and cj.get("id", "") in out_st and "(self)" in out_st
-      and rc_pub == 0 and out_pub.startswith("-----BEGIN PUBLIC KEY-----")
+      and rc_st == 0 and "7f3a" in out_st and cj.get("id", "") in out_st and "self" in out_st
+      and rc_ca == 0 and out_ca == ca
       and 'cluster)     shift; exec python3 /usr/local/share/pipeos/web/cluster.py "$@" ;;' in src,
-      repr((rc_i, out_i[-200:], km, cj, saves() - s0, rc_i2, out_i2[-120:], rc_st, out_st[-200:], rc_pub, out_pub[:40])))
+      repr((rc_i, out_i[-200:], list(cj.get("members", {})), saves() - s0, rc_i2, out_i2[-120:], rc_st, out_st[-200:], rc_ca)))
 
 # ── the wiring: every verb in the help, the skill names every verb ────────
 helptext = "\n".join(l for l in src.split("\n")[:40])
