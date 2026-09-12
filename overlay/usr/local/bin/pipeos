@@ -235,6 +235,7 @@ cmd_status() {
         ok "local checkout's overlay matches live system"
     fi
     [ -f /etc/pipeos/rollback-pending ] && warn "ROLLBACK STAGED — reboot to apply; saves are fenced"
+    [ -f /run/pipeos/flash-pending ] && warn "NEW IMAGE APPLIED — reboot to boot it; saves are fenced until then"
     return 0
 }
 

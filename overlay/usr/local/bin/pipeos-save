@@ -19,6 +19,12 @@ if [ -f /etc/pipeos/rollback-pending ]; then
     logger -s -t pipeos-save "refusing: rollback staged — reboot to apply it first"
     exit 1
 fi
+if [ -f /run/pipeos/flash-pending ]; then
+    # pipeos flash apply installed a merged apkovl on the media; RAM is still
+    # the old system, and saving it would overwrite that apkovl (pipeOS#276)
+    logger -s -t pipeos-save "refusing: a new image is applied — reboot to boot it first (a save now would overwrite the merged apkovl)"
+    exit 1
+fi
 
 # one save at a time (15min cron, shutdown hook, selfcheck promotion and
 # humans all collide here); busybox flock has no -w, so poll

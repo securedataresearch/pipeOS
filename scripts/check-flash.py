@@ -186,6 +186,15 @@ check("6 apply writes exactly the image's p1 bytes at offset 0 of the device and
       and data[want:] == b"\xee" * (len(data) - want),
       "rc=%s head=%r out=%s" % (rc, data[:4], out[-300:]))
 
+fence = froot + "/run/pipeos/flash-pending"
+save_src = open(os.path.join(REPO, "overlay/usr/local/bin/pipeos-save")).read()
+stop_src = open(os.path.join(REPO, "overlay/etc/local.d/pipeos-autosave.stop")).read()
+check("6b an in-place apply leaves /run/pipeos/flash-pending (the media holds the merged apkovl, RAM is the old system), pipeos-save refuses on it, and the shutdown autosave steps aside — two rebooted into its OLD overlay off the new image once (pipeOS#276)",
+      os.path.exists(fence) and open(fence).read().startswith("applied ") and "saves are fenced until the reboot" in out
+      and "if [ -f /run/pipeos/flash-pending ]; then" in save_src and "exit 1" in save_src.split("flash-pending")[1][:400]
+      and "[ -f /run/pipeos/flash-pending ] && exit 0" in stop_src,
+      "fence=%s out=%s" % (os.path.exists(fence), out[-200:]))
+
 # ── 7. the NO_MOUNT seam is fenced ───────────────────────────────────────
 rc, out = sh("sh %s check" % BIN, env={"PIPEOS_FLASH_NO_MOUNT": "1"})
 check("7 NO_MOUNT without a dev override is refused outright",
@@ -319,6 +328,8 @@ cond14 = {
 check("14 apply --to writes the whole image at offset 0, leaves the rest, carves p2 as Linux after p1, and installs the merged apkovl as canonical and known-good on the new p1",
       all(cond14.values()),
       "failed: %s parts=%r out=%s" % ([k for k, v in cond14.items() if not v], parts, out[-300:]))
+check("14c apply --to does NOT fence this box's saves — its own media was not touched",
+      not os.path.exists(froot + "/run/pipeos/flash-pending"))
 check("14b the swap procedure is printed, with the removal rule and the restore-work verb, and this box's flash.applied is untouched",
       rc == 0 and "REMOVE the old stick" in out and "restore-work" in out
       and not os.path.exists(froot + "/work/.pipeos/flash.applied")

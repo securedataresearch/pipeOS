@@ -63,7 +63,15 @@ nothing written at any failure:
     apkovl as **canonical** (`pipeos.apkovl.tar.gz`, via `.new` + rename)
     **and known-good** (`pipeos.known-good.tar.gz`), and removes the old
     rotations — they name packages that are no longer on this media.
-12. Stops. Reboot is the owner's move.
+12. Fences saves: `/run/pipeos/flash-pending` makes `pipeos-save` refuse
+    (and the shutdown autosave step aside) until the reboot — RAM is still
+    the old system, and a save now would re-package it over the merged
+    apkovl, so the box would boot its old overlay off the new image. That
+    is what the first in-place drill on the cluster hardware did (two,
+    2026-09-12: applied 02:44:08, saved over at 02:44:20 by the shutdown
+    hook of the very reboot; pipeOS#276). `pipeos status` says NEW IMAGE
+    APPLIED.
+13. Stops. Reboot is the owner's move; the fence is tmpfs and goes with it.
 
 Progress is in `/run/pipeos/flash.state` (`step=` one of fetching, staged,
 decompressing, packaging, merging, simulating, quiescing, writing, verifying,
