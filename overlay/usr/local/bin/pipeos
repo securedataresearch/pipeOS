@@ -27,6 +27,7 @@
 #   pipeos card set KEY=VALUE...   a card field, regenerated and saved (what the dashboard's forms write)
 #   pipeos secrets phrase [--ack]  the vault's pending recovery phrase; --ack forgets the tmpfs copy
 #   pipeos assistant password      the assistant terminal's password from stdin -> vault, restarted, saved
+#   pipeos nas account NAME      share-only account + its SMB password (stdin) — Files → Network storage's form
 #   pipeos work status|flush|park|unpark   /work's hot set in RAM; park = flush + read-only (the stick idles)
 #
 # Read-only verbs (status/verify/diff/snapshot) are open to the resident
@@ -531,6 +532,7 @@ case "$1" in
     card)        [ "${2:-}" = set ] || { echo "usage: pipeos card set KEY=VALUE..." >&2; exit 2; }; shift 2; cmd_card_set "$@" ;;
     secrets)     shift; cmd_secrets "$@" ;;
     assistant)   shift; cmd_assistant "$@" ;;
+    nas)         shift; exec python3 /usr/local/share/pipeos/web/nasctl.py "$@" ;;
     work)        shift; exec /usr/local/bin/pipeos-work "$@" ;;
     *)
         sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'

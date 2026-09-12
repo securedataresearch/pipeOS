@@ -1551,7 +1551,7 @@ async function dashboard() {
             <span class="tname">${esc(u.name)}</span><span style="display:flex;gap:.3rem;align-items:center;flex-wrap:wrap">${badges}</span>
             <span style="margin-left:auto;display:flex;gap:.25rem">
               ${u.self ? "" : `<button class="ghost small" type="button" data-a="dis">${u.disabled ? "enable" : "disable"}</button>
-              <button class="ghost small" type="button" data-a="pw">reset password</button>
+              ${u.share ? "" : `<button class="ghost small" type="button" data-a="pw">reset password</button>`}
               <button class="ghost small" type="button" data-a="del">remove</button>`}
             </span></div>`);
           const on = (a, fn) => { const b = row.querySelector(`[data-a=${a}]`); if (b) b.onclick = fn; };

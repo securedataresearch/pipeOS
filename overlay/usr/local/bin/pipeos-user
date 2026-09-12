@@ -57,23 +57,25 @@ add)
 		olduid=$(stat -c %u "$HOMES/$name")
 		[ "$olduid" -ge 1000 ] && UIDOPT="-u $olduid"
 	fi
-	SHELL_=/bin/bash
-	[ "${3:-}" = --nologin ] && SHELL_=/sbin/nologin
+	case "${3:-}" in
+		"") nologin=no;  SHELL_=/bin/bash ;;
+		--nologin) nologin=yes; SHELL_=/sbin/nologin ;;
+		*) echo "pipeos-user: unknown flag '$3' (only --nologin) — refusing rather than granting a shell" >&2; usage ;;
+	esac
 	# shellcheck disable=SC2086
 	adduser -D -s "$SHELL_" -h "$HOMES/$name" -G users $UIDOPT "$name"
 	shadow_set "$name" '*'
-	if [ "$SHELL_" = /sbin/nologin ]; then
-		# a share-only account: samba authenticates it from its own passdb and
-		# serves as root after that, so it needs a passwd entry and nothing
-		# else — no shell, no ~/.ssh to ever hold a key, no video group
-		chown "$name:users" "$HOMES/$name"
-		chmod 700 "$HOMES/$name"
-	else
-		addgroup "$name" video 2>/dev/null || true   # /dev/dri for vaapi tools
+	if [ "$nologin" = no ]; then
+		# a login account: /dev/dri for vaapi tools, a place for its key
+		addgroup "$name" video 2>/dev/null || true
 		mkdir -p "$HOMES/$name/.ssh"
-		chown -R "$name:users" "$HOMES/$name"
-		chmod 700 "$HOMES/$name" "$HOMES/$name/.ssh"
 	fi
+	# (a share-only account — samba authenticates it from its own passdb and
+	# serves as root after that — needs the passwd entry and its home, nothing
+	# more: no ~/.ssh to ever hold a key, no video group)
+	chown -R "$name:users" "$HOMES/$name"
+	chmod 700 "$HOMES/$name"
+	[ "$nologin" = no ] && chmod 700 "$HOMES/$name/.ssh"
 	mkdir -p "$(dirname "$MANIFEST")"
 	grep -v "^$name:" "$MANIFEST" 2>/dev/null > "$MANIFEST.new" || true
 	printf '%s:%s\n' "$name" "$(id -u "$name")" >> "$MANIFEST.new"

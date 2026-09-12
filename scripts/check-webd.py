@@ -939,7 +939,10 @@ webd.write_users([u for u in webd.read_users() if u["name"] != "smbuser"])
 # no share left turns storage off. Seeded through the store (pipeos-user
 # and smbpasswd are absent here).
 req("/api/nas-account", {"name": "Bad Name", "password": "hunter22hunter"}, expect=400)
-req("/api/nas-account", {"name": "smbonly", "password": "short"}, expect=500)  # account half needs pipeos-user
+req("/api/nas-account", {"name": "smbonly", "password": "short"}, expect=400)  # checked before any account is made
+assert not any(u["name"] == "smbonly" for u in webd.read_users())
+req("/api/nas-account", {"name": "smbonly", "password": "hunter22hunter"}, expect=500)  # account half needs pipeos-user
+req("/api/users/add", {"name": "shareadmin", "share": True, "role": "admin"}, expect=400)  # never an admin
 req("/api/nas-account", {"name": "admin", "password": "hunter22hunter"}, expect=400)  # exists
 _us = webd.read_users()
 _us.append({"name": "shareonly2", "role": "viewer", "unix": True, "share": True, "created": 0})
@@ -947,13 +950,17 @@ webd.write_users(_us)
 r = req("/api/nas", {"shares": [{"name": "music", "path": "work/music", "users": ["shareonly", "shareonly2"]},
                                 {"name": "solo", "path": "work", "users": ["shareonly2"]}]})
 assert r["ok"] and webd.read_services()["nas"] is True
+r = req("/api/services", {"nas": False})   # the owner turns storage off for the weekend, shares kept
+assert r["services"]["nas"] is False
 r = req("/api/users/del", {"name": "shareonly2"})
 assert r["ok"]
 with open(webd.NAS_CONF) as f:
     nas_text = f.read()
 assert "NAS_S1_NAME='music'" in nas_text and "NAS_S1_USERS='shareonly'" in nas_text
 assert "solo" not in nas_text  # its only user is gone, so is the share
-assert webd.read_services()["nas"] is True
+assert webd.read_services()["nas"] is False  # a delete never turns storage back on
+r = req("/api/services", {"nas": True})
+assert r["services"]["nas"] is True
 r = req("/api/users/del", {"name": "shareonly"})
 assert r["ok"]
 with open(webd.NAS_CONF) as f:
