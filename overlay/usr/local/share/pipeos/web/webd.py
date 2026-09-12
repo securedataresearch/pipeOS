@@ -1617,11 +1617,12 @@ class Handler(BaseHTTPRequestHandler):
         if cookie is not None:
             self.send_header("Set-Cookie", cookie)
         # A member that signed its request gets a signed answer (#222): the
-        # status code stands in the METHOD slot, the path is the request's,
-        # so the caller knows who answered and that the body is theirs.
+        # status code stands in the METHOD slot, the request-target is the
+        # request's (query included), so the caller knows who answered and
+        # that the body is theirs.
         if getattr(self, "_peer", None):
             try:
-                for k, v in cluster.sign_headers(str(code), self.path.split("?")[0], data).items():
+                for k, v in cluster.sign_headers(str(code), self.path, data).items():
                     self.send_header(k, v)
             except cluster.ClusterError as e:
                 sys.stderr.write("cluster: cannot sign the response: %s\n" % e)
@@ -1657,8 +1658,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get(cluster.H_ID):
             if getattr(self, "_peer", None):
                 return self._peer
-            who, why = cluster.check(self.headers, self.command, self.path.split("?")[0],
-                                     getattr(self, "_raw", b""))
+            # the whole request-target, query included — a reader's ?path=
+            # is exactly what a signature must cover
+            who, why = cluster.check(self.headers, self.command, self.path, getattr(self, "_raw", b""))
             if not who:
                 self._peer_reason = why
                 return None
@@ -1691,8 +1693,20 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"https?://([^/:]+)", origin)
         return bool(m) and m.group(1).lower() == host
 
+    def _fresh(self):
+        """Per-request state. protocol_version is HTTP/1.1, so ONE Handler
+        instance serves every request on a keep-alive connection: anything
+        cached on self by one request is seen by the next. The review of
+        #283 found the member verdict cached that way — the second request
+        on a member's socket would have been admitted with any signature.
+        Reset at the top of every request, before anything reads them."""
+        self._peer = None
+        self._peer_reason = ""
+        self._raw = b""
+
     # -- routes --
     def do_GET(self):
+        self._fresh()
         path = self.path.split("?")[0]
         if path == "/" or path in ("/setup", "/login", "/dashboard", "/lobby"):
             return self.serve_static("index.html")
@@ -1758,15 +1772,23 @@ class Handler(BaseHTTPRequestHandler):
         self.err(404, "no such page")
 
     def do_POST(self):
+        self._fresh()
         # Uploads stream a raw body and may run for minutes — they skip both
         # the JSON body cap and MUTATE_LOCK (a big file must not freeze every
         # other mutation). Still same-origin + session gated like the rest.
         if self.path.split("?")[0] == "/api/file-up":
             if not self.same_origin():
                 return self.err(403, "cross-origin request refused")
+            # A member's signature covers the body, and this body is streamed
+            # past the handler unhashed — so a signed upload is refused by
+            # name rather than failing 'bad signature' for a reason the
+            # sender cannot see. Files between members go over the share or
+            # a clone (#243), not this endpoint.
+            if self.headers.get(cluster.H_ID):
+                return self.err(401, "cluster: signed uploads are not supported on /api/file-up")
             sess = self.authed()
             if not sess:
-                return self.err(401, "sign in first")
+                return self.unauth()
             if sess.get("role") == "viewer":
                 return self.err(403, "your account can view this box, not change it")
             # role "user" may transfer files — that is the role's whole point

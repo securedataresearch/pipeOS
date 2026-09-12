@@ -11,6 +11,7 @@ runs the shipped cluster.py and the shipped webd.py, not a copy.
 No root, no network beyond loopback, no box state touched. Controls in
 check-cluster-controls.py put each refusal's bug back.
 """
+import http.client as _hc
 import json
 import os
 import shutil
@@ -205,6 +206,46 @@ rc_st, out_st = B.cli("status")
 check("10 a dropped member is 'not a member' again; a member list that does not parse refuses everyone with 'cluster.json:' and 'pipeos cluster status' says BROKEN (rc 1)",
       st == 401 and "not a member" in body["error"] and st2 == 401 and body2["error"].startswith("cluster: cluster.json:")
       and rc_st == 1 and "BROKEN" in out_st, repr((st, body, st2, body2, rc_st, out_st)))
+
+# ── 12. keep-alive: every request on a connection is checked on its own ──
+# The review of #283: protocol_version is HTTP/1.1, one Handler instance
+# serves a whole connection, and the member verdict was cached on it — the
+# second request on a member's socket would have been admitted unsigned.
+# row 10 left two's list unparseable; put a good one back with both keys
+open(B.cjson, "w").write(json.dumps({"v": 1, "id": jb["id"], "created": 1, "members": {
+    "bbbb": {"pub": B.pub(), "name": "two", "added": 1},
+    "aaaa": {"pub": A.pub(), "name": "zero", "added": 1}}}))
+conn = _hc.HTTPConnection("127.0.0.1", B.port, timeout=10)
+h = A.headers("GET", "/api/cluster")
+conn.request("GET", "/api/cluster", headers=h); r1 = conn.getresponse(); b1 = r1.read()
+forged = dict(h, **{"X-Pipeos-Sig": "AAAA" * 21 + "AA==", "X-Pipeos-Nonce": "ff" * 16})
+conn.request("GET", "/api/cluster", headers=forged); r2 = conn.getresponse(); b2 = json.loads(r2.read())
+conn.request("GET", "/api/cluster"); r3 = conn.getresponse(); b3 = json.loads(r3.read())
+conn.close()
+check("12 on one keep-alive connection: a valid signed request, then a garbage signature (401 'bad signature', not admitted on the first request's verdict), then an unsigned one (401 'sign in first', not the previous refusal)",
+      r1.status == 200 and r2.status == 401 and b2["error"] == "cluster: bad signature"
+      and r3.status == 401 and b3["error"] == "sign in first" and "X-Pipeos-Sig" not in r3.headers,
+      repr((r1.status, r2.status, b2, r3.status, b3)))
+
+# ── 13. the query string is inside the signature, both ways ─────────────
+st_q, body_q, hdrs_q = http(B, "GET", "/api/cluster?x=1", A.headers("GET", "/api/cluster?x=1"))
+resp_q = A.py("print(cluster.check(%r, '200', '/api/cluster?x=1', %r, replay=False))"
+              % ({k: hdrs_q[k] for k in ("X-Pipeos-Id", "X-Pipeos-Ts", "X-Pipeos-Nonce", "X-Pipeos-Sig") if k in hdrs_q},
+                 json.dumps(body_q).encode()))
+st_qt, body_qt, _ = http(B, "GET", "/api/cluster?x=2", A.headers("GET", "/api/cluster?x=1"))
+rc_off, out_off = A.cli("call", "127.0.0.1:1", "GET", "/api/cluster")
+check("13 a signed GET with a query string is accepted and its answer verifies over the same target; the same signature over a changed query is 'bad signature'; a call to a Machine that is off is one 'unreachable' line, rc 1, not a traceback",
+      st_q == 200 and resp_q.startswith("('bbbb'") and st_qt == 401 and body_qt["error"] == "cluster: bad signature"
+      and rc_off == 1 and "unreachable" in out_off and "Traceback" not in out_off,
+      repr((st_q, resp_q, st_qt, body_qt, rc_off, out_off[-200:])))
+
+# ── 14. --force repairs a list that does not parse ──────────────────────
+open(B.cjson, "w").write("{not json")
+rc_f0, out_f0 = B.cli("init", "two")
+rc_f, out_f = B.cli("init", "two", "--force")
+check("14 'cluster init' on an unparseable list refuses (rc 1) and '--force' repairs it to a cluster of one with the SAME key (the members' copy of our public key stays valid)",
+      rc_f0 == 1 and rc_f == 0 and list(json.load(open(B.cjson))["members"]) == ["bbbb"]
+      and json.load(open(B.cjson))["members"]["bbbb"]["pub"] == B.pub(), repr((rc_f0, out_f0[-120:], rc_f, out_f[-120:])))
 
 # ── 11. identity coverage ───────────────────────────────────────────────
 lbu = open(os.path.join(REPO, "overlay/etc/apk/protected_paths.d/lbu.list")).read().split("\n")

@@ -44,6 +44,13 @@ controls = [
     ("G: the answer is not signed (a caller cannot tell a member's reply from anything else on the port)", W,
      lambda s: s.replace("        if getattr(self, \"_peer\", None):\n            try:\n                for k, v in cluster.sign_headers",
                          "        if False:\n            try:\n                for k, v in cluster.sign_headers"), ["4", "9"]),
+
+    ("H: the per-request reset is gone (a keep-alive connection keeps the first request's verdict)", W,
+     lambda s: s.replace("    def do_GET(self):\n        self._fresh()\n", "    def do_GET(self):\n"), ["12"]),
+
+    ("I: the server signs and checks the path without its query (a query rides outside the signature)", W,
+     lambda s: s.replace("who, why = cluster.check(self.headers, self.command, self.path, getattr(self, \"_raw\", b\"\"))",
+                         "who, why = cluster.check(self.headers, self.command, self.path.split(\"?\")[0], getattr(self, \"_raw\", b\"\"))"), ["13"]),
 ]
 
 rc = 0

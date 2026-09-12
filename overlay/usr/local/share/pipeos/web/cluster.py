@@ -24,7 +24,10 @@ THE WIRE. A signed request carries four headers:
     X-Pipeos-Nonce  16 random bytes, hex
     X-Pipeos-Sig    base64 ed25519 signature over the canonical string
 
-    canonical = id "\\n" ts "\\n" nonce "\\n" METHOD "\\n" path "\\n" sha256hex(body)
+    canonical = id "\\n" ts "\\n" nonce "\\n" METHOD "\\n" target "\\n" sha256hex(body)
+
+`target` is the whole request-target as sent — path AND query string. A
+reader's `?path=` is precisely the kind of thing a signature has to cover.
 
 A response is signed the same way by the box that answered, with the HTTP
 status code in the METHOD slot and the request's path — so the caller
@@ -199,7 +202,13 @@ def init(name="", force=False):
     """A cluster of one: mint the key if needed, write the document with
     this Machine as its only member. Refuses when a cluster document
     already exists (leaving one is #211's business), unless forced."""
-    if read() is not None and not force:
+    try:
+        existing = read()
+    except ClusterError:
+        if not force:
+            raise
+        existing = None      # --force exists for exactly this: a list that does not parse
+    if existing is not None and not force:
         raise ClusterError("already in a cluster (%s) — pipeos cluster status" % CLUSTER_JSON)
     pub = mint()
     ts = now()
@@ -348,7 +357,7 @@ def resolve(target):
             if t in (pid, (r.get("name") or "").lower(), (r.get("host") or "").lower(),
                      (r.get("host") or "").lower().removesuffix(".local")) and r.get("ip"):
                 return r["ip"], port
-    raise ClusterError("%s: not a Machine this box knows — pipeos wake ls" % target)
+    raise ClusterError("%s: not a Machine this box knows — pipeos wake --list" % target)
 
 
 def call(target, method, path, body=None, timeout=10):
@@ -369,6 +378,10 @@ def call(target, method, path, body=None, timeout=10):
         status, raw, hdrs = resp.status, resp.read(), resp.headers
     except urllib.error.HTTPError as e:
         status, raw, hdrs = e.code, e.read(), e.headers
+    except (urllib.error.URLError, OSError) as e:
+        # off, or not there: the normal state of a Machine (#241), said in
+        # one line rather than a traceback
+        raise ClusterError("%s (%s): unreachable — %s" % (target, ip, getattr(e, "reason", e)))
     who, _ = check(hdrs, str(status), path, raw, replay=False)
     try:
         parsed = json.loads(raw) if raw[:1] in (b"{", b"[") else raw
