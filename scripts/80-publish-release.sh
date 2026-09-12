@@ -43,31 +43,39 @@ sha256 in transit and every package signature at install."
 # separate, manual act (found 2026-08-30). Same-day mtime = built with this
 # release; older images are refused rather than silently republished.
 IMG_XZ="$OUT/pipeos-usb.img.xz"
-IMG_RAW="$OUT/pipeos-usb.img"
 img_assets=()
 if [ -f "$IMG_XZ" ]; then
     if [ -n "$(find "$IMG_XZ" -mtime -1 2>/dev/null)" ]; then
-        # The image must be GENERIC (pipeOS#271): the uncompressed .img the
-        # .xz was made from must still be here and no newer than the .xz,
-        # and its apkovl must carry no operator key and no box card. A
-        # refusal here is the whole point — do not work around it.
-        [ -f "$IMG_RAW" ] || { echo "REFUSING: $IMG_XZ has no $IMG_RAW beside it to inspect — rebuild (make usb + xz)" >&2; exit 2; }
-        [ "$IMG_RAW" -nt "$IMG_XZ" ] && { echo "REFUSING: $IMG_RAW is newer than $IMG_XZ — the .xz is not this image; re-run xz" >&2; exit 2; }
-        "$PIPEOS_ROOT/scripts/verify-image-generic.sh" "$IMG_RAW" || exit 2
-        grep -q '^kind=operator' "$OUT/pipeos-image.txt" 2>/dev/null \
-            && { echo "REFUSING: $OUT/pipeos-image.txt says kind=operator" >&2; exit 2; }
-        sha256sum "$IMG_XZ" | sed "s|$OUT/||" > "$IMG_XZ.sha256"
-        # SHA256SUMS lists the image too (#179): one digest file for every
-        # asset a box may fetch. pipeos-selfupdate reads only its own line;
-        # the .sha256 asset stays for docs/fulfillment.md's by-hand check.
-        cat "$IMG_XZ.sha256" >> "$stage/SHA256SUMS"
-        img_assets=("$IMG_XZ" "$IMG_XZ.sha256")
-        echo "including flashable image: $(basename "$IMG_XZ") ($(du -h "$IMG_XZ" | cut -f1))"
+        # The image must be GENERIC (pipeOS#271) — and it is the .xz that
+        # ships, so the .xz is what gets inspected: decompressed beside it
+        # (~3.6 GB, a minute) and read by scripts/verify-image-generic.sh,
+        # which refuses an operator key, a root password or a box card. A
+        # refusal here is the whole point — do not work around it. The apk
+        # repo is not held hostage by it: a REFUSED image is not attached
+        # and the release still publishes the repo, saying so loudly.
+        CHK="$OUT/.release-check.img"
+        trap 'rm -rf "$stage" "$CHK"' EXIT
+        echo "inspecting $(basename "$IMG_XZ") (decompressing to check it is a generic image) ..."
+        if ! xz -dc "$IMG_XZ" > "$CHK"; then
+            echo "REFUSING the image: $IMG_XZ does not decompress — not attaching it" >&2
+        elif "$PIPEOS_ROOT/scripts/verify-image-generic.sh" "$CHK"; then
+            sha256sum "$IMG_XZ" | sed "s|$OUT/||" > "$IMG_XZ.sha256"
+            # SHA256SUMS lists the image too (#179): one digest file for every
+            # asset a box may fetch. pipeos-selfupdate reads only its own line;
+            # the .sha256 asset stays for docs/fulfillment.md's by-hand check.
+            cat "$IMG_XZ.sha256" >> "$stage/SHA256SUMS"
+            img_assets=("$IMG_XZ" "$IMG_XZ.sha256")
+            echo "including flashable image: $(basename "$IMG_XZ") ($(du -h "$IMG_XZ" | cut -f1))"
+        else
+            echo "REFUSING the image: $IMG_XZ is an OPERATOR image (see above) — NOT attaching it; the apk repo publishes alone." >&2
+            echo "                    rebuild generic (env -u AUTH_KEYS -u CARD -u ROOT_LOGIN make usb; xz -T0 -k out/pipeos-usb.img) and release again." >&2
+        fi
+        rm -f "$CHK"
     else
-        echo "NOTE: $IMG_XZ is older than a day — NOT attaching a stale image. Rebuild (make usb + xz) to include it." >&2
+        echo "NOTE: $IMG_XZ is older than a day — NOT attaching a stale image. Rebuild (make usb; xz -T0 -k out/pipeos-usb.img) to include it." >&2
     fi
 else
-    echo "NOTE: no $IMG_XZ — publishing the apk repo only. Build one (make usb + xz) to ship a flashable image too." >&2
+    echo "NOTE: no $IMG_XZ — publishing the apk repo only. Build one (make usb; xz -T0 -k out/pipeos-usb.img) to ship a flashable image too." >&2
 fi
 
 echo "publishing $tag ($pkgs packages) ..."

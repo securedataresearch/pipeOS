@@ -6,7 +6,7 @@
 # shellcheck shell=bash
 
 PIPEOS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-OUT="$PIPEOS_ROOT/out"
+OUT="${OUT:-$PIPEOS_ROOT/out}"   # overridable so a probe can stage a throwaway out/ (check-release-guard.py)
 
 ALPINE_VERSION=3.24
 ALPINE_PATCH=3.24.1

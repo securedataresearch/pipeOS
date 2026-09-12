@@ -124,11 +124,15 @@ MC "$OUT/.boot_repository" ::/apks/extra/.boot_repository
 # generic (publishable) or operator (an AUTH_KEYS / make stick build that must
 # never leave the desk, pipeOS#271) — the same rule 80-publish-release.sh
 # enforces with scripts/verify-image-generic.sh; here it is a label and a banner.
-if "$PIPEOS_ROOT/scripts/verify-image-generic.sh" --apkovl "$OUT/pipeos.apkovl.tar.gz" >/dev/null 2>&1; then
-    IMAGE_KIND=generic
-else
-    IMAGE_KIND=operator
-fi
+_grc=0
+IMAGE_WHY=$("$PIPEOS_ROOT/scripts/verify-image-generic.sh" --apkovl "$OUT/pipeos.apkovl.tar.gz" 2>&1) || _grc=$?
+case $_grc in
+    0) IMAGE_KIND=generic ;;
+    2) IMAGE_KIND=operator ;;
+    *) echo "==> could not tell whether the apkovl is generic: $IMAGE_WHY" >&2
+       echo "==> refusing to build an image from an apkovl the guard cannot read" >&2
+       exit 1 ;;
+esac
 {
     echo "variant=$VARIANT"
     echo "kind=$IMAGE_KIND"
@@ -145,6 +149,6 @@ rm -f "$P1"   # merged into $IMG; keeping it double-books P1_SIZE_MB of scratch
 ls -lh "$IMG"
 echo "image ready: $IMG"
 if [ "$IMAGE_KIND" = operator ]; then
-    echo "==> OPERATOR IMAGE (ssh key or box card baked) — flash it, never publish it;"
-    echo "==> make release refuses it (pipeOS#271). Generic: env -u AUTH_KEYS -u CARD make usb"
+    echo "==> OPERATOR IMAGE — flash it, never publish it; make release refuses it (pipeOS#271):"
+    echo "$IMAGE_WHY" | sed 's/^/==>   /'
 fi

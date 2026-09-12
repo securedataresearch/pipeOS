@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
-"""Probe for scripts/verify-image-generic.sh (pipeOS#271): the guard that
-keeps an OPERATOR image — the workstation's ssh key or a box's card baked
-into the apkovl — out of a GitHub release. Builds three apkovls (generic,
-key-baked, make-stick) and, with mtools present, a small FAT image at the
-build's p1 offset holding each, then asserts the verdicts. Also pins that
-80-publish-release.sh calls the guard before `gh release create` and that
-50-build-image.sh stamps kind= — a guard nobody calls gates nothing.
+"""Probe for the release guard (pipeOS#271): scripts/verify-image-generic.sh
+keeps an OPERATOR image — the workstation's ssh key, a console root password
+or a box's card baked into the apkovl — out of a GitHub release.
+
+Rows: three apkovls (generic / key / root password / stick card) through the
+guard's --apkovl mode; the same inside small FAT images at the build's p1
+offset (image mode; needs mtools); the guard's fail-closed edges (missing,
+unreadable, empty listing, no FAT); and the publisher itself, run end to end
+against a throwaway out/ (OUT= seam in config.sh) with a stub `gh` on PATH
+that records its argv: a generic .xz is attached, an operator .xz is NOT and
+`gh release create` still runs for the apk repo alone, and the .xz — not the
+.img beside it — is what is inspected.
 Exit 0 if every row passes. Controls: check-release-guard-controls.py.
 """
 import io
+import lzma
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -19,8 +26,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-GUARD = os.environ.get("CHECK_RELEASE_GUARD_BIN",
-                       os.path.join(HERE, "verify-image-generic.sh"))
+GUARD = os.environ.get("CHECK_RELEASE_GUARD_BIN", os.path.join(HERE, "verify-image-generic.sh"))
 PUBLISH = os.path.join(HERE, "80-publish-release.sh")
 BUILD = os.path.join(HERE, "50-build-image.sh")
 RESULTS = []
@@ -31,7 +37,7 @@ def check(desc, ok, detail=""):
     print(("PASS " if ok else "FAIL ") + desc + ("" if ok else "  [%s]" % detail))
 
 
-def apkovl(path, entries):
+def targz(path, entries):
     with tarfile.open(path, "w:gz") as t:
         for name, content in entries.items():
             data = content.encode()
@@ -41,27 +47,43 @@ def apkovl(path, entries):
             t.addfile(ti, io.BytesIO(data))
 
 
-def run(*args):
-    p = subprocess.run(list(args), capture_output=True, text=True)
+def run(*args, env=None, cwd=None):
+    p = subprocess.run(list(args), capture_output=True, text=True, env=env, cwd=cwd)
     return p.returncode, p.stdout + p.stderr
 
 
+SHADOW_LOCKED = "root:*:19000:0:::::\nbin:!::0:::::\n"
+SHADOW_PW = "root:$6$saltsalt$hashhashhashhash:19000:0:::::\nbin:!::0:::::\n"
+BASE = {"etc/hostname": "pipeos\n", "etc/shadow": SHADOW_LOCKED,
+        "etc/pipeos/card.conf": "# unprovisioned default\nMODEL=generic\n"}
+
 tmp = tempfile.mkdtemp(prefix="relguard.")
 try:
-    generic = os.path.join(tmp, "generic.tar.gz")
-    keyed = os.path.join(tmp, "keyed.tar.gz")
-    stick = os.path.join(tmp, "stick.tar.gz")
-    base = {"etc/hostname": "pipeos\n", "etc/pipeos/card.conf": "# unprovisioned default\nMODEL=generic\n"}
-    apkovl(generic, base)
-    apkovl(keyed, dict(base, **{"root/.ssh/authorized_keys": "ssh-ed25519 AAAA operator\n"}))
-    apkovl(stick, dict(base, **{"etc/pipeos/card.conf": "NICK=box4\nMODEL=fleet\n"}))
+    ovl = {}
+    for label, extra in (("generic", {}),
+                         ("keyed", {"root/.ssh/authorized_keys": "ssh-ed25519 AAAA operator\n"}),
+                         ("rootpw", {"etc/shadow": SHADOW_PW}),
+                         ("stick", {"etc/pipeos/card.conf": "NICK=box4\nMODEL=fleet\n"})):
+        ovl[label] = os.path.join(tmp, label + ".tar.gz")
+        targz(ovl[label], dict(BASE, **extra))
+    # a big one: the listing must outgrow a pipe buffer and STILL trip
+    big = dict(BASE, **{"root/.ssh/authorized_keys": "ssh-ed25519 AAAA operator\n"})
+    big.update({"usr/share/filler/%05d/some-long-file-name-to-fill-the-listing.txt" % i: "" for i in range(6000)})
+    ovl["bigkeyed"] = os.path.join(tmp, "bigkeyed.tar.gz")
+    targz(ovl["bigkeyed"], big)
 
-    rc, out = run(GUARD, "--apkovl", generic)
+    rc, out = run(GUARD, "--apkovl", ovl["generic"])
     check("generic apkovl passes (exit 0)", rc == 0, out.strip())
-    rc, out = run(GUARD, "--apkovl", keyed)
+    rc, out = run(GUARD, "--apkovl", ovl["keyed"])
     check("baked ssh key is refused (exit 2) and named", rc == 2 and "authorized_keys" in out, out.strip())
-    rc, out = run(GUARD, "--apkovl", stick)
+    rc, out = run(GUARD, "--apkovl", ovl["rootpw"])
+    check("a console root password (ROOT_LOGIN=password) is refused (exit 2) and named",
+          rc == 2 and "root has a password" in out, out.strip())
+    rc, out = run(GUARD, "--apkovl", ovl["stick"])
     check("make stick card (NICK set) is refused (exit 2) and named", rc == 2 and "NICK=box4" in out, out.strip())
+    rc, out = run(GUARD, "--apkovl", ovl["bigkeyed"])
+    check("a key in an apkovl whose listing outgrows a pipe buffer is STILL refused (exit 2) — no fail-open under pipefail",
+          rc == 2 and "authorized_keys" in out, "rc=%s %s" % (rc, out.strip()[-160:]))
     rc, out = run(GUARD, "--apkovl", os.path.join(tmp, "missing.tar.gz"))
     check("a missing apkovl refuses (exit 1), never passes", rc == 1, out.strip())
     with open(os.path.join(tmp, "junk.tar.gz"), "w") as f:
@@ -71,21 +93,25 @@ try:
     rc, out = run(GUARD)
     check("no argument is usage, exit 1", rc == 1 and "usage" in out, out.strip())
 
-    # the image path: p1 at PART_OFFSET_MB (config.sh), FAT made the way the
-    # build makes it (mformat + mcopy, no loop mounts)
-    if shutil.which("mformat") and shutil.which("mcopy"):
-        offset_mb = int(re.search(r"^PART_OFFSET_MB=(\d+)", open(os.path.join(REPO, "config.sh")).read(), re.M).group(1))
-        for label, ovl, want_rc in (("generic", generic, 0), ("keyed", keyed, 2), ("stick", stick, 2)):
+    offset_mb = int(re.search(r"^PART_OFFSET_MB=(\d+)", open(os.path.join(REPO, "config.sh")).read(), re.M).group(1))
+
+    def fat_image(path, apkovl_path, size_mb=8):
+        p1 = path + ".p1"
+        with open(p1, "wb") as f:
+            f.truncate(size_mb * 1024 * 1024)
+        env = dict(os.environ, MTOOLS_SKIP_CHECK="1")
+        subprocess.run(["mformat", "-i", p1, "-F", "::"], check=True, capture_output=True, env=env)
+        subprocess.run(["mcopy", "-i", p1, apkovl_path, "::/pipeos.apkovl.tar.gz"], check=True, capture_output=True, env=env)
+        with open(path, "wb") as f:
+            f.truncate((offset_mb + size_mb) * 1024 * 1024)
+        subprocess.run(["dd", "if=" + p1, "of=" + path, "bs=1M", "seek=%d" % offset_mb, "conv=notrunc", "status=none"], check=True)
+        os.unlink(p1)
+
+    have_mtools = bool(shutil.which("mformat") and shutil.which("mcopy"))
+    if have_mtools:
+        for label, want_rc in (("generic", 0), ("keyed", 2), ("rootpw", 2), ("stick", 2)):
             img = os.path.join(tmp, label + ".img")
-            p1 = os.path.join(tmp, label + ".p1")
-            with open(p1, "wb") as f:
-                f.truncate(8 * 1024 * 1024)
-            env = dict(os.environ, MTOOLS_SKIP_CHECK="1")
-            subprocess.run(["mformat", "-i", p1, "-F", "::"], check=True, capture_output=True, env=env)
-            subprocess.run(["mcopy", "-i", p1, ovl, "::/pipeos.apkovl.tar.gz"], check=True, capture_output=True, env=env)
-            with open(img, "wb") as f:
-                f.truncate((offset_mb + 8) * 1024 * 1024)
-            subprocess.run(["dd", "if=" + p1, "of=" + img, "bs=1M", "seek=%d" % offset_mb, "conv=notrunc", "status=none"], check=True)
+            fat_image(img, ovl[label])
             rc, out = run(GUARD, img)
             check("image mode: %s image -> exit %d" % (label, want_rc), rc == want_rc, out.strip())
         empty = os.path.join(tmp, "empty.img")
@@ -96,18 +122,57 @@ try:
     else:
         print("SKIP image-mode rows: mtools not installed here")
 
-    # wiring: the publisher calls the guard BEFORE gh release create, refuses on
-    # a missing/newer .img, and the builder stamps kind=
-    pub = open(PUBLISH).read()
-    call = pub.find("verify-image-generic.sh")
-    create = pub.find("gh release create")
-    check("80-publish-release.sh runs the guard before `gh release create`", 0 < call < create)
-    check("80-publish-release.sh refuses when the .img the .xz came from is missing or newer",
-          "no $IMG_RAW beside it" in pub and '"$IMG_RAW" -nt "$IMG_XZ"' in pub)
-    check("80-publish-release.sh refuses kind=operator in pipeos-image.txt", "kind=operator" in pub)
+    # ---- the publisher, end to end, against a throwaway out/ and a stub gh
+    if have_mtools and shutil.which("xz"):
+        def publish(label_xz, label_img=None):
+            """Stage OUT with a minimal signed-looking repo and the given image
+            (.xz from label_xz; a raw .img from label_img beside it, to prove the
+            .xz is what is inspected). Returns (rc, output, gh argv lines)."""
+            out_dir = os.path.join(tmp, "out-" + label_xz + (label_img or ""))
+            repo_dir = os.path.join(out_dir, "repo/pipeos/x86_64")
+            os.makedirs(repo_dir)
+            targz(os.path.join(repo_dir, "APKINDEX.tar.gz"), {"APKINDEX": "P:foo\nV:1.0-r0\n\n"})
+            targz(os.path.join(repo_dir, "foo-1.0-r0.apk"), {".PKGINFO": "pkgname = foo\n"})
+            img = os.path.join(tmp, label_xz + ".img")
+            with open(img, "rb") as f, lzma.open(os.path.join(out_dir, "pipeos-usb.img.xz"), "wb") as z:
+                shutil.copyfileobj(f, z)
+            if label_img:
+                shutil.copy(os.path.join(tmp, label_img + ".img"), os.path.join(out_dir, "pipeos-usb.img"))
+            bindir = os.path.join(out_dir, "bin")
+            os.makedirs(bindir)
+            log = os.path.join(out_dir, "gh.log")
+            with open(os.path.join(bindir, "gh"), "w") as f:
+                f.write("#!/bin/sh\necho \"$@\" >> %s\n" % log)
+            os.chmod(os.path.join(bindir, "gh"), 0o755)
+            env = dict(os.environ, OUT=out_dir, PATH=bindir + ":" + os.environ["PATH"])
+            rc, text = run("bash", PUBLISH, env=env, cwd=REPO)
+            gh = open(log).read() if os.path.exists(log) else ""   # one call, its notes span lines
+            return rc, text, gh
+
+        rc, text, gh = publish("generic")
+        check("publisher: a generic .xz is inspected, attached, and gh release create runs with it",
+              rc == 0 and gh.count("release create") == 1 and "pipeos-usb.img.xz" in gh
+              and "pipeos-usb.img.xz.sha256" in gh and "including flashable image" in text,
+              "rc=%s gh=%r %s" % (rc, gh, text.strip()[-300:]))
+        rc, text, gh = publish("keyed")
+        check("publisher: an operator .xz is REFUSED — not attached, said loudly, the apk repo still publishes alone",
+              rc == 0 and gh.count("release create") == 1 and "pipeos-usb.img.xz" not in gh
+              and "OPERATOR" in text and "authorized_keys" in text,
+              "rc=%s gh=%r %s" % (rc, gh, text.strip()[-300:]))
+        rc, text, gh = publish("keyed", label_img="generic")
+        check("publisher: the .xz is what is inspected — a generic .img beside an operator .xz does not launder it",
+              rc == 0 and gh.count("release create") == 1 and "pipeos-usb.img.xz" not in gh and "OPERATOR" in text,
+              "rc=%s gh=%r %s" % (rc, gh, text.strip()[-300:]))
+        check("publisher: the scratch decompressed image is removed afterwards",
+              not any(os.path.exists(os.path.join(tmp, d, ".release-check.img")) for d in os.listdir(tmp) if d.startswith("out-")))
+    else:
+        print("SKIP publisher rows: mtools/xz not installed here")
+
     bld = open(BUILD).read()
-    check("50-build-image.sh stamps kind= from the same guard",
-          'echo "kind=$IMAGE_KIND"' in bld and "verify-image-generic.sh" in bld)
+    check("50-build-image.sh stamps kind= from the guard's three exits (0 generic, 2 operator, else refuse the build)",
+          'echo "kind=$IMAGE_KIND"' in bld and "verify-image-generic.sh" in bld
+          and "0) IMAGE_KIND=generic" in bld and "2) IMAGE_KIND=operator" in bld
+          and "refusing to build an image from an apkovl the guard cannot read" in bld)
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
