@@ -30,7 +30,7 @@ BREAKS = [
     ("G  the roster is never written (#241)", MDNSD,
      '                roster_upsert(state)', '                pass'),
     ("H  the TXT carries no MAC (#241)", MDNSD,
-     '            "mac": ident.get("mac", "")}', '            "mac": ""}'),
+     '            "mac": ident.get("mac", ""),', '            "mac": "",'),
 ]
 
 failed = False
