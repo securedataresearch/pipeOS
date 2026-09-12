@@ -564,7 +564,7 @@ def lobby_entries():
     view can offer Wake (#241). Awake first, claimed first, then by name."""
     ps, ok = peers()
     me = self_entry()
-    rows = [dict(me, awake=True)] + [dict(p, self=False, awake=True) for p in ps]
+    rows = [dict(me, awake=True)] + [dict(p, self=False, awake=True, cluster=p.get("cl", "")) for p in ps]
     live = {r["id"] for r in rows}
     for pid, r in roster().items():
         if pid in live or pid == me["id"]:
@@ -1842,6 +1842,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_login(body)
         if path == "/api/cluster/join":
             return self.api_cluster_join(body)
+        if path == "/api/cluster/add-request":
+            return self.api_cluster_add_request(body)
         # everything below requires a session
         sess = self.authed()
         if not sess:
@@ -1901,6 +1903,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/cluster/sync": self.api_cluster_sync,
             "/api/cluster/members": self.api_cluster_members,
             "/api/cluster/reboot-all": self.api_cluster_reboot_all,
+            "/api/cluster/join-via": self.api_cluster_join_via,
+            "/api/cluster/adopt": self.api_cluster_adopt,
             "/api/cluster/services": self.api_cluster_services,
             "/api/schedule/set": self.api_schedule_set,
             "/api/schedule/del": self.api_schedule_del,
@@ -2404,15 +2408,72 @@ class Handler(BaseHTTPRequestHandler):
         if not claimed():
             return self.err(403, "this Machine is not claimed yet — claim it first (or adopt it, #213)")
         u = find_user(read_users(), "admin")
-        if u is None or not check_hash(body.get("password") or "", u.get("hash")):
-            time.sleep(2)
-            return self.err(403, "wrong password for this Machine")
+        pw = body.get("password") or ""
+        # the wizard's join (#213): the box minted a one-time token and
+        # handed it to the member that is now calling — accepted once
+        if not cluster.take_join_token(pw):
+            if u is None or not check_hash(pw, u.get("hash")):
+                time.sleep(2)
+                return self.err(403, "wrong password for this Machine")
         try:
             ans = cluster.join(body.get("cluster") or {}, name=box_name())
         except cluster.ClusterError as e:
             return self.err(409, str(e))
         saved, out = save_state()
         self.send(200, dict(ans, saved=saved, save_output=out))
+
+    def api_cluster_add_request(self, body):
+        """Box two asks to be added (#213): it carries a one-time token it
+        minted, and THIS member's admin password as the authorisation —
+        checked the way login checks it, one flat cost. Then the ordinary
+        add() runs against it with the token, and the list is pushed."""
+        if not claimed():
+            return self.err(403, "this Machine is not claimed")
+        u = find_user(read_users(), "admin")
+        if u is None or not check_hash(body.get("password") or "", u.get("hash")):
+            time.sleep(2)
+            return self.err(403, "wrong password for this member")
+        target = (body.get("addr") or body.get("id") or "").strip()
+        token = body.get("token") or ""
+        if not target or not token:
+            return self.err(400, "id and token")
+        try:
+            mid, report = cluster.add(target, token)
+        except cluster.ClusterError as e:
+            return self.err(409, str(e))
+        saved, out = save_state()
+        self.send(200, {"ok": True, "id": mid, "pushed": report, "saved": saved, "save_output": out})
+
+    def api_cluster_join_via(self, body):
+        """This box asks a member to add it (the wizard's Join)."""
+        member = (body.get("id") or body.get("addr") or "").strip()
+        pw = body.get("password") or ""
+        if not member or not pw:
+            return self.err(400, "which member, and its admin password")
+        try:
+            ans = cluster.join_via(member, pw)
+        except cluster.ClusterError as e:
+            return self.err(409, str(e))
+        saved, out = save_state()
+        self.send(200, {"ok": True, "via": member, "pushed": ans.get("pushed", {}), "saved": saved, "save_output": out})
+
+    def api_cluster_adopt(self, body):
+        """Adopt an unclaimed Machine from this dashboard (#213): claimed
+        with THIS Machine's password (typed once to confirm), added, named."""
+        u = find_user(read_users(), "admin")
+        pw = body.get("password") or ""
+        if u is None or not check_hash(pw, u.get("hash")):
+            time.sleep(2)
+            return self.err(403, "that is not this Machine's admin password")
+        target = (body.get("id") or body.get("addr") or "").strip()
+        if not target:
+            return self.err(400, "which Machine")
+        try:
+            mid, phrase, report = cluster.adopt(target, pw, (body.get("name") or "").strip().lower())
+        except cluster.ClusterError as e:
+            return self.err(409, str(e))
+        saved, out = save_state()
+        self.send(200, {"ok": True, "id": mid, "recovery_phrase": phrase, "pushed": report, "saved": saved, "save_output": out})
 
     def api_cluster_members(self, body):
         """The list from a member (its client certificate admitted it).

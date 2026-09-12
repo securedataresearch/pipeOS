@@ -20,6 +20,13 @@ orig = {p: open(p).read() for p in (C, W)}
 OLD_H = '    res = {mid: ("rebooting" if st == 200 else "%s" % ((b.get("error") if isinstance(b, dict) else "") or st))\n           for mid, (st, b) in fanout(others, "POST", "/api/reboot", {}).items()}\n    res[v["self"]] = local_reboot()'
 NEW_H = '    res = {v["self"]: local_reboot()}\n    time.sleep(0.5)\n    res.update({mid: ("rebooting" if st == 200 else "%s" % ((b.get("error") if isinstance(b, dict) else "") or st))\n           for mid, (st, b) in fanout(others, "POST", "/api/reboot", {}).items()})'
 
+OLD_D = '        if not cluster.take_join_token(pw):\n            if u is None or not check_hash(pw, u.get("hash")):\n                time.sleep(2)\n                return self.err(403, "wrong password for this Machine")\n'
+OLD_J = '        if u is None or not check_hash(body.get("password") or "", u.get("hash")):\n            time.sleep(2)\n            return self.err(403, "wrong password for this member")\n'
+OLD_K = '    try:\n        os.unlink(JOIN_TOKEN)\n    except OSError:\n        pass\n    return bool(candidate)'
+NEW_K = '    return bool(candidate)'
+OLD_L = '    if ident.get("claimed"):\n        raise ClusterError'
+NEW_L = '    if False:\n        raise ClusterError'
+
 controls = [
     ("A: the listener never asks for a client certificate (no member is ever admitted)", C,
      lambda s: s.replace("        ctx.verify_mode = ssl.CERT_OPTIONAL\n", "        ctx.verify_mode = ssl.CERT_NONE\n"), ["3"]),
@@ -33,7 +40,7 @@ controls = [
                          "                who = mid\n                break\n"), ["3"]),
 
     ("D: the join does not check the password", W,
-     lambda s: s.replace("        if u is None or not check_hash(body.get(\"password\") or \"\", u.get(\"hash\")):\n            time.sleep(2)\n            return self.err(403, \"wrong password for this Machine\")\n", "\n"), ["3"]),
+     lambda s: s.replace(OLD_D, ""), ["3"]),
 
     ("E: the caller does not verify the answering certificate (any server on that port is 'a member')", C,
      lambda s: s.replace("        ctx.load_verify_locations(cafile=cafile)\n        ctx.verify_mode = ssl.CERT_REQUIRED\n",
@@ -47,6 +54,15 @@ controls = [
 
     ("I: the service switch answers ok for an id that is not a member", C,
      lambda s: s.replace('            res[i] = "not a member"\n', '            res[i] = "ok"\n'), ["15"]),
+
+    ("J: add-request does not check the member's password (anyone on the LAN joins a box to the cluster)", W,
+     lambda s: s.replace(OLD_J, ""), ["17"]),
+
+    ("K: the join token is not single-use (a captured token joins again later)", C,
+     lambda s: s.replace(OLD_K, NEW_K), ["17"]),
+
+    ("L: adopt does not refuse a Machine that is already claimed (the owner's guard)", C,
+     lambda s: s.replace(OLD_L, NEW_L), ["18"]),
 
     ("F: the reader does not drop a member seen in another cluster", C,
      lambda s: s.replace("        if pid in d[\"members\"] and pid != self_id() and p.get(\"cl\") and p[\"cl\"] != d[\"id\"]:\n",
