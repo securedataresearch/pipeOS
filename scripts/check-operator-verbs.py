@@ -206,14 +206,33 @@ check("14 assistant password reads stdin into the vault as assistant_pass for th
       and 'eerror "the assistant terminal is enabled but $CONF does not exist' not in open(os.path.join(REPO, "overlay/etc/init.d/pipeos-assistant")).read() and "9>&-" in src.split("cmd_assistant()")[1].split("# ----")[0]
       and rc_tty == 2, "rc=%s out=%s" % (rc_tty, out_tty))
 
+# ── nas account (pipeOS#270): the Storage page's share-only account as a verb ──
+# Same module function as the dashboard (webd.nas_account_create). The unix
+# half shells out to pipeos-user, absent here, so the create itself stops at
+# that refusal — which is the point: nothing is written before it.
+NASCTL = os.path.join(WEB, "nasctl.py")
+def nas(*args, stdin=None):
+    p = subprocess.run([sys.executable, NASCTL] + list(args), capture_output=True, text=True, env=ENV, input=stdin)
+    return p.returncode, p.stdout + p.stderr
+s0 = saves()
+rc_a, out_a = nas("bogus")
+rc_b, out_b = nas("account", "office", stdin="short")
+rc_c, out_c = nas("account", "Bad Name", stdin="hunter22hunter")
+rc_d, out_d = nas("account", "office", stdin="hunter22hunter")
+check("16 nas account: a bogus verb, a short SMB password and a hostile name are refusals (rc 2) that write nothing; the create is the dashboard's nas_account_create (pipeos-user missing here stops it at the unix step, still nothing saved); the verb is wired in pipeos",
+      rc_a == 2 and rc_b == 2 and "8 characters" in out_b and rc_c == 2 and "user name" in out_c
+      and rc_d == 2 and "unix user" in out_d and saves() == s0
+      and 'nas)         shift; exec python3 /usr/local/share/pipeos/web/nasctl.py "$@" ;;' in src,
+      repr((rc_a, out_b, out_c, out_d, saves() - s0)))
+
 # ── the wiring: every verb in the help, the skill names every verb ────────
 helptext = "\n".join(l for l in src.split("\n")[:40])
 skill = open(os.path.join(REPO, ".claude/skills/pipeos-fleet/SKILL.md")).read()
 doc = open(os.path.join(REPO, "docs/fleet-ops.md")).read()
-verbs = ("pipeos schedule", "pipeos usage", "pipeos card set", "pipeos secrets phrase", "pipeos assistant password", "pipeos deploy-overlay", "pipeos vault", "pipeos wake", "pipeos work")
+verbs = ("pipeos schedule", "pipeos usage", "pipeos card set", "pipeos secrets phrase", "pipeos assistant password", "pipeos nas account", "pipeos deploy-overlay", "pipeos vault", "pipeos wake", "pipeos work")
 check("15 every operator verb is in pipeos's help, in the fleet skill and in docs/fleet-ops.md",
-      all(v in helptext for v in verbs[:5]) and all(v in skill for v in verbs) and all(v in doc for v in verbs),
-      "help=%r skill=%r doc=%r" % ([v for v in verbs[:5] if v not in helptext], [v for v in verbs if v not in skill], [v for v in verbs if v not in doc]))
+      all(v in helptext for v in verbs[:6]) and all(v in skill for v in verbs) and all(v in doc for v in verbs),
+      "help=%r skill=%r doc=%r" % ([v for v in verbs[:6] if v not in helptext], [v for v in verbs if v not in skill], [v for v in verbs if v not in doc]))
 
 shutil.rmtree(D, ignore_errors=True)
 print("%d/%d" % (sum(RESULTS), len(RESULTS)))

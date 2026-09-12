@@ -798,6 +798,13 @@ async function dashboard() {
               <button id="nadd" type="button">Add share</button>
             </div>
             <div id="nusers" class="note" style="margin-top:.4rem"></div>
+            <label style="margin-top:.9rem">New account for a share</label>
+            <p class="note">An account that only connects to shares — no dashboard sign-in, no shell. Its one credential is the SMB password you set here.</p>
+            <div class="chatrow">
+              <input id="naname" type="text" autocomplete="off" placeholder="account name, e.g. office" style="margin:0">
+              <input id="napass" type="password" autocomplete="new-password" placeholder="SMB password, 8+ characters" style="margin:0">
+              <button id="nacreate" type="button">Create</button>
+            </div>
             <label style="margin-top:.9rem">SMB passwords</label>
             <p class="note">SMB needs its own password per account — set one here for each person who will connect.</p>
             <div class="chatrow">
@@ -1534,7 +1541,7 @@ async function dashboard() {
         ulist.replaceChildren(...r.users.map(u => {
           const badges = [
             u.role === "admin" ? '<span class="pill status-ok">admin</span>' : '<span class="pill">' + esc(u.role || "viewer") + '</span>',
-            u.unix ? '<span class="pill">ssh</span>' : "",
+            u.share ? '<span class="pill">share only</span>' : u.unix ? '<span class="pill">ssh</span>' : "",
             u.sudo ? '<span class="pill">doas</span>' : "",
             u.terminal ? `<a class="pill" data-vok href="${location.protocol}//${location.hostname}:${u.term_port}/" target="_blank" rel="noopener">terminal :${u.term_port} ↗</a>` : "",
             u.disabled ? '<span class="pill status-warn">disabled</span>' : "",
@@ -1544,7 +1551,7 @@ async function dashboard() {
             <span class="tname">${esc(u.name)}</span><span style="display:flex;gap:.3rem;align-items:center;flex-wrap:wrap">${badges}</span>
             <span style="margin-left:auto;display:flex;gap:.25rem">
               ${u.self ? "" : `<button class="ghost small" type="button" data-a="dis">${u.disabled ? "enable" : "disable"}</button>
-              <button class="ghost small" type="button" data-a="pw">reset password</button>
+              ${u.share ? "" : `<button class="ghost small" type="button" data-a="pw">reset password</button>`}
               <button class="ghost small" type="button" data-a="del">remove</button>`}
             </span></div>`);
           const on = (a, fn) => { const b = row.querySelector(`[data-a=${a}]`); if (b) b.onclick = fn; };
@@ -1829,7 +1836,7 @@ async function dashboard() {
     const renderNasUsers = () => {
       const box = v.querySelector("#nusers");
       if (!nasUsers.length) {
-        box.innerHTML = "No accounts with unix access yet — add one under Users first.";
+        box.innerHTML = "No accounts can connect yet — create one below, or give an existing account unix access under Users.";
         return;
       }
       box.innerHTML = "May connect: " + nasUsers.map(u =>
@@ -1882,6 +1889,21 @@ async function dashboard() {
       postNas(nasShares.map(sh => ({ name: sh.name, path: sh.path, users: sh.users }))
         .concat([{ name, path, users }]));
       v.querySelector("#nname").value = ""; v.querySelector("#nrel").value = "";
+    };
+    v.querySelector("#nacreate").onclick = async () => {
+      const name = v.querySelector("#naname").value.trim(), pw = v.querySelector("#napass").value;
+      if (!name) return nasErr("give the account a name");
+      if (pw.length < 8) return nasErr("SMB password: at least 8 characters");
+      nasErr(""); nasSay("creating…");
+      try {
+        const r = await api("/api/nas-account", { name, password: pw });
+        v.querySelector("#naname").value = ""; v.querySelector("#napass").value = "";
+        nasSay("account " + name + " ready — tick it on a share");
+        if (r.problems && r.problems.length) nasErr(r.problems.join("; "));
+        await loadNas();
+        const cb = v.querySelector(`#nusers input[data-nu="${name}"]`);
+        if (cb) cb.checked = true;
+      } catch (e) { nasSay(""); nasErr(e.message); }
     };
     v.querySelector("#npset").onclick = async () => {
       const name = v.querySelector("#npuser").value, pw = v.querySelector("#nppass").value;

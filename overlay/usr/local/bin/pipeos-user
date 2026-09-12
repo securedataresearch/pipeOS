@@ -3,7 +3,9 @@
 # the web dashboard shells out here (argv, never a shell string) and the same
 # commands work over ssh.
 #
-#   pipeos-user add NAME          create NAME with home /work/home/NAME
+#   pipeos-user add NAME [--nologin]  create NAME with home /work/home/NAME;
+#                                 --nologin: shell /sbin/nologin, no ~/.ssh —
+#                                 exists for samba's passdb only (pipeOS#270)
 #   pipeos-user set-key NAME      install an ssh public key (stdin)
 #   pipeos-user set-hash NAME     set the shadow hash (stdin, $6$…) — needed
 #                                 for doas, which checks the user's own password
@@ -25,7 +27,7 @@
 #     /work/.pipeos/users.manifest records name:uid for that day.
 set -eu
 
-usage() { sed -n '4,12p' "$0" >&2; exit 1; }
+usage() { sed -n '4,14p' "$0" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || { echo "pipeos-user: root only" >&2; exit 1; }
 cmd=${1:-} name=${2:-}
 [ -n "$cmd" ] || usage
@@ -55,18 +57,30 @@ add)
 		olduid=$(stat -c %u "$HOMES/$name")
 		[ "$olduid" -ge 1000 ] && UIDOPT="-u $olduid"
 	fi
+	case "${3:-}" in
+		"") nologin=no;  SHELL_=/bin/bash ;;
+		--nologin) nologin=yes; SHELL_=/sbin/nologin ;;
+		*) echo "pipeos-user: unknown flag '$3' (only --nologin) — refusing rather than granting a shell" >&2; usage ;;
+	esac
 	# shellcheck disable=SC2086
-	adduser -D -s /bin/bash -h "$HOMES/$name" -G users $UIDOPT "$name"
+	adduser -D -s "$SHELL_" -h "$HOMES/$name" -G users $UIDOPT "$name"
 	shadow_set "$name" '*'
-	addgroup "$name" video 2>/dev/null || true   # /dev/dri for vaapi tools
-	mkdir -p "$HOMES/$name/.ssh"
+	if [ "$nologin" = no ]; then
+		# a login account: /dev/dri for vaapi tools, a place for its key
+		addgroup "$name" video 2>/dev/null || true
+		mkdir -p "$HOMES/$name/.ssh"
+	fi
+	# (a share-only account — samba authenticates it from its own passdb and
+	# serves as root after that — needs the passwd entry and its home, nothing
+	# more: no ~/.ssh to ever hold a key, no video group)
 	chown -R "$name:users" "$HOMES/$name"
-	chmod 700 "$HOMES/$name" "$HOMES/$name/.ssh"
+	chmod 700 "$HOMES/$name"
+	[ "$nologin" = no ] && chmod 700 "$HOMES/$name/.ssh"
 	mkdir -p "$(dirname "$MANIFEST")"
 	grep -v "^$name:" "$MANIFEST" 2>/dev/null > "$MANIFEST.new" || true
 	printf '%s:%s\n' "$name" "$(id -u "$name")" >> "$MANIFEST.new"
 	mv "$MANIFEST.new" "$MANIFEST"
-	echo "pipeos-user: added $name (home $HOMES/$name, uid $(id -u "$name"))"
+	echo "pipeos-user: added $name (home $HOMES/$name, uid $(id -u "$name"), shell $SHELL_)"
 	;;
 set-key)
 	id "$name" >/dev/null 2>&1 || { echo "pipeos-user: no such user $name" >&2; exit 1; }
