@@ -161,6 +161,11 @@ jobs:
           python3 scripts/check-backup.py
           python3 scripts/check-backup-controls.py
 
+      # #275. the automatic IMAGE update: a newer release is applied in place
+      # and the box reboots — the step the review found could never fire.
+      - name: automatic image self-update fires (and holds) correctly
+        run: python3 scripts/check-selfupdate-image.py
+
       # #271. make release must refuse an operator image (ssh key or box card
       # baked): the guard reads the apkovl out of the image's FAT and says no.
       - name: the release publisher refuses an operator image

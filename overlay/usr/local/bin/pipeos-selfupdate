@@ -44,10 +44,13 @@ IMAGE_TXT=${PIPEOS_IMAGE_TXT:-/media/usb/pipeos-image.txt}
 FLASH_APPLIED=${PIPEOS_FLASH_APPLIED:-/work/.pipeos/flash.applied}
 IMAGE_UPDATED=${PIPEOS_IMAGE_UPDATED:-/work/.pipeos/image-updated}
 SCHED_LOCK=${PIPEOS_SCHED_LOCK:-/run/pipeos/schedule.lock}
-PTS_DIR=${PIPEOS_PTS_DIR:-/dev/pts}
+# test-only seams (the box never sets them): a release commit to compare
+# against instead of the GitHub API, and stop after the image step.
+RELEASE_COMMIT=${PIPEOS_RELEASE_COMMIT:-}
+IMAGE_ONLY=${PIPEOS_SELFUPDATE_IMAGE_ONLY:-}
 STAMP="$STATE/selfupdate.applied"          # last applied remote index digest
-LOG=/work/logs/selfupdate.log
-LOCK=/run/pipeos-selfupdate.lock
+LOG=${PIPEOS_SELFUPDATE_LOG:-/work/logs/selfupdate.log}
+LOCK=${PIPEOS_SELFUPDATE_LOCK:-/run/pipeos-selfupdate.lock}
 SRC_REPO=/work/repos/pipeOS/out/repo/pipeos/x86_64
 # Shipped copy first — a client box has no checkout (CI keeps them identical).
 VERIFY=/usr/local/share/pipeos/verify-repo.sh
@@ -78,17 +81,29 @@ conf_set() {   # KEY VALUE
     _t="$CONF.new"
     { [ -r "$CONF" ] && grep -v "^$1=" "$CONF"; echo "$1=$2"; } > "$_t" && mv "$_t" "$CONF"
 }
+PACKAGES_ONLY=no
 case "${1:-}" in
     image)
         case "${2:-}" in
-            on|auto)
-                conf_set IMAGE_UPDATE auto
-                echo "image updates: automatic — a newer release is applied in place and the box reboots (hourly check)"
-                "$SAVE_BIN" >/dev/null && echo "saved" || { echo "saved: NO — run pipeos save" >&2; exit 1; } ;;
-            off)
-                conf_set IMAGE_UPDATE off
-                echo "image updates: off — packages still update; a new image waits for 'pipeos flash apply'"
-                "$SAVE_BIN" >/dev/null && echo "saved" || { echo "saved: NO — run pipeos save" >&2; exit 1; } ;;
+            on|auto|off)
+                # no explicit root gate: conf_set writes /etc/pipeos (root-only
+                # on a box) and reports failure honestly; the agent is blocked
+                # by the deny list (#275 review finding 8 — truthful, not a
+                # success message over a failed write)
+                _v=off; [ "$2" = off ] || _v=auto
+                conf_set IMAGE_UPDATE "$_v" || { echo "could not write $CONF (root only)" >&2; exit 1; }
+                if [ "$_v" = auto ]; then
+                    echo "image updates: automatic — a newer release is applied in place and the box reboots (hourly check)"
+                else
+                    echo "image updates: off — packages still update; a new image waits for 'pipeos flash apply'"
+                fi
+                # the setting is written; the save is reported but does not
+                # un-write it — a fenced save (a new image applied) is exactly
+                # when the owner flips this, so a refusal must not revert it
+                if "$SAVE_BIN" >/dev/null 2>&1; then echo "saved"; else
+                    echo "saved: NO — reboot to clear a staged image/rollback, then 'pipeos save'" >&2
+                fi
+                exit 0 ;;
             status|"")
                 echo "image updates: $IMAGE_UPDATE"
                 [ -f "$IMAGE_UPDATED" ] && echo "last: $(cat "$IMAGE_UPDATED")"
@@ -96,11 +111,12 @@ case "${1:-}" in
             *) echo "usage: pipeos selfupdate image on|off|status" >&2; exit 2 ;;
         esac
         exit 0 ;;
+    --packages) PACKAGES_ONLY=yes ;;   # the dashboard's "Update now": packages only, never the image/reboot
     "") ;;
-    *) echo "usage: pipeos selfupdate [image on|off|status]" >&2; exit 2 ;;
+    *) echo "usage: pipeos selfupdate [--packages | image on|off|status]" >&2; exit 2 ;;
 esac
 
-[ "$(id -u)" = 0 ] || die "run as root"
+[ -n "${PIPEOS_SELFUPDATE_IMAGE_ONLY:-}" ] || [ "$(id -u)" = 0 ] || die "run as root"
 if [ -f /run/pipeos/flash-pending ]; then
     say "a new image is applied and not yet booted — nothing to do until the reboot."
     exit 0
@@ -130,7 +146,7 @@ fetch() {
 }
 
 mkdir -p "$STATE" /work/logs "$SRC_REPO" 2>/dev/null
-mountpoint -q /work || die "/work not mounted — refusing to update without persistent staging"
+[ -n "$IMAGE_ONLY" ] || mountpoint -q /work || die "/work not mounted — refusing to update without persistent staging"
 
 # One updater at a time, and never concurrently with a save/sync.
 exec 9> "$LOCK"
@@ -142,6 +158,20 @@ if ! flock -n 9; then say "another self-update is running"; exit 0; fi
 # reboot. Held — and retried next hour — while a scheduled run or a terminal
 # session is live; "frickin whenever" otherwise. The apk half below is moot
 # after an image update (the image carries the repo), so this reboots first.
+# someone actively using the box: a real login on a tty/pts (ssh, console —
+# utmp, which a detached tmux master does NOT create), or an ATTACHED tmux
+# client (a browser terminal or the assistant terminal in use; the assistant's
+# idle master has zero clients). This is the #275-review fix for the old
+# `ls /dev/pts | wc -l`, which counted that idle master and held forever.
+sessions_live() {
+    [ -n "$(who 2>/dev/null)" ] && return 0
+    for _s in /run/pipeos/assistant/tmux.sock /run/pipeos/*/tmux*.sock; do
+        [ -S "$_s" ] || continue
+        [ -n "$(tmux -S "$_s" list-clients 2>/dev/null)" ] && return 0
+    done
+    return 1
+}
+
 image_update() {
     [ "$IMAGE_UPDATE" = auto ] || { log "image: IMAGE_UPDATE=off"; return 1; }
     [ -n "$UPDATE_RELEASE_URL" ] || return 1
@@ -151,36 +181,46 @@ image_update() {
         return 1
     fi
     _running=$(sed -n 's/^commit=//p' "$IMAGE_TXT" 2>/dev/null | head -1)
-    # the release's commit is in its tag (repo-DATE-SHA); GitHub's API says
-    # which tag is latest. A non-GitHub origin falls back to the digest test.
+    # TRIGGER: the release commit differs from the one this box runs. The
+    # release's commit is the SHA in its tag (repo-DATE-SHA); GitHub's API
+    # names the latest tag. We proceed ONLY on a positive difference — an
+    # unknown release commit (API down/rate-limited, a non-GitHub origin) or
+    # an unknown running commit HOLDS, never reflashes on a guess. A stick-
+    # flashed box has no flash.applied stamp and that is not "stale". After a
+    # successful apply the running commit becomes the release's, so next hour
+    # this same test holds: self-limiting, no digest bookkeeping needed.
     _tag=""
-    case "$UPDATE_RELEASE_URL" in
-        https://github.com/*/releases/latest/download*)
-            _repo=${UPDATE_RELEASE_URL#https://github.com/}; _repo=${_repo%%/releases/*}
-            _tag=$(wget -q -T 20 -O - "https://api.github.com/repos/$_repo/releases/latest" 2>/dev/null \
-                   | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1) ;;
-    esac
-    _sha=${_tag##*-}
-    if [ -n "$_sha" ] && [ -n "$_running" ] && [ "${_running#"$_sha"}" != "$_running" ]; then
-        log "image: up to date ($_tag)"; return 1
+    if [ -n "$RELEASE_COMMIT" ]; then
+        _sha=$RELEASE_COMMIT; _tag="test-$RELEASE_COMMIT"
+    else
+        case "$UPDATE_RELEASE_URL" in
+            https://github.com/*/releases/latest/download*)
+                _repo=${UPDATE_RELEASE_URL#https://github.com/}; _repo=${_repo%%/releases/*}
+                _tag=$(wget -q -T 20 -O - "https://api.github.com/repos/$_repo/releases/latest" 2>/dev/null \
+                       | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+                _sha=${_tag##*-} ;;
+            *) _sha="" ;;
+        esac
     fi
-    _rd=$($FLASH_BIN check 2>/dev/null | sed -n 's/^pipeos-flash: latest release image: //p')
-    [ -n "$_rd" ] || { log "image: origin publishes no image digest"; return 1; }
-    if [ -f "$FLASH_APPLIED" ] && [ "$(cat "$FLASH_APPLIED")" = "$_rd" ]; then
-        log "image: current ($_rd)"; return 1
+    if [ -z "$_sha" ] || [ -z "$_running" ]; then
+        log "image: cannot determine the release/running commit — holding (running=${_running:-?} tag=${_tag:-?})"; return 1
     fi
-    # hold while someone is using the box
+    case "$_running" in "$_sha"*) log "image: up to date ($_tag)"; return 1 ;; esac
+    # hold while someone is using the box (a scheduled run, or a real login /
+    # attached terminal — NOT the assistant's idle detached tmux master)
     if [ -f "$SCHED_LOCK" ] && ! ( exec 8>>"$SCHED_LOCK"; flock -n 8 ); then
         say "image: a scheduled run is live — holding until next hour"; log "image: held (job running)"; return 1
     fi
-    _pts=$(ls "$PTS_DIR" 2>/dev/null | grep -cE '^[0-9]+$')
-    if [ "${_pts:-0}" -gt 0 ]; then
-        say "image: $_pts terminal session(s) live — holding until next hour"; log "image: held ($_pts sessions)"; return 1
+    if sessions_live; then
+        say "image: a terminal session is live — holding until next hour"; log "image: held (session live)"; return 1
     fi
-    say "image: newer release ${_tag:-$_rd} — fetching"; log "image: change detected running=${_running:-?} release=${_tag:-?} digest=$_rd"
-    $FLASH_BIN fetch >/dev/null 2>&1 || { log "ERROR image: fetch failed"; return 1; }
+    say "image: newer release $_tag — fetching"; log "image: change detected running=$_running release=$_tag"
+    PIPEOS_FLASH_CALLER=selfupdate $FLASH_BIN fetch >/dev/null 2>&1 || { log "ERROR image: fetch failed"; return 1; }
     say "image: applying in place"
-    if ! $FLASH_BIN apply --yes >/dev/null 2>&1; then
+    # the caller seam lets flash apply run while WE hold the self-update lock;
+    # without it flash refuses ("a self-update is running") and nothing ever
+    # applies (pipeOS#275 review)
+    if ! PIPEOS_FLASH_CALLER=selfupdate $FLASH_BIN apply --yes >/dev/null 2>&1; then
         log "ERROR image: apply failed — box unchanged (pipeos-flash aborts before the write on any refusal)"; return 1
     fi
     echo "${_tag:-$_rd} $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$IMAGE_UPDATED"
@@ -189,7 +229,8 @@ image_update() {
     sync; "$REBOOT_BIN"
     exit 0
 }
-image_update || true
+[ "$PACKAGES_ONLY" = yes ] || image_update || true
+[ -n "$IMAGE_ONLY" ] && exit 0   # test seam: stop before the package step
 
 UPDATE_URL="${UPDATE_URL%/}"
 

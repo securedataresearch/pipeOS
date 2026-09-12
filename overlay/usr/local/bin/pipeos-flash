@@ -459,7 +459,11 @@ cmd_apply() {
     if [ "$NO_MOUNT" != 1 ]; then
         mountpoint -q /work || die "/work not mounted"
     fi
-    if [ -e /run/pipeos-selfupdate.lock ] && ! flock -n 8 8</run/pipeos-selfupdate.lock 2>/dev/null; then
+    # pipeos-selfupdate holds this lock while IT drives the apply (pipeOS#275);
+    # its caller seam says "that lock is mine, proceed". Any other caller still
+    # yields to a self-update in progress.
+    if [ "${PIPEOS_FLASH_CALLER:-}" != selfupdate ] \
+       && [ -e /run/pipeos-selfupdate.lock ] && ! flock -n 8 8</run/pipeos-selfupdate.lock 2>/dev/null; then
         die "a self-update is running — try again when it finishes"
     fi
 

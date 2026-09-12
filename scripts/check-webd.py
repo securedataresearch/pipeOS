@@ -228,6 +228,7 @@ _no_save = {
     "/api/reboot": "the shutdown hook saves",
     "/api/reboot-firmware": "the shutdown hook saves",
     "/api/update-now": "pipeos-selfupdate saves itself",
+    "/api/update-set": "the pipeos selfupdate verb saves; the handler reads its receipt (#275)",
     "/api/flash": "pipeos-flash writes the media directly",
     "/api/save": "is the save",
     "/api/wake": "a packet on the wire, no state (#241)",

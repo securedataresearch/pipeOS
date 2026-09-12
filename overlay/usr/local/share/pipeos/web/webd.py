@@ -3809,9 +3809,12 @@ class PhaseB:
         rc, out = run(["pipeos-selfupdate", "image", "on" if want == "auto" else "off"], timeout=300)
         if rc != 0:
             return self.err(500, "could not set image updates: " + out.strip()[-200:])
-        saved, detail = save_state()   # the verb saved; this is the handler's own receipt
-        self.send(200, {"ok": True, "image_update": want,
-                        "saved": saved, "save_detail": "" if saved else detail})
+        # the verb wrote the conf AND saved (or reported why it could not); do
+        # not save again here (that was two full lbu cycles per flip). "saved"
+        # in its output is the receipt (#275 review).
+        saved = "\nsaved" in ("\n" + out)
+        self.send(200, {"ok": True, "image_update": want, "saved": saved,
+                        "save_detail": "" if saved else out.strip()[-200:]})
 
     def api_flash_get(self):
         image = lanid.image_info(FLASH_IMAGE_TXT)
@@ -3858,7 +3861,10 @@ class PhaseB:
         self.send(200, {"ok": True, "started": True})
 
     def api_update_now(self, _body):
-        rc, out = run(["pipeos-selfupdate"], timeout=900)
+        # packages only: the manual button must never rewrite p1 and reboot the
+        # box under the owner — that is the automatic path and pipeos flash
+        # apply, each with its own confirmation (#275 review).
+        rc, out = run(["pipeos-selfupdate", "--packages"], timeout=900)
         self.send(200, {"ok": rc == 0, "detail": out.strip()[-500:]})
 
 
