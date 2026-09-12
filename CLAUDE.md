@@ -84,6 +84,12 @@ out of it:
 
 ## Testing
 
+- **Before every push: `scripts/ci-local.sh`** — runs every step `ci.yml`
+  runs, in order, here (shellcheck included; `pacman -S shellcheck mtools
+  dosfstools`). Three pushes went red on 2026-09-12 on things a local run
+  would have caught; Sam: "always do all the checks locally first".
+  `scripts/ci-local.sh cluster` runs only the steps naming cluster.
+
 - VM: `make vm` (NVMe attach) or `VARIANT=usb scripts/61-run-vm-usb.sh`;
   ssh -p 2222 root@localhost, password `pipeos`. Ctrl-a x quits the serial
   console. Rebuild the image after any VM session that committed state.
