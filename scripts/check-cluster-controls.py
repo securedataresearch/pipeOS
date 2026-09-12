@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Controls for check-cluster.py (pipeOS#222).
+"""Controls for check-cluster.py (pipeOS#222, #211).
 
-Each control breaks ONE check in the shipped cluster.py or webd.py and must
-make a DIFFERENT row fail, for its own reason — a probe over an auth
-primitive that cannot see the primitive lose a check is worse than none.
-The shipped files are restored after every run.
+Each control breaks ONE property of the shipped cluster.py or webd.py and
+must make a DIFFERENT row fail, for its own reason. The shipped files are
+restored after every run.
 """
 import os
 import subprocess
@@ -19,38 +18,27 @@ PROBE = os.path.join(HERE, "check-cluster.py")
 orig = {p: open(p).read() for p in (C, W)}
 
 controls = [
-    ("A: the skew check is gone (any timestamp is accepted)", C,
-     lambda s: s.replace("    if skew > SKEW_S:\n", "    if False:\n"), ["6"]),
+    ("A: the listener never asks for a client certificate (no member is ever admitted)", C,
+     lambda s: s.replace("        ctx.verify_mode = ssl.CERT_OPTIONAL\n", "        ctx.verify_mode = ssl.CERT_NONE\n"), ["3"]),
 
-    ("B: the replay set is gone (a signature can be presented forever)", C,
-     lambda s: s.replace("    if replay and _replay_seen(sig, ts):\n", "    if False:\n"), ["5"]),
+    ("B: the listener is not restarted when the list changes (a removed member's certificate keeps working)", W,
+     lambda s: s.replace("cluster.ON_CHANGE.append(lambda: HTTPS.get(\"server\") is not None and start_https(init=False))\n", "\n")
+                .replace("        if HTTPS.get(\"server\") is not None and cur != HTTPS.get(\"bundle\"):\n", "        if False:\n"), ["4"]),
 
-    ("C: the signature is not verified (any base64 passes)", C,
-     lambda s: s.replace("    if not verify_sig(m[\"pub\"], canonical(box_id, ts, nonce, method, path, body), sig):\n",
-                         "    if False:\n"), ["7", "8"]),
+    ("C: the member is read off the certificate's position in the list, not off which CA signed it (any member's cert is attributed to the first member)", C,
+     lambda s: s.replace("                if p.returncode == 0:\n                    who = mid\n                    break\n",
+                         "                who = mid\n                break\n"), ["3"]),
 
-    ("D: the body is not in the canonical string (a tampered body verifies)", C,
-     lambda s: s.replace("                      hashlib.sha256(body).hexdigest()]).encode()",
-                         "                      \"\"]).encode()"), ["7"]),
+    ("D: the join does not check the password", W,
+     lambda s: s.replace("        if u is None or not check_hash(body.get(\"password\") or \"\", u.get(\"hash\")):\n            time.sleep(2)\n            return self.err(403, \"wrong password for this Machine\")\n", "\n"), ["3"]),
 
-    ("E: the member list is not consulted (any key that verifies against ANY member passes as that id)", C,
-     lambda s: s.replace("    m = mem.get(box_id)\n    if not m or not m.get(\"pub\"):\n",
-                         "    m = mem.get(box_id) or next(iter(mem.values()), None)\n    if not m or not m.get(\"pub\"):\n"), ["3", "10"]),
+    ("E: the caller does not verify the answering certificate (any server on that port is 'a member')", C,
+     lambda s: s.replace("        ctx.load_verify_locations(cafile=cafile)\n        ctx.verify_mode = ssl.CERT_REQUIRED\n",
+                         "        ctx.verify_mode = ssl.CERT_NONE\n"), ["2"]),
 
-    ("F: a failed signature falls back to the cookie (the stranger gets 'sign in first', not the reason)", W,
-     lambda s: s.replace("                self._peer_reason = why\n                return None\n",
-                         "                return valid_session(self.cookie_token())\n"), ["3"]),
-
-    ("G: the answer is not signed (a caller cannot tell a member's reply from anything else on the port)", W,
-     lambda s: s.replace("        if getattr(self, \"_peer\", None):\n            try:\n                for k, v in cluster.sign_headers",
-                         "        if False:\n            try:\n                for k, v in cluster.sign_headers"), ["4", "9"]),
-
-    ("H: the per-request reset is gone (a keep-alive connection keeps the first request's verdict)", W,
-     lambda s: s.replace("    def do_GET(self):\n        self._fresh()\n", "    def do_GET(self):\n"), ["12"]),
-
-    ("I: the server signs and checks the path without its query (a query rides outside the signature)", W,
-     lambda s: s.replace("who, why = cluster.check(self.headers, self.command, self.path, getattr(self, \"_raw\", b\"\"))",
-                         "who, why = cluster.check(self.headers, self.command, self.path.split(\"?\")[0], getattr(self, \"_raw\", b\"\"))"), ["13"]),
+    ("F: the reader does not drop a member seen in another cluster", C,
+     lambda s: s.replace("        if pid in d[\"members\"] and pid != self_id() and p.get(\"cl\") and p[\"cl\"] != d[\"id\"]:\n",
+                         "        if False:\n"), ["9"]),
 ]
 
 rc = 0

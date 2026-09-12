@@ -14,14 +14,23 @@
 # server cert is regenerated whenever the box's IP changes, so visiting by IP
 # stays valid on a DHCP lease change while the CA — and thus the trust — is
 # untouched.
+#
+# The CA is also the box's CLUSTER identity (pipeOS#222, web/cluster.py): a
+# member is a Machine whose CA the others trust, and the server cert doubles
+# as the client cert a Machine presents when it calls a member — so it
+# carries clientAuth too, and a cert issued before that (serverAuth only) is
+# re-issued here at the next boot; the CA, and so the trust, is untouched.
+#
+# Seams (the check-cluster.py probe runs this script per fake Machine):
+# PIPEOS_TLS_DIR, PIPEOS_TLS_HOST.
 set -e
 
-TLS=/etc/pipeos/tls
+TLS=${PIPEOS_TLS_DIR:-/etc/pipeos/tls}
 CA_KEY="$TLS/ca.key"; CA_CRT="$TLS/ca.crt"
 SRV_KEY="$TLS/server.key"; SRV_CRT="$TLS/server.crt"
 mkdir -p "$TLS"; chmod 700 "$TLS"
 
-HOST=$(hostname 2>/dev/null || echo pipeos)
+HOST=${PIPEOS_TLS_HOST:-$(hostname 2>/dev/null || echo pipeos)}
 # the owner's alias (docs/cluster.md §1) rides the cert as a SAN; the CN
 # stays the chassis id so a rename never re-keys trust
 NAME=$(sed -n 's/^NAME=["]*\([^"]*\)["]*$/\1/p' /etc/pipeos/card.conf 2>/dev/null | head -1 | tr 'A-Z' 'a-z')
@@ -50,6 +59,10 @@ fi
 if [ "$need" = 0 ] && [ -n "$NAME" ]; then
 	openssl x509 -in "$SRV_CRT" -noout -text 2>/dev/null | grep -q "DNS:$NAME.local" || need=1
 fi
+# a cert from before the cluster work has no clientAuth: re-issue (same CA)
+if [ "$need" = 0 ]; then
+	openssl x509 -in "$SRV_CRT" -noout -text 2>/dev/null | grep -q "TLS Web Client Authentication" || need=1
+fi
 
 if [ "$need" = 1 ]; then
 	openssl req -newkey rsa:2048 -nodes -keyout "$SRV_KEY.new" -out "$TLS/server.csr" \
@@ -58,7 +71,7 @@ if [ "$need" = 1 ]; then
 		-CAcreateserial -days 825 -sha256 \
 		-extfile /dev/stdin -out "$SRV_CRT.new" >/dev/null 2>&1 <<EXT
 subjectAltName=$want_san
-extendedKeyUsage=serverAuth
+extendedKeyUsage=serverAuth,clientAuth
 keyUsage=critical,digitalSignature,keyEncipherment
 EXT
 	mv "$SRV_KEY.new" "$SRV_KEY"; mv "$SRV_CRT.new" "$SRV_CRT"
