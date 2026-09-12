@@ -162,7 +162,7 @@ function machineRows(ms, opts = {}) {
     const act = off
       ? (opts.wake ? (m.mac ? `<button class="btn" type="button" data-wake="${esc(m.id)}">Wake</button>`
                             : `<span class="note">no MAC on record</span>`) : "")
-      : (!m.claimed && !m.self && href) ? `<a class="btn" href="${esc(href)}" target="_blank" rel="noopener">Claim ↗</a>`
+      : (!m.claimed && !m.self && href) ? `<a class="btn" href="${esc(href)}" target="_blank" rel="noopener">Claim ↗</a>${opts.wake ? ` <button class="btn ghost" type="button" data-adopt="${esc(m.id)}">Adopt</button>` : ""}`
       : (!m.self && href ? `<a class="btn ghost" href="${esc(href)}" target="_blank" rel="noopener">Open ↗</a>` : "");
     const desc = [m.model || "", m.ip || "", (m.host && m.ip) ? m.host : "", off && m.mac ? m.mac : ""].filter(Boolean);
     return `<div class="row${off ? " off" : ""}">
@@ -221,7 +221,7 @@ function step1(state) {
     try {
       const r = await api("/api/claim", { password: p1 });
       if (!r.saved) alert("Claimed, but saving to the boot media failed:\n" + r.save_detail);
-      if (r.recovery_phrase) phraseStep(state, r.recovery_phrase); else step2(state);
+      if (r.recovery_phrase) phraseStep(state, r.recovery_phrase, () => joinStep(state)); else joinStep(state);
     } catch (e) {
       err.textContent = e.message; err.hidden = false;
       busy(v.querySelector("#go"), false);
@@ -245,6 +245,36 @@ function phraseStep(state, phrase, next) {
     </div>
   </div>`);
   v.querySelector("#go").onclick = () => (next ? next() : step2(state));
+  app.replaceChildren(v);
+}
+
+// #213: when a cluster already exists on this network, box two's first pages
+// offer to join it. The owner types the password of one member; this box
+// mints a one-time token and the member adds it — no password crosses.
+async function joinStep(state) {
+  let members = [];
+  try { const lb = await api("/api/lobby"); members = (lb.machines || []).filter(m => !m.self && m.awake !== false && m.claimed && m.cluster); } catch (e) {}
+  if (!members.length) return step2(state);
+  const v = el(`<div>
+    <p class="steps">A cluster is here</p>
+    <h1>Join this cluster?</h1>
+    <p class="sub">These Machines on your network already work as one. Joining gives this Machine the member list and nothing else — its own settings stay its own.</p>
+    <div class="card">
+      ${members.map(m => `<div class="row"><div><div class="name">${esc(m.name || m.host || m.id)}</div><div class="desc">${esc([m.id, m.ip].filter(Boolean).join(" · "))}</div></div></div>`).join("")}
+      <label for="jmember">Confirm with the password of</label>
+      <select id="jmember">${members.map(m => `<option value="${esc(m.id)}">${esc(m.name || m.host || m.id)}</option>`).join("")}</select>
+      <input id="jpw" type="password" placeholder="that Machine's admin password" autocomplete="off">
+      <p class="err" id="jerr" hidden></p>
+      <button id="jgo">Join</button>
+      <button id="jskip" class="ghost">Not now</button>
+    </div>
+  </div>`);
+  v.querySelector("#jskip").onclick = () => step2(state);
+  v.querySelector("#jgo").onclick = async () => {
+    const err = v.querySelector("#jerr"); err.hidden = true; busy(v.querySelector("#jgo"), true);
+    try { await api("/api/cluster/join-via", { id: v.querySelector("#jmember").value, password: v.querySelector("#jpw").value }); step2(state); }
+    catch (e) { err.textContent = e.message; err.hidden = false; busy(v.querySelector("#jgo"), false); }
+  };
   app.replaceChildren(v);
 }
 
@@ -2158,6 +2188,19 @@ async function dashboard() {
       const ms = r.machines || [];
       if (ms.length) {
         rows.className = ""; rows.innerHTML = machineRows(ms, { wake: isAdmin });
+        rows.querySelectorAll("[data-adopt]").forEach(b => b.onclick = async () => {
+          // #213: claim it with THIS Machine's password, add it, name it — one step
+          const pw = prompt("Adopt this Machine into the cluster: it is claimed with this Machine's admin password (type it to confirm) and added. No second password.");
+          if (!pw) return;
+          const name = prompt("A name for it (letters, digits, dots, dashes) — or leave empty:") || "";
+          b.disabled = true; note.textContent = "adopting…";
+          try {
+            const r = await api("/api/cluster/adopt", { id: b.dataset.adopt, password: pw, name: name.trim() });
+            note.textContent = "adopted " + r.id + " — " + (Object.keys(r.pushed || {}).length ? "list pushed" : "cluster of two");
+            if (r.recovery_phrase) alert("Its recovery phrase, shown once — write it down with this Machine's:\n\n" + r.recovery_phrase);
+            pollNetwork();
+          } catch (e) { note.textContent = e.message; b.disabled = false; }
+        });
         rows.querySelectorAll("[data-wake]").forEach(b => b.onclick = async () => {
           b.disabled = true;
           try {

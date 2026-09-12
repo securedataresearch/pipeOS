@@ -77,6 +77,9 @@ SRV_KEY = os.path.join(TLS_DIR, "server.key")
 SAVE_BIN = os.environ.get("PIPEOS_SAVE_BIN", "/usr/local/bin/pipeos-save")
 MDNS_CACHE = os.environ.get("PIPEOS_MDNS_CACHE", "/run/pipeos/mdns/peers.json")
 MDNS_ROSTER = os.environ.get("PIPEOS_MDNS_ROSTER", "/work/pipeos/mdns/machines.json")
+JOIN_TOKEN = os.environ.get("PIPEOS_JOIN_TOKEN", "/run/pipeos/join-token")
+ADVERTISE = os.environ.get("PIPEOS_CLUSTER_ADVERTISE", "")   # the probe's loopback instances: ip:port a member should use for us
+JOIN_TOKEN_TTL = 600
 TLS_PORT = 443
 
 _IDENT = {}                  # leaf sha256 -> member id, for this list
@@ -487,6 +490,16 @@ def call(target, method, path, body=None, timeout=10):
     return st, parsed, member_of(leaf)
 
 
+def _plain(target, method, path, body=None, timeout=10):
+    """An unverified, certificate-less request to a Machine that does not
+    know us yet (its public state, a claim, a join request): what the two
+    onboarding paths (#213) need before any trust exists. Never used for a
+    member call — those are call()."""
+    ip, port = resolve(target)
+    st, parsed, _ = _https(ip, port, method, path, body, None, timeout, present=False)
+    return st, parsed if isinstance(parsed, dict) else {}
+
+
 def fetch_ca(target, timeout=10):
     """A Machine's CA, from its public /ca.crt — over TLS, unverified,
     because this is the step that LEARNS the CA (the padlock download does
@@ -568,6 +581,77 @@ def remove(box_id):
 
 def sync():
     return push()
+
+
+# ---- onboarding the second box (#213, docs/cluster.md §11) ----------------------
+
+def mint_join_token():
+    """A one-time secret this box will accept in place of its password on
+    /api/cluster/join, for ten minutes. Minted by the box that wants to
+    join, handed to the member it asks — so no admin password travels
+    between boxes: the joiner never learns the member's, the member never
+    learns the joiner's."""
+    t = secrets.token_hex(16)
+    os.makedirs(os.path.dirname(JOIN_TOKEN), exist_ok=True)
+    with open(JOIN_TOKEN + ".new", "w") as f:
+        f.write("%s %d\n" % (t, now() + JOIN_TOKEN_TTL))
+    os.chmod(JOIN_TOKEN + ".new", 0o600)
+    os.replace(JOIN_TOKEN + ".new", JOIN_TOKEN)
+    return t
+
+
+def take_join_token(candidate):
+    """True once for the live token, then it is gone (single use)."""
+    try:
+        with open(JOIN_TOKEN) as f:
+            t, exp = f.read().split()
+    except (OSError, ValueError):
+        return False
+    try:
+        os.unlink(JOIN_TOKEN)
+    except OSError:
+        pass
+    return bool(candidate) and secrets.compare_digest(candidate, t) and now() <= int(exp)
+
+
+def join_via(member, member_password):
+    """Box two asks a member to add it (the wizard's Join this cluster):
+    mint a token, hand it to the member with the member's own admin
+    password; the member runs its ordinary add() against us with the
+    token, and pushes the list. Returns the member's answer."""
+    token = mint_join_token()
+    body = {"id": self_id(), "token": token, "password": member_password}
+    if ADVERTISE:
+        body["addr"] = ADVERTISE
+    st, ans = _plain(member, "POST", "/api/cluster/add-request", body, timeout=40)
+    if st != 200:
+        raise ClusterError("%s refused: %s" % (member, ans.get("error", st) if isinstance(ans, dict) else st))
+    return ans
+
+
+def adopt(target, password, name=""):
+    """A member claims an unclaimed Machine for the owner — with the same
+    password, so no second one is ever typed — then adds it and, when a
+    name was given, names it. Returns (id, recovery phrase, push report)."""
+    d = read()
+    if d is None:
+        d = init()
+    st, ident = _plain(target, "GET", "/api/state")
+    if st != 200 or not isinstance(ident, dict):
+        raise ClusterError("%s: not a Machine (%s)" % (target, st))
+    if ident.get("claimed"):
+        raise ClusterError("%s is already claimed — add it with its own password instead" % (ident.get("name") or target))
+    st, ans = _plain(target, "POST", "/api/claim", {"password": password}, timeout=60)
+    if st != 200 or not isinstance(ans, dict):
+        raise ClusterError("%s refused the claim: %s" % (target, ans.get("error", st) if isinstance(ans, dict) else st))
+    phrase = ans.get("recovery_phrase", "")
+    mid, report = add(target, password, name)
+    if name:
+        try:
+            call(mid, "POST", "/api/name", {"name": name}, timeout=30)
+        except ClusterError as e:
+            report[mid] = "joined; naming failed: %s" % e
+    return mid, phrase, report
 
 
 # ---- the cluster page (#212): every member's summary, and the two cluster-wide acts
@@ -767,6 +851,30 @@ def main(argv):
             report = sync()
             print("list pushed: %s" % _report(report))
             return 0 if all(v in ("taken", "same", "removed") for v in report.values()) else 1
+        if verb == "join":
+            if len(argv) < 2:
+                print("usage: pipeos cluster join MEMBER|IP   (that member's admin password on stdin)", file=sys.stderr); return 2
+            pw = sys.stdin.readline().rstrip("\n")
+            if not pw:
+                print("cluster: the member's admin password is read from stdin and was empty", file=sys.stderr); return 2
+            ans = join_via(argv[1], pw)
+            print("joined via %s; list pushed: %s" % (argv[1], _report(ans.get("pushed", {}))))
+            return 0
+        if verb == "adopt":
+            if len(argv) < 2:
+                print("usage: pipeos cluster adopt ID|IP [NAME]   (this Machine's admin password on stdin)", file=sys.stderr); return 2
+            pw = sys.stdin.readline().rstrip("\n")
+            if not pw:
+                print("cluster: this Machine's admin password is read from stdin and was empty", file=sys.stderr); return 2
+            # through this box's own handler, so the verb makes the same refusal
+            # the dashboard makes: the password must be THIS Machine's admin
+            st, out, who = call("local", "POST", "/api/cluster/adopt", {"id": argv[1], "password": pw, "name": argv[2] if len(argv) > 2 else ""}, timeout=90)
+            if st != 200 or not who:
+                print("cluster: %s" % ((out.get("error") if isinstance(out, dict) else "") or st), file=sys.stderr); return 1
+            print("adopted %s; list pushed: %s" % (out.get("id"), _report(out.get("pushed", {}))))
+            if out.get("recovery_phrase"):
+                print("its recovery phrase (shown once, store it with this Machine's):\n  %s" % out["recovery_phrase"])
+            return 0 if out.get("saved") else 1
         if verb == "page":
             st, out, who = call("local", "GET", "/api/cluster/page")
             if st != 200 or not who:
@@ -811,7 +919,7 @@ def main(argv):
     except ClusterError as e:
         print("cluster: %s" % e, file=sys.stderr)
         return 1
-    print("usage: pipeos cluster init [NAME] [--force] | status | ca | add ID|NAME|IP [NAME] | remove ID | sync | page | reboot-all [--yes] | services KEY on|off [ID...] | call ID|NAME|IP METHOD PATH [JSON]", file=sys.stderr)
+    print("usage: pipeos cluster init [NAME] [--force] | status | ca | add ID|NAME|IP [NAME] | remove ID | sync | join MEMBER | adopt ID|IP [NAME] | page | reboot-all [--yes] | services KEY on|off [ID...] | call ID|NAME|IP METHOD PATH [JSON]", file=sys.stderr)
     return 2
 
 

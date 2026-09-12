@@ -176,6 +176,13 @@ ROLE) are named where the design reuses them.
 - Association is entirely client-side: a shipped generic box carries
   nothing that ties it to any customer or cluster.
 
+- Built (#213): the wizard's **Join this cluster** step after the claim
+  (the owner types one member's password; the new box mints a one-time
+  token, the member runs its ordinary add against it — no password crosses
+  between boxes); **Adopt** on an unclaimed Machine in a member's Network
+  view (claimed with this member's password, typed once to confirm; added;
+  named; its recovery phrase shown once). `pipeos cluster join|adopt`.
+
 → #213
 
 The second box's secrets are its own: claiming it mints its own vault and

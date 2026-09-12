@@ -171,3 +171,20 @@ VM: `make vm` forwards `:8080 → :80` (and ssh on 2222). Claim at
 `http://localhost:8080/`, toggle, `reboot`, confirm everything survives and
 the boot report is not DEGRADED with pipe off. mDNS cannot traverse QEMU
 user-mode networking — test discovery on a real LAN.
+
+## Joining a cluster (#213)
+
+After the recovery phrase, if the lobby shows a Machine that is already in
+a cluster, the wizard offers **Join this cluster?** with the members listed.
+The owner picks one and types *that* Machine's admin password. This box
+mints a one-time join token (`/run/pipeos/join-token`, ten minutes, single
+use) and asks the member to add it (`POST /api/cluster/add-request` with
+the member's password as the authorisation); the member runs its ordinary
+add against this box with the token standing in for a password, and pushes
+the list. The member's password never reaches this box's disk; this box's
+password never leaves it. "Not now" continues to the name step.
+
+**Adopt** is the same handshake from the other side: on a member's Network
+view an unclaimed Machine has an Adopt button; the owner types the member's
+password once, the member claims the new box with that same password, adds
+it, names it if asked, and shows the new box's recovery phrase once.

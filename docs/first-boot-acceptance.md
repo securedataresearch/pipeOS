@@ -113,3 +113,11 @@ should have said. Each becomes a fix in the same PR or an issue.
 | pull the power on one member | within a minute its row is grey "off · last seen …", the cluster verdict says "1 member off"; power back → green again |
 | tick two members, switch a service on, Apply | both rows' services change; each box's own Services view agrees after a reload; `pipeos verify` PASS on both |
 | Reboot everything while a stream is live | the confirm names the busy Machine and why; on confirm every member reboots, the one you opened last; all back green |
+
+## 9. The second box (#213)
+
+| step | expect |
+|------|--------|
+| claim box two while box one is a cluster | after the recovery phrase: "Join this cluster?" lists box one; the wrong password is refused; the right one joins — both Cluster views show two members |
+| box three unclaimed, box one's Network view → Adopt | one password prompt (box one's), optional name; box three is claimed, named, a member; its recovery phrase shown once |
+| box three's own page afterwards | the dashboard, signed in with the same password; `pipeos verify` PASS |

@@ -42,6 +42,10 @@ os.makedirs(BIN)
 with open(os.path.join(BIN, "pipeos-save"), "w") as f:
     f.write("#!/bin/sh\necho save >> \"$PIPEOS_TEST_SAVES\"\n")
 os.chmod(os.path.join(BIN, "pipeos-save"), 0o755)
+for stub in ("pipebox-card", "pipeos-tls-init"):
+    with open(os.path.join(BIN, stub), "w") as f:
+        f.write("#!/bin/sh\nexit 0\n")
+    os.chmod(os.path.join(BIN, stub), 0o755)
 
 # the instance runner: webd with its state redirected into its own dir,
 # HTTP and HTTPS both on a free port, the CA/server cert tls-init made
@@ -55,6 +59,10 @@ for k in ("ADMIN_CONF", "SERVICES_CONF", "CARD", "PROVISIONED", "BOOT_REPORT", "
 webd.SESS_DIR = os.path.join(d, "sessions"); webd.MDNS_CACHE = os.path.join(d, "peers.json"); webd.MACHINES_ROSTER = os.path.join(d, "machines.json")
 webd.FLASH_IMAGE_TXT = os.path.join(d, "image.txt")
 webd.SCHEDULE_LOCK = os.path.join(d, "sched.lock")
+webd.TLS_INIT = os.path.join(os.environ["PIPEOS_BIN"], "pipeos-tls-init")
+webd.VAULT = webd.vault.VAULT_FILE = os.path.join(d, "vault.sealed"); webd.SECRETS_DIR = webd.vault.RUN_DIR = os.path.join(d, "secrets")
+webd.vault.ETC = d; webd.vault.ITER = 1500; webd.vault.ident = lambda: {"mac": "aa:bb:cc:dd:" + os.environ["PIPEOS_CLUSTER_SELF"][:2] + ":" + os.environ["PIPEOS_CLUSTER_SELF"][2:], "serial": "PC", "product": "Test Box"}
+webd.VAULT_PHRASE = os.path.join(d, "vault-phrase"); webd.VAULT_STATUS = os.path.join(d, "vault.status")
 open(webd.FLASH_IMAGE_TXT, "w").write("variant=usb\nbuilt=2026-09-12T00:00:00Z\ncommit=abc123def456789\n")
 webd.TLS_DIR = os.path.join(d, "tls"); webd.CA_CRT = webd.TLS_DIR + "/ca.crt"; webd.SRV_CRT = webd.TLS_DIR + "/server.crt"; webd.SRV_KEY = webd.TLS_DIR + "/server.key"
 webd.lanid.mac4 = lambda iface=None: os.environ["PIPEOS_CLUSTER_SELF"]
@@ -85,7 +93,8 @@ class Box:
                         PIPEOS_CLUSTER_SELF=bid, PIPEOS_SAVE_BIN=os.path.join(BIN, "pipeos-save"),
                         PIPEOS_TEST_SAVES=self.saves, PIPEOS_WEB_HTTPS_PORT="0", PIPEOS_WEB_BUNDLE_POLL="0.2", BOX_NAME=name,
                         PIPEOS_REBOOT_CMD="date +%%s.%%N >> %s" % os.path.join(self.dir, "reboots"),
-                        PIPEOS_PTS_GLOB=os.path.join(self.dir, "no-pts", "*"))
+                        PIPEOS_PTS_GLOB=os.path.join(self.dir, "no-pts", "*"), PIPEOS_BIN=BIN,
+                        PIPEOS_JOIN_TOKEN=os.path.join(self.dir, "join-token"))
         r = subprocess.run(["sh", TLS_INIT], env=self.env, capture_output=True, text=True)
         assert r.returncode == 0, "tls-init for %s: %s" % (name, r.stdout + r.stderr)
         self.proc = subprocess.Popen([sys.executable, "-c", RUNNER, os.path.join(WEB, "webd.py"), self.dir],
@@ -399,6 +408,38 @@ check("16 'reboot-all' refuses while a member is busy (a job running on six) and
       and len(reboots(G)) == 1 and len(reboots(H)) == 1 and reboots(H)[0] <= reboots(G)[0],
       repr((rc_rb0, out_rb0[-200:], rc_rb, out_rb[-200:], reboots(G), reboots(H))))
 
+# ── 17-18. onboarding the second box (#213): join from the new box, adopt from a member
+J = Box("3333", "nine"); J.claim("ninepassword")
+J.env["PIPEOS_CLUSTER_ADVERTISE"] = J.addr
+G.see(H, J); H.see(G, J); J.see(G, H)
+rc_jw, out_jw = J.cli("join", G.addr, stdin="wrongpassword\n")
+j_before = J.doc()
+rc_j, out_j = J.cli("join", G.addr, stdin="sixpassword\n")
+G.see(H, J); H.see(G, J); J.see(G, H)
+tok_gone = not os.path.exists(os.path.join(J.dir, "join-token"))
+hashes = {b.name: b.py("print(cluster.members_hash())") for b in (G, H, J)}
+check("17 the wizard's join: the wrong member password is refused (rc 1, nothing changes); the right one has the member add this box with a one-time token — all three lists agree; the token is gone afterwards (single use)",
+      rc_jw == 1 and "refused" in out_jw and j_before is None
+      and rc_j == 0 and "joined via" in out_j and sorted(G.doc()["members"]) == ["1111", "2222", "3333"] == sorted(J.doc()["members"]) == sorted(H.doc()["members"])
+      and len(set(hashes.values())) == 1 and tok_gone,
+      repr((rc_jw, out_jw[-160:], j_before, rc_j, out_j[-200:], hashes, tok_gone)))
+
+K = Box("4444", "ten-box")            # unclaimed: no admin conf, no users
+G.see(H, J, K)
+rc_aw, out_aw = G.cli("adopt", K.addr, "ten", stdin="wrongpassword\n")
+k_unclaimed = not os.path.exists(os.path.join(K.dir, "admin_conf"))
+rc_a, out_a = G.cli("adopt", K.addr, "ten", stdin="sixpassword\n")
+G.see(H, J, K)
+k_card = open(os.path.join(K.dir, "card")).read() if os.path.exists(os.path.join(K.dir, "card")) else ""
+rc_a2, out_a2 = G.cli("adopt", K.addr, stdin="sixpassword\n")
+check("18 adopt from a member: the wrong (member) password is refused before anything touches the new box; the right one claims it with that same password, adds it, names it, prints its recovery phrase once, saves; adopting a claimed Machine is refused",
+      rc_aw == 1 and "not this Machine's admin password" in out_aw and k_unclaimed
+      and rc_a == 0 and "adopted 4444" in out_a and "recovery phrase" in out_a
+      and os.path.exists(os.path.join(K.dir, "admin_conf")) and "4444" in G.doc()["members"] and K.doc() and "1111" in K.doc()["members"]
+      and "NAME=ten" in k_card
+      and rc_a2 == 1 and "add it with its own password instead" in out_a2,
+      repr((rc_aw, out_aw[-160:], k_unclaimed, rc_a, out_a[-300:], k_card, rc_a2, out_a2[-160:])))
+
 # ── 12. identity coverage ───────────────────────────────────────────────
 lbu = open(os.path.join(REPO, "overlay/etc/apk/protected_paths.d/lbu.list")).read().split("\n")
 su = open(os.path.join(REPO, "overlay/usr/local/bin/pipeos-selfupdate")).read()
@@ -411,7 +452,7 @@ check("12 the member list and the TLS dir are identity: in lbu.list, in pipeos-s
       and "cluster.json does not parse" in sc and "no CA/server cert" in sc and "has no clientAuth" in sc
       and "is not in the lbu include list" in sc and "member list differs on" in sc, "")
 
-for b in (A, B, C, G, H):
+for b in (A, B, C, G, H, J, K):
     b.stop()
 shutil.rmtree(TMPD, ignore_errors=True)
 print("%d/%d" % (sum(RESULTS), len(RESULTS)))
