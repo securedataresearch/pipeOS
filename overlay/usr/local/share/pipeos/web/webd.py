@@ -1786,6 +1786,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/assistant-config": self.api_assistant_set,
             "/api/cohort": self.api_cohort,
             "/api/update-now": self.api_update_now,
+            "/api/update-set": self.api_update_set,
             "/api/flash": self.api_flash,
             "/api/wake": self.api_wake,
             "/api/secrets/set": self.api_secrets_set,
@@ -3763,8 +3764,15 @@ class PhaseB:
                         "saved": saved, "save_detail": "" if saved else detail})
 
     def api_update_get(self):
-        conf = read_conf_values(SELFUPDATE_CONF, ["UPDATE_RELEASE_URL", "UPDATE_URL"])
+        conf = read_conf_values(SELFUPDATE_CONF, ["UPDATE_RELEASE_URL", "UPDATE_URL", "IMAGE_UPDATE"])
         origin = conf["UPDATE_RELEASE_URL"] or conf["UPDATE_URL"]
+        image_update = "off" if conf["IMAGE_UPDATE"] == "off" else "auto"   # absent = auto (#275)
+        image_last = ""
+        try:
+            with open("/work/.pipeos/image-updated") as f:
+                image_last = f.read().strip()
+        except OSError:
+            pass
         applied = ""
         try:
             with open(UPDATE_STAMP) as f:
@@ -3788,7 +3796,25 @@ class PhaseB:
             state = "self-update disabled"
         self.send(200, {"origin": origin, "applied": applied[:12],
                         "remote": remote[:12], "state": state,
+                        "image_update": image_update, "image_last": image_last,
+                        "image_pending": os.path.exists("/run/pipeos/flash-pending"),
                         "last": tail_file(LOG_ALLOW["selfupdate"], 3) or ""})
+
+    def api_update_set(self, body):
+        """The System page's switch: automatic image updates on/off — the
+        `pipeos selfupdate image` verb does the write and the save (#275)."""
+        want = body.get("image_update")
+        if want not in ("auto", "off"):
+            return self.err(400, "image_update must be auto or off")
+        rc, out = run(["pipeos-selfupdate", "image", "on" if want == "auto" else "off"], timeout=300)
+        if rc != 0:
+            return self.err(500, "could not set image updates: " + out.strip()[-200:])
+        # the verb wrote the conf AND saved (or reported why it could not); do
+        # not save again here (that was two full lbu cycles per flip). "saved"
+        # in its output is the receipt (#275 review).
+        saved = "\nsaved" in ("\n" + out)
+        self.send(200, {"ok": True, "image_update": want, "saved": saved,
+                        "save_detail": "" if saved else out.strip()[-200:]})
 
     def api_flash_get(self):
         image = lanid.image_info(FLASH_IMAGE_TXT)
@@ -3835,7 +3861,10 @@ class PhaseB:
         self.send(200, {"ok": True, "started": True})
 
     def api_update_now(self, _body):
-        rc, out = run(["pipeos-selfupdate"], timeout=900)
+        # packages only: the manual button must never rewrite p1 and reboot the
+        # box under the owner — that is the automatic path and pipeos flash
+        # apply, each with its own confirmation (#275 review).
+        rc, out = run(["pipeos-selfupdate", "--packages"], timeout=900)
         self.send(200, {"ok": rc == 0, "detail": out.strip()[-500:]})
 
 

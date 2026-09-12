@@ -73,7 +73,7 @@
 # self-update: the applied-digest stamp lives on /work (ext4), but the config
 # and the cron wrapper are custom files under /etc that apk audit would drop
 +etc/pipeos/selfupdate.conf
-+etc/periodic/daily/pipeos-selfupdate
++etc/periodic/hourly/pipeos-selfupdate
 +etc/periodic/daily/pipeos-checkout-refresh
 # same shape, weekly: the reclaim job is a custom file under /etc/periodic, so
 # apk audit does not see it and a reboot would take it with everything else

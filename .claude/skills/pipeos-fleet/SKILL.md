@@ -72,6 +72,7 @@ pipeos usage cap 40 | cap none                  # card MONTHLY_CAP_USD, regenera
 pipeos card set KEY=VALUE ...                   # any card field; regenerate + save
 pipeos secrets phrase [--ack]                   # the vault's pending recovery phrase (tmpfs); --ack forgets it
 printf '%s' PW | pipeos assistant password      # -> vault assistant_pass, pipeos-assistant restarted, saved
+pipeos selfupdate image on|off|status           # automatic image updates (default on): hourly check, apply in place, reboot — held while a job/terminal is live
 printf '%s' PW | pipeos nas account NAME        # share-only account (no sign-in, no shell) + its SMB password; tick it on a share in Files → Network storage
 pipeos vault status|list|get|set|export         # the sealed store; set reads stdin: printf '%s' V | pipeos vault set NAME [CONSUMER]
 pipeos wake NAME|ID|--all|--list                # magic packet to a Machine this box has seen

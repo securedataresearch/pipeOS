@@ -531,7 +531,7 @@ fi
 # the log, and this reads what they left.
 _suc=/etc/pipeos/selfupdate.conf
 if [ -r "$_suc" ]; then
-    UPDATE_URL="" UPDATE_RELEASE_URL=""
+    UPDATE_URL="" UPDATE_RELEASE_URL="" IMAGE_UPDATE=""
     # shellcheck disable=SC1090
     . "$_suc" 2>/dev/null
     if [ -n "${UPDATE_RELEASE_URL:-}${UPDATE_URL:-}" ]; then
@@ -545,6 +545,13 @@ if [ -r "$_suc" ]; then
         case "$(tail -1 "$_sulog" 2>/dev/null)" in *ERROR*)
             warnn "last self-update run ERRORED: $(tail -1 "$_sulog" | cut -c1-140)" ;;
         esac
+        # the image half (#275): say when this boot IS the update, and when the owner turned it off
+        if [ -f /work/.pipeos/image-updated ] && [ -n "$(find /work/.pipeos/image-updated -newer /proc/1 2>/dev/null)" ]; then
+            : # written after this boot started — not this boot's update
+        elif [ -f /work/.pipeos/image-updated ] && [ -z "$(find /work/.pipeos/image-updated -mmin +30 2>/dev/null)" ]; then
+            noten "this boot is a self-applied image update: $(cat /work/.pipeos/image-updated)"
+        fi
+        [ "${IMAGE_UPDATE:-auto}" = off ] && noten "automatic image updates are OFF (pipeos selfupdate image on) — packages still update; a new image waits for pipeos flash apply"
     fi
 fi
 

@@ -228,6 +228,7 @@ _no_save = {
     "/api/reboot": "the shutdown hook saves",
     "/api/reboot-firmware": "the shutdown hook saves",
     "/api/update-now": "pipeos-selfupdate saves itself",
+    "/api/update-set": "the pipeos selfupdate verb saves; the handler reads its receipt (#275)",
     "/api/flash": "pipeos-flash writes the media directly",
     "/api/save": "is the save",
     "/api/wake": "a packet on the wire, no state (#241)",
@@ -968,6 +969,13 @@ with open(webd.NAS_CONF) as f:
 assert webd.read_services()["nas"] is False  # no share left
 assert not any(u["name"].startswith("shareonly") for u in webd.read_users())
 ok("nas-account validates; deleting a unix account strips it from shares, drops emptied shares, turns storage off")
+# automatic image updates (pipeOS#275): the switch validates; the write is the
+# verb's (pipeos-selfupdate, absent on a dev host -> 500 and nothing saved)
+req("/api/update-set", {"image_update": "sometimes"}, expect=400)
+req("/api/update-set", {}, expect=400)
+_r = req("/api/update", expect=200)
+assert _r["image_update"] in ("auto", "off") and "image_pending" in _r
+ok("update-set validates auto|off; /api/update reports the image-update state")
 # the restart helper must only ever RESTART a running smbd: OpenRC's -i is
 # --ifexists (the first cut started a stopped service); --ifstarted is -s
 assert '["rc-service", "-s", "pipeos-nas", "restart"]' in _src and '"rc-service", "-i"' not in _src
@@ -995,6 +1003,7 @@ req("/api/file-op", {"op": "mkdir", "path": "work", "name": "nope"}, expect=403)
 req("/api/nas", {"shares": []}, expect=403)
 req("/api/nas-password", {"name": "peek", "password": "whatever12"}, expect=403)
 req("/api/nas-account", {"name": "peek2", "password": "whatever12"}, expect=403)
+req("/api/update-set", {"image_update": "off"}, expect=403)
 req("/api/backup", {"dest": "ext/sdx1"}, expect=403)
 req("/api/flash", {"mode": "inplace", "confirm": "x"}, expect=403)
 req("/api/wake", {"id": "4d4d"}, expect=403)
