@@ -54,6 +54,8 @@ for k in ("ADMIN_CONF", "SERVICES_CONF", "CARD", "PROVISIONED", "BOOT_REPORT", "
     setattr(webd, k, os.path.join(d, k.lower()))
 webd.SESS_DIR = os.path.join(d, "sessions"); webd.MDNS_CACHE = os.path.join(d, "peers.json"); webd.MACHINES_ROSTER = os.path.join(d, "machines.json")
 webd.FLASH_IMAGE_TXT = os.path.join(d, "image.txt")
+webd.SCHEDULE_LOCK = os.path.join(d, "sched.lock")
+open(webd.FLASH_IMAGE_TXT, "w").write("variant=usb\nbuilt=2026-09-12T00:00:00Z\ncommit=abc123def456789\n")
 webd.TLS_DIR = os.path.join(d, "tls"); webd.CA_CRT = webd.TLS_DIR + "/ca.crt"; webd.SRV_CRT = webd.TLS_DIR + "/server.crt"; webd.SRV_KEY = webd.TLS_DIR + "/server.key"
 webd.lanid.mac4 = lambda iface=None: os.environ["PIPEOS_CLUSTER_SELF"]
 webd.box_hostname = lambda: "pipeos-" + os.environ["PIPEOS_CLUSTER_SELF"]
@@ -81,13 +83,16 @@ class Box:
                         PIPEOS_MDNS_CACHE=os.path.join(self.dir, "peers.json"),
                         PIPEOS_MDNS_ROSTER=os.path.join(self.dir, "machines.json"),
                         PIPEOS_CLUSTER_SELF=bid, PIPEOS_SAVE_BIN=os.path.join(BIN, "pipeos-save"),
-                        PIPEOS_TEST_SAVES=self.saves, PIPEOS_WEB_HTTPS_PORT="0", PIPEOS_WEB_BUNDLE_POLL="0.2", BOX_NAME=name)
+                        PIPEOS_TEST_SAVES=self.saves, PIPEOS_WEB_HTTPS_PORT="0", PIPEOS_WEB_BUNDLE_POLL="0.2", BOX_NAME=name,
+                        PIPEOS_REBOOT_CMD="date +%%s.%%N >> %s" % os.path.join(self.dir, "reboots"),
+                        PIPEOS_PTS_GLOB=os.path.join(self.dir, "no-pts", "*"))
         r = subprocess.run(["sh", TLS_INIT], env=self.env, capture_output=True, text=True)
         assert r.returncode == 0, "tls-init for %s: %s" % (name, r.stdout + r.stderr)
         self.proc = subprocess.Popen([sys.executable, "-c", RUNNER, os.path.join(WEB, "webd.py"), self.dir],
                                      env=self.env, stdout=subprocess.PIPE, stderr=open(os.path.join(self.dir, "webd.log"), "w"), text=True)
         self.port, self.tls_port = (int(x) for x in self.proc.stdout.readline().split())
         self.addr = "127.0.0.1:%d" % self.tls_port        # cluster.py talks TLS only
+        self.env["PIPEOS_WEB_HTTPS_PORT_LOCAL"] = str(self.tls_port)   # `pipeos cluster page` talks to its own :443
 
     def cli(self, *args, env=None, stdin=None):
         p = subprocess.run([sys.executable, CLUSTER] + list(args), capture_output=True, text=True, env=env or self.env, input=stdin)
@@ -322,6 +327,78 @@ check("11 a member list that does not parse: status says BROKEN (rc 1), a member
       and rc_f0 == 1 and rc_f == 0 and list(A.doc()["members"]) == ["aaaa"] and A.doc()["members"]["aaaa"]["ca"] == A.ca(),
       repr((rc_bs, out_bs, rc_bc, out_bc[:120], rc_f0, out_f0[-120:], rc_f, out_f[-120:])))
 
+# ── 13-16. the cluster page (#212): two fresh Machines ──────────────────
+G = Box("1111", "six"); H = Box("2222", "seven")
+for b in (G, H):
+    b.claim(b.name + "password")
+G.cli("init", "six"); G.see(H)
+rc_gh, _ = G.cli("add", H.addr, stdin="sevenpassword\n"); G.see(H); H.see(G)
+rc_sum, out_sum = G.cli("call", H.addr, "GET", "/api/cluster/summary")
+summ = json.loads(out_sum.split("\n", 1)[1]) if rc_sum == 0 else {}
+rc_pg, out_pg = G.cli("page")
+st_pg, page = json.loads(G.py("st, b, who = cluster.call('local', 'GET', '/api/cluster/page'); print(json.dumps([st, b]))"))
+rows = {r["id"]: r for r in page.get("members", [])}
+check("13 a member's /api/cluster/summary over mutual TLS carries the two lines (name, id, role, verdict, activity, disk, release, boot report); the page gathers every member's, marks itself, and gives one verdict; 'pipeos cluster page' prints it",
+      rc_gh == 0 and rc_sum == 0 and summ.get("id") == "2222" and summ.get("name") == "seven" and summ.get("role") == "GENERIC"
+      and "commit" in summ and "work_pct" in summ and "busy" in summ and "boot_report" in summ
+      and st_pg == 200 and sorted(rows) == ["1111", "2222"] and rows["1111"]["self"] and rows["2222"]["awake"]
+      and rows["2222"]["commit"] == "abc123def456" and page["verdict"] == "all green"
+      and rc_pg == 0 and "member    seven" in out_pg and "member    six" in out_pg and "abc123def456" in out_pg,
+      repr((rc_gh, rc_sum, summ, st_pg, page, rc_pg, out_pg[-300:])))
+
+# a member off: grey, and the cluster verdict says so
+H.stop()
+st_pg2, page2 = json.loads(G.py("st, b, who = cluster.call('local', 'GET', '/api/cluster/page'); print(json.dumps([st, b]))"))
+r2 = {r["id"]: r for r in page2["members"]}
+check("14 a member that does not answer is a grey row (off, last seen, the reason) and the cluster verdict counts it; the rest of the page still renders",
+      st_pg2 == 200 and r2["2222"]["awake"] is False and "unreachable" in r2["2222"].get("error", "") and r2["1111"]["awake"]
+      and page2["verdict"] == "1 member off", repr((st_pg2, page2)))
+H = Box("2222", "seven-b"); H.claim("sevenpassword")
+G.cli("remove", "2222"); G.see(H); G.cli("add", H.addr, stdin="sevenpassword\n"); G.see(H); H.see(G)
+
+
+def svc_on(box, key):
+    try:
+        t = open(os.path.join(box.dir, "services_conf")).read()
+    except OSError:
+        return None
+    return ("SERVICE_%s=on" % key.upper()) in t or '"%s": true' % key in t
+
+
+# ── 15. one service on several Machines ─────────────────────────────────
+rc_sv, out_sv = G.cli("services", "claude", "on")
+on_g, on_h = svc_on(G, "claude"), svc_on(H, "claude")
+rc_sv2, out_sv2 = G.cli("services", "claude", "off", "2222", "9999")
+check("15 'cluster services claude on' with no ids reaches every member: both services confs say on, each box saved its own; 'off 2222 9999' flips only seven and calls 9999 not a member",
+      rc_sv == 0 and "1111=ok" in out_sv and "2222=ok" in out_sv and on_g and on_h
+      and "2222=ok" in out_sv2 and "9999=not a member" in out_sv2 and svc_on(G, "claude") and not svc_on(H, "claude"),
+      repr((rc_sv, out_sv, on_g, on_h, rc_sv2, out_sv2, svc_on(G, "claude"), svc_on(H, "claude"))))
+
+def reboots(box):
+    try:
+        return [float(x) for x in open(os.path.join(box.dir, "reboots")).read().split()]
+    except OSError:
+        return []
+
+
+# ── 16. reboot everything: the warning, then the order ──────────────────
+import fcntl as _f
+lockf = open(os.path.join(G.dir, "sched.lock"), "w")
+_f.flock(lockf, _f.LOCK_EX)
+rc_rb0, out_rb0 = G.cli("reboot-all")
+_f.flock(lockf, _f.LOCK_UN); lockf.close()
+time.sleep(2.5)
+none_yet = not reboots(G) and not reboots(H)
+rc_rb, out_rb = G.cli("reboot-all")
+time.sleep(3.5)
+
+
+check("16 'reboot-all' refuses while a member is busy (a job running on six) and names it, without --yes; once idle every member reboots, the others before the box that asked",
+      rc_rb0 == 1 and "busy" in out_rb0 and "a job is running" in out_rb0 and none_yet
+      and rc_rb == 0 and "2222=rebooting" in out_rb and "1111=rebooting" in out_rb
+      and len(reboots(G)) == 1 and len(reboots(H)) == 1 and reboots(H)[0] <= reboots(G)[0],
+      repr((rc_rb0, out_rb0[-200:], rc_rb, out_rb[-200:], reboots(G), reboots(H))))
+
 # ── 12. identity coverage ───────────────────────────────────────────────
 lbu = open(os.path.join(REPO, "overlay/etc/apk/protected_paths.d/lbu.list")).read().split("\n")
 su = open(os.path.join(REPO, "overlay/usr/local/bin/pipeos-selfupdate")).read()
@@ -334,7 +411,7 @@ check("12 the member list and the TLS dir are identity: in lbu.list, in pipeos-s
       and "cluster.json does not parse" in sc and "no CA/server cert" in sc and "has no clientAuth" in sc
       and "is not in the lbu include list" in sc and "member list differs on" in sc, "")
 
-for b in (A, B, C):
+for b in (A, B, C, G, H):
     b.stop()
 shutil.rmtree(TMPD, ignore_errors=True)
 print("%d/%d" % (sum(RESULTS), len(RESULTS)))

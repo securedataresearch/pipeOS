@@ -240,6 +240,57 @@ echo "done — reload https://@HOST@.local/ and look for the padlock (restart th
 """
 
 
+REBOOT_CMD = os.environ.get("PIPEOS_REBOOT_CMD", "reboot")
+PTS_GLOB = os.environ.get("PIPEOS_PTS_GLOB", "/dev/pts/[0-9]*")   # an open terminal = a busy box; the probe points it elsewhere
+
+
+def schedule_reboot(delay=2):
+    """Reboot in `delay` seconds, detached, so the answer goes out first."""
+    subprocess.Popen(["sh", "-c", "sleep %d; %s" % (delay, REBOOT_CMD)],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return "rebooting"
+
+
+def _lock_held(path):
+    """Is some process holding the flock on `path`?"""
+    try:
+        with open(path, "a+") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(f, fcntl.LOCK_UN)
+                return False
+            except OSError:
+                return True
+    except OSError:
+        return False
+
+
+def box_summary():
+    """This Machine in two lines (#212): who it is, and what it is doing —
+    verdict, activity, disk, release, the boot report — what the cluster
+    page shows per member and what /api/cluster/summary hands a member."""
+    up, pct, free_mb = uptime_disk()
+    svcs = read_services()
+    img = lanid.image_info(FLASH_IMAGE_TXT)
+    busy = []
+    if svcs.get("stream"):
+        rc, _ = run(["rc-service", "pipeos-stream", "status"], timeout=15)
+        if rc == 0:
+            busy.append("stream live")
+    if _lock_held(SCHEDULE_LOCK):
+        busy.append("a job is running")
+    if glob.glob(PTS_GLOB):
+        busy.append("a terminal is open")
+    if os.path.exists("/run/pipeos/flash-pending"):
+        busy.append("a new image is applied, reboot pending")
+    return {"id": lanid.mac4(), "name": box_name(), "role": card_get("ROLE") or "GENERIC",
+            "host": (box_name() or lanid.lan_name()) + ".local", "ip": primary_ip()[0],
+            "verdict": lanid.verdict_line(BOOT_REPORT), "boot_report": boot_report(),
+            "uptime_s": up, "work_pct": pct, "work_free_mb": free_mb,
+            "commit": img["commit"][:12], "built": img["built"],
+            "services": svcs, "busy": busy}
+
+
 def run(argv, timeout=60, input_text=None, env=None):
     """Run a command (no shell, ever). Returns (rc, stdout+stderr)."""
     try:
@@ -1749,6 +1800,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/update": self.api_update_get,
             "/api/flash": self.api_flash_get,
             "/api/cluster": self.api_cluster_get,
+            "/api/cluster/summary": self.api_cluster_summary,
+            "/api/cluster/page": self.api_cluster_page,
         }
         fn = readers.get(path)
         if fn is not None:
@@ -1847,6 +1900,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/cluster/remove": self.api_cluster_remove,
             "/api/cluster/sync": self.api_cluster_sync,
             "/api/cluster/members": self.api_cluster_members,
+            "/api/cluster/reboot-all": self.api_cluster_reboot_all,
+            "/api/cluster/services": self.api_cluster_services,
             "/api/schedule/set": self.api_schedule_set,
             "/api/schedule/del": self.api_schedule_del,
             "/api/schedule/run": self.api_schedule_run,
@@ -2264,6 +2319,49 @@ class Handler(BaseHTTPRequestHandler):
         v = cluster.view()
         v["dropped"] = dropped
         self.send(200, v)
+
+    def api_cluster_summary(self):
+        self.send(200, box_summary())
+
+    def api_cluster_page(self):
+        """The pilot's one page (#212): every member's two lines and one
+        verdict, gathered from the members over mutual TLS by whichever box
+        was opened — leaderless, no copy of anyone's state kept."""
+        self.send(200, cluster.page(box_summary))
+
+    def api_cluster_reboot_all(self, body):
+        """Reboot everything (docs/cluster.md §9): warns through the page's
+        `busy` list, and still does it on confirm — the others first, this
+        box last. Each box's shutdown hook saves; nothing here does."""
+        if not body.get("confirm"):
+            return self.err(400, "confirm: true — the page shows what is busy first")
+        self.send(200, {"ok": True, "results": cluster.reboot_all(schedule_reboot)})
+
+    def api_cluster_services(self, body):
+        """One service switch on several members at once (§10). Each box
+        applies and saves its own change through its own /api/services."""
+        key = body.get("key")
+        if key not in SVC_KEYS:
+            return self.err(400, "which service: one of " + ", ".join(SVC_KEYS))
+        ids = body.get("ids") or [r["id"] for r in cluster.view()["members"]]
+
+        def local_set(change):
+            svcs = read_services()
+            problems = []
+            for k, want in change.items():
+                if want and not svcs.get(k):
+                    why = self._unconfigured(k)
+                    if why:
+                        problems.append(why)
+                        continue
+                svcs[k] = bool(want)
+            write_services(svcs)
+            problems += apply_services(svcs)
+            saved, detail = save_state()
+            if svcs.get(key) != bool(body.get("on")):
+                return "refused: " + "; ".join(problems or ["not applied"])
+            return "ok" if saved else "ok, NOT saved: " + detail
+        self.send(200, {"ok": True, "results": cluster.services_all(ids, key, bool(body.get("on")), local_set)})
 
     def api_cluster_add(self, body):
         """Mark a Machine out of the lobby (#211): its id or address and
@@ -3347,10 +3445,7 @@ class Handler(BaseHTTPRequestHandler):
         on a diskless box a clean reboot IS a restore to last-saved state, and
         before this the only path to one on a shell-less box was the power
         button. Answer first, then reboot — the browser deserves its 200."""
-        subprocess.Popen(
-            ["sh", "-c", "sleep 2; reboot"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
+        schedule_reboot()
         self.send(200, {"ok": True, "note": "rebooting — the box is back in about a minute"})
 
     def api_reboot_firmware(self, _body):

@@ -155,6 +155,14 @@ ROLE) are named where the design reuses them.
 - Without clicking into a box you can: see health, see files, see roles,
   change roles, shut everything down.
 
+- Built (#212): `/api/cluster/page` gathers every member's
+  `/api/cluster/summary` over mutual TLS from whichever box was opened;
+  `Reboot everything` warns with the page's busy list (a live stream, a
+  running job, an open terminal, a pending image) and reboots the others
+  first, this box last; one service switch fans out to the ticked members,
+  each applying and saving its own. `pipeos cluster page|reboot-all|services`.
+  Roles show as a pill until #214.
+
 → #212
 
 ## 11. Onboarding the second box

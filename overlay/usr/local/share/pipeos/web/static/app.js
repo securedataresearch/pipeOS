@@ -1042,11 +1042,23 @@ async function dashboard() {
         <div class="viewhead"><h1>Cluster</h1></div>
         <p class="sub">A cluster is a decision, not a fact: the Machines you mark out of the network list. Each holds every member's key; nothing else is shared or copied between them.</p>
         <div class="card">
-          <div class="cardhead"><h2>Members</h2><span class="note" id="clnote"></span></div>
+          <div class="cardhead"><h2>Members</h2><span id="clverdict" class="pill">looking…</span></div>
+          <p class="note" id="clnote"></p>
           <div id="clrows" class="note">looking…</div>
           <div style="margin-top:.6rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
             <button id="clsync" class="ghost small" type="button">push the list to every member</button>
+            <button id="clreboot" class="ghost small" type="button">Reboot everything</button>
             <span class="note" id="clmsg"></span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="cardhead"><h2>A service on several Machines</h2><span class="note" id="clsvcnote"></span></div>
+          <p class="note">Each Machine keeps its own settings; this flips one switch on the members you tick, and each saves its own change.</p>
+          <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+            <select id="clsvc">${SERVICES.map(s => `<option value="${s.key}">${esc(s.name)}</option>`).join("")}</select>
+            <select id="clsvcon"><option value="1">on</option><option value="0">off</option></select>
+            <span id="clsvcids"></span>
+            <button id="clsvcgo" class="btn small" type="button">Apply</button>
           </div>
         </div>
         <div class="card">
@@ -2437,29 +2449,50 @@ async function dashboard() {
     const rows = v.querySelector("#clrows"), note = v.querySelector("#clnote");
     const cands = v.querySelector("#clcands"), cnote = v.querySelector("#clcnote"), msg = v.querySelector("#clmsg");
     if (!rows) return;
-    let c;
+    let c, pg;
     try { c = await api("/api/cluster"); } catch (e) { note.textContent = e.message; return; }
     if (c.error) { rows.className = "note"; rows.textContent = "the member list is broken: " + c.error + " — pipeos cluster status"; return; }
+    const verdictEl = v.querySelector("#clverdict");
     if (!c.cluster) {
       rows.className = "note"; rows.textContent = "This Machine is not in a cluster yet. Add a Machine below to start one, or another member can add this one.";
-      note.textContent = "";
+      note.textContent = ""; verdictEl.textContent = "no cluster"; verdictEl.className = "pill";
     } else {
+      // the page (#212): two lines per Machine, one verdict for the cluster
+      try { pg = await api("/api/cluster/page"); } catch (e) { note.textContent = e.message; return; }
+      const [vc, vtxt] = verdictClass("verdict: " + (pg.verdict || ""));
+      verdictEl.textContent = pg.verdict || "?"; verdictEl.className = "pill " + vc;
       rows.className = "";
-      rows.innerHTML = c.members.map(m => {
+      const gb = mb => mb == null ? "" : Math.round(mb / 1024) + " GB free";
+      rows.innerHTML = pg.members.map(m => {
         const label = m.name || m.id;
-        const pills = (m.self ? '<span class="pill">this one</span>' : "")
-          + (m.awake ? "" : '<span class="pill status-warn">off · last seen ' + esc(agoShort(m.last_seen)) + '</span>')
-          + (m.in_sync ? "" : '<span class="pill status-warn">list differs</span>')
-          + (m.awake && m.verdict ? `<span class="pill ${verdictClass("verdict: " + m.verdict)[0]}">${esc(m.verdict)}</span>` : "");
-        const href = !m.self && m.awake && (m.host || m.ip) ? "http://" + (m.host || m.ip) + "/" : "";
+        const href = m.awake && (m.host || m.ip) ? "http://" + (m.host || m.ip) + "/" : "";
+        const [mvc, mvt] = m.awake ? verdictClass("verdict: " + (m.verdict || "")) : ["status-warn", "off · last seen " + agoShort(m.last_seen)];
+        const act = m.awake ? ((m.busy && m.busy.length) ? m.busy.join(", ") : "idle") : (m.error || "no answer");
+        const disk = m.awake && m.work_pct != null ? `disk ${m.work_pct}% · ${gb(m.work_free_mb)}` : "";
+        const rel = m.awake && m.commit ? `release ${m.commit.slice(0, 12)}${m.built ? " · " + m.built.slice(0, 10) : ""}` : "";
+        const pills = (m.self ? '<span class="pill">this one</span>' : "") + (m.in_sync ? "" : '<span class="pill status-warn">list differs</span>')
+          + `<span class="pill">${esc(m.role || "GENERIC")}</span>`;
         return `<div class="row${m.awake ? "" : " off"}">
-          <div><div class="name">${href ? `<a href="${esc(href)}">${esc(label)}</a>` : esc(label)} ${pills}</div>
-          <div class="desc">${esc([m.id, m.ip, "key " + m.fingerprint].filter(Boolean).join(" · "))}</div></div>
-          <div>${m.self ? "" : `<button class="btn ghost" type="button" data-clrm="${esc(m.id)}">Remove</button>`}</div>
+          <div style="min-width:0">
+            <div class="name">${href ? `<a href="${esc(href)}">${esc(label)}</a>` : esc(label)} <span class="note">${esc(m.id)}</span> ${pills}</div>
+            <div class="desc"><span class="${mvc}">${esc(mvt)}</span> · ${esc(act)}${disk ? " · " + esc(disk) : ""}${rel ? " · " + esc(rel) : ""}${m.awake && m.uptime_s != null ? " · up " + esc(fmtUptime(m.uptime_s)) : ""}</div>
+            ${m.awake && m.boot_report ? `<details><summary class="note">boot report</summary><pre class="report">${esc(m.boot_report)}</pre></details>` : ""}
+          </div>
+          <div style="display:flex;gap:.4rem;flex-direction:column;align-items:flex-end">
+            ${href ? `<a class="btn ghost small" href="${esc(href)}#/files">Files ↗</a>` : ""}
+            ${m.self ? "" : `<button class="btn ghost small" type="button" data-clrm="${esc(m.id)}">Remove</button>`}
+          </div>
         </div>`;
       }).join("");
-      const off = c.members.filter(m => !m.awake).length, diff = c.members.filter(m => !m.in_sync).length;
-      note.textContent = `cluster ${c.cluster} · ${c.members.length} member${c.members.length === 1 ? "" : "s"}` + (off ? ` · ${off} off` : "") + (diff ? ` · ${diff} out of sync` : "") + (c.dropped && c.dropped.length ? ` · dropped ${c.dropped.join(", ")} (joined another cluster)` : "");
+      const off = pg.members.filter(m => !m.awake).length, diff = pg.members.filter(m => !m.in_sync).length;
+      note.textContent = `cluster ${c.cluster} · ${pg.members.length} member${pg.members.length === 1 ? "" : "s"}` + (off ? ` · ${off} off` : "") + (diff ? ` · ${diff} out of sync` : "") + (c.dropped && c.dropped.length ? ` · dropped ${c.dropped.join(", ")} (joined another cluster)` : "") + " · roles are editable once #214 lands";
+      const idsEl = v.querySelector("#clsvcids");
+      if (idsEl && idsEl.childElementCount !== pg.members.length) idsEl.innerHTML = pg.members.map(m => `<label class="note" style="margin-right:.6rem"><input type="checkbox" data-clsvcid="${esc(m.id)}" checked> ${esc(m.name || m.id)}</label>`).join("");
+      v.querySelector("#clreboot").onclick = async () => {
+        const busy = (pg.busy || []).map(b => (b.name || b.id) + ": " + b.why.join(", ")).join("\n");
+        if (!confirm("Reboot every member of the cluster? " + (busy ? "\n\nBusy right now:\n" + busy + "\n\nThey will reboot anyway." : "Nothing is busy.") + "\n\nThis Machine reboots last.")) return;
+        try { const r = await api("/api/cluster/reboot-all", { confirm: true }); msg.textContent = "rebooting: " + pushed(r.results); } catch (e) { msg.textContent = e.message; }
+      };
       rows.querySelectorAll("[data-clrm]").forEach(b => b.onclick = async () => {
         if (!confirm("Remove " + b.dataset.clrm + " from the cluster? It keeps its key and becomes a cluster of one; add it again any time.")) return;
         b.disabled = true;
@@ -2487,6 +2520,14 @@ async function dashboard() {
     }
   };
   const pushed = (p) => { const ks = Object.keys(p || {}); return ks.length ? "list pushed: " + ks.map(k => k + "=" + p[k]).join(", ") : "no other members to tell"; };
+  const clsvcgo = v.querySelector("#clsvcgo");
+  if (clsvcgo) clsvcgo.onclick = async () => {
+    const n = v.querySelector("#clsvcnote"); clsvcgo.disabled = true; n.textContent = "applying…";
+    const ids = Array.from(v.querySelectorAll("[data-clsvcid]:checked")).map(i => i.dataset.clsvcid);
+    try { const r = await api("/api/cluster/services", { key: v.querySelector("#clsvc").value, on: v.querySelector("#clsvcon").value === "1", ids }); n.textContent = pushed(r.results); pollCluster(); }
+    catch (e) { n.textContent = e.message; }
+    clsvcgo.disabled = false;
+  };
   const clsync = v.querySelector("#clsync");
   if (clsync) clsync.onclick = async () => {
     const msg = v.querySelector("#clmsg"); clsync.disabled = true;
