@@ -350,6 +350,64 @@ bad = [l.split()[-1] for l in modes if l and not l.startswith("100755")]
 check("16 every shipped init script, binary, local.d hook and periodic job is executable in git — a deploy installs git's mode (the image build's blanket chmod hid pipeos-vault's init script AND binary at 644; zero refused both, 2026-09-11)",
       not bad, repr(bad))
 
+# ── 17. a template deploy regenerates the card's outputs (pipeOS#281) ──
+# The real generator and the real templates, because the property is about
+# THEM: etc/pipeos/* is derived from card.conf through the templates a deploy
+# carries, and #278/#280 shipped template changes that left all four boxes
+# CRITICAL ("generator is not byte-stable") until a hand-run generate.
+# A stamped box (generate has run) whose templates then change must come out
+# of the deploy regenerated and verify-clean, with no hand step.
+PBC = os.path.join(REPO, "overlay/usr/local/bin/pipebox-card")
+TMPL_DIR = os.path.join(REPO, "overlay/usr/local/share/pipeos/card")
+REAL_CARD = open(os.path.join(REPO, "docs/cards/box0.card")).read()
+REAL_FIXTURE = {k: v for k, v in FIXTURE.items()
+                if not k.startswith("overlay/usr/local/share/pipeos/card/")
+                and k != "docs/cards/box9.card"}
+REAL_FIXTURE["overlay/usr/local/bin/pipebox-card"] = (open(PBC).read(), 0o755)
+for name in os.listdir(TMPL_DIR):
+    REAL_FIXTURE["overlay/usr/local/share/pipeos/card/" + name] = \
+        (open(os.path.join(TMPL_DIR, name)).read(), 0o644)
+
+
+def real_verify(c):
+    return subprocess.run(["sh", PBC, "verify", "--card", os.path.join(c.root, "etc/pipeos/card.conf"),
+                           "--root", c.root, "--templates", os.path.join(c.root, "usr/local/share/pipeos/card")],
+                          capture_output=True, text=True).returncode
+
+
+c17 = case(fixture=REAL_FIXTURE, card=REAL_CARD)
+# generate has run here with the v1 templates, the way a provisioned box has
+g = subprocess.run(["sh", PBC, "generate", "--card", os.path.join(c17.root, "etc/pipeos/card.conf"),
+                    "--root", c17.root, "--templates", TMPL_DIR], capture_output=True, text=True)
+assert g.returncode == 0, "row 17 setup: generate failed: " + g.stderr
+c17.run()
+same = c17.rc == 0 and "card outputs: match" in c17.log and "regenerat" not in c17.log
+# v2: the mandate template gains a line, as #278's did
+tp = os.path.join(c17.repo, "overlay/usr/local/share/pipeos/card/mandate.md.tmpl")
+write(tp, open(tp).read() + "\nA line the new release adds to every mandate.\n")
+git(c17.repo, "add", "-A"); git(c17.repo, "commit", "-qm", "template change")
+c17.run("--dry-run")
+dry_said = "would regenerate" in c17.log
+dry_untouched = "A line the new release" not in (c17.live("etc/pipeos/mandate.md") or "")
+c17.run()
+check("17 a deploy that changes a card template regenerates the box's card outputs, and verify is clean after it (all four boxes sat CRITICAL after #278/#280 until a hand generate — pipeOS#281)",
+      same and c17.rc == 0
+      and "regenerated the card outputs" in c17.log
+      and "A line the new release" in (c17.live("etc/pipeos/mandate.md") or "")
+      and real_verify(c17) == 0,
+      "same=%s rc=%d verify=%d log=%r" % (same, c17.rc, real_verify(c17), c17.log[-400:]))
+check("17a --dry-run of the template change says it would regenerate, and regenerates nothing",
+      dry_said and dry_untouched, "said=%s untouched=%s" % (dry_said, dry_untouched))
+
+# ── 17b. a box generate has never run on is left alone ──────────────────
+# verify's exit 2 is "cannot tell", not "divergent". Regenerating there would
+# be this tool deciding a box's identity from a card nobody has acted on yet.
+c17b = case(fixture=REAL_FIXTURE, card=REAL_CARD).run()
+check("17b a provisioned box with no generation stamp is left alone and told what to run",
+      c17b.rc == 0 and c17b.live("etc/pipeos/mandate.md") is None
+      and "left alone" in c17b.log and "pipebox-card generate" in c17b.log,
+      "rc=%d log=%r" % (c17b.rc, c17b.log[-300:]))
+
 for c in CASES:
     shutil.rmtree(c.dir, ignore_errors=True)
 

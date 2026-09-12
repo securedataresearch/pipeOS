@@ -108,6 +108,22 @@ controls = [
     cp "$repo_card" "$CARD" || die "cannot install the card\"""",
          '    cp "$repo_card" "$CARD" || die "cannot install the card"')),
 
+    # M is the pipeOS#281 defect put back: the templates land, the outputs do
+    # not follow, the box is CRITICAL until a hand generate. Row 17 must fail.
+    ("M: a divergent card output is reported but never regenerated",
+     lambda s: s.replace(
+         '''            if sh "$pbc" generate --card "$CARD" --root "${ROOT:-/}" \\
+                   --templates "$ROOT/usr/local/share/pipeos/card" >/dev/null 2>&1; then''',
+         '''            if true; then''')),
+
+    # N regenerates on exit 2 as well: a box generate has never run on gets
+    # its identity decided by the deploy tool. Row 17b must fail.
+    ("N: the outputs step regenerates on 'cannot tell' (no stamp) too",
+     lambda s: s.replace(
+         '''        *)  say "card outputs: no generation stamp on this box''',
+         '''        *)  sh "$pbc" generate --card "$CARD" --root "${ROOT:-/}" --templates "$ROOT/usr/local/share/pipeos/card" >/dev/null 2>&1
+            say "card outputs: no generation stamp on this box''')),
+
     # J is the review defect itself, put back. Before box1's CHANGES the scan
     # walked $ROOT/$p whole, so on a real box every apk-owned file under
     # etc/init.d and usr/local/bin printed as stale. Row 6b is the row that

@@ -26,13 +26,24 @@
 # 2026-08-15. The exclusion is enforced twice below: the deploy list does not
 # name them, and a second filter drops them even if someone adds them to it.
 #
+# WHAT IT DOES INSTEAD (pipeOS#281): it REGENERATES them from the box's own
+# card when they no longer match. A deploy carries the card TEMPLATES
+# (usr/local/share/pipeos/card/*.tmpl) and the generator itself, so the moment
+# a template changes, the deployed templates and the box's generated files
+# disagree and `pipebox-card verify` — which selfcheck runs — FAILs. #278/#280
+# shipped two template changes and every box in the fleet sat CRITICAL until
+# an operator hand-ran `pipebox-card generate && pipeos save` on each. That is
+# the drift this tool exists to end, so after the install it runs verify and,
+# on a divergence, generate — from the box's card.conf, which it never wrote —
+# before the save. --dry-run says "would regenerate".
+#
 # THE CARD GATE (R19 — the card in the repo is the only source of truth): the
 # on-box /etc/pipeos/card.conf is meant to be a copy of docs/cards/$NICK.card.
 # When it is stale, generation renders a box that can do nothing. So a deploy
 # stops when they differ, rather than shipping new generator code onto a box
 # whose input is wrong. `--install-card` installs the repo's card instead of
-# refusing; it does NOT regenerate — that is `pipebox-card generate`, operator
-# territory, and it is named in the output.
+# refusing. The outputs step below then regenerates from it (a stamped box)
+# or says what to run (a box generate has never run on).
 #
 # OPERATOR ONLY. Like `pipeos save`, this is fenced away from the resident
 # agent in pipebox-settings.json: it writes /etc, it saves, and a box must not
@@ -382,6 +393,20 @@ if [ "$n_new" = 0 ] && [ "$n_mod" = 0 ] && [ "$n_stale" = 0 ] && [ "$card_action
 fi
 
 if [ "$DRY" = yes ]; then
+    # The templates are not installed yet, so verify cannot be run against
+    # them; what CAN be said is whether this ref changes a template or the
+    # generator (then the outputs will diverge and be regenerated), and
+    # whether they already diverge on the box (then the same). Only for a
+    # provisioned box: an unprovisioned one is left alone either way.
+    if [ -n "$NICK" ]; then
+        if grep -Eq '^(new|mod)   ?(usr/local/share/pipeos/card/|usr/local/bin/pipebox-card( |$))' "$changes"; then
+            say "card outputs: would regenerate (this ref changes a card template or the generator)"
+        elif [ -f "$ROOT/usr/local/bin/pipebox-card" ] \
+             && { sh "$ROOT/usr/local/bin/pipebox-card" verify --card "$CARD" --root "${ROOT:-/}" \
+                  --templates "$ROOT/usr/local/share/pipeos/card" >/dev/null 2>&1; [ $? = 1 ]; }; then
+            say "card outputs: would regenerate (they already diverge from the templates on this box)"
+        fi
+    fi
     say "dry run — nothing written."
     exit 0
 fi
@@ -444,8 +469,41 @@ if [ "$card_action" = install ]; then
     done
     cp "$repo_card" "$CARD" || die "cannot install the card"
     say "installed docs/cards/$NICK.card -> $CARD"
-    say "  NOTE: generated files are NOT regenerated. Run 'pipebox-card generate'."
 fi
+
+# ---- 4b. the card's outputs follow the templates (pipeOS#281) -------------
+# etc/pipeos/* and root/.pipe/policy.json are never deployed (NEVER, above):
+# they are derived, on this box, from card.conf through the templates this
+# deploy just installed. When the templates or the generator changed, the
+# derived files are now wrong by construction and `pipebox-card verify`
+# FAILs — and selfcheck runs it, so the box reads CRITICAL until someone
+# regenerates. Do it here, from the box's own card, which this tool does not
+# write. verify-then-generate is self-healing: it also repairs a divergence a
+# prior template deploy left behind, not only one from this run. verify's
+# exit 2 (no card, no stamp) is "cannot tell", not "divergent": an
+# unprovisioned box, or one whose card was just installed and never
+# generated, is left for the operator — regenerating there would be this
+# tool deciding a box's identity, which is exactly what it must not do.
+card_outputs_step() {
+    pbc="$ROOT/usr/local/bin/pipebox-card"
+    [ -f "$pbc" ] || { say "card outputs: no pipebox-card on this box — left alone (run 'pipebox-card generate' once one is installed)"; return 0; }
+    [ -n "$NICK" ] || { say "card outputs: unprovisioned box — left alone"; return 0; }
+    sh "$pbc" verify --card "$CARD" --root "${ROOT:-/}" \
+        --templates "$ROOT/usr/local/share/pipeos/card" >/dev/null 2>&1
+    case $? in
+        0)  say "card outputs: match the deployed templates" ;;
+        1)  say "card outputs: diverge from the deployed templates — regenerating with pipebox-card generate"
+            if sh "$pbc" generate --card "$CARD" --root "${ROOT:-/}" \
+                   --templates "$ROOT/usr/local/share/pipeos/card" >/dev/null 2>&1; then
+                say "regenerated the card outputs from $CARD"
+                log "regenerated card outputs after deploy (templates or generator changed)"
+            else
+                die "pipebox-card generate FAILED after the deploy — the templates are installed but the box's generated files do not match them; run 'pipebox-card generate' by hand and read its error"
+            fi ;;
+        *)  say "card outputs: no generation stamp on this box — left alone (run 'pipebox-card generate' once the box is provisioned)" ;;
+    esac
+}
+card_outputs_step
 
 {
     echo "commit $commit"
