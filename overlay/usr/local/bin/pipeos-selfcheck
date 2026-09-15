@@ -185,6 +185,36 @@ if [ "$_wol" != off ] && command -v ethtool >/dev/null 2>&1; then
     fi
 fi
 
+# ---- 1cx. the hardware watchdog is armed (#247). /etc/init.d/watchdog reads
+# the card (WATCHDOG=kernel|off, default kernel) and leaves its state in
+# /run/pipeos/watchdog.state. Armed and petted = one line nowhere (the normal
+# case); off by card = a note; kernel but not running = WARN (a box in a
+# closet that will not come back from a hang), never CRIT — the box is up.
+# On --boot the armed flag is persisted to /work so the NEXT boot's section 2
+# can say "watchdog" rather than "power loss" for an unclean stop.
+WD_FLAG=/work/.pipeos/watchdog-armed
+_wdm=$(sed -n 's/^WATCHDOG=["]*\([^"]*\)["]*$/\1/p' /etc/pipeos/card.conf 2>/dev/null | head -1 | tr 'A-Z' 'a-z')
+_wds=$(cat /run/pipeos/watchdog.state 2>/dev/null)
+_wd_was_armed=no; [ -f "$WD_FLAG" ] && _wd_was_armed=yes
+if [ "$_wdm" = off ]; then
+    noten "watchdog: off by card (WATCHDOG=off) — a hung box stays hung until someone pulls the plug; pipeos watchdog kernel arms it"
+    [ "$BOOT" = yes ] && rm -f "$WD_FLAG" 2>/dev/null
+else
+    case "$_wds" in
+        armed*)
+            if pgrep -x watchdog >/dev/null 2>&1; then
+                [ "$BOOT" = yes ] && { mkdir -p /work/.pipeos 2>/dev/null; : > "$WD_FLAG" 2>/dev/null; }
+            else
+                warnn "watchdog: armed at boot but the petter is gone (${_wds}) — with nowayout=0 the dog is disarmed, not about to fire; rc-service watchdog restart"
+            fi ;;
+        nodev*)
+            noten "watchdog: no TCO device on this board (${_wds#nodev }) — a VM, or a chipset without iTCO; nothing to arm"
+            [ "$BOOT" = yes ] && rm -f "$WD_FLAG" 2>/dev/null ;;
+        *)
+            warnn "watchdog: service state is '${_wds:-none}' — not armed this boot; rc-service watchdog status, then pipeos watchdog kernel" ;;
+    esac
+fi
+
 # ---- 1d. provisioning is a DISPLAYED state, not an inference (appliance
 # plan, decision 3). pipeos-save exits 0 without /etc/pipeos/provisioned, so
 # a box abandoned mid-walkthrough never persists anything — and used to
@@ -196,8 +226,21 @@ if [ ! -f /etc/pipeos/provisioned ]; then
 fi
 
 # ---- 2. how did the last run end? (marker readable only once /work is up)
-if dmesg 2>/dev/null | grep -qi 'EXT4-fs.*recover'; then
-    down="power loss / hard reset (ext4 journal recovery ran)"
+# A hard reset has three faces the box can tell apart (#247): a kernel panic
+# leaves a pstore record (efi_pstore, /sys/fs/pstore/dmesg-*) and the 60 s
+# watchdog is what rebooted us out of it; no record but the dog was armed at
+# the last boot (the flag section 1cx wrote) means the dog OR the plug — the
+# iTCO's bootstatus reads 0 either way, so the report says both rather than
+# guess; no flag means the plug, or a box from before the flag existed.
+_pstore=$(ls /sys/fs/pstore/ 2>/dev/null | grep -c '^dmesg-')
+if [ "${_pstore:-0}" -gt 0 ] 2>/dev/null; then
+    down="kernel panic — the watchdog rebooted us ($_pstore pstore record(s) in /sys/fs/pstore, read them before they rotate)"
+elif dmesg 2>/dev/null | grep -qi 'EXT4-fs.*recover'; then
+    if [ "$_wd_was_armed" = yes ]; then
+        down="hard reset: watchdog (armed, 60 s) or power loss — no clean shutdown, no panic record, ext4 journal recovery ran"
+    else
+        down="power loss / hard reset (ext4 journal recovery ran)"
+    fi
 elif [ -f "$MARKER" ]; then
     down="clean shutdown"
 else

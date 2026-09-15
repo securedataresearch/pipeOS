@@ -147,6 +147,7 @@ mk_runlevel() {
     for s in "$@"; do ln -sf "/etc/init.d/$s" "$STAGE/etc/runlevels/$level/$s"; done
 }
 mk_runlevel sysinit devfs dmesg mdev hwdrivers modloop
+# watchdog is OUR /etc/init.d/watchdog (overlay), card-aware (#247), not busybox's
 mk_runlevel boot     modules sysctl pipeos-identity hostname bootmisc syslog networking pipeos-wol hwclock seedrng watchdog
 # The pipe pair is NOT in the client default runlevel: pipe is a service the
 # wizard turns on (rc-update at claim time), not the box's spine. Fleet sticks

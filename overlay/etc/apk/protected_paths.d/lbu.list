@@ -15,6 +15,9 @@
 +etc/pipeos/vault.sealed
 # wake-on-lan is armed at every boot (#241): tmpfs forgets an ethtool setting
 +etc/init.d/pipeos-wol
+# the hardware watchdog's init script is OURS over busybox-openrc's (#247): a
+# modified package file, which apk audit does see — the line is belt and braces
++etc/init.d/watchdog
 # /work's hot set in RAM (pipeos-work); a new init script vanishes at reboot without this line
 +etc/init.d/pipeos-hot
 +etc/init.d/pipeos-workspace

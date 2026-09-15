@@ -87,6 +87,11 @@ jobs:
           python3 scripts/check-wake.py
           python3 scripts/check-wake-controls.py
 
+      # #247. The hardware watchdog was already shipped and armed; this pins
+      # the card switch, the 60 s timeout, and the boot report's cause line.
+      - name: hardware watchdog — the card switch, the arming, the cause line
+        run: python3 scripts/check-watchdog.py
+
       # #244. Every service secret used to be a plain file in the apkovl;
       # now one sealed store, chassis-bound, opened into /run at boot. The
       # rows are the binding, the phrase, the integrity check, the

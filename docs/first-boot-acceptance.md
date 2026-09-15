@@ -52,6 +52,9 @@ Release under test: `________`   Box: `________`   Date: `________`
 - [ ] **Repair remote access**: visibly did something ("____").
 - [ ] Power pulled once mid-run; booted again; the report said power loss
       and state was kept.
+- [ ] **Watchdog** (#247, docs/hardware.md): `echo c > /proc/sysrq-trigger`
+      on the bench; the box came back by itself in ____ s and the report
+      said "went down: kernel panic — the watchdog rebooted us".
 - [ ] **Vendor support access** on: the key and "waiting for a port" card
       appeared; key sent; port pinned on the relay; pill went "tunnel up"
       in ____ s; operator reached the box with `ssh -J`; toggle off; the

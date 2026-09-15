@@ -19,6 +19,22 @@ advertised. For that packet to start the box, two switches have to be on:
 2. **The BIOS side** — the firmware decides whether a packet may start
    the machine from soft-off (S5). The OS cannot flip this.
 
+## The watchdog (#247)
+
+The M920q's chipset has a TCO timer (`iTCO_wdt`, autoloaded). Every boot,
+our `/etc/init.d/watchdog` (over busybox-openrc's, same path) arms it for
+**60 s** and busybox `watchdog` pets it every 20 s. No health probe, by
+decision: a busy box is not a hung box, and a probe's false positives are
+reboots mid-write. What it catches is a hung kernel or a dead userspace —
+the petting stops, the chipset resets the box, and the boot report names
+it: a kernel panic leaves a pstore record (`/sys/fs/pstore/dmesg-*`) and
+reads as *kernel panic — the watchdog rebooted us*; an unclean stop with
+the dog armed reads as *watchdog or power loss* (the iTCO cannot tell the
+two apart, so neither does the report). `WATCHDOG=off` in the card leaves
+the device closed (`nowayout=0`: closed never fires); `pipeos watchdog
+kernel|off|status` is the switch. A VM has no TCO device; the service
+notes that and the report says "nothing to arm".
+
 ### M920q: turning it on in the BIOS
 
 Power on with a keyboard attached, press **F1** at the Lenovo splash:
