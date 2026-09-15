@@ -202,7 +202,11 @@ if [ "$_wdm" = off ]; then
 else
     case "$_wds" in
         armed*)
-            if pgrep -x watchdog >/dev/null 2>&1; then
+            # the pidfile, not pgrep: busybox pgrep -x matches the whole
+            # command line, so `pgrep -x watchdog` misses /sbin/watchdog and
+            # read a running petter as gone (zero, 2026-09-15)
+            _wdpid=$(cat /run/watchdog.pid 2>/dev/null)
+            if [ -n "$_wdpid" ] && kill -0 "$_wdpid" 2>/dev/null; then
                 [ "$BOOT" = yes ] && { mkdir -p /work/.pipeos 2>/dev/null; : > "$WD_FLAG" 2>/dev/null; }
             else
                 warnn "watchdog: armed at boot but the petter is gone (${_wds}) — with nowayout=0 the dog is disarmed, not about to fire; rc-service watchdog restart"
