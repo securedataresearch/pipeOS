@@ -301,7 +301,10 @@ cmd_verify() {
         _left=$(/usr/local/bin/pipeos-vault plaintext-left 2>/dev/null)
         if [ "$_left" != none ] && [ -n "$_left" ]; then
             fail "secrets still in the clear beside the vault: $(echo "$_left" | tr '\n' ' ')"
-        elif [ -f "$OVL" ] && tar -tzf "$OVL" 2>/dev/null | grep -qE '^etc/pipeos/(claude-auth\.env|support_key|nas-private/)'; then
+        # anchored: support_key.pub is the PUBLIC half and lbu.list keeps it on
+        # purpose; an unanchored `support_key` matched it and failed verify on
+        # a clean box (zero, 2026-09-15), which blocks every deploy-overlay
+        elif [ -f "$OVL" ] && tar -tzf "$OVL" 2>/dev/null | grep -qE '^etc/pipeos/(claude-auth\.env$|support_key$|nas-private/)'; then
             fail "the canonical apkovl still carries a plaintext secret — pipeos save"
         else
             ok "secrets sealed: nothing in the clear, on disk or in the apkovl"
