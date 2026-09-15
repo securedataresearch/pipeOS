@@ -3,34 +3,55 @@
 Scope: turning a paid order into a box in the mail. The order book is the
 Stripe dashboard; nothing here depends on any other order system.
 
-## Turning the store on (once)
+## Turning the store on (done 2026-09-15)
 
 The Buy buttons on pipe.online/hardware post to the relay's
-`/stripe/checkout-box?sku=disk|machine`. The endpoint has shipped since the
-pricing pivot; what was missing on 2026-09-09 was the two prices — every
-Buy answered a bare 504 because the platform in front of the relay
-rewrites the relay's "not for sale yet" 503. Now an unpriced SKU sends the
-visitor back to the page's note; to sell:
+`/stripe/checkout-box?sku=disk|machine|cluster`. An unpriced SKU sends the
+visitor back to the page's `#not-yet` note; a priced one goes straight to
+Stripe. The switch-on happened 2026-09-15 and is recorded here so the next
+person can see what exists rather than re-mint it:
 
-1. Mint the products and prices, in the Stripe account the relay bills to
-   (`stripe login` first; live mode):
-   ```sh
-   stripe products create --name "PipeOS Live Disk" --description "pipeOS on a stick, in a ring box"
-   stripe prices create --product prod_… --unit-amount 2000 --currency usd --tax-behavior exclusive
-   stripe products create --name "PipeOS Machine" --description "a 1-liter box with pipeOS ready, unclaimed"
-   stripe prices create --product prod_… --unit-amount 79900 --currency usd --tax-behavior exclusive
-   ```
-   The unit amounts are the page's ($20, $799); the page is the contract.
-   Automatic tax needs a registration in the Stripe dashboard (Tax →
-   Registrations) or checkout fails at the tax step.
-2. Paste the two `price_…` ids into the relay's console env as
-   `STRIPE_DISK_PRICE_ID` and `STRIPE_MACHINE_PRICE_ID` (SECRET), then
-   `scripts/do-apply.sh prod` in the pipe repo — the spec declares both keys
-   and the apply carries the values through.
-3. Prove it without paying: press Buy, reach Stripe's page, cancel — it
-   returns to pricing. A test-mode purchase with card 4242… lands in the
-   dashboard's order book with shipping, phone and the `pipe-live-disk` /
-   `pipe-machine` label.
+| Product (live mode) | Price | Env key on the relay |
+|---|---|---|
+| PipeOS Live Disk | $20, `price_1UG05IBLyiUFnqirog8UYWiG` | `STRIPE_DISK_PRICE_ID` |
+| PipeOS Machine | $799, `price_1UG0CBBLyiUFnqir9DXiStA4` | `STRIPE_MACHINE_PRICE_ID` |
+| PipeOS Cluster | $7,999, `price_1UG0D1BLyiUFnqirT9ncKTce` | `STRIPE_CLUSTER_PRICE_ID` |
+| PipeOS on-site install | $500, `price_1UG0D2BLyiUFnqirw9fjbaJz` | `STRIPE_CLUSTER_INSTALL_PRICE_ID` |
+
+All four are one-off, USD, tax **exclusive**; the three goods carry the
+general tangible-goods tax code and are marked shippable, the install is a
+service. The install is not a SKU of its own: it is a Checkout *optional
+item* on the Machine and Cluster sessions (pipe#923), shown unticked on
+Stripe's page. The page's amounts are the contract — a price change is a
+new Price object and a new id in the console, never an edit in place.
+
+**Shipping (pipe#923, Sam 2026-09-15): US only, flat per SKU** — $5 stick,
+$25 machine, $250 cluster freight — written into each session inline as
+`shipping_rate_data` with a delivery estimate (3–5 business days; 7–10 for
+the cluster). No Shipping Rate object exists in the dashboard and no env
+key carries it: the amounts sit in the relay's SKU table
+(`crates/pipe-relay/src/web_stripe.rs`, `checkout_box_handler`) beside the
+page's prices, and a change is a code change like a price on the page.
+Canada left `allowed_countries` on the same day: customs paperwork and a
+GST registration the store does not have. Add it back on the first ask.
+
+How the values reached the relay: added to the **live** app spec on the
+relay's service with `doctl apps update` (the live spec fetched first, the
+four entries appended as `type: SECRET` with plaintext values, DO encrypts
+on apply). `scripts/do-apply.sh prod` in the pipe repo then carries them
+forever (its merge keeps every live SECRET); `scripts/check-spec-drift.py`
+against a fresh `doctl apps spec get` must say "no spec drift".
+
+Two things the dashboard still owns:
+
+- **Tax registrations: none.** Stripe Tax is active with a Thousand Oaks
+  head office, so checkout computes tax but collects $0 everywhere until a
+  registration exists (Tax → Registrations). A California business shipping
+  goods to California addresses wants the CA registration before real
+  orders; a filing decision, not a build step.
+- **Proving it without paying:** press Buy, reach Stripe's page, cancel — it
+  returns to /hardware/. A test-mode purchase with card 4242… needs
+  test-mode prices, which do not exist; the live cancel is the drill.
 
 ## Per order
 
@@ -63,7 +84,8 @@ visitor back to the page's note; to sell:
 4. **Pack**: box + power lead + the one-page
    [client-onboarding](client-onboarding.md) sheet (printed).
 5. **Mark fulfilled** in Stripe with the tracking number; email goes from
-   there.
+   there. The order's shipping line is what the buyer paid for postage
+   (\$5 / \$25 / \$250) — buy the label to match, not above it.
 
 ## Batch prep (ahead of orders)
 
