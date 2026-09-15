@@ -40,6 +40,9 @@ with open(os.path.join(BIN, "pipebox-card"), "w") as f:
     f.write("#!/bin/sh\necho \"$*\" >> %s/gen.log\ngrep -q '^MONTHLY_CAP_USD=bad$' \"$3\" && exit 1\nexit 0\n" % D)
 with open(os.path.join(BIN, "pipeos-schedule-run"), "w") as f:
     f.write("#!/bin/sh\necho \"$1\" >> %s/ran\n" % D)
+with open(os.path.join(BIN, "rc-service"), "w") as f:
+    # the service manager stub: records the call; `watchdog restart` succeeds
+    f.write("#!/bin/sh\necho \"$*\" >> %s/rc.log\nexit 0\n" % D)
 for b in os.listdir(BIN):
     os.chmod(os.path.join(BIN, b), 0o755)
 CONF = os.path.join(D, "schedule.json")
@@ -283,14 +286,27 @@ check("18 cluster init writes a cluster of one whose only member is this box's o
       and 'cluster)     shift; exec python3 /usr/local/share/pipeos/web/cluster.py "$@" ;;' in src,
       repr((rc_i, out_i[-200:], list(cj.get("members", {})), saves() - s0, rc_i2, out_i2[-120:], rc_st, out_st[-200:], rc_ca)))
 
+# ── 17. pipeos watchdog (#247): the card field, regenerated, saved, the service restarted now
+s2 = saves()
+rc_wo, out_wo = pipeos("watchdog", "off")
+card_w = open(CARD).read()
+rc_wk, out_wk = pipeos("watchdog", "kernel")
+rclog = open(os.path.join(D, "rc.log")).read() if os.path.exists(os.path.join(D, "rc.log")) else ""
+rc_ws, out_ws = pipeos("watchdog", "status")
+bad_w = [a for a in (("on",), ("probe",)) if pipeos("watchdog", *a)[0] != 2]
+check("17 watchdog off|kernel writes WATCHDOG, regenerates, saves, restarts the service at once; status reads the card; on/probe are refused",
+      rc_wo == 0 and "WATCHDOG=off" in card_w and rc_wk == 0 and "WATCHDOG=kernel" in open(CARD).read()
+      and rclog.count("watchdog restart") == 2 and saves() == s2 + 2 and rc_ws == 0 and "WATCHDOG=kernel" in out_ws and not bad_w,
+      "off=%s %s kernel=%s %s rc=%r status=%s %s bad=%r" % (rc_wo, out_wo[-120:], rc_wk, out_wk[-120:], rclog, rc_ws, out_ws[-160:], bad_w))
+
 # ── the wiring: every verb in the help, the skill names every verb ────────
 helptext = "\n".join(l for l in src.split("\n")[:40])
 skill = open(os.path.join(REPO, ".claude/skills/pipeos-fleet/SKILL.md")).read()
 doc = open(os.path.join(REPO, "docs/fleet-ops.md")).read()
-verbs = ("pipeos schedule", "pipeos usage", "pipeos card set", "pipeos secrets phrase", "pipeos assistant password", "pipeos nas account", "pipeos selfupdate image", "pipeos deploy-overlay", "pipeos vault", "pipeos wake", "pipeos work", "pipeos cluster")
+verbs = ("pipeos schedule", "pipeos usage", "pipeos card set", "pipeos secrets phrase", "pipeos assistant password", "pipeos nas account", "pipeos selfupdate image", "pipeos watchdog", "pipeos deploy-overlay", "pipeos vault", "pipeos wake", "pipeos work", "pipeos cluster")
 check("15 every operator verb is in pipeos's help, in the fleet skill and in docs/fleet-ops.md",
-      all(v in helptext for v in verbs[:7]) and all(v in skill for v in verbs) and all(v in doc for v in verbs),
-      "help=%r skill=%r doc=%r" % ([v for v in verbs[:7] if v not in helptext], [v for v in verbs if v not in skill], [v for v in verbs if v not in doc]))
+      all(v in helptext for v in verbs[:8]) and all(v in skill for v in verbs) and all(v in doc for v in verbs),
+      "help=%r skill=%r doc=%r" % ([v for v in verbs[:8] if v not in helptext], [v for v in verbs if v not in skill], [v for v in verbs if v not in doc]))
 
 shutil.rmtree(D, ignore_errors=True)
 print("%d/%d" % (sum(RESULTS), len(RESULTS)))

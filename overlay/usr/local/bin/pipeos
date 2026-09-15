@@ -29,6 +29,7 @@
 #   pipeos secrets phrase [--ack]  the vault's pending recovery phrase; --ack forgets the tmpfs copy
 #   pipeos assistant password      the assistant terminal's password from stdin -> vault, restarted, saved
 #   pipeos nas account NAME      share-only account + its SMB password (stdin) — Files → Network storage's form
+#   pipeos watchdog kernel|off|status   the hardware watchdog (card WATCHDOG, default kernel): regenerated, saved, restarted now
 #   pipeos selfupdate image on|off|status   automatic image updates (default on): a newer release is applied and the box reboots
 #   pipeos work status|flush|park|unpark   /work's hot set in RAM; park = flush + read-only (the stick idles)
 #
@@ -300,7 +301,10 @@ cmd_verify() {
         _left=$(/usr/local/bin/pipeos-vault plaintext-left 2>/dev/null)
         if [ "$_left" != none ] && [ -n "$_left" ]; then
             fail "secrets still in the clear beside the vault: $(echo "$_left" | tr '\n' ' ')"
-        elif [ -f "$OVL" ] && tar -tzf "$OVL" 2>/dev/null | grep -qE '^etc/pipeos/(claude-auth\.env|support_key|nas-private/)'; then
+        # anchored: support_key.pub is the PUBLIC half and lbu.list keeps it on
+        # purpose; an unanchored `support_key` matched it and failed verify on
+        # a clean box (zero, 2026-09-15), which blocks every deploy-overlay
+        elif [ -f "$OVL" ] && tar -tzf "$OVL" 2>/dev/null | grep -qE '^etc/pipeos/(claude-auth\.env$|support_key$|nas-private/)'; then
             fail "the canonical apkovl still carries a plaintext secret — pipeos save"
         else
             ok "secrets sealed: nothing in the clear, on disk or in the apkovl"
@@ -473,6 +477,25 @@ cmd_card_set() {
     "$SAVE_BIN" >/dev/null && echo "saved" || { echo "saved: NO — run pipeos save" >&2; exit 1; }
 }
 
+cmd_watchdog() {
+    case "${1:-status}" in
+        kernel|off)
+            cmd_card_set "WATCHDOG=$1"
+            # act now, not at the next boot: the petter closes the device
+            # cleanly on stop (nowayout=0), so off really is off
+            if rc-service watchdog restart >/dev/null 2>&1 9>&-; then echo "watchdog: $1 (service restarted)"
+            elif [ "$1" = off ]; then echo "watchdog: off (service stopped)"
+            else echo "watchdog: service did not start — rc-service watchdog status; /run/pipeos/watchdog.state" >&2; exit 1; fi ;;
+        status)
+            _m=$(sed -n 's/^WATCHDOG=["]*\([^"]*\)["]*$/\1/p' "$CARD" 2>/dev/null | head -1)
+            echo "card:    WATCHDOG=${_m:-} (${_m:-kernel})"
+            echo "service: $(cat /run/pipeos/watchdog.state 2>/dev/null || echo 'no state file (service never ran this boot)')"
+            [ -r /sys/class/watchdog/watchdog0/identity ] && echo "device:  $(cat /sys/class/watchdog/watchdog0/identity) timeout=$(cat /sys/class/watchdog/watchdog0/timeout 2>/dev/null)s state=$(cat /sys/class/watchdog/watchdog0/state 2>/dev/null)"
+            return 0 ;;
+        *) echo "usage: pipeos watchdog kernel|off|status" >&2; exit 2 ;;
+    esac
+}
+
 cmd_usage() {
     case "${1:-totals}" in
         totals) [ $# -gt 0 ] && shift; exec python3 "$LEDGER_PY" totals "$@" ;;
@@ -539,6 +562,7 @@ case "$1" in
     vault)       shift; exec /usr/local/bin/pipeos-vault "$@" ;;
     schedule)    shift; exec python3 /usr/local/share/pipeos/web/schedctl.py "$@" ;;
     usage)       shift; cmd_usage "$@" ;;
+    watchdog)    shift; cmd_watchdog "$@" ;;
     card)        [ "${2:-}" = set ] || { echo "usage: pipeos card set KEY=VALUE..." >&2; exit 2; }; shift 2; cmd_card_set "$@" ;;
     secrets)     shift; cmd_secrets "$@" ;;
     assistant)   shift; cmd_assistant "$@" ;;

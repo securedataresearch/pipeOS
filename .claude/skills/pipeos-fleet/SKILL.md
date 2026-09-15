@@ -77,6 +77,7 @@ pipeos usage cap 40 | cap none                  # card MONTHLY_CAP_USD, regenera
 pipeos card set KEY=VALUE ...                   # any card field; regenerate + save
 pipeos secrets phrase [--ack]                   # the vault's pending recovery phrase (tmpfs); --ack forgets it
 printf '%s' PW | pipeos assistant password      # -> vault assistant_pass, pipeos-assistant restarted, saved
+pipeos watchdog kernel|off|status               # the hardware watchdog (card WATCHDOG, default kernel, 60 s): regenerated, saved, restarted now
 pipeos selfupdate image on|off|status           # automatic image updates (default on): hourly check, apply in place, reboot — held while a job/terminal is live
 printf '%s' PW | pipeos nas account NAME        # share-only account (no sign-in, no shell) + its SMB password; tick it on a share in Files → Network storage
 pipeos vault status|list|get|set|export         # the sealed store; set reads stdin: printf '%s' V | pipeos vault set NAME [CONSUMER]
@@ -96,6 +97,7 @@ Box clocks are UTC; cron expressions are box-local, so UTC.
 - **Cap DM / pause:** `pipeos usage` for this month's spend; `pipeos usage cap N` with N below it → `enforce` prints paused, `/work/.pipeos/ledger/paused` exists, the owner gets the 100% DM, `pipeos schedule run X` is refused and the tick logs "paused". `pipeos usage cap none` (or a higher N) lifts it at once.
 - **Vault first boot / rehome:** `rc-service pipeos-vault status`, `pipeos vault status` (open), `pipeos vault list`; `pipeos secrets phrase` shows the migration's phrase until acked — give it to Sam, then `--ack`. Rehome = the stick in another chassis: dashboard Secrets → recovery phrase.
 - **Wake a sibling:** from a member, `pipeos wake one`. **Only the onboard 1GbE (eth1) supports WoL; the SFP+ eth0 does not.** Uncabled eth1 = no wake. selfcheck says which.
+- **Watchdog drill (#247):** `pipeos watchdog status` says armed 60 20; `echo c > /proc/sysrq-trigger` (a real panic — the box is gone for ~90 s); back up, the boot report says `went down: kernel panic — the watchdog rebooted us`, `pipeos-selfcheck` green, known-good untouched. `pipeos watchdog off` → status says off, no petter; `kernel` re-arms.
 - **Reboot drill:** `pipeos verify` PASS → `reboot` → wait ~90 s → `pipeos-selfcheck` green and `pipeos status` says known-good matches.
 
 ## What is NOT yours to do

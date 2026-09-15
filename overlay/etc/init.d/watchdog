@@ -1,0 +1,81 @@
+#!/sbin/openrc-run
+# watchdog — feed the hardware watchdog, every boot (#247).
+#
+# This file REPLACES busybox-openrc's /etc/init.d/watchdog (same path, so
+# the boot runlevel line in scripts/40-build-apkovl.sh is unchanged and no
+# second daemon can ever race this one for the device). The busybox script
+# is a plain "start the petter"; this one reads the card first.
+#
+# What it is: the Intel TCO timer on the M920q (iTCO_wdt, autoloaded by
+# hwdrivers), armed for WATCHDOG_TIMEOUT seconds and petted every
+# WATCHDOG_INTERVAL by busybox `watchdog` — no health probe, on purpose
+# (decided 2026-09-15: "kernel mode"). A wedged kernel or a dead userspace
+# stops the petting and the chipset resets the box; the boot report then
+# says so (pipeos-selfcheck, section 2). A busy box is NOT a hung box: the
+# petter is its own process and keeps petting through an apk upgrade, a
+# clone or a full disk, which is why there is no probe to cry wolf.
+#
+# The card says WATCHDOG=kernel|off (default kernel). `off` leaves the
+# device closed; nowayout=0 means a closed device never fires. A change
+# is `pipeos watchdog kernel|off`, which regenerates, saves and restarts
+# this service — never a hand edit.
+#
+# Seams for the probe (scripts/check-watchdog.py), never set in production:
+# PIPEOS_WD_BIN, PIPEOS_WD_CARD, PIPEOS_WD_DEV, PIPEOS_WD_STATE.
+description="feed the hardware watchdog (card: WATCHDOG=kernel|off)"
+
+_bin=${PIPEOS_WD_BIN:-/sbin/watchdog}
+_card=${PIPEOS_WD_CARD:-/etc/pipeos/card.conf}
+_dev=${PIPEOS_WD_DEV:-${WATCHDOG_DEV:-/dev/watchdog0}}
+_state=${PIPEOS_WD_STATE:-/run/pipeos/watchdog.state}
+_timeout=${WATCHDOG_TIMEOUT:-60}
+_interval=${WATCHDOG_INTERVAL:-20}
+
+command="$_bin"
+command_args="-T $_timeout -t $_interval -F $_dev"
+command_background=true
+pidfile="/run/watchdog.pid"
+
+depend() {
+	need dev
+	after hwdrivers
+}
+
+# parsed, never sourced — same rule as every other card read
+card_mode() {
+	sed -n 's/^WATCHDOG=["]*\([^"]*\)["]*$/\1/p' "$_card" 2>/dev/null | head -1 | tr 'A-Z' 'a-z'
+}
+
+note_state() {
+	mkdir -p "${_state%/*}" 2>/dev/null
+	printf '%s\n' "$*" > "$_state" 2>/dev/null
+}
+
+start_pre() {
+	_mode=$(card_mode)
+	case "$_mode" in
+		off)
+			einfo "watchdog off (card: WATCHDOG=off) — the device stays closed"
+			note_state "off"
+			return 1 ;;
+		''|kernel) ;;
+		*)
+			ewarn "watchdog: card says WATCHDOG=$_mode (not kernel|off) — arming anyway"
+			;;
+	esac
+	if [ ! -c "$_dev" ] && [ -z "${PIPEOS_WD_DEV:-}" ]; then
+		# no TCO device (a VM, another board): not a boot failure, the report says so
+		ewarn "watchdog: no $_dev — nothing to arm (a VM?)"
+		note_state "nodev $_dev"
+		return 1
+	fi
+	note_state "armed $_timeout $_interval $_dev"
+	return 0
+}
+
+stop_post() {
+	# busybox watchdog writes the magic close ('V') on SIGTERM, so with
+	# nowayout=0 a stopped service is a disarmed dog, not a 60 s fuse
+	note_state "stopped"
+	return 0
+}
