@@ -44,11 +44,14 @@ against a fresh `doctl apps spec get` must say "no spec drift".
 
 Two things the dashboard still owns:
 
-- **Tax registrations: none.** Stripe Tax is active with a Thousand Oaks
-  head office, so checkout computes tax but collects $0 everywhere until a
-  registration exists (Tax → Registrations). A California business shipping
-  goods to California addresses wants the CA registration before real
-  orders; a filing decision, not a build step.
+- **Tax registration: California, state sales tax**, active from
+  2026-09-15 (`taxreg_1UG2eqBLyiUFnqirz46iJkNr`, created through the Tax
+  Registrations API after re-saving the head office through the Tax
+  Settings API — the dashboard-set address was not enough for the API).
+  Stripe now collects CA sales tax on goods shipped into California and
+  $0 elsewhere until another state's registration exists. The Stripe
+  object is the instruction to collect; the permission to collect and the
+  remittance are the CDTFA seller's permit, which is the owner's filing.
 - **Proving it without paying:** press Buy, reach Stripe's page, cancel — it
   returns to /hardware/. A test-mode purchase with card 4242… needs
   test-mode prices, which do not exist; the live cancel is the drill.
