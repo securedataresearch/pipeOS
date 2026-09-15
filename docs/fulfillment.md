@@ -25,6 +25,16 @@ item* on the Machine and Cluster sessions (pipe#923), shown unticked on
 Stripe's page. The page's amounts are the contract — a price change is a
 new Price object and a new id in the console, never an edit in place.
 
+**Shipping (pipe#923, Sam 2026-09-15): US only, flat per SKU** — $5 stick,
+$25 machine, $250 cluster freight — written into each session inline as
+`shipping_rate_data` with a delivery estimate (3–5 business days; 7–10 for
+the cluster). No Shipping Rate object exists in the dashboard and no env
+key carries it: the amounts sit in the relay's SKU table
+(`crates/pipe-relay/src/web_stripe.rs`, `checkout_box_handler`) beside the
+page's prices, and a change is a code change like a price on the page.
+Canada left `allowed_countries` on the same day: customs paperwork and a
+GST registration the store does not have. Add it back on the first ask.
+
 How the values reached the relay: added to the **live** app spec on the
 relay's service with `doctl apps update` (the live spec fetched first, the
 four entries appended as `type: SECRET` with plaintext values, DO encrypts
@@ -74,7 +84,8 @@ Two things the dashboard still owns:
 4. **Pack**: box + power lead + the one-page
    [client-onboarding](client-onboarding.md) sheet (printed).
 5. **Mark fulfilled** in Stripe with the tracking number; email goes from
-   there.
+   there. The order's shipping line is what the buyer paid for postage
+   (\$5 / \$25 / \$250) — buy the label to match, not above it.
 
 ## Batch prep (ahead of orders)
 
