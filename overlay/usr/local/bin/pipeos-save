@@ -12,8 +12,16 @@
 # free-space floor, candidate-fits probe. New: single-instance lock,
 # candidate integrity check, skip-if-unchanged, rollback fence.
 
-[ -f /etc/pipeos/provisioned ] || exit 0
-[ -n "$(lbu status 2>/dev/null)" ] || exit 0
+# PIPEOS_SAVE_UNCLAIM=1 is `pipeos unclaim`'s one save (pipeOS single-box pass,
+# 2026-09-16): the provisioned marker is already gone (that is the change), the
+# canonical AND the known-good apkovl are both written as nobody's, and the old
+# owner's rotations and any hostname-named apkovl are removed. Before this,
+# unclaim ended in `lbu commit -d`, which wrote <hostname>.apkovl.tar.gz and
+# DELETED the canonical and the known-good — verify failed on every unclaimed
+# box and a later claim's save sat beside a stale twin at the next boot.
+UNCLAIM=${PIPEOS_SAVE_UNCLAIM:-}
+[ -f /etc/pipeos/provisioned ] || [ -n "$UNCLAIM" ] || exit 0
+[ -n "$(lbu status 2>/dev/null)" ] || [ -n "$UNCLAIM" ] || exit 0
 
 # Fences. Exit 3 = REFUSED (nothing wrong with the box; do not fall back to
 # lbu commit — pipebox-setup and the provisioner read this code). Checked
@@ -49,6 +57,7 @@ fenced && exit 3   # the apply that held the lock may have fenced while we waite
 . /etc/lbu/lbu.conf 2>/dev/null
 MEDIA=/media/usb
 OVL=$MEDIA/pipeos.apkovl.tar.gz
+KNOWN_GOOD=$MEDIA/pipeos.known-good.tar.gz
 LIMIT=${BACKUP_LIMIT:-3}
 
 free_kb=$(df -k "$MEDIA" | awk 'NR==2{print $4}')
@@ -91,7 +100,7 @@ fi
 
 # identical content -> nothing to do (the 15min cron would otherwise burn
 # ~96 vfat write windows a day on no-op commits)
-if [ -f "$OVL" ] && \
+if [ -z "$UNCLAIM" ] && [ -f "$OVL" ] && \
    [ "$(sha256sum "$tmp" | cut -d' ' -f1)" = "$(sha256sum "$OVL" | cut -d' ' -f1)" ]; then
     exit 0
 fi
@@ -110,6 +119,20 @@ if [ -f "$OVL" ]; then
 fi
 mv "$OVL.new" "$OVL"   # the only instant the canonical name is in motion
 sync
+# a <hostname>.apkovl.tar.gz is never ours (plain lbu writes it) and the
+# initramfs prefers it to the canonical at boot — a stale twin from the old
+# unclaim shadowed a fresh claim; any such file goes whenever we save
+rm -f "$MEDIA/$(hostname).apkovl.tar.gz"
+
+if [ -n "$UNCLAIM" ]; then
+    # nobody's box: known-good is nobody's too (the old owner's known-good
+    # would roll the claim back in), and nothing of the old owner stays on
+    # the media — rotations, or the hostname-named file lbu used to leave
+    cp "$OVL" "$KNOWN_GOOD.new" && sync && mv "$KNOWN_GOOD.new" "$KNOWN_GOOD"
+    rm -f "$MEDIA"/pipeos.[0-9]*.tar.gz
+    sync
+    exit 0
+fi
 
 # prune rotations beyond the limit, oldest first
 n=$(ls -1 "$MEDIA"/pipeos.[0-9]*.tar.gz 2>/dev/null | wc -l)

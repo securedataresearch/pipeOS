@@ -75,6 +75,12 @@ jobs:
       - name: the live verdict — --live skips the heavy sections, writes one file, and every reader prefers it
         run: python3 scripts/check-selfcheck-live.py
 
+      # the single-box pass on zero (2026-09-16): unclaim is a factory reset —
+      # every owner record and sign-in gone, a new CA, the canonical AND the
+      # known-good apkovl written as nobody's (lbu commit -d used to delete them)
+      - name: unclaim — nobody's box means nobody's
+        run: python3 scripts/check-unclaim.py
+
       # #222. Two Machines on loopback, each with its own key: a member's
       # signature is a session, a stranger's is a 401 that names the check
       # that refused it (skew, replay, not a member, bad signature); the

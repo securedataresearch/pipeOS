@@ -430,36 +430,55 @@ cmd_rollback() {
 # box's NICK is cleared too — it was derived from a sign-in that belonged to
 # the previous owner.
 cmd_unclaim() {
-    [ "$(id -u)" = 0 ] || { echo "unclaim: root only" >&2; return 1; }
-    [ -f /etc/pipeos/rollback-pending ] && { echo "unclaim: a rollback is staged — reboot first" >&2; return 1; }
-    [ -f /run/pipeos/flash-pending ] && { echo "unclaim: a new image is applied and not yet booted — reboot first (pipeOS#276)" >&2; return 1; }
+    # Nobody's box means nobody's (single-box pass on zero, 2026-09-16): the
+    # first unclaim left the pipe identity signed in as the old owner, the
+    # cluster membership and the CA the old cluster trusts, the NAS shares,
+    # the pinned support port, the assistant config — and `lbu commit -d`
+    # deleted the canonical and known-good apkovl. Everything the owner made
+    # goes; the chassis identity (hostname, MAC) and /work stay.
+    # Seams for scripts/check-unclaim.py; the box never sets them.
+    _etc=${PIPEOS_ETC:-/etc/pipeos}; _home=${PIPEOS_ROOT_HOME:-/root}; _run=${PIPEOS_RUN:-/run/pipeos}
+    _tls_init=${PIPEOS_TLS_INIT:-/usr/local/bin/pipeos-tls-init}; _reboot=${PIPEOS_REBOOT_BIN:-reboot}
+    [ "$(id -u)" = 0 ] || [ -n "${PIPEOS_UNCLAIM_TEST:-}" ] || { echo "unclaim: root only" >&2; return 1; }
+    [ -f "$_etc/rollback-pending" ] && { echo "unclaim: a rollback is staged — reboot first" >&2; return 1; }
+    [ -f "$_run/flash-pending" ] && { echo "unclaim: a new image is applied and not yet booted — reboot first (pipeOS#276)" >&2; return 1; }
     _hn=$(hostname)
     if [ "$1" != "--yes" ]; then
-        echo "This makes $_hn nobody's box: claim, dashboard users, name and owner are"
+        echo "This makes $_hn nobody's box: claim, dashboard users, name, owner, pipe and"
+        echo "Claude sign-ins, cluster membership, shares, schedule and support port are"
         echo "removed and it reboots into the setup wizard. Type the hostname to continue:"
         read -r _ans
         [ "$_ans" = "$_hn" ] || { echo "did not match $_hn — nothing changed" >&2; return 1; }
     fi
-    _card=/etc/pipeos/card.conf
+    _card=$_etc/card.conf
     sed -i 's/^NAME=.*/NAME=/; s/^OWNER_NICK=.*/OWNER_NICK=/' "$_card"
     if [ "$(sed -n 's/^ROLE=//p' "$_card" | head -1)" = GENERIC ]; then
         sed -i 's/^NICK=.*/NICK=/' "$_card"
     fi
-    pipebox-card generate --card "$_card" >/dev/null || { echo "card regeneration failed" >&2; return 1; }
-    rm -f /etc/pipeos/web-admin.conf /etc/pipeos/users.json /etc/pipeos/terminals.conf \
-          /etc/pipeos/services.conf
-    # nobody's box has nobody's secrets: the vault and its export go too (#244)
-    rm -f /etc/pipeos/vault.sealed /etc/pipeos/support_key.pub
-    rm -rf /run/pipeos/web-sessions /run/pipeos/secrets
-    # save BEFORE the provisioned marker goes: pipeos-save is a no-op without
-    # it, and the removal itself is what has to reach the media
-    /usr/local/bin/pipeos-save || { echo "save failed — the box is still claimed on the media" >&2; return 1; }
-    rm -f /etc/pipeos/provisioned
-    # the marker's removal is the one change that cannot go through
-    # pipeos-save; lbu is the canonical writer underneath it
-    lbu commit -d >/dev/null 2>&1 || { echo "final commit failed" >&2; return 1; }
+    "$CARD_GEN" generate --card "$_card" >/dev/null || { echo "card regeneration failed" >&2; return 1; }
+    # the owner's records: claim, users, terminals, services, jobs, shares, mounts, assistant, stream
+    rm -f "$_etc/web-admin.conf" "$_etc/users.json" "$_etc/terminals.conf" "$_etc/services.conf" \
+          "$_etc/schedule.json" "$_etc/nas.conf" "$_etc/mounts.conf" "$_etc/assistant.conf" "$_etc/stream.conf"
+    # nobody's box has nobody's secrets: the vault, its export, the support key and port (#244)
+    rm -f "$_etc/vault.sealed" "$_etc/support_key.pub"
+    [ -f "$_etc/support.conf" ] && sed -i 's/^SUPPORT_PORT=.*/SUPPORT_PORT=/' "$_etc/support.conf"
+    rm -rf "$_run/web-sessions" "$_run/secrets"
+    # the sign-ins: pipe (identity, credentials, contacts, inbox), Claude, hermes
+    rm -rf "$_home/.pipe/identity.dat" "$_home/.pipe/credentials.dat" "$_home/.pipe/config.dat" \
+           "$_home/.pipe/contacts.dat" "$_home/.pipe/http.json" "$_home/.pipe/inbox"
+    rm -f "$_home/.claude/.credentials.json" "$_home/.claude.json" "$_home/.hermes/auth.json" "$_home/.hermes/.env"
+    # the cluster: membership, the trust bundle, and the CA the old cluster still
+    # trusts — a new CA, so the old members stop trusting this box's certificate
+    rm -f "$_etc/cluster.json" "$_run/cluster-ca.pem" "$_run/cluster.status"
+    rm -rf "$_etc/tls"
+    "$_tls_init" >/dev/null 2>&1 || echo "warn: the TLS re-init failed — pipeos-tls-init runs again at boot" >&2
+    # the provisioned marker goes FIRST, then ONE save in unclaim mode: the
+    # canonical and the known-good apkovl are both written as nobody's and the
+    # old owner's rotations leave the media (pipeos-save, PIPEOS_SAVE_UNCLAIM)
+    rm -f "$_etc/provisioned"
+    PIPEOS_SAVE_UNCLAIM=1 "$SAVE_BIN" || { echo "save failed — the box may still be claimed on the media; do not hand it on" >&2; return 1; }
     echo "$_hn is unclaimed; rebooting into the wizard at http://$_hn.local/"
-    sleep 2; reboot
+    sleep 2; "$_reboot"
 }
 
 # ---------------------------------------------------------------- operator verbs (#259)
