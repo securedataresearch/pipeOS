@@ -234,7 +234,11 @@ fi
 # answers were gone. The issue/motd banner shows it at the console; this
 # line puts it in every boot report.
 if [ ! -f /etc/pipeos/provisioned ]; then
-    warnn "UNPROVISIONED: autosave is OFF (no /etc/pipeos/provisioned) — nothing done on this box survives a reboot; finish pipebox-setup (or bake a card: make stick)"
+    # The one line a stranger reads in the lobby before anything else (the
+    # single-box pass on zero, 2026-09-16): a customer sentence, not
+    # "UNPROVISIONED … pipebox-setup … make stick". Still a warn: nothing
+    # done on this box survives a reboot until it is claimed.
+    warnn "not claimed yet — open http://$(hostname).local/ (or http://pipeos.local/) on any phone or computer and choose a password; until then nothing done on this box survives a reboot"
 fi
 
 # ---- 2. how did the last run end? (marker readable only once /work is up)
