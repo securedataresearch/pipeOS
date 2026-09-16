@@ -27,6 +27,12 @@ Operator admin is root-by-key.
    ```
    Port assignment ledger: keep it in this file — one line per box,
    42001 upward, comment = box name.
+
+   | port  | box    | pinned |
+   |-------|--------|--------|
+   | 42001 | basho0 | yes (the first enrolment) |
+   | 42002 | pilot0 | assigned 2026-09-15, pinned on the day |
+   | 42003 | pilot1 | assigned 2026-09-15, pinned on the day |
 4. The box's `pipeos-support` service (already running from the toggle)
    connects within its 30s respawn window: `ssh -R 42001:127.0.0.1:22
    tunnel@relay.pipeterminal.com -N`.
