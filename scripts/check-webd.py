@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 import sys
+import time
 import tempfile
 import threading
 import urllib.request
@@ -170,6 +171,11 @@ with open(tmp + "/bin/claude", "w") as f:
             "esac\n")
 os.chmod(tmp + "/bin/claude", 0o755)
 os.environ["PATH"] = tmp + "/bin:" + os.environ.get("PATH", "")
+# the live-verdict refresh every save fires (#290 follow-up): a stub that records its argv
+webd.SELFCHECK_BIN = tmp + "/selfcheck-stub"
+with open(webd.SELFCHECK_BIN, "w") as f:
+    f.write("#!/bin/sh\necho \"$*\" >> " + tmp + "/selfcheck.argv\nprintf 'verdict: all green\\n'\n")
+os.chmod(webd.SELFCHECK_BIN, 0o755)
 webd.CLAUDE_HOME = tmp + "/home"
 webd.CLAUDE_CREDS = tmp + "/home/.claude/.credentials.json"
 with open(webd.CARD, "w") as f:
@@ -300,6 +306,13 @@ ok("cross-origin claim refused")
 r = req("/api/claim", {"password": "hunter22hunter"})
 assert r["ok"] and os.path.exists(webd.PROVISIONED)
 ok("claim sets the provisioned marker")
+assert os.path.exists(webd.SERVICES_CONF) and webd.read_services()["claude"] is True and webd.read_services()["pipe"] is False
+ok("claim writes the default service set (Claude on, the rest off) — no file is no longer the fleet default")
+time.sleep(0.3)
+assert os.path.exists(tmp + "/selfcheck.argv") and "--live" in open(tmp + "/selfcheck.argv").read()
+ok("a save refreshes the live verdict (pipeos-selfcheck --live fired after the claim's save)")
+assert req("/api/services")["services"]["claude"] is True
+ok("GET /api/services reads the declared set")
 _phrase = r["recovery_phrase"]
 assert len(_phrase.split("-")) == 8 and os.path.exists(webd.VAULT) and (os.stat(webd.VAULT).st_mode & 0o077) == 0
 ok("claim mints the box's vault (0600) and hands the wizard the recovery phrase once")

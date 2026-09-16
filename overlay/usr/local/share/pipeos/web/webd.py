@@ -911,7 +911,8 @@ def apply_services(svcs):
                 if svc == "pipeos-stream":
                     problems.append("streaming is enabled but not configured yet")
                 elif svc == "pipeos-support":
-                    problems.append("support access is enabled but no relay is configured yet")
+                    # the relay is shipped; what a fresh box lacks is its port
+                    problems.append("support access is on but not connected yet — it needs a port from us: send the key shown under Services")
                 elif svc == "pipeos-assistant":
                     problems.append("the assistant terminal is enabled but has no password yet")
                 elif svc == "pipeos-terminals":
@@ -951,8 +952,23 @@ def card_set(updates):
         raise RuntimeError("card regeneration failed: " + out.strip()[-300:])
 
 
+def refresh_live_verdict():
+    """Every settings change re-reads the box's health NOW (#290 follow-up,
+    the single-box pass 2026-09-16): after the claim the dashboard kept
+    showing the boot report's "not claimed yet" warning for up to an hour.
+    `pipeos-selfcheck --live` is under a second and writes only
+    /run/pipeos/health.last; fire-and-forget, never on the request's path."""
+    try:
+        subprocess.Popen([SELFCHECK_BIN, "--live"], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
+
+
 def save_state():
     rc, out = run(["pipeos-save"], timeout=300)
+    if rc == 0:
+        refresh_live_verdict()
     return rc == 0, out.strip()[-300:]
 
 
@@ -1790,6 +1806,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_docs(path)
         readers = {
             "/api/status": self.api_status,
+            "/api/services": self.api_services_get,
             "/api/name-suggest": self.api_name_suggest,
             "/api/users": self.api_users,
             "/api/metrics": self.api_metrics,
@@ -2542,6 +2559,12 @@ class Handler(BaseHTTPRequestHandler):
         except (vault.VaultError, OSError, ValueError) as e:
             sys.stderr.write("pipeos-webd: vault init at claim failed: %s\n" % e)
         # The claim IS the provisioning event: from here on, saves persist.
+        # The service set is written NOW, as the sheet promises (Claude on,
+        # the rest off): a claim over the API that never visited the wizard's
+        # services step left no services.conf, and selfcheck's legacy reading
+        # of "no file" is the fleet default — pipe on (zero, 2026-09-16).
+        if not os.path.exists(SERVICES_CONF):
+            write_services(dict(read_services(), claude=True))
         # Save NOW — a claim that exists only in RAM is not a claim.
         with open(PROVISIONED, "a"):
             pass
@@ -3168,6 +3191,11 @@ class Handler(BaseHTTPRequestHandler):
             return ("user terminals stay off until a user has one — give an account a "
                     "browser terminal under Users; that turns them on")
         return ""
+
+    def api_services_get(self):
+        """The declared service set, readable — an agent driving the wizard
+        had no GET for it (the single-box pass, 2026-09-16)."""
+        self.send(200, {"services": read_services()})
 
     def api_services(self, body):
         svcs = read_services()
