@@ -38,6 +38,7 @@ command on several boxes in parallel with `&`/`wait`, one output file each.
 pipeos status            # overlay commit + how far behind origin/main, save state
 pipeos verify            # PASS = a reboot reproduces this state (run before AND after any change)
 pipeos-selfcheck         # verdict + every WARN/CRITICAL; the boot-report DM says the same
+pipeos-selfcheck --live  # the hourly live verdict (#290): same rows minus the heavy ones; writes /run/pipeos/health.last, which the page and `pipeos status` prefer when newer
 pipebox-card verify      # derived files match the card? deploy-overlay regenerates them after a template change (#281); FAIL otherwise -> pipebox-card generate; pipeos save
 pipeos cluster status    # this Machine's cluster identity (its CA) + member list (#222); `pipeos cluster call two GET /api/cluster` is a box-to-box call over mutual TLS
 pipeos cluster adopt ID  # (this box's password on stdin) claim an unclaimed Machine + add it in one step (#213); join MEMBER from the new box

@@ -80,6 +80,8 @@
 # and the cron wrapper are custom files under /etc that apk audit would drop
 +etc/pipeos/selfupdate.conf
 +etc/periodic/hourly/pipeos-selfupdate
+# the hourly live verdict (#290): a custom file under /etc/periodic, same blind spot
++etc/periodic/hourly/pipeos-health
 +etc/periodic/daily/pipeos-checkout-refresh
 # same shape, weekly: the reclaim job is a custom file under /etc/periodic, so
 # apk audit does not see it and a reboot would take it with everything else

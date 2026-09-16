@@ -100,6 +100,7 @@ SRV_CRT = TLS_DIR + "/server.crt"
 SRV_KEY = TLS_DIR + "/server.key"
 SESS_DIR = "/run/pipeos/web-sessions"
 BOOT_REPORT = "/run/pipeos/boot-report"
+HEALTH_LAST = "/run/pipeos/health.last"     # the hourly live verdict (#290)
 # The LAN lobby (#lobby): mdnsd's peer cache, and how stale a row may be
 # before the lobby stops showing it (3× the responder's 10 s interval).
 MACHINES_ROSTER = "/work/pipeos/mdns/machines.json"
@@ -283,9 +284,10 @@ def box_summary():
         busy.append("a terminal is open")
     if os.path.exists("/run/pipeos/flash-pending"):
         busy.append("a new image is applied, reboot pending")
+    verdict, vsrc, vage = lanid.verdict_now(BOOT_REPORT, HEALTH_LAST)
     return {"id": lanid.mac4(), "name": box_name(), "role": card_get("ROLE") or "GENERIC",
             "host": (box_name() or lanid.lan_name()) + ".local", "ip": primary_ip()[0],
-            "verdict": lanid.verdict_line(BOOT_REPORT), "boot_report": boot_report(),
+            "verdict": verdict, "verdict_source": vsrc, "verdict_age_s": vage, "boot_report": boot_report(),
             "uptime_s": up, "work_pct": pct, "work_free_mb": free_mb,
             "commit": img["commit"][:12], "built": img["built"],
             "services": svcs, "busy": busy}
@@ -554,7 +556,7 @@ def self_entry():
     return {"id": m4, "name": name,
             "host": (name or lan) + ".local",
             "ip": primary_ip()[0], "claimed": claimed(),
-            "verdict": lanid.verdict_line(BOOT_REPORT), "commit": img["commit"][:12],
+            "verdict": lanid.verdict_now(BOOT_REPORT, HEALTH_LAST)[0], "commit": img["commit"][:12],
             "built": img["built"], "model": lanid.model(), "self": True}
 
 
@@ -951,6 +953,14 @@ def save_state():
 def boot_report():
     try:
         with open(BOOT_REPORT) as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def health_last():
+    try:
+        with open(HEALTH_LAST) as f:
             return f.read()
     except OSError:
         return ""
@@ -2599,6 +2609,9 @@ class Handler(BaseHTTPRequestHandler):
             "services": svcs,
             "running": running,
             "boot_report": boot_report(),
+            # the hourly live verdict (#290): the dashboard prefers it when newer
+            "health_last": health_last(),
+            "verdict_now": dict(zip(("verdict", "source", "age_s"), lanid.verdict_now(BOOT_REPORT, HEALTH_LAST))),
             "spend_today_usd": spend.get("today", {}).get("usd", 0),
             "spend_month_usd": spend.get("month", {}).get("usd", 0),
             "usage_cap": spend.get("cap", {}),

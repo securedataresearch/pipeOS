@@ -150,6 +150,28 @@ def verdict_line(path="/run/pipeos/boot-report"):
     return m.group(1).strip() if m else ""
 
 
+HEALTH_LAST = "/run/pipeos/health.last"
+
+
+def verdict_now(boot="/run/pipeos/boot-report", live=HEALTH_LAST):
+    """The verdict as of now (#290): the hourly live check when it is the
+    newer file, else the boot report. Returns (verdict, source, age_s) —
+    source is "live" or "boot" ("" when neither exists), age_s the seconds
+    since that file was written — so a reader can say which one it shows."""
+    import os, time
+    best, src = None, ""
+    for path, name in ((boot, "boot"), (live, "live")):
+        try:
+            m = os.stat(path).st_mtime
+        except OSError:
+            continue
+        if best is None or m > best:
+            best, src = m, name
+    if not src:
+        return "", "", 0
+    return verdict_line(live if src == "live" else boot), src, max(0, int(time.time() - best))
+
+
 # ---- wire -------------------------------------------------------------------
 
 

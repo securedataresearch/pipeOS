@@ -1,0 +1,6 @@
+#!/bin/sh
+# pipeos-health — the live verdict, hourly (#290). pipeos-selfcheck --live is
+# a read-only hand-run minus the heavy sections; its one write is
+# /run/pipeos/health.last, which the cluster page, the lobby and `pipeos
+# status` read in preference to the boot report when it is newer.
+exec /usr/local/bin/pipeos-selfcheck --live >/dev/null 2>&1

@@ -64,6 +64,10 @@ controls = [
     ("L: adopt does not refuse a Machine that is already claimed (the owner's guard)", C,
      lambda s: s.replace(OLD_L, NEW_L), ["18"]),
 
+    ("M: the summary reads the boot report even when a newer live verdict exists (the page lies between reboots, #290)", W,
+     lambda s: s.replace("    verdict, vsrc, vage = lanid.verdict_now(BOOT_REPORT, HEALTH_LAST)\n",
+                         "    verdict, vsrc, vage = lanid.verdict_line(BOOT_REPORT), \"boot\", 0\n"), ["13b"]),
+
     ("F: the reader does not drop a member seen in another cluster", C,
      lambda s: s.replace("        if pid in d[\"members\"] and pid != self_id() and p.get(\"cl\") and p[\"cl\"] != d[\"id\"]:\n",
                          "        if False:\n"), ["9"]),

@@ -31,6 +31,7 @@ when host keys have changed (every reflash). Clocks are UTC.
 | verb | what it is in the dashboard | writes | saves |
 |------|-----------------------------|--------|-------|
 | `pipeos status` / `verify` / `diff` | Overview, System | — | — |
+| `pipeos-selfcheck --live` | the hourly live verdict (#290) behind every verdict pill | `/run/pipeos/health.last` only | no (tmpfs) |
 | `pipeos deploy-overlay [--dry-run] [--yes]` | — (operator only) | overlay files, crontab, runlevels, `.overlay-stamp` | yes, then verifies |
 | `pipeos schedule ls\|add\|set\|rm\|enable\|disable\|run\|log` | Schedule view | `/etc/pipeos/schedule.json` | every mutating verb |
 | `pipeos usage [totals]` | Usage view | — | — |
