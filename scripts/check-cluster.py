@@ -54,7 +54,7 @@ import importlib.util, os, sys, threading
 from http.server import HTTPServer
 spec = importlib.util.spec_from_file_location("webd", sys.argv[1]); webd = importlib.util.module_from_spec(spec); spec.loader.exec_module(webd)
 d = sys.argv[2]
-for k in ("ADMIN_CONF", "SERVICES_CONF", "CARD", "PROVISIONED", "BOOT_REPORT", "USERS_CONF", "SELFUPDATE_CONF", "SUPPORT_CONF", "NAS_CONF"):
+for k in ("ADMIN_CONF", "SERVICES_CONF", "CARD", "PROVISIONED", "BOOT_REPORT", "HEALTH_LAST", "USERS_CONF", "SELFUPDATE_CONF", "SUPPORT_CONF", "NAS_CONF"):
     setattr(webd, k, os.path.join(d, k.lower()))
 webd.SESS_DIR = os.path.join(d, "sessions"); webd.MDNS_CACHE = os.path.join(d, "peers.json"); webd.MACHINES_ROSTER = os.path.join(d, "machines.json")
 webd.FLASH_IMAGE_TXT = os.path.join(d, "image.txt")
@@ -354,6 +354,26 @@ check("13 a member's /api/cluster/summary over mutual TLS carries the two lines 
       and rows["2222"]["commit"] == "abc123def456" and page["verdict"] == "all green"
       and rc_pg == 0 and "member    seven" in out_pg and "member    six" in out_pg and "abc123def456" in out_pg,
       repr((rc_gh, rc_sum, summ, st_pg, page, rc_pg, out_pg[-300:])))
+
+# the live verdict (#290): a member whose boot report went DEGRADED but whose
+# hourly check says green rolls up green and the row says so; an older live
+# file loses to the boot report
+open(os.path.join(H.dir, "boot_report"), "w").write("pipeos boot report [seven]\nverdict: DEGRADED — 1 critical\nCRITICAL: the morning's template divergence\n")
+open(os.path.join(H.dir, "health_last"), "w").write("pipeos health [live] [seven]\nverdict: all green\n")
+now = time.time()
+os.utime(os.path.join(H.dir, "boot_report"), (now - 7200, now - 7200)); os.utime(os.path.join(H.dir, "health_last"), (now - 600, now - 600))
+st_l, page_l = json.loads(G.py("st, b, who = cluster.call('local', 'GET', '/api/cluster/page'); print(json.dumps([st, b]))"))
+rl = {r["id"]: r for r in page_l.get("members", [])}
+rc_pl, out_pl = G.cli("page")
+os.utime(os.path.join(H.dir, "health_last"), (now - 9000, now - 9000))
+st_o, page_o = json.loads(G.py("st, b, who = cluster.call('local', 'GET', '/api/cluster/page'); print(json.dumps([st, b]))"))
+ro = {r["id"]: r for r in page_o.get("members", [])}
+check("13b a member's newer live verdict (health.last) wins over a DEGRADED boot report — the page rolls up green, the row says live and how old; an older live file loses to the boot report",
+      st_l == 200 and rl["2222"]["verdict"] == "all green" and rl["2222"]["verdict_source"] == "live" and 500 <= rl["2222"]["verdict_age_s"] <= 700
+      and page_l["verdict"] == "all green" and rc_pl == 0 and "(live, 10m ago)" in out_pl
+      and st_o == 200 and ro["2222"]["verdict_source"] == "boot" and "DEGRADED" in ro["2222"]["verdict"] and page_o["verdict"].startswith("DEGRADED"),
+      repr((st_l, rl.get("2222", {}).get("verdict"), rl.get("2222", {}).get("verdict_source"), rl.get("2222", {}).get("verdict_age_s"), page_l.get("verdict"), out_pl[-200:], ro.get("2222", {}).get("verdict_source"), page_o.get("verdict"))))
+os.unlink(os.path.join(H.dir, "health_last")); open(os.path.join(H.dir, "boot_report"), "w").write("pipeos boot report [seven]\nverdict: all green\n")
 
 # a member off: grey, and the cluster verdict says so
 H.stop()

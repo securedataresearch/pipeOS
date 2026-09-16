@@ -620,7 +620,9 @@ async function dashboard() {
   } catch (e) {
     return boot();
   }
-  const [vcls, verdict] = verdictClass(st.boot_report);
+  // the live verdict (#290) when the hourly check has run since boot
+  const liveNow = st.verdict_now && st.verdict_now.source === "live";
+  const [vcls, verdict] = verdictClass(liveNow ? st.health_last : st.boot_report);
   const rows = SERVICES.map(s => `
     <div class="row">
       <div><div class="name">${esc(s.name)}</div><div class="desc">${esc(s.desc)}</div></div>
@@ -1272,7 +1274,7 @@ async function dashboard() {
       renderAlerts();
     }).catch(() => {});
   };
-  buildAlerts(st.boot_report, "at boot — ");
+  buildAlerts(liveNow ? st.health_last : st.boot_report, liveNow ? "now — " : "at boot — ");
   v.querySelector("#recheck").onclick = async () => {
     const b = v.querySelector("#recheck"), n = v.querySelector("#rechecknote");
     busy(b, true); n.textContent = "checking (up to a minute)…";
@@ -2509,7 +2511,10 @@ async function dashboard() {
       rows.innerHTML = pg.members.map(m => {
         const label = m.name || m.id;
         const href = m.awake && (m.host || m.ip) ? "http://" + (m.host || m.ip) + "/" : "";
-        const [mvc, mvt] = m.awake ? verdictClass("verdict: " + (m.verdict || "")) : ["status-warn", "off · last seen " + agoShort(m.last_seen)];
+        const [mvc, mvt0] = m.awake ? verdictClass("verdict: " + (m.verdict || "")) : ["status-warn", "off · last seen " + agoShort(m.last_seen)];
+        // which verdict this is (#290): the hourly live check, or the boot snapshot
+        const when = !m.awake ? "" : m.verdict_source === "live" ? ` · checked ${Math.max(1, Math.round((m.verdict_age_s || 0) / 60))}m ago` : " · at boot";
+        const mvt = mvt0 + when;
         const act = m.awake ? ((m.busy && m.busy.length) ? m.busy.join(", ") : "idle") : (m.error || "no answer");
         const disk = m.awake && m.work_pct != null ? `disk ${m.work_pct}% · ${gb(m.work_free_mb)}` : "";
         const rel = m.awake && m.commit ? `release ${m.commit.slice(0, 12)}${m.built ? " · " + m.built.slice(0, 10) : ""}` : "";

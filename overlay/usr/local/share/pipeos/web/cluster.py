@@ -884,7 +884,9 @@ def main(argv):
                 l1 = "%-12s %s  %s" % (r.get("name") or "", r["id"], r.get("role") or "")
                 if r.get("awake"):
                     act = ", ".join(r.get("busy") or []) or "idle"
-                    l2 = "%s · %s · disk %s%% · %s %s" % (r.get("verdict") or "?", act, r.get("work_pct", "?"), (r.get("commit") or "")[:12], r.get("built") or "")
+                    src = r.get("verdict_source") or "boot"
+                    when = ("live, %dm ago" % (int(r.get("verdict_age_s") or 0) // 60)) if src == "live" else "at boot"
+                    l2 = "%s (%s) · %s · disk %s%% · %s %s" % (r.get("verdict") or "?", when, act, r.get("work_pct", "?"), (r.get("commit") or "")[:12], r.get("built") or "")
                 else:
                     l2 = "off · last seen %s · %s" % (time.strftime("%Y-%m-%d %H:%MZ", time.gmtime(r.get("last_seen") or 0)), r.get("error", ""))
                 print("member    %s\n          %s" % (l1, l2))

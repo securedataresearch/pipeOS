@@ -30,6 +30,7 @@ webd.CARD = tmp + "/card.conf"
 webd.PROVISIONED = tmp + "/provisioned"
 webd.SESS_DIR = tmp + "/sessions"
 webd.BOOT_REPORT = tmp + "/boot-report"
+webd.HEALTH_LAST = tmp + "/health.last"
 webd.STREAM_CONF = tmp + "/stream.conf"
 webd.USERS_CONF = tmp + "/users.json"
 webd.TERMINALS_CONF = tmp + "/terminals.conf"
@@ -307,6 +308,18 @@ ok("second claim refused")
 st = req("/api/status")
 assert "verdict: all green" in st["boot_report"]
 ok("status returns the boot report")
+# the live verdict (#290): newer wins, older loses, absent = boot
+assert st["verdict_now"]["source"] == "boot" and st["health_last"] == ""
+with open(webd.HEALTH_LAST, "w") as f:
+    f.write("pipeos health [live] [test]\nverdict: green with 1 warning(s)\nwarn: pipeos-mdns down\n")
+st = req("/api/status")
+assert st["verdict_now"]["source"] == "live" and st["verdict_now"]["verdict"] == "green with 1 warning(s)" and "pipeos-mdns down" in st["health_last"]
+_t = os.stat(webd.BOOT_REPORT).st_mtime - 3600
+os.utime(webd.HEALTH_LAST, (_t, _t))
+st = req("/api/status")
+assert st["verdict_now"]["source"] == "boot" and st["verdict_now"]["verdict"] == "all green"
+os.unlink(webd.HEALTH_LAST)
+ok("status carries the live verdict when health.last is newer than the boot report, and the boot one otherwise")
 r = req("/api/services", {"claude": True, "pipe": False})
 assert r["services"]["claude"] is True and r["services"]["pipe"] is False
 ok("services toggle round-trips")

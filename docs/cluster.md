@@ -138,7 +138,10 @@ ROLE) are named where the design reuses them.
   will not apply an update while another member is mid-update or not
   green. Leaderless: each box checks the member list before it goes.
 - The cluster page shows **one verdict for the cluster** and every
-  member's boot report in one place.
+  member's boot report in one place. Since #290 the verdict is **live**: an
+  hourly `pipeos-selfcheck --live` writes `/run/pipeos/health.last` and every
+  reader (the page, the lobby, `pipeos status`) prefers it when it is newer
+  than the boot report, and says which one it shows.
 - Alerts stay **one DM per box** for now (too much is changing to design
   a digest).
 - A **Reboot everything** button exists. It warns when something like a

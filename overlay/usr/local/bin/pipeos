@@ -138,6 +138,17 @@ cmd_status() {
     else
         warn "no boot report this boot (selfcheck --boot has not finished)"
     fi
+    # the live verdict (#290): the hourly --live run, when it has happened since boot
+    if [ -r /run/pipeos/health.last ] && [ /run/pipeos/health.last -nt /run/pipeos/boot-report ]; then
+        hverdict=$(sed -n 's/^verdict: //p' /run/pipeos/health.last | head -1)
+        hage=$(( ($(date +%s) - $(stat -c %Y /run/pipeos/health.last 2>/dev/null || echo 0)) / 60 ))
+        case "$hverdict" in
+            *DEGRADED*) fail "health now: $hverdict (${hage}m ago) — cat /run/pipeos/health.last" ;;
+            *warning*)  warn "health now: $hverdict (${hage}m ago) — cat /run/pipeos/health.last" ;;
+            '')         warn "health now: verdict unreadable — cat /run/pipeos/health.last" ;;
+            *)          ok "health now: $hverdict (${hage}m ago)" ;;
+        esac
+    fi
     if [ ! -f /etc/pipeos/provisioned ]; then
         fail "UNPROVISIONED — autosave is OFF; nothing persists (claim the box at http://$(hostname).local/ or run pipebox-setup)"
     fi

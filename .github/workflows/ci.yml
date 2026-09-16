@@ -70,6 +70,11 @@ jobs:
       - name: the web wizard claims, refuses, and forgets sessions correctly
         run: python3 scripts/check-webd.py
 
+      # #290. The cluster page's verdict was the boot report, a snapshot; the
+      # hourly --live run writes health.last and every reader prefers it.
+      - name: the live verdict — --live skips the heavy sections, writes one file, and every reader prefers it
+        run: python3 scripts/check-selfcheck-live.py
+
       # #222. Two Machines on loopback, each with its own key: a member's
       # signature is a session, a stranger's is a 401 that names the check
       # that refused it (skew, replay, not a member, bad signature); the

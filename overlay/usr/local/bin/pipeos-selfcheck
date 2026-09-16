@@ -18,10 +18,18 @@
 # the clean-shutdown marker, the daemon starts and `apk fix` all ran before
 # that gate, so a hand-run still mutated the box. #13 asks for "safe to run any
 # time, by anyone, on any box", and that is the whole of it.
-BOOT=no
+#
+# --live (#290) is the third mode: a hand-run that skips the heavy sections
+# (the toolchain compile, `apk update`, `du`, `pipeos verify`) and makes
+# exactly one write — /run/pipeos/health.last, tmpfs, the same shape as the
+# boot report. The hourly cron runs it so the cluster page, the lobby and
+# `pipeos status` can say how the box is NOW, not how its boot went.
+BOOT=no LIVE=no
 case "$1" in
     --boot) BOOT=yes ;;
+    --live) LIVE=yes ;;
 esac
+HEALTH_LAST=/run/pipeos/health.last
 
 LOG=/work/logs/selfcheck.log
 MARKER=/work/.pipeos/clean-shutdown
@@ -650,7 +658,10 @@ fi
 # ---- 4. will a reboot reproduce this state? (covers the incident: media
 # repo coherence, world resolution, all packages installed, apkovl readable)
 # `pipeos verify` only reads; `apk fix` installs, so it is the boot-only half.
-if vout=$(pipeos verify 2>&1); then
+# --live skips it: a package audit every hour is not what "live" is for.
+if [ "$LIVE" = yes ]; then
+    :
+elif vout=$(pipeos verify 2>&1); then
     :
 elif [ "$BOOT" != yes ]; then
     crit "pipeos verify FAIL: $(echo "$vout" | grep '^FAIL' | head -3 | tr '\n' '; ')"
@@ -688,8 +699,11 @@ if [ "${use:-0}" -ge "$disk_crit" ] || [ "${use:-0}" -ge "$disk_warn" ]; then
     # the big-ticket subtree (e.g. repos/); a second pass one level into
     # repos/*/target catches the specific cargo cache pattern box1 found,
     # without hardcoding it as the only thing this check can name.
-    top=$(du -xsk /work/*/ 2>/dev/null | sort -rn | head -1)
-    topt=$(du -xsk /work/repos/*/target 2>/dev/null | sort -rn | head -1)
+    top=""; topt=""
+    if [ "$LIVE" != yes ]; then   # --live names no culprit: du over /work is the cost it skips
+        top=$(du -xsk /work/*/ 2>/dev/null | sort -rn | head -1)
+        topt=$(du -xsk /work/repos/*/target 2>/dev/null | sort -rn | head -1)
+    fi
     culprit="top consumer: ${top:-unknown}"
     [ -n "$topt" ] && culprit="$culprit; ${topt}"
     if [ "${use:-0}" -ge "$disk_crit" ]; then
@@ -893,7 +907,7 @@ done
 # remediation).
 if [ -z "$(ls -A /etc/apk/keys 2>/dev/null)" ]; then
     crit "no apk signing keys in /etc/apk/keys — index reads UNTRUSTED and apk silently falls back to whatever is already installed"
-else
+elif [ "$LIVE" != yes ]; then   # --live: no index fetch every hour
     akout=$(apk update 2>&1)
     if echo "$akout" | grep -qi 'untrusted'; then
         crit "apk index UNTRUSTED: $(echo "$akout" | grep -i untrusted | head -3 | tr '\n' '; ')"
@@ -968,6 +982,7 @@ fi
 # cargo/rustc/cc", which is false on box3, because PATH alone does not carry
 # the sysroot. Either that script sources env.sh or the headers belong in
 # `world`; both fix it, and this check reports the symptom under either.
+if [ "$LIVE" != yes ]; then   # --live never compiles: the proof is minutes, hourly is not the place
 _tc_conf=/etc/pipeos/pipebox.conf
 [ -r "$_tc_conf" ] && . "$_tc_conf" 2>/dev/null
 if [ -n "${TOOLCHAIN:-}" ]; then
@@ -1019,6 +1034,7 @@ if [ -n "${TOOLCHAIN:-}" ]; then
                 ;;
         esac
     done
+fi
 fi
 
 # ---- 5h. the declared repos are on disk and point where the card says
@@ -1096,7 +1112,8 @@ _claimed=no
 [ -s /etc/pipeos/web-admin.conf ] && _claimed=yes
 _bname=$(sed -n 's/^NAME=["]*\([^"]*\)["]*$/\1/p' /etc/pipeos/card.conf 2>/dev/null | head -1)
 _bhead=$(hostname); [ -n "$_bname" ] && _bhead="$_bname ($_bhead)"
-msg="pipeos boot report [$_bhead] $(date -u '+%Y-%m-%d %H:%MZ')
+_kind="boot report"; [ "$LIVE" = yes ] && _kind="health [live]"
+msg="pipeos $_kind [$_bhead] $(date -u '+%Y-%m-%d %H:%MZ')
 went down: $down
 claimed: $_claimed
 services: pipe=$SERVICE_PIPE claude=$SERVICE_CLAUDE stream=$SERVICE_STREAM support=$SERVICE_SUPPORT
@@ -1107,13 +1124,25 @@ $(cat "$R")"
 apkovl promoted to known-good"
 [ "$skipped_promotion" = yes ] && msg="$msg
 apkovl promotion skipped (hand-run — rerun with --boot to apply it)"
-[ "$BOOT" != yes ] && msg="$msg
+if [ "$LIVE" = yes ]; then
+    msg="$msg
+live: read-only except this file; the heavy checks (toolchain, apk update, du, verify) are the boot report's"
+elif [ "$BOOT" != yes ]; then
+    msg="$msg
 hand-run: nothing was changed — no writes, no services started, no packages
 installed, boot media untouched, owner not DMed. Rerun with --boot to apply."
+fi
 
 # ---- 7b. a hand-run only ever prints; the boot path also logs and DMs.
+# --live prints and lands its one file (#290): every verdict reader prefers
+# it over the boot report when it is the newer of the two.
 echo "$msg"
 
+if [ "$LIVE" = yes ]; then
+    mkdir -p /run/pipeos 2>/dev/null
+    printf '%s\n' "$msg" > "$HEALTH_LAST.new" 2>/dev/null && mv -f "$HEALTH_LAST.new" "$HEALTH_LAST" 2>/dev/null
+    rm -f "$R"; exit 0
+fi
 [ "$BOOT" = yes ] || { rm -f "$R"; exit 0; }
 
 # ---- 7c. the report lands locally BEFORE any delivery attempt (appliance
