@@ -1,0 +1,30 @@
+# pipeOS model card — pilot1 (the second customer-pilot team-assistant box)
+#
+# The second GENERIC card, pilot0 line for line: a team-assistant box for
+# the second pilot business.
+# No Foreman, no GitHub, no repo lane — the owner directs it, the team
+# reaches it by DM and (once the owner wires a cohort) the board.
+#
+# OWNER_NICK and COHORT_ID stay empty here: the customer claims the box
+# from the web wizard on their premises (the console pipebox-setup is the
+# fleet path), and names the owner there if pipe is turned on. Nothing
+# fleet-specific may ever appear in this file.
+
+NICK=pilot1
+NAME=
+ROLE=GENERIC
+OWNER_NICK=
+FOREMAN_NICK=
+COHORT_ID=
+GH_OWNER=
+
+TOOLCHAIN=
+REPOS=
+PIPE_CAPS=read,send.dm,send.room,send.lobby,send.bbs
+
+DISK_WARN_PCT=70
+DISK_CRIT_PCT=85
+GC_INTERVAL_HOURS=
+OVERLAY_CRIT_DAYS=
+AGENT_TIMEOUT_MIN=30
+CLEAN_AFTER_RUN=
