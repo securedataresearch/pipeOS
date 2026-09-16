@@ -967,8 +967,9 @@ def refresh_live_verdict():
 
 def save_state():
     rc, out = run(["pipeos-save"], timeout=300)
-    if rc == 0:
-        refresh_live_verdict()
+    # refreshed whether or not the save took: a failed save is itself
+    # something the live verdict should be showing
+    refresh_live_verdict()
     return rc == 0, out.strip()[-300:]
 
 
