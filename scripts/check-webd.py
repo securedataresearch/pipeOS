@@ -313,6 +313,8 @@ assert os.path.exists(tmp + "/selfcheck.argv") and "--live" in open(tmp + "/self
 ok("a save refreshes the live verdict (pipeos-selfcheck --live fired after the claim's save)")
 assert req("/api/services")["services"]["claude"] is True
 ok("GET /api/services reads the declared set")
+assert "usd" in req("/api/usage/cap", {"usd": "ten"}, expect=400)["error"]
+ok("the usage-cap error names its field")
 _phrase = r["recovery_phrase"]
 assert len(_phrase.split("-")) == 8 and os.path.exists(webd.VAULT) and (os.stat(webd.VAULT).st_mode & 0o077) == 0
 ok("claim mints the box's vault (0600) and hands the wizard the recovery phrase once")

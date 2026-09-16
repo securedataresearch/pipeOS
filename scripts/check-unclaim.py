@@ -48,7 +48,12 @@ for name, body in (("pipebox-card", 'echo "$*" >> %s/card.log\n' % MARK),
     with open(os.path.join(BIN, name), "w") as f:
         f.write("#!/bin/sh\n" + body)
     os.chmod(os.path.join(BIN, name), 0o755)
-env = dict(os.environ, PATH=BIN + ":" + os.environ["PATH"], PIPEOS_ETC=ETC, PIPEOS_ROOT_HOME=HOME, PIPEOS_RUN=RUN,
+WORK = os.path.join(D, "work")
+for d in ("/.pipeos/ledger", "/.pipeos/schedule", "/pipebox/sessions", "/pipebox/webchat", "/pipebox/state", "/claude/projects/p1", "/logs", "/home/office", "/repos/proj"):
+    os.makedirs(WORK + d, exist_ok=True)
+for f in ("/.pipeos/ledger/2026-09.jsonl", "/.pipeos/schedule/runs.log", "/claude/projects/p1/s.jsonl", "/logs/selfcheck.log", "/.authorized_keys.backup", "/home/office/doc.txt", "/repos/proj/README", "/.pipeos/users.manifest"):
+    open(WORK + f, "w").write("x")
+env = dict(os.environ, PATH=BIN + ":" + os.environ["PATH"], PIPEOS_ETC=ETC, PIPEOS_ROOT_HOME=HOME, PIPEOS_RUN=RUN, PIPEOS_WORK=WORK,
            PIPEOS_TLS_INIT=BIN + "/pipeos-tls-init", PIPEOS_REBOOT_BIN=BIN + "/reboot", PIPEOS_CARD_GEN=BIN + "/pipebox-card",
            PIPEOS_SAVE_BIN=BIN + "/pipeos-save", PIPEOS_UNCLAIM_TEST="1")
 p = subprocess.run(["sh", PIPEOS, "unclaim", "--yes"], capture_output=True, text=True, env=env)
@@ -84,6 +89,10 @@ check("6 pipeos-save's unclaim mode skips the provisioned guard, never short-cir
       and 'mv "$KNOWN_GOOD.new" "$KNOWN_GOOD"' in save and 'rm -f "$MEDIA"/pipeos.[0-9]*.tar.gz' in save
       and save.index('rm -f "$MEDIA/$(hostname).apkovl.tar.gz"') < save.index('if [ -n "$UNCLAIM" ]; then\n    # nobody')
       and not re.search(r"^\s*lbu commit", open(PIPEOS).read(), re.M))
+gone_w = [f for f in ("/.pipeos/ledger", "/.pipeos/schedule", "/pipebox/sessions", "/pipebox/webchat", "/pipebox/state", "/claude/projects/p1", "/logs/selfcheck.log", "/.authorized_keys.backup") if os.path.exists(WORK + f)]
+check("8 the owner's private state on /work goes (ledger, schedule runs, sessions, chat, agent state, transcripts, logs, the key backup); /work/home, /work/repos, users.manifest and an empty claude/projects stay",
+      not gone_w and os.path.exists(WORK + "/home/office/doc.txt") and os.path.exists(WORK + "/repos/proj/README")
+      and os.path.exists(WORK + "/.pipeos/users.manifest") and os.path.isdir(WORK + "/claude/projects"), repr(gone_w))
 sc = open(os.path.join(REPO, "overlay/usr/local/bin/pipeos-selfcheck")).read()
 check("7 selfcheck: an unprovisioned box wants no pipe and no claude (nobody's box runs nothing)",
       '[ -f /etc/pipeos/provisioned ] || SERVICE_PIPE=off SERVICE_CLAUDE=off' in sc)

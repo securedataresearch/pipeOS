@@ -438,7 +438,7 @@ cmd_unclaim() {
     # deleted the canonical and known-good apkovl. Everything the owner made
     # goes; the chassis identity (hostname, MAC) and /work stay.
     # Seams for scripts/check-unclaim.py; the box never sets them.
-    _etc=${PIPEOS_ETC:-/etc/pipeos}; _home=${PIPEOS_ROOT_HOME:-/root}; _run=${PIPEOS_RUN:-/run/pipeos}
+    _etc=${PIPEOS_ETC:-/etc/pipeos}; _home=${PIPEOS_ROOT_HOME:-/root}; _run=${PIPEOS_RUN:-/run/pipeos}; _work=${PIPEOS_WORK:-/work}
     _tls_init=${PIPEOS_TLS_INIT:-/usr/local/bin/pipeos-tls-init}; _reboot=${PIPEOS_REBOOT_BIN:-reboot}
     [ "$(id -u)" = 0 ] || [ -n "${PIPEOS_UNCLAIM_TEST:-}" ] || { echo "unclaim: root only" >&2; return 1; }
     [ -f "$_etc/rollback-pending" ] && { echo "unclaim: a rollback is staged — reboot first" >&2; return 1; }
@@ -468,6 +468,14 @@ cmd_unclaim() {
     rm -rf "$_home/.pipe/identity.dat" "$_home/.pipe/credentials.dat" "$_home/.pipe/config.dat" \
            "$_home/.pipe/contacts.dat" "$_home/.pipe/http.json" "$_home/.pipe/inbox"
     rm -f "$_home/.claude/.credentials.json" "$_home/.claude.json" "$_home/.hermes/auth.json" "$_home/.hermes/.env"
+    # the owner's private state on /work: the usage ledger (a new owner inherited
+    # $2.46 of the old owner's spend), schedule runs, the agent's transcripts and
+    # sessions, the dashboard chat, the logs, the key backup. /work/home and
+    # /work/repos stay — the data, not the owner (a full wipe is a format).
+    rm -rf "$_work/.pipeos/ledger" "$_work/.pipeos/schedule" "$_work/pipebox/sessions" "$_work/pipebox/webchat" \
+           "$_work/pipebox/state" "$_work/claude/projects" "$_work/.authorized_keys.backup"
+    [ -d "$_work/logs" ] && find "$_work/logs" -type f -exec rm -f {} + 2>/dev/null
+    [ -d "$_work/claude" ] && mkdir -p "$_work/claude/projects"
     # the cluster: membership, the trust bundle, and the CA the old cluster still
     # trusts — a new CA, so the old members stop trusting this box's certificate
     rm -f "$_etc/cluster.json" "$_run/cluster-ca.pem" "$_run/cluster.status"

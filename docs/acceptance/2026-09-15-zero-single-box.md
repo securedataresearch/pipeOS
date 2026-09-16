@@ -22,4 +22,8 @@ stranger — laptop and box side from the workstation, phone steps by Sam.
 | 12 | drills | Vendor support access ON: the key and "waiting for a port" (port "") shown; OFF: gone. The "problems" text said "no relay is configured yet" while the relay is shipped — the port is what is missing | **stumble → reworded** |
 | 13 | drills | Repair remote access: "restarted sshd, saved". Reboot the box (API): back in **59 s** with the claim and the name; the browser session did not survive (sessions are tmpfs — sign in again, by design) | PASS |
 | 14 | drills | Secrets sealed: `grep -r sk-ant /etc /media/usb` finds nothing; `pipeos verify` says *secrets sealed*; vault open | PASS |
+| 15 | drills | Usage: the new owner's Usage view opened on **$2.46 / 14 calls of the old owner's spend** (the ledger lives on /work, which unclaim keeps) | **stumble → fixed** (unclaim drops the ledger, schedule runs, transcripts, sessions, chat, logs; /work/home and /work/repos stay) |
+| 16 | drills | Usage cap over the API: `{"cap": 1}` refused with "the cap is a whole number of dollars…" — the field name is not the obvious one and the error does not name it | **stumble → fixed** (`cap` accepted as an alias; the error names `usd`) |
+| 17 | drills | Schedule: add + Run now over the API ok (saved); the run itself needs Claude signed in (row 11) | PASS (add/run), owed (the fire) |
+| 18 | drills | Usage cap over the API (`usd`): cap $1 under $2.46 spent → paused at once, Run now refused with "scheduled runs are paused — the monthly cap is reached; raise it under Usage"; cap none → `enforce` unpaused and the paused file went — but `/api/status` still said paused for up to a minute (the ledger's 60 s cache) | PASS; **stumble → fixed** (a cap change refreshes the status cache) |
 

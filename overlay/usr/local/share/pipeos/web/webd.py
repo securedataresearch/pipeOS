@@ -2055,9 +2055,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, t)
 
     def api_usage_cap(self, body):
-        v = body.get("usd")
+        # "usd" is the field; "cap" is what an agent guesses first (the
+        # single-box pass, 2026-09-16) — accepted, and the error names the field
+        v = body.get("usd", body.get("cap"))
         if isinstance(v, bool) or not isinstance(v, int) or v < 0 or v > 100000:
-            return self.err(400, "the cap is a whole number of dollars, 0 (none) to 100000")
+            return self.err(400, 'the cap is a whole number of dollars, 0 (none) to 100000 — send {"usd": N}')
         try:
             card_ensure_key("MONTHLY_CAP_USD")
             card_set({"MONTHLY_CAP_USD": str(v) if v else ""})
