@@ -101,6 +101,20 @@ Box clocks are UTC; cron expressions are box-local, so UTC.
 - **Watchdog drill (#247):** `pipeos watchdog status` says armed 60 20; `echo c > /proc/sysrq-trigger` (a real panic — the box is gone for ~90 s); back up, the boot report says `went down: kernel panic — the watchdog rebooted us`, `pipeos-selfcheck` green, known-good untouched. `pipeos watchdog off` → status says off, no petter; `kernel` re-arms.
 - **Reboot drill:** `pipeos verify` PASS → `reboot` → wait ~90 s → `pipeos-selfcheck` green and `pipeos status` says known-good matches.
 
+## Pilot day (#159) — the opposite rule
+
+A pilot Machine is a customer's, not the fleet's: nothing above applies on
+site. The stick comes from the **released** image (`gh release download`,
+`sha256sum -c`, `scripts/verify-image-generic.sh` exit 0, `scripts/70-flash.sh
+--image`), burned in on the bench and **never claimed** (`curl
+http://pipeos.local/api/state` → `"claimed": false` before it goes in the
+bag). On site **the client's hands**: claim, name, services, Claude sign-in
+from `docs/client-onboarding.md`; we read `docs/first-boot-acceptance.md`
+and fill in `docs/acceptance/pilot0.md` / `pilot1.md`. The support door is
+proven both ways (key → pinned to the port in `docs/support-relay.md`'s
+ledger → `ssh -J` → toggle off → tunnel gone) and then stays off. No ssh to
+a pilot box unless the owner has the toggle on and asked.
+
 ## What is NOT yours to do
 
 - Sign a box into pipe or Claude (OAuth/credentials: Sam, via the wizard).
