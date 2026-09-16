@@ -55,7 +55,8 @@ when host keys have changed (every reflash). Clocks are UTC.
 | `pipeos vault status\|list\|get\|set\|del\|export\|unlock\|rephrase` | Secrets view | the sealed store | set/del: the store is in `/etc`, save after |
 | `pipeos wake NAME\|ID\|--all\|--list` | Network → Wake | — | — |
 | `pipeos work status\|flush\|park\|unpark` | — (operator) | flush: the RAM-staged hot set → the stick; park: remount `/work` read-only | flush is the save |
-| `pipeos backup`, `flash`, `restore-work`, `pkg`, `rollback`, `unclaim` | Files, System | see each verb's header | yes |
+| `pipeos backup`, `flash`, `restore-work`, `pkg`, `rollback` | Files, System | see each verb's header | yes |
+| `pipeos unclaim [--yes]` | — (operator; a resale or a fresh start) | a factory reset: claim, users, name, owner, jobs, shares, support port, assistant, vault, pipe + Claude + hermes sign-ins, cluster membership, a NEW CA; /work and the chassis identity stay | one save in unclaim mode (canonical + known-good as nobody's), then reboot |
 
 `pipeos` with no verb prints the list; each verb refuses with rc 2 and
 one line when the input is wrong, exactly as the dashboard answers 400.
