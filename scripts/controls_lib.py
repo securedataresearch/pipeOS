@@ -53,8 +53,15 @@ def pmap(fn, items):
     jobs = int(os.environ.get("CONTROLS_JOBS") or 0) or min(max(len(items), 1), os.cpu_count() or 2)
     if jobs <= 1:
         return [fn(i) for i in items]
-    with ThreadPoolExecutor(max_workers=jobs) as ex:
-        return list(ex.map(fn, items))
+    ex = ThreadPoolExecutor(max_workers=jobs)
+    futures = [ex.submit(fn, i) for i in items]
+    try:
+        return [f.result() for f in futures]
+    except BaseException:
+        ex.shutdown(wait=False, cancel_futures=True)   # a stale anchor's sys.exit fails fast, not after every probe
+        raise
+    finally:
+        ex.shutdown(wait=True)
 
 
 def cleanup(root):

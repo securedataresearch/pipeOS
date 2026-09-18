@@ -97,11 +97,12 @@ class Box:
                         PIPEOS_MDNS_CACHE=os.path.join(self.dir, "peers.json"),
                         PIPEOS_MDNS_ROSTER=os.path.join(self.dir, "machines.json"),
                         PIPEOS_CLUSTER_SELF=bid, PIPEOS_SAVE_BIN=os.path.join(BIN, "pipeos-save"),
-                        PIPEOS_TEST_SAVES=self.saves, PIPEOS_WEB_HTTPS_PORT="0", PIPEOS_WEB_BUNDLE_POLL="0.2", BOX_NAME=name,
+                        PIPEOS_TEST_SAVES=self.saves, PIPEOS_WEB_HTTPS_PORT="0", PIPEOS_WEB_BUNDLE_POLL="0.05", BOX_NAME=name,
                         PIPEOS_REBOOT_CMD="date +%%s.%%N >> %s" % os.path.join(self.dir, "reboots"),
                         PIPEOS_PTS_GLOB=os.path.join(self.dir, "no-pts", "*"), PIPEOS_BIN=BIN,
                         PIPEOS_JOIN_TOKEN=os.path.join(self.dir, "join-token"),
-                        PIPEOS_CLUSTER_LAST=os.path.join(self.dir, "last"), PIPEOS_TEST_RAN=os.path.join(self.dir, "ran"))
+                        PIPEOS_CLUSTER_LAST=os.path.join(self.dir, "last"), PIPEOS_TEST_RAN=os.path.join(self.dir, "ran"),
+                        PIPEOS_WEB_AUTH_DELAY="0")
         r = subprocess.run(["sh", TLS_INIT], env=self.env, capture_output=True, text=True)
         assert r.returncode == 0, "tls-init for %s: %s" % (name, r.stdout + r.stderr)
         self.proc = subprocess.Popen([sys.executable, "-c", RUNNER, os.path.join(WEB, "webd.py"), self.dir],
@@ -110,9 +111,12 @@ class Box:
         self.addr = "127.0.0.1:%d" % self.tls_port        # cluster.py talks TLS only
         self.env["PIPEOS_WEB_HTTPS_PORT_LOCAL"] = str(self.tls_port)   # `pipeos cluster page` talks to its own :443
 
+    MEMBERSHIP = ("init", "add", "remove", "sync", "join", "adopt")
+
     def cli(self, *args, env=None, stdin=None):
         p = subprocess.run([sys.executable, CLUSTER] + list(args), capture_output=True, text=True, env=env or self.env, input=stdin)
-        time.sleep(0.6)      # the listeners follow the trust store on disk (bundle_watcher, 0.2 s here)
+        if args and args[0] in self.MEMBERSHIP:
+            time.sleep(0.45)     # the listeners follow the trust store on disk (bundle_watcher, 0.05 s here)
         return p.returncode, p.stdout + p.stderr
 
     def py(self, code, env=None):
@@ -423,10 +427,13 @@ lockf = open(os.path.join(G.dir, "sched.lock"), "w")
 _f.flock(lockf, _f.LOCK_EX)
 rc_rb0, out_rb0 = G.cli("reboot-all")
 _f.flock(lockf, _f.LOCK_UN); lockf.close()
-time.sleep(2.5)
+time.sleep(2.5)      # schedule_reboot's own 2 s delay: had the refusal been ignored, the files would exist by now
 none_yet = not reboots(G) and not reboots(H)
 rc_rb, out_rb = G.cli("reboot-all")
-time.sleep(3.5)
+for _ in range(80):  # the stub fires after schedule_reboot's 2 s; poll rather than wait a fixed 3.5 s
+    if reboots(G) and reboots(H):
+        break
+    time.sleep(0.05)
 
 
 check("16 'reboot-all' refuses while a member is busy (a job running on six) and names it, without --yes; once idle every member reboots, the others before the box that asked",

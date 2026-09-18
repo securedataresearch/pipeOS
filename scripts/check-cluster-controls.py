@@ -20,8 +20,8 @@ orig = {p: open(p).read() for p in (C, W)}
 OLD_H = '    res = {mid: ("rebooting" if st == 200 else "%s" % ((b.get("error") if isinstance(b, dict) else "") or st))\n           for mid, (st, b) in fanout(others, "POST", "/api/reboot", {}).items()}\n    res[v["self"]] = local_reboot()'
 NEW_H = '    res = {v["self"]: local_reboot()}\n    time.sleep(0.5)\n    res.update({mid: ("rebooting" if st == 200 else "%s" % ((b.get("error") if isinstance(b, dict) else "") or st))\n           for mid, (st, b) in fanout(others, "POST", "/api/reboot", {}).items()})'
 
-OLD_D = '        if not cluster.take_join_token(pw):\n            if u is None or not check_hash(pw, u.get("hash")):\n                time.sleep(2)\n                return self.err(403, "wrong password for this Machine")\n'
-OLD_J = '        if u is None or not check_hash(body.get("password") or "", u.get("hash")):\n            time.sleep(2)\n            return self.err(403, "wrong password for this member")\n'
+OLD_D = '        if not cluster.take_join_token(pw):\n            if u is None or not check_hash(pw, u.get("hash")):\n                time.sleep(AUTH_DELAY)\n                return self.err(403, "wrong password for this Machine")\n'
+OLD_J = '        if u is None or not check_hash(body.get("password") or "", u.get("hash")):\n            time.sleep(AUTH_DELAY)\n            return self.err(403, "wrong password for this member")\n'
 OLD_K = '    try:\n        os.unlink(JOIN_TOKEN)\n    except OSError:\n        pass\n    return bool(candidate)'
 NEW_K = '    return bool(candidate)'
 OLD_L = '    if ident.get("claimed"):\n        raise ClusterError'
@@ -95,17 +95,17 @@ def one(ctl):
     name, path, f, must = ctl
     mut = f(orig[path])
     if mut == orig[path]:
-        return name, None, must, []
+        return name, None, must
     root = controls_lib.sandbox({path: mut})
     try:
         _, out = controls_lib.run_probe(PROBE, root=root)
     finally:
         controls_lib.cleanup(root)
-    return name, controls_lib.fails_in(out), must, []
+    return name, controls_lib.fails_in(out), must
 
 
 rc = 0
-for name, fails, must, _ in controls_lib.pmap(one, controls):
+for name, fails, must in controls_lib.pmap(one, controls):
     if fails is None:
         print("--- %s: CONTROL DID NOT APPLY" % name)
         rc = 1

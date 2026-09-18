@@ -3,8 +3,8 @@ name: ci
 # pipeOS has had no CI. The scripts in this repo are the ones that decide
 # whether a box boots, and until now nothing ran them except a person on a
 # box — and no box in the fleet can execute them from inside its agent
-# sandbox. This runs the card gate on every push, which is the difference
-# between "the generator should be byte-stable" and "it is".
+# sandbox. This runs the gate on every PR and every merge to main, which is
+# the difference between "the generator should be byte-stable" and "it is".
 
 # One run per change (2026-09-18): a PR branch used to run twice per push —
 # once as `push`, once as `pull_request` — and the two raced the same
@@ -13,6 +13,12 @@ on:
   push:
     branches: ["main"]
   pull_request:
+
+# a second push to the same PR cancels the run the first one started,
+# instead of racing it
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   cards:
