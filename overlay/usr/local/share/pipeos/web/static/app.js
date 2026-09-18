@@ -2590,7 +2590,8 @@ async function dashboard() {
     const n = v.querySelector("#clagnote"); claggo.disabled = true; n.textContent = "starting…";
     const body = { name: v.querySelector("#clagname").value.trim(), on: v.querySelector("#clagon").value };
     const prompt = v.querySelector("#clagprompt").value, cron = v.querySelector("#clagcron").value.trim();
-    if (prompt.trim()) { body.prompt = prompt; body.cron = cron; }
+    if (prompt.trim()) body.prompt = prompt;
+    if (cron) body.cron = cron;
     try {
       const r = await api("/api/cluster/start", body);
       n.textContent = `started ${r.name} on ${r.on}${r.picked ? " (the idlest member)" : ""}` + (r.saved === false ? " — NOT saved: " + r.save_detail : "");

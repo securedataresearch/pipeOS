@@ -75,8 +75,12 @@ controls = [
      lambda s: s.replace("    if mid == me:\n        st, out = local_start(spec)\n", "    if True:\n        st, out = local_start(spec)\n"), ["19"]),
 
     ("P: a grey member's agents are shown as they last were, not as last-known (a dead box's agent reads as running, #300)", C,
-     lambda s: s.replace('                s["agents"] = [dict(a, running=None) for a in last.get("agents", []) if isinstance(a, dict)]\n                s["agents_stale"] = True\n',
+     lambda s: s.replace('                s["agents"] = [dict(a, running=None, last_status="") for a in last.get("agents", []) if isinstance(a, dict)]\n                s["agents_stale"] = True\n',
                          '                s["agents"] = [a for a in last.get("agents", []) if isinstance(a, dict)]\n                s["agents_stale"] = False\n'), ["21"]),
+
+    ("Q: a placement the member refuses at run time is not saved (the job it wrote vanishes at the next boot, #300)", W,
+     lambda s: s.replace('        if out.get("changed"):          # the job is written even when the run was refused — so it is saved either way\n',
+                         '        if st == 200 and out.get("changed"):\n'), ["19b"]),
 
     ("F: the reader does not drop a member seen in another cluster", C,
      lambda s: s.replace("        if pid in d[\"members\"] and pid != self_id() and p.get(\"cl\") and p[\"cl\"] != d[\"id\"]:\n",

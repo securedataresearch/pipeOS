@@ -699,13 +699,18 @@ def fanout(ids, method, path, body=None, timeout=8):
 
 
 def _remember(mid, summary):
-    """Keep what a member last said — for its grey row (#300). Best effort:
-    a full or read-only /work loses nothing but the grey list."""
+    """Keep what a member last said — for its grey row (#300). Written only
+    when the list changed (the page polls every few seconds; /work must be
+    allowed to idle, #264). Best effort: a full or read-only /work loses
+    nothing but the grey list."""
+    agents = summary.get("agents") or []
+    if _last(mid).get("agents") == agents:
+        return
     try:
         os.makedirs(LAST_DIR, exist_ok=True)
-        tmp = os.path.join(LAST_DIR, mid + ".new")
-        with open(tmp, "w") as f:
-            json.dump({"t": int(time.time()), "agents": summary.get("agents") or []}, f)
+        fd, tmp = tempfile.mkstemp(prefix=mid + ".", dir=LAST_DIR)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"t": int(time.time()), "agents": agents}, f)
         os.rename(tmp, os.path.join(LAST_DIR, mid + ".json"))
     except (OSError, TypeError, ValueError):
         pass
@@ -743,7 +748,7 @@ def page(local_summary):
                 # a grey box's agents are grey too (#300): what it had when it
                 # last answered, shown as such, never restarted from here
                 last = _last(r["id"])
-                s["agents"] = [dict(a, running=None) for a in last.get("agents", []) if isinstance(a, dict)]
+                s["agents"] = [dict(a, running=None, last_status="") for a in last.get("agents", []) if isinstance(a, dict)]
                 s["agents_stale"] = True
                 s["agents_seen"] = last.get("t")
         s.update({"id": r["id"], "name": s.get("name") or r["name"], "self": r["self"], "fingerprint": r["fingerprint"],
@@ -782,14 +787,16 @@ def reboot_all(local_reboot):
 def pick_idlest(rows):
     """The member to start an agent on when the owner says "idlest": awake,
     nothing busy, then the least load per cpu, then the fewest agents
-    already running. None when nobody qualifies (every box busy or off)."""
+    placed there. A member that reports no load (a release before #300,
+    a failed /proc read) sorts last — it may not know how to take an agent.
+    None when nobody qualifies (every box busy or off)."""
     def load(r):
         l1, n = r.get("load1"), r.get("ncpu")
-        return (l1 / n) if isinstance(l1, (int, float)) and n else 0.0
+        return (l1 / n) if isinstance(l1, (int, float)) and isinstance(n, int) and n > 0 else float("inf")
     ok = [r for r in rows if r.get("awake") and not r.get("busy")]
     if not ok:
         return None
-    ok.sort(key=lambda r: (load(r), sum(1 for a in r.get("agents") or [] if a.get("running")), r["id"]))
+    ok.sort(key=lambda r: (load(r), len(r.get("agents") or []), r["id"]))
     return ok[0]["id"]
 
 
@@ -808,7 +815,8 @@ def start_agent(on, spec, local_start, local_summary):
             return 409, {"error": "no member is idle right now — every one is busy or off; name one to start there anyway"}
     else:
         want = on.strip().lower()
-        hit = [r for r in v["members"] if r["id"] == want or (r["name"] or "").lower() == want]
+        want = want[:-6] if want.endswith(".local") else want
+        hit = [r for r in v["members"] if want in (r["id"], (r["name"] or "").lower(), (r.get("host") or "").lower().removesuffix(".local"))]
         if not hit:
             return 404, {"error": "%s is not a member" % on}
         mid = hit[0]["id"]
@@ -900,8 +908,8 @@ def _report(r):
     return ", ".join("%s=%s" % kv for kv in sorted(r.items())) or "(no other members)"
 
 
-def _agents_line(agents):
-    return ", ".join("%s (%s)" % (a.get("name"), "running" if a.get("running") else (a.get("last_status") or "never ran")) for a in agents)
+def _agents_line(agents, stale=False):
+    return ", ".join("%s (%s)" % (a.get("name"), "grey" if stale else ("running" if a.get("running") else (a.get("last_status") or "never ran"))) for a in agents)
 
 
 def main(argv):
@@ -990,7 +998,7 @@ def main(argv):
                     l2 = "off · last seen %s · %s" % (time.strftime("%Y-%m-%d %H:%MZ", time.gmtime(r.get("last_seen") or 0)), r.get("error", ""))
                 print("member    %s\n          %s" % (l1, l2))
                 if r.get("agents"):
-                    print("          agents%s: %s" % (" (last known)" if r.get("agents_stale") else "", _agents_line(r["agents"])))
+                    print("          agents%s: %s" % (" (last known)" if r.get("agents_stale") else "", _agents_line(r["agents"], bool(r.get("agents_stale")))))
             return 0
         if verb == "agents":
             st, out, who = call("local", "GET", "/api/cluster/page")
@@ -1007,13 +1015,17 @@ def main(argv):
             name = rest[0] if rest and not rest[0].startswith("--") else ""
             i = 1 if name else 0
             while i < len(rest):
-                if rest[i].startswith("--") and i + 1 < len(rest):
+                if rest[i].startswith("--") and i + 1 < len(rest) and not rest[i + 1].startswith("--"):
                     flags[rest[i][2:]] = rest[i + 1]; i += 2
+                elif rest[i].startswith("--"):
+                    print("cluster: %s needs a value" % rest[i], file=sys.stderr); return 2
                 else:
                     name = ""; break
-            if not name or "on" not in flags or set(flags) - {"on", "prompt", "cron", "cwd", "backend", "session"}:
-                print("usage: pipeos cluster start NAME --on ID|NAME|idlest [--prompt TEXT --cron \"M H D M W\" [--cwd DIR] [--backend claude|hermes] [--session fresh|continue]]", file=sys.stderr); return 2
+            if not name or "on" not in flags or set(flags) - {"on", "prompt", "cron", "cwd", "backend", "session", "notify"}:
+                print("usage: pipeos cluster start NAME --on ID|NAME|idlest [--prompt TEXT --cron \"M H D M W\" [--cwd DIR] [--backend claude|hermes] [--session fresh|continue] [--notify on|off]]", file=sys.stderr); return 2
             body = dict(flags, name=name)
+            if "notify" in body:
+                body["notify"] = body["notify"] == "on"
             st, out, who = call("local", "POST", "/api/cluster/start", body, timeout=30)
             if st != 200 or not who:
                 print("cluster: %s" % ((out.get("error") if isinstance(out, dict) else "") or st), file=sys.stderr); return 1

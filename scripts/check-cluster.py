@@ -475,6 +475,16 @@ check("19 'cluster start NAME --on ID' places an agent on that member: the job i
       repr((rc_st1, out_st1[-160:], jobs_of(H), jobs_of(G), ran1, ran_on(H), saves1 - h_saves0, H.nsaves() - h_saves0, rc_st2, out_st2[-120:], rc_st3, out_st3[-120:], rc_st4, out_st4[-160:], rc_st5, out_st5[-160:], h_agents, rc_ag, out_ag[-200:])))
 
 import fcntl as _f
+# 19b. a placement refused at run time (the member is mid-job) still wrote the job — so it is saved, and said so
+lh = open(os.path.join(H.dir, "sched.lock"), "w"); _f.flock(lh, _f.LOCK_EX)
+h_saves2 = H.nsaves()
+rc_rf, out_rf = G.cli("start", "later", "--on", "2222", "--prompt", "later then", "--cron", "@weekly")
+_f.flock(lh, _f.LOCK_UN); lh.close()
+check("19b a placement the member refuses at run time (another job is running there) still wrote the job into its schedule — and the member saved it, so the next boot keeps what the owner placed; the refusal names the member",
+      rc_rf == 1 and "2222: another job is running" in out_rf and "later" in jobs_of(H) and H.nsaves() == h_saves2 + 1 and "later" not in ran_on(H),
+      repr((rc_rf, out_rf[-200:], jobs_of(H), H.nsaves() - h_saves2, ran_on(H))))
+G.cli("call", "2222", "POST", "/api/schedule/del", json.dumps({"name": "later"}))
+
 lg = open(os.path.join(G.dir, "sched.lock"), "w"); _f.flock(lg, _f.LOCK_EX)          # six is busy: a job is running
 rc_i1, out_i1 = G.cli("start", "pick", "--on", "idlest", "--prompt", "pick me", "--cron", "@hourly")
 g_jobs1, h_jobs1 = jobs_of(G), jobs_of(H)

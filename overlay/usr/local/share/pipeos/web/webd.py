@@ -2134,11 +2134,11 @@ class Handler(BaseHTTPRequestHandler):
         What `/api/cluster/start` calls on the chosen member, and what the
         local arm does directly."""
         st, out = agent_start_here(body)
-        if st != 200:
-            return self.err(st, out["error"])
-        if out.get("changed"):
+        if out.get("changed"):          # the job is written even when the run was refused — so it is saved either way
             saved, detail = save_state()
             out["saved"], out["save_detail"] = saved, ("" if saved else detail)
+        if st != 200:
+            return self.err(st, out["error"] + ("" if out.get("saved", True) else "; the job was written but NOT saved: " + out.get("save_detail", "")))
         self.send(200, out)
 
     def api_cluster_start(self, body):
@@ -2155,7 +2155,7 @@ class Handler(BaseHTTPRequestHandler):
 
         def local_start(sp):
             st, out = agent_start_here(sp)
-            if st == 200 and out.get("changed"):
+            if out.get("changed"):
                 saved, detail = save_state()
                 out["saved"], out["save_detail"] = saved, ("" if saved else detail)
             return st, out
@@ -3768,14 +3768,25 @@ def agent_start_here(body):
         before = read_schedule()
         job, err = schedule_upsert(body)
         if err:
-            return 400, {"error": err}
+            return 400, {"error": err, "changed": False}
         changed = job not in before
     elif not any(j["name"] == name for j in read_schedule()):
-        return 404, {"error": "no agent named %s on this Machine — give it a prompt and a schedule to place it here" % name}
+        return 404, {"error": "no agent named %s on this Machine — give it a prompt and a schedule to place it here" % name, "changed": False}
     st, err = schedule_start(name)
     if err:
-        return st, {"error": err}
+        # the job is on the box now even though it did not run: the caller
+        # saves it, or the next boot would drop what the owner just placed
+        return st, {"error": err, "changed": changed, "name": name, "on": lanid.mac4()}
     return 200, {"ok": True, "started": True, "name": name, "on": lanid.mac4(), "changed": changed}
+
+
+def _alive(pid):
+    """Is the pid a live process? A runner killed by a power pull leaves its
+    running_pid in state.json until that job next ends on its own."""
+    try:
+        return bool(pid) and os.path.exists("/proc/%d" % int(pid))
+    except (TypeError, ValueError):
+        return False
 
 
 def agents_here():
@@ -3788,7 +3799,7 @@ def agents_here():
         last = st.get(j["name"], {})
         out.append({"name": j["name"], "cron": j.get("cron", ""), "backend": j.get("backend", "claude"),
                     "enabled": bool(j.get("enabled", True)),
-                    "running": bool(running and last.get("running_pid")),
+                    "running": bool(running and _alive(last.get("running_pid"))),
                     "last_status": last.get("last_status", ""), "last_start": last.get("last_start"),
                     "last_end": last.get("last_end")})
     return out
