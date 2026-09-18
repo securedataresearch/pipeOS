@@ -479,8 +479,8 @@ identity_block() {
         [ -n "$OWNER_NICK" ] && printf ' · owner %s' "$OWNER_NICK"
         printf '\n'
     else
-        printf '  UNPROVISIONED — no model card names this box.\n'
-        printf '  Log in as root and run pipebox-setup to provision it.\n'
+        printf '  Not claimed yet — nobody has named this box.\n'
+        printf '  Open http://pipeos.local/ from a browser on this network and choose a password.\n'
     fi
 }
 

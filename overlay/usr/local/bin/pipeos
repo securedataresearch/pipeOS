@@ -151,7 +151,7 @@ cmd_status() {
         esac
     fi
     if [ ! -f /etc/pipeos/provisioned ]; then
-        fail "UNPROVISIONED — autosave is OFF; nothing persists (claim the box at http://$(hostname).local/ or run pipebox-setup)"
+        fail "not claimed yet — autosave is OFF; nothing persists until someone opens http://$(hostname).local/ and chooses a password"
     fi
     # Claim state: the web wizard's first credential. Unclaimed is the honest
     # out-of-box state, not an error — but say where to go.
@@ -436,7 +436,10 @@ cmd_unclaim() {
     # cluster membership and the CA the old cluster trusts, the NAS shares,
     # the pinned support port, the assistant config — and `lbu commit -d`
     # deleted the canonical and known-good apkovl. Everything the owner made
-    # goes; the chassis identity (hostname, MAC) and /work stay.
+    # goes — including their root ssh key, their agent's transcripts and
+    # memory, and the weekly backups under /work/backup (byte-copies of the
+    # very credentials removed above; the #306 review). The chassis identity
+    # (hostname, MAC) stays, and so does the data on /work: homes and repos.
     # Seams for scripts/check-unclaim.py; the box never sets them.
     _etc=${PIPEOS_ETC:-/etc/pipeos}; _home=${PIPEOS_ROOT_HOME:-/root}; _run=${PIPEOS_RUN:-/run/pipeos}; _work=${PIPEOS_WORK:-/work}
     _tls_init=${PIPEOS_TLS_INIT:-/usr/local/bin/pipeos-tls-init}; _reboot=${PIPEOS_REBOOT_BIN:-reboot}
@@ -446,8 +449,10 @@ cmd_unclaim() {
     _hn=$(hostname)
     if [ "$1" != "--yes" ]; then
         echo "This makes $_hn nobody's box: claim, dashboard users, name, owner, pipe and"
-        echo "Claude sign-ins, cluster membership, shares, schedule and support port are"
-        echo "removed and it reboots into the setup wizard. Type the hostname to continue:"
+        echo "Claude sign-ins, root ssh keys, cluster membership, shares, schedule, support"
+        echo "port, the agent's transcripts and memory, and the backups under /work/backup"
+        echo "are removed and it reboots into the setup wizard. /work/home and /work/repos"
+        echo "stay. Type the hostname to continue:"
         read -r _ans
         [ "$_ans" = "$_hn" ] || { echo "did not match $_hn — nothing changed" >&2; return 1; }
     fi
@@ -468,14 +473,32 @@ cmd_unclaim() {
     rm -rf "$_home/.pipe/identity.dat" "$_home/.pipe/credentials.dat" "$_home/.pipe/config.dat" \
            "$_home/.pipe/contacts.dat" "$_home/.pipe/http.json" "$_home/.pipe/inbox"
     rm -f "$_home/.claude/.credentials.json" "$_home/.claude.json" "$_home/.hermes/auth.json" "$_home/.hermes/.env"
+    # the owner's root ssh key: with key-only sshd it is a door into the next
+    # owner's Machine (the #306 review); the wizard's Users view grants a new one
+    rm -f "$_home/.ssh/authorized_keys"
     # the owner's private state on /work: the usage ledger (a new owner inherited
-    # $2.46 of the old owner's spend), schedule runs, the agent's transcripts and
-    # sessions, the dashboard chat, the logs, the key backup. /work/home and
-    # /work/repos stay — the data, not the owner (a full wipe is a format).
-    rm -rf "$_work/.pipeos/ledger" "$_work/.pipeos/schedule" "$_work/pipebox/sessions" "$_work/pipebox/webchat" \
-           "$_work/pipebox/state" "$_work/claude/projects" "$_work/.authorized_keys.backup"
-    [ -d "$_work/logs" ] && find "$_work/logs" -type f -exec rm -f {} + 2>/dev/null
-    [ -d "$_work/claude" ] && mkdir -p "$_work/claude/projects"
+    # $2.46 of the old owner's spend), schedule runs and job dirs, the agent's
+    # transcripts, sessions and memory, the dashboard chat, the logs, the key
+    # backup, and /work/backup (weekly copies of the apkovl and the pipe
+    # credentials). /work/home and /work/repos stay — the data, not the owner
+    # (a full wipe is a format). /work must be writable: a parked box is
+    # unparked first, and the hot-set dirs (bind mounts) are emptied, not removed.
+    _wb=${PIPEOS_WORK_BIN:-/usr/local/bin/pipeos-work}
+    if awk -v w="$_work" '$2 == w { print $4 }' /proc/mounts 2>/dev/null | grep -qE '(^|,)ro(,|$)'; then
+        "$_wb" unpark >/dev/null || { echo "unclaim: $_work is parked (read-only) and would not unpark — nothing changed on it" >&2; return 1; }
+    fi
+    _bad=0
+    for _d in "$_work/.pipeos/ledger" "$_work/.pipeos/schedule" "$_work/logs" "$_work/pipeos/mdns"; do
+        [ -d "$_d" ] || continue
+        find "$_d" -mindepth 1 -delete || _bad=1
+    done
+    for _d in "$_work/pipebox/sessions" "$_work/pipebox/webchat" "$_work/pipebox/state" "$_work/pipebox/jobs" \
+              "$_work/claude/projects" "$_work/backup" "$_work/.authorized_keys.backup"; do
+        [ -e "$_d" ] || continue
+        rm -rf "$_d" || _bad=1
+    done
+    [ -d "$_work/claude" ] && { mkdir -p "$_work/claude/projects" || _bad=1; }
+    [ "$_bad" = 0 ] || { echo "unclaim: part of the owner's state on $_work could not be removed (see above) — NOT saved; do not hand this box on" >&2; return 1; }
     # the cluster: membership, the trust bundle, and the CA the old cluster still
     # trusts — a new CA, so the old members stop trusting this box's certificate
     rm -f "$_etc/cluster.json" "$_run/cluster-ca.pem" "$_run/cluster.status"

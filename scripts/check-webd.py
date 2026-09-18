@@ -174,7 +174,7 @@ os.environ["PATH"] = tmp + "/bin:" + os.environ.get("PATH", "")
 # the live-verdict refresh every save fires (#290 follow-up): a stub that records its argv
 webd.SELFCHECK_BIN = tmp + "/selfcheck-stub"
 with open(webd.SELFCHECK_BIN, "w") as f:
-    f.write("#!/bin/sh\necho \"$*\" >> " + tmp + "/selfcheck.argv\nprintf 'verdict: all green\\n'\n")
+    f.write("#!/bin/sh\necho \"$*\" >> " + tmp + "/selfcheck.argv\necho 'ok all fine'\nprintf 'verdict: all green\\n'\n")
 os.chmod(webd.SELFCHECK_BIN, 0o755)
 webd.CLAUDE_HOME = tmp + "/home"
 webd.CLAUDE_CREDS = tmp + "/home/.claude/.credentials.json"
@@ -308,7 +308,11 @@ assert r["ok"] and os.path.exists(webd.PROVISIONED)
 ok("claim sets the provisioned marker")
 assert os.path.exists(webd.SERVICES_CONF) and webd.read_services()["claude"] is True and webd.read_services()["pipe"] is False
 ok("claim writes the default service set (Claude on, the rest off) — no file is no longer the fleet default")
-time.sleep(0.3)
+import select as _sel0   # a real wait, not a fixed sleep (time.sleep is no-op-patched further down)
+for _ in range(100):
+    if os.path.exists(tmp + "/selfcheck.argv"):
+        break
+    _sel0.select([], [], [], 0.1)
 assert os.path.exists(tmp + "/selfcheck.argv") and "--live" in open(tmp + "/selfcheck.argv").read()
 ok("a save refreshes the live verdict (pipeos-selfcheck --live fired after the claim's save)")
 assert req("/api/services")["services"]["claude"] is True
@@ -756,10 +760,6 @@ assert data[:2] == b"\x1f\x8b", "not gzip: %r" % data[:8]
 req("/api/file-op", {"op": "delete", "path": "work/tardir", "recursive": True})
 ok("folder tar.gz download streams and stays jailed")
 # health: the read-only re-check runs the selfcheck binary and reports verdict
-webd.SELFCHECK_BIN = tmp + "/selfcheck-stub"
-with open(webd.SELFCHECK_BIN, "w") as f:
-    f.write("#!/bin/sh\necho 'ok all fine'\necho 'verdict: all green'\n")
-os.chmod(webd.SELFCHECK_BIN, 0o755)
 h = req("/api/health")
 assert h["ok"] is True and h["verdict"] == "all green"
 ok("health re-check runs selfcheck and extracts the verdict")

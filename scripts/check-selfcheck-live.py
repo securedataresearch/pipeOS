@@ -37,7 +37,7 @@ check("3 --live skips apk update, du over /work, and pipeos verify",
 tail = SC[SC.index("# ---- 7. compose the report"):]
 writes = re.findall(r"> *\"?\$?HEALTH_LAST", tail)
 check("4 the report says health [live], lands atomically in HEALTH_LAST, and --live exits before the boot-only block",
-      '_kind="health [live]"' in tail and 'printf \'%s\\n\' "$msg" > "$HEALTH_LAST.new"' in tail and 'mv -f "$HEALTH_LAST.new" "$HEALTH_LAST"' in tail
+      '_kind="health [live]"' in tail and 'mktemp "$HEALTH_LAST.XXXXXX"' in tail and 'printf \'%s\\n\' "$msg" > "$_hl"' in tail and 'mv -f "$_hl" "$HEALTH_LAST"' in tail
       and tail.index('if [ "$LIVE" = yes ]; then\n    mkdir -p /run/pipeos') < tail.index('[ "$BOOT" = yes ] || { rm -f "$R"; exit 0; }'))
 hourly = os.path.join(REPO, "overlay/etc/periodic/hourly/pipeos-health")
 lbu = open(os.path.join(REPO, "overlay/etc/apk/protected_paths.d/lbu.list")).read()

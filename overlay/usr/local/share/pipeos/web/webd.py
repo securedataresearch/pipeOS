@@ -952,17 +952,37 @@ def card_set(updates):
         raise RuntimeError("card regeneration failed: " + out.strip()[-300:])
 
 
+_LIVE = {"running": False, "again": False, "lock": threading.Lock()}
+
+
+def _live_worker():
+    while True:
+        try:
+            subprocess.run([SELFCHECK_BIN, "--live"], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        with _LIVE["lock"]:
+            if not _LIVE["again"]:
+                _LIVE["running"] = False
+                return
+            _LIVE["again"] = False
+
+
 def refresh_live_verdict():
     """Every settings change re-reads the box's health NOW (#290 follow-up,
     the single-box pass 2026-09-16): after the claim the dashboard kept
     showing the boot report's "not claimed yet" warning for up to an hour.
-    `pipeos-selfcheck --live` is under a second and writes only
-    /run/pipeos/health.last; fire-and-forget, never on the request's path."""
-    try:
-        subprocess.Popen([SELFCHECK_BIN, "--live"], stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    except OSError:
-        pass
+    `pipeos-selfcheck --live` takes a few seconds (dozens of forks) and
+    writes only /run/pipeos/health.last. Never on the request's path, and
+    coalesced: a burst of saves runs it once now and once more after, not
+    N times at once on a fanless box (the #306 review)."""
+    with _LIVE["lock"]:
+        if _LIVE["running"]:
+            _LIVE["again"] = True
+            return
+        _LIVE["running"] = True
+    threading.Thread(target=_live_worker, daemon=True).start()
 
 
 def save_state():
@@ -2065,12 +2085,13 @@ class Handler(BaseHTTPRequestHandler):
             card_set({"MONTHLY_CAP_USD": str(v) if v else ""})
         except RuntimeError as e:
             return self.err(500, str(e))
-        saved, detail = save_state()
-        # lowering under this month's spend pauses now; raising above it resumes now
+        # lowering under this month's spend pauses now; raising above it resumes
+        # now — BEFORE the save, whose live re-check must read the settled marker
         try:
             state = ledger_obj().enforce_cap()
         except Exception as e:
             state = {"error": str(e)}
+        saved, detail = save_state()
         self.send(200, {"ok": True, "cap": v, "state": state, "saved": saved, "save_detail": "" if saved else detail})
 
     # -- scheduled runs (#242) --------------------------------------------------

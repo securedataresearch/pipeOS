@@ -49,10 +49,14 @@ for name, body in (("pipebox-card", 'echo "$*" >> %s/card.log\n' % MARK),
         f.write("#!/bin/sh\n" + body)
     os.chmod(os.path.join(BIN, name), 0o755)
 WORK = os.path.join(D, "work")
-for d in ("/.pipeos/ledger", "/.pipeos/schedule", "/pipebox/sessions", "/pipebox/webchat", "/pipebox/state", "/claude/projects/p1", "/logs", "/home/office", "/repos/proj"):
+for d in ("/.pipeos/ledger", "/.pipeos/schedule", "/pipebox/sessions", "/pipebox/webchat", "/pipebox/state", "/pipebox/jobs/drill", "/claude/projects/p1",
+          "/claude/projects/-root/memory", "/backup/pipe", "/logs", "/home/office", "/repos/proj"):
     os.makedirs(WORK + d, exist_ok=True)
-for f in ("/.pipeos/ledger/2026-09.jsonl", "/.pipeos/schedule/runs.log", "/claude/projects/p1/s.jsonl", "/logs/selfcheck.log", "/.authorized_keys.backup", "/home/office/doc.txt", "/repos/proj/README", "/.pipeos/users.manifest"):
+for f in ("/.pipeos/ledger/2026-09.jsonl", "/.pipeos/schedule/runs.log", "/claude/projects/p1/s.jsonl", "/claude/projects/-root/memory/MEMORY.md",
+          "/pipebox/jobs/drill/prompt", "/backup/pipe/credentials.dat", "/backup/pipeos.apkovl.20260914.tar.gz",
+          "/logs/selfcheck.log", "/.authorized_keys.backup", "/home/office/doc.txt", "/repos/proj/README", "/.pipeos/users.manifest"):
     open(WORK + f, "w").write("x")
+os.makedirs(HOME + "/.ssh", exist_ok=True); open(HOME + "/.ssh/authorized_keys", "w").write("ssh-ed25519 AAAA old-owner\n")
 env = dict(os.environ, PATH=BIN + ":" + os.environ["PATH"], PIPEOS_ETC=ETC, PIPEOS_ROOT_HOME=HOME, PIPEOS_RUN=RUN, PIPEOS_WORK=WORK,
            PIPEOS_TLS_INIT=BIN + "/pipeos-tls-init", PIPEOS_REBOOT_BIN=BIN + "/reboot", PIPEOS_CARD_GEN=BIN + "/pipebox-card",
            PIPEOS_SAVE_BIN=BIN + "/pipeos-save", PIPEOS_UNCLAIM_TEST="1")
@@ -89,13 +93,19 @@ check("6 pipeos-save's unclaim mode skips the provisioned guard, never short-cir
       and 'mv "$KNOWN_GOOD.new" "$KNOWN_GOOD"' in save and 'rm -f "$MEDIA"/pipeos.[0-9]*.tar.gz' in save
       and save.index('rm -f "$MEDIA/$(hostname).apkovl.tar.gz"') < save.index('if [ -n "$UNCLAIM" ]; then\n    # nobody')
       and not re.search(r"^\s*lbu commit", open(PIPEOS).read(), re.M))
-gone_w = [f for f in ("/.pipeos/ledger", "/.pipeos/schedule", "/pipebox/sessions", "/pipebox/webchat", "/pipebox/state", "/claude/projects/p1", "/logs/selfcheck.log", "/.authorized_keys.backup") if os.path.exists(WORK + f)]
-check("8 the owner's private state on /work goes (ledger, schedule runs, sessions, chat, agent state, transcripts, logs, the key backup); /work/home, /work/repos, users.manifest and an empty claude/projects stay",
-      not gone_w and os.path.exists(WORK + "/home/office/doc.txt") and os.path.exists(WORK + "/repos/proj/README")
-      and os.path.exists(WORK + "/.pipeos/users.manifest") and os.path.isdir(WORK + "/claude/projects"), repr(gone_w))
+gone_w = [f for f in ("/.pipeos/ledger/2026-09.jsonl", "/.pipeos/schedule/runs.log", "/pipebox/sessions", "/pipebox/webchat", "/pipebox/state", "/pipebox/jobs",
+                      "/claude/projects/p1", "/claude/projects/-root", "/backup", "/logs/selfcheck.log", "/.authorized_keys.backup") if os.path.exists(WORK + f)]
+check("8 the owner's private state on /work goes (ledger, schedule runs, sessions, chat, agent state, job dirs, transcripts AND memory, logs, the key backup, /work/backup's apkovl + pipe copies); the root ssh key goes; the hot-set dirs are emptied not removed; /work/home, /work/repos, users.manifest and an empty claude/projects stay",
+      not gone_w and not os.path.exists(HOME + "/.ssh/authorized_keys") and os.path.isdir(WORK + "/.pipeos/ledger") and os.path.isdir(WORK + "/logs")
+      and os.path.exists(WORK + "/home/office/doc.txt") and os.path.exists(WORK + "/repos/proj/README")
+      and os.path.exists(WORK + "/.pipeos/users.manifest") and os.path.isdir(WORK + "/claude/projects"), repr((gone_w, os.path.exists(HOME + "/.ssh/authorized_keys"))))
 sc = open(os.path.join(REPO, "overlay/usr/local/bin/pipeos-selfcheck")).read()
 check("7 selfcheck: an unprovisioned box wants no pipe and no claude (nobody's box runs nothing)",
       '[ -f /etc/pipeos/provisioned ] || SERVICE_PIPE=off SERVICE_CLAUDE=off' in sc)
+stale = {f: open(os.path.join(REPO, f)).read() for f in ("overlay/usr/local/bin/pipeos", "overlay/usr/local/bin/pipebox-card", "overlay/usr/local/bin/pipeos-selfcheck", "overlay/etc/issue", "overlay/etc/motd")}
+bad = [f for f, t in stale.items() if "pipebox-setup" in t or "UNPROVISIONED" in t]
+check("9 nobody's box speaks the wizard's language everywhere it is met: no 'UNPROVISIONED' or 'run pipebox-setup' in pipeos status, the console banner, its generator, or selfcheck",
+      not bad and "chooses a password" in stale["overlay/usr/local/bin/pipeos"] and "choose a password" in stale["overlay/etc/issue"], repr(bad))
 
 shutil.rmtree(D, ignore_errors=True)
 print("%d/%d" % (sum(RESULTS), len(RESULTS)))
