@@ -9,6 +9,9 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 BIN = os.path.join(REPO, "overlay/usr/local/bin/pipeos-flash")
+sys.path.insert(0, HERE)
+import controls_lib  # noqa: E402
+
 PROBE = os.path.join(HERE, "check-flash.py")
 
 BREAKS = [
@@ -59,8 +62,10 @@ BREAKS = [
 ]
 
 src = open(BIN).read()
-failed = False
-for name, old, new in BREAKS:
+
+
+def one(brk):
+    name, old, new = brk
     if src.count(old) != 1:
         sys.exit("control %s: anchor appears %d times — fix the controls before trusting them"
                  % (name[0], src.count(old)))
@@ -70,7 +75,11 @@ for name, old, new in BREAKS:
     p = subprocess.run([sys.executable, PROBE], capture_output=True, text=True,
                        env=dict(os.environ, CHECK_FLASH_BIN=path))
     os.unlink(path)
-    fails = [l for l in p.stdout.splitlines() if l.startswith("FAIL")]
+    return name, [l for l in p.stdout.splitlines() if l.startswith("FAIL")]
+
+
+failed = False
+for name, fails in controls_lib.pmap(one, BREAKS):
     print("%s\n   -> %d row(s) fail" % (name, len(fails)))
     for l in fails:
         print("      " + l[5:].split("  [")[0])

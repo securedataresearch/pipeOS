@@ -243,6 +243,7 @@ echo "done — reload https://@HOST@.local/ and look for the padlock (restart th
 
 REBOOT_CMD = os.environ.get("PIPEOS_REBOOT_CMD", "reboot")
 PTS_GLOB = os.environ.get("PIPEOS_PTS_GLOB", "/dev/pts/[0-9]*")   # an open terminal = a busy box; the probe points it elsewhere
+AUTH_DELAY = float(os.environ.get("PIPEOS_WEB_AUTH_DELAY", "2"))   # the pause a wrong password earns; the probes set 0
 
 
 def schedule_reboot(delay=2):
@@ -2228,7 +2229,7 @@ class Handler(BaseHTTPRequestHandler):
         name = (body.get("name") or "").strip().lower()
         u = find_user(read_users(), sess.get("user", ""))
         if not u or not check_hash(body.get("password") or "", u.get("hash", "")):
-            time.sleep(2)
+            time.sleep(AUTH_DELAY)
             return self.err(403, "that is not your password")
         v = vault_get(name)
         if v is None:
@@ -2249,7 +2250,7 @@ class Handler(BaseHTTPRequestHandler):
             vault.unlock(phrase)
             vault.export()
         except vault.Locked:
-            time.sleep(2)
+            time.sleep(AUTH_DELAY)
             return self.err(403, "that is not this vault's recovery phrase")
         except (vault.VaultError, OSError, ValueError) as e:
             return self.err(500, "vault: %s" % e)
@@ -2415,7 +2416,7 @@ class Handler(BaseHTTPRequestHandler):
         # handed it to the member that is now calling — accepted once
         if not cluster.take_join_token(pw):
             if u is None or not check_hash(pw, u.get("hash")):
-                time.sleep(2)
+                time.sleep(AUTH_DELAY)
                 return self.err(403, "wrong password for this Machine")
         try:
             ans = cluster.join(body.get("cluster") or {}, name=box_name())
@@ -2433,7 +2434,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(403, "this Machine is not claimed")
         u = find_user(read_users(), "admin")
         if u is None or not check_hash(body.get("password") or "", u.get("hash")):
-            time.sleep(2)
+            time.sleep(AUTH_DELAY)
             return self.err(403, "wrong password for this member")
         target = (body.get("addr") or body.get("id") or "").strip()
         token = body.get("token") or ""
@@ -2465,7 +2466,7 @@ class Handler(BaseHTTPRequestHandler):
         u = find_user(read_users(), "admin")
         pw = body.get("password") or ""
         if u is None or not check_hash(pw, u.get("hash")):
-            time.sleep(2)
+            time.sleep(AUTH_DELAY)
             return self.err(403, "that is not this Machine's admin password")
         target = (body.get("id") or body.get("addr") or "").strip()
         if not target:
@@ -2559,7 +2560,7 @@ class Handler(BaseHTTPRequestHandler):
         # one flat cost and one message for every failure — no user enumeration
         if (u is None or u.get("disabled") or u.get("share")
                 or not check_hash(body.get("password") or "", u.get("hash"))):
-            time.sleep(2)
+            time.sleep(AUTH_DELAY)
             return self.err(403, "wrong username or password")
         if not os.path.exists(USERS_CONF) and name == "admin":
             # pre-multi-user box: lazily seed the store from the legacy hash
@@ -3294,7 +3295,7 @@ class Handler(BaseHTTPRequestHandler):
         if u is None:
             return self.err(403, "your account no longer exists")
         if not check_hash(body.get("current") or "", u.get("hash")):
-            time.sleep(2)
+            time.sleep(AUTH_DELAY)
             return self.err(403, "current password is wrong")
         new = body.get("new") or ""
         if len(new) < 8:

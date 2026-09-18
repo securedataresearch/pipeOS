@@ -11,6 +11,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 WAKE = os.path.join(REPO, "overlay/usr/local/share/pipeos/web/wake.py")
 WOL = os.path.join(REPO, "overlay/etc/init.d/pipeos-wol")
+sys.path.insert(0, HERE)
+import controls_lib  # noqa: E402
+
 PROBE = os.path.join(HERE, "check-wake.py")
 
 BREAKS = [
@@ -32,8 +35,8 @@ BREAKS = [
      '		_up=1; [ "$(cat "$_d/operstate" 2>/dev/null)" = up ] && _up=0', '		_up=0; [ "$(cat "$_d/operstate" 2>/dev/null)" = up ] && _up=1'),
 ]
 
-failed = False
-for name, path, old, new in BREAKS:
+def one(brk):
+    name, path, old, new = brk
     src = open(path).read()
     if src.count(old) != 1:
         sys.exit("control %s: anchor appears %d times — fix the controls before trusting them" % (name[0], src.count(old)))
@@ -43,7 +46,11 @@ for name, path, old, new in BREAKS:
     env = dict(os.environ, **({"CHECK_WAKE_BIN": tmp} if path == WAKE else {"CHECK_WOL_BIN": tmp}))
     p = subprocess.run([sys.executable, PROBE], capture_output=True, text=True, env=env)
     os.unlink(tmp)
-    fails = [l for l in p.stdout.splitlines() if l.startswith("FAIL")]
+    return name, [l for l in p.stdout.splitlines() if l.startswith("FAIL")]
+
+
+failed = False
+for name, fails in controls_lib.pmap(one, BREAKS):
     print("%s\n   -> %d row(s) fail" % (name, len(fails)))
     for l in fails:
         print("      " + l[5:].split("  [")[0])
