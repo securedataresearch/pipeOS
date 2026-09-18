@@ -68,6 +68,20 @@ controls = [
      lambda s: s.replace("    verdict, vsrc, vage = lanid.verdict_now(BOOT_REPORT, HEALTH_LAST)\n",
                          "    verdict, vsrc, vage = lanid.verdict_line(BOOT_REPORT), \"boot\", 0\n"), ["13b"]),
 
+    ("N: the idlest pick ignores busy (an agent lands on a box mid-job, #300)", C,
+     lambda s: s.replace('    ok = [r for r in rows if r.get("awake") and not r.get("busy")]\n', '    ok = [r for r in rows if r.get("awake")]\n'), ["20"]),
+
+    ("O: a placement starts the agent on the box that was asked, whatever member was named (#300)", C,
+     lambda s: s.replace("    if mid == me:\n        st, out = local_start(spec)\n", "    if True:\n        st, out = local_start(spec)\n"), ["19"]),
+
+    ("P: a grey member's agents are shown as they last were, not as last-known (a dead box's agent reads as running, #300)", C,
+     lambda s: s.replace('                s["agents"] = [dict(a, running=None, last_status="") for a in last.get("agents", []) if isinstance(a, dict)]\n                s["agents_stale"] = True\n',
+                         '                s["agents"] = [a for a in last.get("agents", []) if isinstance(a, dict)]\n                s["agents_stale"] = False\n'), ["21"]),
+
+    ("Q: a placement the member refuses at run time is not saved (the job it wrote vanishes at the next boot, #300)", W,
+     lambda s: s.replace('        if out.get("changed"):          # the job is written even when the run was refused — so it is saved either way\n',
+                         '        if st == 200 and out.get("changed"):\n'), ["19b"]),
+
     ("F: the reader does not drop a member seen in another cluster", C,
      lambda s: s.replace("        if pid in d[\"members\"] and pid != self_id() and p.get(\"cl\") and p[\"cl\"] != d[\"id\"]:\n",
                          "        if False:\n"), ["9"]),

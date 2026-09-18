@@ -47,9 +47,20 @@ One that advertises another cluster id on the LAN has joined elsewhere and
 is dropped here by every reader on its own. Being on the LAN with the same
 password is not membership; only the list is.
 
+AGENTS (#300, docs/cluster.md §12). An agent (a scheduled job) is started
+ON a member and lives there: its record in that box's schedule.json, its
+work on that box's /work. `start_agent` places one — on the member named,
+or on the idlest awake member — through that member's own /api/agent/start
+(this box through the same function directly), the way a service switch
+fans out. Every member's agents ride its summary, so the page lists them
+all; a member that has gone grey shows the agents it had at its last
+answer, marked stale, from a per-member last-known copy under
+/work/pipeos/cluster/last (a note of what was seen, not a copy of state —
+nothing is ever restarted from it).
+
 Seams (env, the check-cluster.py probe): PIPEOS_CLUSTER_JSON, PIPEOS_CLUSTER_BUNDLE,
 PIPEOS_CLUSTER_STATUS, PIPEOS_CLUSTER_SELF (the box id), PIPEOS_TLS_DIR,
-PIPEOS_SAVE_BIN, PIPEOS_MDNS_CACHE, PIPEOS_MDNS_ROSTER.
+PIPEOS_SAVE_BIN, PIPEOS_MDNS_CACHE, PIPEOS_MDNS_ROSTER, PIPEOS_CLUSTER_LAST.
 """
 
 import hashlib
@@ -70,6 +81,7 @@ import lanid  # noqa: E402
 CLUSTER_JSON = os.environ.get("PIPEOS_CLUSTER_JSON", "/etc/pipeos/cluster.json")
 BUNDLE = os.environ.get("PIPEOS_CLUSTER_BUNDLE", "/run/pipeos/cluster-ca.pem")
 STATUS = os.environ.get("PIPEOS_CLUSTER_STATUS", "/run/pipeos/cluster.status")
+LAST_DIR = os.environ.get("PIPEOS_CLUSTER_LAST", "/work/pipeos/cluster/last")   # a member's last summary, for its grey row (#300)
 TLS_DIR = os.environ.get("PIPEOS_TLS_DIR", "/etc/pipeos/tls")
 CA_CRT = os.path.join(TLS_DIR, "ca.crt")
 SRV_CRT = os.path.join(TLS_DIR, "server.crt")
@@ -686,6 +698,33 @@ def fanout(ids, method, path, body=None, timeout=8):
     return out
 
 
+def _remember(mid, summary):
+    """Keep what a member last said — for its grey row (#300). Written only
+    when the list changed (the page polls every few seconds; /work must be
+    allowed to idle, #264). Best effort: a full or read-only /work loses
+    nothing but the grey list."""
+    agents = summary.get("agents") or []
+    if _last(mid).get("agents") == agents:
+        return
+    try:
+        os.makedirs(LAST_DIR, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=mid + ".", dir=LAST_DIR)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"t": int(time.time()), "agents": agents}, f)
+        os.rename(tmp, os.path.join(LAST_DIR, mid + ".json"))
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def _last(mid):
+    try:
+        with open(os.path.join(LAST_DIR, mid + ".json")) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def page(local_summary):
     """One row per member, two lines' worth of fields each: the local box
     from `local_summary()`, every other member from its /api/cluster/summary
@@ -701,7 +740,17 @@ def page(local_summary):
             s = dict(local_summary())
         else:
             st, b = answers.get(r["id"], (0, {"error": "not asked"}))
-            s = dict(b) if st == 200 and isinstance(b, dict) else {"error": (b.get("error") if isinstance(b, dict) else "") or "no answer"}
+            if st == 200 and isinstance(b, dict):
+                s = dict(b)
+                _remember(r["id"], s)
+            else:
+                s = {"error": (b.get("error") if isinstance(b, dict) else "") or "no answer"}
+                # a grey box's agents are grey too (#300): what it had when it
+                # last answered, shown as such, never restarted from here
+                last = _last(r["id"])
+                s["agents"] = [dict(a, running=None, last_status="") for a in last.get("agents", []) if isinstance(a, dict)]
+                s["agents_stale"] = True
+                s["agents_seen"] = last.get("t")
         s.update({"id": r["id"], "name": s.get("name") or r["name"], "self": r["self"], "fingerprint": r["fingerprint"],
                   "in_sync": r["in_sync"], "ip": s.get("ip") or r["ip"], "host": s.get("host") or r["host"],
                   "last_seen": r["last_seen"]})
@@ -733,6 +782,60 @@ def reboot_all(local_reboot):
            for mid, (st, b) in fanout(others, "POST", "/api/reboot", {}).items()}
     res[v["self"]] = local_reboot()
     return res
+
+
+def pick_idlest(rows):
+    """The member to start an agent on when the owner says "idlest": awake,
+    nothing busy, then the least load per cpu, then the fewest agents
+    placed there. A member that reports no load (a release before #300,
+    a failed /proc read) sorts last — it may not know how to take an agent.
+    None when nobody qualifies (every box busy or off)."""
+    def load(r):
+        l1, n = r.get("load1"), r.get("ncpu")
+        return (l1 / n) if isinstance(l1, (int, float)) and isinstance(n, int) and n > 0 else float("inf")
+    ok = [r for r in rows if r.get("awake") and not r.get("busy")]
+    if not ok:
+        return None
+    ok.sort(key=lambda r: (load(r), len(r.get("agents") or []), r["id"]))
+    return ok[0]["id"]
+
+
+def start_agent(on, spec, local_start, local_summary):
+    """Place an agent (#300): `on` is a member's id or name — the default,
+    explicit — or "idlest". The chosen member takes it through its own
+    /api/agent/start (this box through `local_start`), so the refusals are
+    the member's own: a bad schedule, a running job, a reached cap.
+    Returns (status, {"on": id, "name": ..., ...}) or (status, {"error"})."""
+    v = view()
+    me = v["self"]
+    if on == "idlest":
+        pg = page(local_summary)
+        mid = pick_idlest(pg["members"])
+        if not mid:
+            return 409, {"error": "no member is idle right now — every one is busy or off; name one to start there anyway"}
+    else:
+        want = on.strip().lower()
+        want = want[:-6] if want.endswith(".local") else want
+        hit = [r for r in v["members"] if want in (r["id"], (r["name"] or "").lower(), (r.get("host") or "").lower().removesuffix(".local"))]
+        if not hit:
+            return 404, {"error": "%s is not a member" % on}
+        mid = hit[0]["id"]
+    if mid == me:
+        st, out = local_start(spec)
+    else:
+        try:
+            st, out, who = call(mid, "POST", "/api/agent/start", spec, timeout=20)
+        except ClusterError as e:
+            return 502, {"error": "%s did not take it: %s" % (mid, e)}
+        if not who:
+            return 502, {"error": "%s: not a member's answer" % mid}
+        if not isinstance(out, dict):
+            out = {"error": "%s" % st}
+    if st != 200:
+        return st, {"error": "%s: %s" % (mid, out.get("error") or st), "on": mid}
+    out["on"] = mid
+    out["picked"] = (on == "idlest")
+    return 200, out
 
 
 def services_all(ids, key, on, local_set):
@@ -803,6 +906,10 @@ def _save():
 
 def _report(r):
     return ", ".join("%s=%s" % kv for kv in sorted(r.items())) or "(no other members)"
+
+
+def _agents_line(agents, stale=False):
+    return ", ".join("%s (%s)" % (a.get("name"), "grey" if stale else ("running" if a.get("running") else (a.get("last_status") or "never ran"))) for a in agents)
 
 
 def main(argv):
@@ -890,7 +997,41 @@ def main(argv):
                 else:
                     l2 = "off · last seen %s · %s" % (time.strftime("%Y-%m-%d %H:%MZ", time.gmtime(r.get("last_seen") or 0)), r.get("error", ""))
                 print("member    %s\n          %s" % (l1, l2))
+                if r.get("agents"):
+                    print("          agents%s: %s" % (" (last known)" if r.get("agents_stale") else "", _agents_line(r["agents"], bool(r.get("agents_stale")))))
             return 0
+        if verb == "agents":
+            st, out, who = call("local", "GET", "/api/cluster/page")
+            if st != 200 or not who:
+                print("cluster: the page did not answer (%s)" % st, file=sys.stderr); return 1
+            for r in out.get("members", []):
+                for a in r.get("agents") or []:
+                    state = "grey (box off)" if not r.get("awake") else ("running" if a.get("running") else (a.get("last_status") or "never ran"))
+                    print("%-12s %s  %-32s %-10s %s" % (r.get("name") or "", r["id"], a.get("name"), a.get("backend") or "claude", state))
+            return 0
+        if verb == "start":
+            flags = {}
+            rest = argv[1:]
+            name = rest[0] if rest and not rest[0].startswith("--") else ""
+            i = 1 if name else 0
+            while i < len(rest):
+                if rest[i].startswith("--") and i + 1 < len(rest) and not rest[i + 1].startswith("--"):
+                    flags[rest[i][2:]] = rest[i + 1]; i += 2
+                elif rest[i].startswith("--"):
+                    print("cluster: %s needs a value" % rest[i], file=sys.stderr); return 2
+                else:
+                    name = ""; break
+            if not name or "on" not in flags or set(flags) - {"on", "prompt", "cron", "cwd", "backend", "session", "notify"}:
+                print("usage: pipeos cluster start NAME --on ID|NAME|idlest [--prompt TEXT --cron \"M H D M W\" [--cwd DIR] [--backend claude|hermes] [--session fresh|continue] [--notify on|off]]", file=sys.stderr); return 2
+            body = dict(flags, name=name)
+            if "notify" in body:
+                body["notify"] = body["notify"] == "on"
+            st, out, who = call("local", "POST", "/api/cluster/start", body, timeout=30)
+            if st != 200 or not who:
+                print("cluster: %s" % ((out.get("error") if isinstance(out, dict) else "") or st), file=sys.stderr); return 1
+            print("started %s on %s%s%s" % (name, out.get("on"), " (the idlest member)" if out.get("picked") else "",
+                                          "" if out.get("saved", True) else "; NOT saved: " + (out.get("save_detail") or "")))
+            return 0 if out.get("saved", True) else 1
         if verb == "reboot-all":
             st, out, who = call("local", "GET", "/api/cluster/page")
             busy = out.get("busy", []) if st == 200 and isinstance(out, dict) else []
@@ -921,7 +1062,7 @@ def main(argv):
     except ClusterError as e:
         print("cluster: %s" % e, file=sys.stderr)
         return 1
-    print("usage: pipeos cluster init [NAME] [--force] | status | ca | add ID|NAME|IP [NAME] | remove ID | sync | join MEMBER | adopt ID|IP [NAME] | page | reboot-all [--yes] | services KEY on|off [ID...] | call ID|NAME|IP METHOD PATH [JSON]", file=sys.stderr)
+    print("usage: pipeos cluster init [NAME] [--force] | status | ca | add ID|NAME|IP [NAME] | remove ID | sync | join MEMBER | adopt ID|IP [NAME] | page | agents | start NAME --on ID|NAME|idlest [--prompt TEXT --cron SPEC ...] | reboot-all [--yes] | services KEY on|off [ID...] | call ID|NAME|IP METHOD PATH [JSON]", file=sys.stderr)
     return 2
 
 

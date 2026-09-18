@@ -1094,6 +1094,17 @@ async function dashboard() {
           </div>
         </div>
         <div class="card">
+          <div class="cardhead"><h2>Start an agent on a Machine</h2><span class="note" id="clagnote"></span></div>
+          <p class="note">An agent is started <b>on</b> a member and lives there: its schedule, its work and its secrets stay on that Machine. Pick the Machine; “the idlest member” picks the one with nothing busy and the least load. A Machine that is off keeps its agents until it is back.</p>
+          <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+            <input id="clagname" placeholder="name (a-z 0-9 -)" style="width:11rem" autocomplete="off">
+            <select id="clagon"></select>
+            <input id="clagcron" placeholder="schedule, e.g. @daily or 0 7 * * 1-5" style="width:16rem" autocomplete="off">
+          </div>
+          <textarea id="clagprompt" rows="2" placeholder="what it does (the prompt) — leave empty to run an agent that already lives on that Machine" style="width:100%;margin-top:.4rem"></textarea>
+          <div style="margin-top:.4rem"><button id="claggo" class="btn small" type="button">Start</button></div>
+        </div>
+        <div class="card">
           <div class="cardhead"><h2>Add a Machine</h2><span class="note" id="clcnote"></span></div>
           <p class="note">Claimed Machines on this network that are not members. Adding one needs <b>its</b> admin password — the one typed at its setup — because the list, not the password, is what makes a member.</p>
           <div id="clcands" class="note">looking…</div>
@@ -2516,6 +2527,9 @@ async function dashboard() {
         const when = !m.awake ? "" : m.verdict_source === "live" ? ` · checked ${Math.max(1, Math.round((m.verdict_age_s || 0) / 60))}m ago` : " · at boot";
         const mvt = mvt0 + when;
         const act = m.awake ? ((m.busy && m.busy.length) ? m.busy.join(", ") : "idle") : (m.error || "no answer");
+        // the agents that live on this Machine (#300): started here, they stay here; a grey box's are last-known
+        const agentTxt = (m.agents || []).map(a => `${esc(a.name)} <span class="note">(${m.awake ? (a.running ? "running" : esc(a.last_status || "never ran")) : "grey"})</span>`).join(", ");
+        const agents = agentTxt ? `<div class="desc">agents${m.awake ? "" : " (last known)"}: ${agentTxt}</div>` : "";
         const disk = m.awake && m.work_pct != null ? `disk ${m.work_pct}% · ${gb(m.work_free_mb)}` : "";
         const rel = m.awake && m.commit ? `release ${m.commit.slice(0, 12)}${m.built ? " · " + m.built.slice(0, 10) : ""}` : "";
         const pills = (m.self ? '<span class="pill">this one</span>' : "") + (m.in_sync ? "" : '<span class="pill status-warn">list differs</span>')
@@ -2524,6 +2538,7 @@ async function dashboard() {
           <div style="min-width:0">
             <div class="name">${href ? `<a href="${esc(href)}">${esc(label)}</a>` : esc(label)} <span class="note">${esc(m.id)}</span> ${pills}</div>
             <div class="desc"><span class="${mvc}">${esc(mvt)}</span> · ${esc(act)}${disk ? " · " + esc(disk) : ""}${rel ? " · " + esc(rel) : ""}${m.awake && m.uptime_s != null ? " · up " + esc(fmtUptime(m.uptime_s)) : ""}</div>
+            ${agents}
             ${m.awake && m.boot_report ? `<details><summary class="note">boot report</summary><pre class="report">${esc(m.boot_report)}</pre></details>` : ""}
           </div>
           <div style="display:flex;gap:.4rem;flex-direction:column;align-items:flex-end">
@@ -2536,6 +2551,8 @@ async function dashboard() {
       note.textContent = `cluster ${c.cluster} · ${pg.members.length} member${pg.members.length === 1 ? "" : "s"}` + (off ? ` · ${off} off` : "") + (diff ? ` · ${diff} out of sync` : "") + (c.dropped && c.dropped.length ? ` · dropped ${c.dropped.join(", ")} (joined another cluster)` : "") + " · roles are editable once #214 lands";
       const idsEl = v.querySelector("#clsvcids");
       if (idsEl && idsEl.childElementCount !== pg.members.length) idsEl.innerHTML = pg.members.map(m => `<label class="note" style="margin-right:.6rem"><input type="checkbox" data-clsvcid="${esc(m.id)}" checked> ${esc(m.name || m.id)}</label>`).join("");
+      const onEl = v.querySelector("#clagon");
+      if (onEl && onEl.childElementCount !== pg.members.length + 1) onEl.innerHTML = pg.members.map(m => `<option value="${esc(m.id)}">${esc(m.name || m.id)}${m.awake ? "" : " (off)"}</option>`).join("") + '<option value="idlest">the idlest member</option>';
       v.querySelector("#clreboot").onclick = async () => {
         const busy = (pg.busy || []).map(b => (b.name || b.id) + ": " + b.why.join(", ")).join("\n");
         if (!confirm("Reboot every member of the cluster? " + (busy ? "\n\nBusy right now:\n" + busy + "\n\nThey will reboot anyway." : "Nothing is busy.") + "\n\nThis Machine reboots last.")) return;
@@ -2568,6 +2585,20 @@ async function dashboard() {
     }
   };
   const pushed = (p) => { const ks = Object.keys(p || {}); return ks.length ? "list pushed: " + ks.map(k => k + "=" + p[k]).join(", ") : "no other members to tell"; };
+  const claggo = v.querySelector("#claggo");
+  if (claggo) claggo.onclick = async () => {
+    const n = v.querySelector("#clagnote"); claggo.disabled = true; n.textContent = "starting…";
+    const body = { name: v.querySelector("#clagname").value.trim(), on: v.querySelector("#clagon").value };
+    const prompt = v.querySelector("#clagprompt").value, cron = v.querySelector("#clagcron").value.trim();
+    if (prompt.trim()) body.prompt = prompt;
+    if (cron) body.cron = cron;
+    try {
+      const r = await api("/api/cluster/start", body);
+      n.textContent = `started ${r.name} on ${r.on}${r.picked ? " (the idlest member)" : ""}` + (r.saved === false ? " — NOT saved: " + r.save_detail : "");
+      pollCluster();
+    } catch (e) { n.textContent = e.message; }
+    claggo.disabled = false;
+  };
   const clsvcgo = v.querySelector("#clsvcgo");
   if (clsvcgo) clsvcgo.onclick = async () => {
     const n = v.querySelector("#clsvcnote"); clsvcgo.disabled = true; n.textContent = "applying…";
