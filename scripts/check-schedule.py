@@ -35,6 +35,7 @@ def check(desc, ok, detail=""):
 D = tempfile.mkdtemp(prefix="cksched-")
 shutil.copy(CRONSPEC, os.path.join(D, "cronspec.py"))
 shutil.copy(TICK, os.path.join(D, "schedtick.py"))
+shutil.copy(os.path.join(WEB, "ledger.py"), os.path.join(D, "ledger.py"))   # the tick's sibling import: which cap says no (#302)
 spec = importlib.util.spec_from_file_location("cronspec", os.path.join(D, "cronspec.py"))
 cs = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cs)
@@ -93,7 +94,7 @@ def jobs(*js):
 def tick(now, run_bin=RUN_STUB):
     env = dict(os.environ, PIPEOS_SCHED_CONF=CONF, PIPEOS_SCHED_STATE_DIR=STATE_DIR, PIPEOS_SCHED_RUN_BIN=run_bin,
                PIPEOS_SCHED_LOG=os.path.join(LOGDIR, "schedule.log"), PIPEOS_SCHED_LOGDIR=LOGDIR, PIPEOS_SCHED_PAUSED=PAUSED,
-               PIPEOS_SCHED_NOW=now)
+               PIPEOS_SCHED_PAUSED_JSON=os.environ.get("PIPEOS_SCHED_PAUSED_JSON", os.path.join(D, "no-paused.json")), PIPEOS_SCHED_NOW=now)
     p = subprocess.run([sys.executable, os.path.join(D, "schedtick.py")], capture_output=True, text=True, env=env)
     time.sleep(0.2)
     return p.returncode
@@ -130,6 +131,20 @@ os.unlink(PAUSED)
 st = json.load(open(os.path.join(STATE_DIR, "state.json")))
 check("6 the state file remembers the last minute each job fired, atomically", st["jobs"]["every-15"]["last_fired_minute"] == "2026-09-10T18:15"
       and not os.path.exists(os.path.join(STATE_DIR, "state.json.new")), repr(st))
+# 5b. an agent's own cap (#302): paused.json stops that one job with its text; the others fire
+PAUSED_JSON = os.path.join(D, "paused.json")
+json.dump({"box": None, "cluster": None, "agents": {"every-15": {"scope": "agent", "name": "every-15", "cap": 5, "spent": 5.2, "since": "2026-09-10",
+           "text": "agent every-15: monthly cap USD 5 reached 2026-09-10 (spent 5.20; the per-agent cap on every-15); every-15 resumes on the 1st or when its cap is raised (pipeos schedule set every-15 --cap N)"}}}, open(PAUSED_JSON, "w"))
+jobs({"name": "every-15", "cron": "*/15 * * * *", "prompt": "p", "enabled": True}, {"name": "also-15", "cron": "*/15 * * * *", "prompt": "q", "enabled": True})
+os.environ["PIPEOS_SCHED_PAUSED_JSON"] = PAUSED_JSON
+tick("2026-09-10T18:30")
+e = fired()
+del os.environ["PIPEOS_SCHED_PAUSED_JSON"]
+os.unlink(PAUSED_JSON)
+check("5b under an agent's own pause entry in paused.json that job is skipped and its log names ITS cap, while another job sharing the minute fires",
+      e == c + ["also-15"] and "agent every-15: monthly cap USD 5" in open(jl).read() and "skipped every-15" in open(os.path.join(LOGDIR, "schedule.log")).read(),
+      "e=%r c=%r" % (e, c))
+jobs({"name": "every-15", "cron": "*/15 * * * *", "prompt": "p", "enabled": True})
 
 # ── 7-13. the runner ─────────────────────────────────────────────────────
 BIN = os.path.join(D, "bin")
@@ -168,7 +183,7 @@ BIG_PROMPT = "line one with 'quotes' and \"doubles\" and $dollar and `ticks`\n" 
 def runner(job, extra_env=None, wait=True):
     env = dict(os.environ, PATH=BIN + ":" + os.environ.get("PATH", ""), PIPEOS_SCHED_CONF=CONF, PIPEOS_SCHED_STATE_DIR=RSTATE,
                PIPEOS_SCHED_LOCK=LOCK, PIPEOS_SCHED_LOGDIR=RLOGS, PIPEOS_SCHED_PIPEBOX_CONF=PBCONF, PIPEOS_SCHED_SETTINGS=SETTINGS,
-               PIPEOS_SCHED_SECRETS=SECRETS, PIPEOS_SCHED_WORK=WORK, PIPEOS_SCHED_PAUSED=os.path.join(D, "rpaused"))
+               PIPEOS_SCHED_SECRETS=SECRETS, PIPEOS_SCHED_WORK=WORK, PIPEOS_SCHED_PAUSED=os.path.join(D, "rpaused"), PIPEOS_SCHED_PAUSED_JSON=os.path.join(D, "no-rpaused.json"))
     env.pop("CLAUDE_TIMEOUT", None)
     if extra_env:
         env.update(extra_env)
@@ -281,6 +296,18 @@ rc_p, _ = runner("blank")
 check("18 the runner itself honours the cap's pause marker (Run now and an agent's pipeos-schedule-run are not a way around the tick): rc 75, claude not started, the log says why",
       rc_p == 75 and not argv("claude") and "monthly cap" in open(os.path.join(RLOGS, "schedule-blank.log")).read(), "rc=%s" % rc_p)
 os.unlink(os.path.join(D, "rpaused"))
+clear("claude")
+# 18b. the runner honours an agent's own entry in paused.json too, and only for that agent
+RPJ = os.path.join(D, "rpaused.json")
+json.dump({"box": None, "cluster": None, "agents": {"blank": {"scope": "agent", "name": "blank", "cap": 1, "spent": 1.5, "since": "2026-09-10",
+           "text": "agent blank: monthly cap USD 1 reached 2026-09-10 (spent 1.50; the per-agent cap on blank); blank resumes on the 1st or when its cap is raised (pipeos schedule set blank --cap N)"}}}, open(RPJ, "w"))
+rc_pj, _ = runner("blank", {"PIPEOS_SCHED_PAUSED_JSON": RPJ})
+none_started = not argv("claude")
+rc_pj2, _ = runner("root", {"PIPEOS_SCHED_PAUSED_JSON": RPJ})
+check("18b the runner refuses an agent whose OWN cap is reached (rc 75, claude not started, the log names the agent's cap) and runs another job under the same paused.json",
+      rc_pj == 75 and none_started and "agent blank: monthly cap USD 1" in open(os.path.join(RLOGS, "schedule-blank.log")).read() and rc_pj2 == 0 and len(argv("claude")) == 1,
+      "pj=%s started=%r root=%s" % (rc_pj, not none_started, rc_pj2))
+os.unlink(RPJ)
 clear("claude")
 runner("flaky", {"STUB_RC": "1"}); f1 = argv("claude"); clear("claude")
 runner("flaky"); f2 = argv("claude"); clear("claude")

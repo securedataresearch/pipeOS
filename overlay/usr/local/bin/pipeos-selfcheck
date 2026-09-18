@@ -870,13 +870,20 @@ if mountpoint -q /work && [ -x /usr/local/bin/pipeos-ledger-ingest ]; then
             warnn "usage ledger: nothing ingested for $(( (_now - _li) / 60 )) min while the dashboard is up — rc-service pipeos-web restart"
         fi
         _lc=$(printf '%s' "$_lt" | jq -r '.cap.usd // 0'); _lp=$(printf '%s' "$_lt" | jq -r '.cap.pct // 0'); _ls=$(printf '%s' "$_lt" | jq -r '.cap.spent // 0')
-        if [ "${_lc:-0}" -gt 0 ] 2>/dev/null; then
-            if [ -f /work/.pipeos/ledger/paused ]; then
-                warnn "usage: the monthly cap (USD $_lc) is reached — scheduled jobs are paused until it is raised under Usage or the month turns"
-            elif [ "${_lp:-0}" -ge 80 ] 2>/dev/null; then
-                warnn "usage: USD $_ls of the USD $_lc monthly cap ($_lp%) — scheduled jobs pause at 100%"
-            fi
+        _lpt=$(printf '%s' "$_lt" | jq -r '.cap.paused // ""')
+        if [ -n "$_lpt" ]; then
+            # the marker's own sentence: it names the cap that bit (#302)
+            warnn "usage: paused — $_lpt"
+        elif [ "${_lc:-0}" -gt 0 ] 2>/dev/null && [ "${_lp:-0}" -ge 80 ] 2>/dev/null; then
+            warnn "usage: USD $_ls of the USD $_lc monthly cap ($_lp%) — scheduled jobs pause at 100%"
         fi
+        # in the parent shell, not a pipeline: warnn counts, and a subshell's count is lost
+        _laps=$(printf '%s' "$_lt" | jq -r '.cap.agents // {} | to_entries[] | select(.value.paused != "") | .value.paused' 2>/dev/null)
+        while IFS= read -r _lap; do
+            [ -n "$_lap" ] && warnn "usage: $_lap"
+        done <<EOF_LAPS
+$_laps
+EOF_LAPS
     fi
 fi
 

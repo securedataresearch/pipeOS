@@ -208,6 +208,68 @@ s6 = L().enforce_cap()
 check("15 a new month is a fresh slate: spend is 0 of the cap, no pause, no DM", not s6["paused"] and not s6["warned"] and len(dms()) == 2 and L().totals()["month"]["calls"] == 0, repr(s6))
 os.environ["PIPEOS_LEDGER_NOW"] = NOW
 
+# ── 18-21. the agent cap (#302): the job's own number, the pause that names it ──
+SCHED = os.path.join(D, "schedule.json")
+
+
+def set_agent_cap(name, cap):
+    jobs = [{"name": "nightly", "cron": "0 2 * * *", "prompt": "x", "enabled": True}, {"name": "other", "cron": "0 3 * * *", "prompt": "y", "enabled": True}]
+    for j in jobs:
+        if j["name"] == name and cap:
+            j["cap_usd"] = cap
+    json.dump({"v": 1, "jobs": jobs}, open(SCHED, "w"))
+
+
+def LS():
+    return lg.Ledger(dir=LDIR, transcripts=TR, rates=RATES, conf=CONF, runs_log=RUNS, sessions_dir=SESS, webchat_sid=WSID, pipe_bin=PIPE, schedule=SCHED)
+
+
+set_cap("")
+set_agent_cap("nightly", 0)
+LS().enforce_cap()
+nightly_spent = LS().totals()["month_by_actor"]["job:nightly"]["usd"]
+set_agent_cap("nightly", int(nightly_spent))          # 100%+ of a whole-dollar cap
+d0 = len(dms())
+s18 = LS().enforce_cap()
+pj = lg.read_paused(os.path.join(LDIR, "paused.json"))      # tolerant: a control that writes nothing must FAIL the row, not crash the probe
+why_n, why_o = LS().paused_for("nightly"), LS().paused_for("other")
+s18b = LS().enforce_cap()
+t18 = LS().totals()
+check("18 an agent over its own cap: paused.json carries its entry and no plain marker is written (the box is not paused); paused_for names the agent for it and says nothing for another job; one DM naming the agent, not a second; totals show it",
+      s18["agents_paused"] == ["nightly"] and not s18["paused"] and s18["changed"] and "nightly" in pj["agents"] and pj["box"] is None
+      and not os.path.exists(os.path.join(LDIR, "paused")) and why_n.startswith("agent nightly: monthly cap USD %d reached 2026-09-10" % int(nightly_spent)) and "pipeos schedule set nightly --cap" in why_n and why_o == ""
+      and len(dms()) == d0 + 1 and "agent nightly" in dms()[-1] and "other jobs keep running" in dms()[-1] and not s18b["changed"] and len(dms()) == d0 + 1
+      and t18["cap"]["agents"]["nightly"]["paused"] == why_n and t18["cap"]["paused"] == "" and t18["cap"]["paused_by"] is None,
+      repr((s18, pj, why_n, why_o, dms()[-1:], t18["cap"])))
+set_cap(cap_over)
+s19 = LS().enforce_cap()
+ptxt19 = LS().paused_text()
+why_n19, why_o19 = LS().paused_for("nightly"), LS().paused_for("other")
+t19 = LS().totals()
+set_cap(100000)
+s19b = LS().enforce_cap()
+pj19 = lg.read_paused(os.path.join(LDIR, "paused.json"))
+check("19 box and agent both reached: the plain marker carries the BOX text (every job stops), paused_for gives nightly the box text too — most restrictive wins and it is named — and other the box text; paused_by is the box; lifting the box cap leaves only the agent's entry and removes the plain marker",
+      s19["paused"] and s19["agents_paused"] == ["nightly"] and ptxt19.startswith("monthly cap USD %d reached 2026-09-10" % cap_over) and "this Machine's cap" in ptxt19
+      and why_n19 == ptxt19 and why_o19 == ptxt19 and t19["cap"]["paused_by"]["scope"] == "box" and t19["cap"]["paused"] == ptxt19
+      and not s19b["paused"] and s19b["agents_paused"] == ["nightly"] and not os.path.exists(os.path.join(LDIR, "paused")) and pj19["box"] is None and "nightly" in pj19["agents"]
+      and LS().paused_for("other") == "" and LS().paused_for("nightly").startswith("agent nightly"),
+      repr((s19, ptxt19, why_n19, why_o19, s19b, pj19)))
+set_agent_cap("nightly", 0)
+s20 = LS().enforce_cap()
+check("20 clearing the agent's cap lifts its pause at once: paused.json is gone (nothing paused), paused_for is empty for every job",
+      not s20["agents_paused"] and s20["changed"] and not os.path.exists(os.path.join(LDIR, "paused.json")) and LS().paused_for("nightly") == "", repr(s20))
+set_agent_cap("nightly", int(nightly_spent)); LS().enforce_cap()
+envp = dict(os.environ, PIPEOS_LEDGER_DIR=LDIR, PIPEOS_LEDGER_TRANSCRIPTS=TR, PIPEOS_LEDGER_RATES=RATES, PIPEOS_LEDGER_CONF=CONF,
+            PIPEOS_LEDGER_RUNS=RUNS, PIPEOS_LEDGER_SESSIONS=SESS, PIPEOS_LEDGER_WEBCHAT_SID=WSID, PIPEOS_LEDGER_PIPE=PIPE, PIPEOS_LEDGER_SCHEDULE=SCHED)
+pn = subprocess.run([sys.executable, LEDGER, "paused", "--job", "nightly"], capture_output=True, text=True, env=envp)
+po = subprocess.run([sys.executable, LEDGER, "paused", "--job", "other"], capture_output=True, text=True, env=envp)
+pt = subprocess.run([sys.executable, LEDGER, "totals"], capture_output=True, text=True, env=envp)
+check("21 the CLI: `paused --job NAME` prints the cap that stops NAME (empty for a job that may run); `totals` lists each agent's cap and PAUSED",
+      pn.returncode == 0 and pn.stdout.startswith("agent nightly: monthly cap") and po.returncode == 0 and po.stdout == ""
+      and pt.returncode == 0 and "agent nightly" in pt.stdout and "PAUSED" in pt.stdout, repr((pn.stdout[:80], po.stdout, pt.stdout[-200:])))
+set_agent_cap("nightly", 0); set_cap(""); LS().enforce_cap()
+
 # ── 16. the CLI ────────────────────────────────────────────────────────
 env = dict(os.environ, PIPEOS_LEDGER_DIR=LDIR, PIPEOS_LEDGER_TRANSCRIPTS=TR, PIPEOS_LEDGER_RATES=RATES, PIPEOS_LEDGER_CONF=CONF,
            PIPEOS_LEDGER_RUNS=RUNS, PIPEOS_LEDGER_SESSIONS=SESS, PIPEOS_LEDGER_WEBCHAT_SID=WSID, PIPEOS_LEDGER_PIPE=PIPE)

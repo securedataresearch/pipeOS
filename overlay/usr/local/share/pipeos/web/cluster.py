@@ -835,6 +835,10 @@ def start_agent(on, spec, local_start, local_summary):
         return st, {"error": "%s: %s" % (mid, out.get("error") or st), "on": mid}
     out["on"] = mid
     out["picked"] = (on == "idlest")
+    if spec.get("cap_usd") and out.get("cap_usd") != spec["cap_usd"]:
+        # a member on an older release drops a key it does not know — say so
+        # rather than let an agent run uncapped in silence (the #308 review)
+        out["warning"] = "%s did not take the cap (it answered without one — an older release?); the agent runs UNCAPPED there" % mid
     return 200, out
 
 
@@ -1021,16 +1025,27 @@ def main(argv):
                     print("cluster: %s needs a value" % rest[i], file=sys.stderr); return 2
                 else:
                     name = ""; break
-            if not name or "on" not in flags or set(flags) - {"on", "prompt", "cron", "cwd", "backend", "session", "notify"}:
-                print("usage: pipeos cluster start NAME --on ID|NAME|idlest [--prompt TEXT --cron \"M H D M W\" [--cwd DIR] [--backend claude|hermes] [--session fresh|continue] [--notify on|off]]", file=sys.stderr); return 2
+            if not name or "on" not in flags or set(flags) - {"on", "prompt", "cron", "cwd", "backend", "session", "notify", "cap"}:
+                print("usage: pipeos cluster start NAME --on ID|NAME|idlest [--prompt TEXT --cron \"M H D M W\" [--cwd DIR] [--backend claude|hermes] [--session fresh|continue] [--notify on|off] [--cap N|none]]", file=sys.stderr); return 2
             body = dict(flags, name=name)
             if "notify" in body:
                 body["notify"] = body["notify"] == "on"
+            if "cap" in body:
+                c = body.pop("cap")
+                if c in ("none", "0"):
+                    body["cap_usd"] = 0
+                elif c.isdigit():
+                    body["cap_usd"] = int(c)
+                else:
+                    print("cluster: --cap is a whole number of dollars or none", file=sys.stderr); return 2
             st, out, who = call("local", "POST", "/api/cluster/start", body, timeout=30)
             if st != 200 or not who:
                 print("cluster: %s" % ((out.get("error") if isinstance(out, dict) else "") or st), file=sys.stderr); return 1
-            print("started %s on %s%s%s" % (name, out.get("on"), " (the idlest member)" if out.get("picked") else "",
-                                          "" if out.get("saved", True) else "; NOT saved: " + (out.get("save_detail") or "")))
+            print("started %s on %s%s%s%s" % (name, out.get("on"), " (the idlest member)" if out.get("picked") else "",
+                                            " (cap USD %d)" % out["cap_usd"] if out.get("cap_usd") else "",
+                                            "" if out.get("saved", True) else "; NOT saved: " + (out.get("save_detail") or "")))
+            if out.get("warning"):
+                print("cluster: WARNING — %s" % out["warning"], file=sys.stderr)
             return 0 if out.get("saved", True) else 1
         if verb == "reboot-all":
             st, out, who = call("local", "GET", "/api/cluster/page")

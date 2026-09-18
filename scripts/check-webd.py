@@ -56,7 +56,7 @@ webd.LEDGER_PAUSED = tmp + "/paused"
 # the usage ledger (#246): rows, transcripts, rates, the conf with the cap,
 # and the dashboard chat's own session id, all in the tempdir
 webd.LEDGER_DIR = tmp + "/ledger"
-webd.LEDGER_PAUSED = tmp + "/ledger/paused"
+webd.LEDGER_PAUSED = tmp + "/ledger/paused"; webd.LEDGER_PAUSED_JSON = tmp + "/ledger/paused.json"
 webd.LEDGER_TRANSCRIPTS = tmp + "/projects"
 webd.LEDGER_CONF = tmp + "/pipebox.conf"
 webd.LEDGER_SESSIONS = tmp + "/psessions"
@@ -609,7 +609,7 @@ for bad in ("40; rm -rf /", -1, 1e9, 4.5, "abc", [], True, None):
     req("/api/usage/cap", {"usd": bad}, expect=400)
 assert "MONTHLY_CAP_USD" not in open(webd.CARD).read() or "MONTHLY_CAP_USD=\n" in open(webd.CARD).read()
 ok("usage: a hostile cap is refused and the card is untouched")
-_card_set, webd.card_set = webd.card_set, (lambda updates: open(webd.LEDGER_CONF, "w").write('NICK=""\nOWNER_NICK=""\nMONTHLY_CAP_USD="%s"\n' % updates["MONTHLY_CAP_USD"]))
+_card_set, webd.card_set = webd.card_set, (lambda updates: open(webd.LEDGER_CONF, "w").write('NICK=""\nOWNER_NICK=""\nMONTHLY_CAP_USD="%s"\n' % updates.get("MONTHLY_CAP_USD", "")))
 r = req("/api/usage/cap", {"usd": 40})
 assert r["ok"] and r["cap"] == 40 and req("/api/usage")["cap"]["usd"] == 40 and req("/api/usage")["cap"]["pct"] == 9
 assert "MONTHLY_CAP_USD=" in open(webd.CARD).read()   # the key line was added to a card that predates it
@@ -618,8 +618,35 @@ assert r["ok"] and r["state"]["paused"] is True and os.path.exists(webd.LEDGER_P
 assert "monthly cap" in req("/api/schedule")["paused"]
 r = req("/api/usage/cap", {"usd": 0})
 assert r["ok"] and not os.path.exists(webd.LEDGER_PAUSED) and req("/api/usage")["cap"]["usd"] == 0
-webd.card_set = _card_set
 ok("usage: setting the cap writes the card (adding the key to an older card), saves, and enforces at once — under the spend pauses the schedule, 0 lifts it")
+# the agent scope (#302): the cap lives on the job; the pause names the agent and stops only it
+req("/api/schedule/set", {"name": "nightly", "cron": "0 2 * * *", "prompt": "count"})
+req("/api/schedule/set", {"name": "other", "cron": "0 3 * * *", "prompt": "count again"})
+req("/api/usage/cap", {"scope": "agent", "name": "ghost", "usd": 1}, expect=404)
+r = req("/api/usage/cap", {"scope": "agent", "name": "nightly", "usd": 1})        # job:nightly spent 2.0 this month
+rows = {j["name"]: j for j in req("/api/schedule")["jobs"]}
+assert r["ok"] and r["scope"] == "agent" and r["state"]["agents_paused"] == ["nightly"] and r["state"]["paused"] is False
+assert rows["nightly"]["cap_usd"] == 1 and rows["nightly"]["paused"].startswith("agent nightly: monthly cap USD 1") and rows["other"]["paused"] == "" and rows["other"]["cap_usd"] == 0
+assert not os.path.exists(webd.LEDGER_PAUSED) and os.path.exists(webd.LEDGER_PAUSED_JSON)
+e = req("/api/schedule/run", {"name": "nightly"}, expect=409)["error"]
+assert "agent nightly: monthly cap USD 1" in e and "pipeos schedule set nightly --cap" in e
+st = req("/api/status")
+assert st["usage_paused"] is False and st["usage_agents_paused"] == ["nightly"] and st["usage_paused_by"] is None
+u = req("/api/usage")
+assert u["cap"]["agents"]["nightly"]["usd"] == 1 and u["cap"]["agents"]["nightly"]["paused"] and abs(u["month_by_actor"]["job:nightly"]["usd"] - 2.0) < 1e-6
+r = req("/api/usage/cap", {"scope": "agent", "name": "nightly", "usd": 0})
+assert r["ok"] and {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["paused"] == "" and not os.path.exists(webd.LEDGER_PAUSED_JSON)
+req("/api/usage/cap", {"scope": "cluster", "usd": 1}, expect=400)
+req("/api/schedule/set", {"name": "nightly", "cap_usd": True}, expect=400)
+req("/api/schedule/set", {"name": "nightly", "cap_usd": 3}); req("/api/schedule/set", {"name": "nightly", "cap_usd": False}, expect=400); req("/api/schedule/set", {"name": "nightly", "cap_usd": 0.0}, expect=400)
+assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["cap_usd"] == 3    # a bool/float never cleared it
+r = req("/api/schedule/set", {"name": "nightly", "cap_usd": 1})                              # from the Schedule side: enforced at once
+assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["paused"].startswith("agent nightly")
+req("/api/schedule/set", {"name": "nightly", "cap_usd": 0})
+req("/api/schedule/set", {"name": "nightly", "cap_usd": 100001}, expect=400)
+req("/api/schedule/del", {"name": "nightly"}); req("/api/schedule/del", {"name": "other"})
+webd.card_set = _card_set
+ok("usage: an agent's own cap (scope agent) lives on its job, pauses only that job with a text that names the agent — Run now is refused with it, status lists it, the box is not paused — and 0 lifts it; hostile values and an unknown scope are refused")
 # the dashboard chat: its own session id, --session-id first then --resume
 req("/api/services", {"claude": True})
 os.unlink(tmp + "/claude.argv") if os.path.exists(tmp + "/claude.argv") else None

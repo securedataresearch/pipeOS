@@ -31,6 +31,7 @@ SETTINGS=${PIPEOS_SCHED_SETTINGS:-/etc/pipeos/pipebox-settings.json}
 SECRETS=${PIPEOS_SCHED_SECRETS:-/run/pipeos/secrets}
 WORKROOT=${PIPEOS_SCHED_WORK:-/work}
 PAUSED=${PIPEOS_SCHED_PAUSED:-/work/.pipeos/ledger/paused}
+PAUSED_JSON=${PIPEOS_SCHED_PAUSED_JSON:-/work/.pipeos/ledger/paused.json}
 
 job=${1:-}
 case "$job" in
@@ -145,6 +146,15 @@ command -v "$backend" >/dev/null 2>&1 || refuse "$backend is not installed on th
 if [ -f "$PAUSED" ]; then
     log "job $job: scheduled runs are paused — $(cat "$PAUSED" 2>/dev/null || echo "the monthly cap is reached") (raise it under Usage)"
     exit 75
+fi
+# this agent's own cap (#302): the plain marker above is the box or the cluster;
+# paused.json carries the per-agent entries, and its text names the cap
+if [ -f "$PAUSED_JSON" ]; then
+    why=$(jq -r --arg j "$job" '.agents[$j].text // ""' "$PAUSED_JSON" 2>/dev/null)
+    if [ -n "$why" ]; then
+        log "job $job: paused — $why"
+        exit 75
+    fi
 fi
 
 # ---- a parked /work (pipeos work park: read-only so the stick idles) is

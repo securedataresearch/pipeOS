@@ -60,7 +60,9 @@ ENV = dict(os.environ, PATH=BIN + ":/usr/bin:/bin",   # not the workstation PATH
            PIPEOS_SCHED_LOGDIR=LOGS, PIPEOS_SCHED_RUN_BIN=os.path.join(BIN, "pipeos-schedule-run"),
            PIPEOS_SAVE_BIN=os.path.join(BIN, "pipeos-save"), PIPEOS_SCHED_WORK=WORK,
            PIPEOS_CARD=CARD, PIPEOS_CARD_GEN=os.path.join(BIN, "pipebox-card"), PIPEOS_VAULT_PHRASE=PHRASE,
-           PIPEOS_LEDGER=os.path.join(D, "ledger-stub.py"))
+           PIPEOS_LEDGER=os.path.join(D, "ledger-stub.py"), PIPEOS_SCHEDCTL=os.path.join(WEB, "schedctl.py"),
+           PIPEOS_SCHED_PAUSED=os.path.join(D, "no-paused"), PIPEOS_SCHED_PAUSED_JSON=os.path.join(D, "no-paused.json"),
+           PIPEOS_LEDGER_DIR=os.path.join(D, "ledger-dir"))
 with open(os.path.join(D, "ledger-stub.py"), "w") as f:
     f.write("import sys, os\nopen(os.path.join(%r, 'ledger.log'), 'a').write(' '.join(sys.argv[1:]) + '\\n')\nprint('{\"stub\": true}')\n" % D)
 
@@ -188,7 +190,26 @@ check("12 usage cap N writes MONTHLY_CAP_USD, regenerates, saves, then enforces 
       and rc_t == 0 and "stub" in out_t and led.strip().split("\n")[-1] == "enforce" and saves() == n1 + 2,
       "c=%s %s n=%s card=%r led=%r bad=%r t=%s" % (rc_c, out_c, rc_n, card3, led, bad, out_t))
 
+# ── 12b. the agent scope (#302): the cap lives on the job ─────────────────
+sched("add", "capped", "--cron", "0 3 * * *", "--prompt", "count the beans")
+n2 = saves()
+jm = lambda: {j["name"]: j for j in jobs()}   # noqa: E731
+rc_a, out_a = pipeos("usage", "cap", "--agent", "capped", "5")
+cap_a = jm().get("capped", {}).get("cap_usd")
+rc_an, _ = pipeos("usage", "cap", "--agent", "capped", "none")
+cap_an = jm().get("capped", {}).get("cap_usd")
+rc_as, _ = sched("set", "capped", "--cap", "7")
+bad_a = [a for a in (("cap", "--agent"), ("cap", "--agent", "capped", "ten"), ("cap", "--agent", "capped", "0.5")) if pipeos("usage", *a)[0] != 2]
+rc_ag, out_ag = pipeos("usage", "cap", "--agent", "ghost", "5")
+led2 = open(os.path.join(D, "ledger.log")).read()
+check("12b usage cap --agent NAME N writes cap_usd on that job (through schedctl, which saves) and enforces at once; none clears it; schedule set --cap does the same; a missing name, a non-number and a fraction are refused; an unknown job fails without saving",
+      rc_a == 0 and cap_a == 5 and rc_an == 0 and cap_an is None and rc_as == 0 and jm()["capped"]["cap_usd"] == 7
+      and not bad_a and rc_ag != 0 and "no job named ghost" in out_ag and saves() == n2 + 3 and led2.strip().split("\n")[-1] == "enforce",
+      "a=%s %s cap=%r an=%s %r as=%s bad=%r ag=%s %s saves=%d" % (rc_a, out_a[-120:], cap_a, rc_an, cap_an, rc_as, bad_a, rc_ag, out_ag[-120:], saves() - n2))
+sched("rm", "capped")
+
 # ── secrets phrase ───────────────────────────────────────────────────────
+n_sp = saves()
 rc_np, out_np = pipeos("secrets", "phrase")
 open(PHRASE, "w").write("9c48-ce4f-c874-3ee3-c366-aefd-8f09-eeb3\n")
 rc_p, out_p = pipeos("secrets", "phrase")
@@ -197,7 +218,7 @@ rc_a, out_a = pipeos("secrets", "phrase", "--ack")
 gone = not os.path.exists(PHRASE)
 rc_x, _ = pipeos("secrets", "bogus")
 check("13 secrets phrase prints the pending recovery phrase and leaves it; --ack prints it once more and forgets the tmpfs copy; nothing pending is rc 1; a bogus verb rc 2; no save (tmpfs)",
-      rc_np == 1 and rc_p == 0 and "9c48-ce4f" in out_p and still and rc_a == 0 and "9c48-ce4f" in out_a and "acked" in out_a and gone and rc_x == 2 and saves() == n1 + 2,
+      rc_np == 1 and rc_p == 0 and "9c48-ce4f" in out_p and still and rc_a == 0 and "9c48-ce4f" in out_a and "acked" in out_a and gone and rc_x == 2 and saves() == n_sp,
       "np=%s p=%s still=%s a=%s gone=%s x=%s" % (rc_np, (rc_p, out_p), still, (rc_a, out_a), gone, rc_x))
 
 # ── assistant password (the shape only: the vault and rc-service are the box's) ──
