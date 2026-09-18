@@ -911,7 +911,8 @@ def apply_services(svcs):
                 if svc == "pipeos-stream":
                     problems.append("streaming is enabled but not configured yet")
                 elif svc == "pipeos-support":
-                    problems.append("support access is enabled but no relay is configured yet")
+                    # the relay is shipped; what a fresh box lacks is its port
+                    problems.append("support access is on but not connected yet — it needs a port from us: send the key shown under Services")
                 elif svc == "pipeos-assistant":
                     problems.append("the assistant terminal is enabled but has no password yet")
                 elif svc == "pipeos-terminals":
@@ -951,8 +952,44 @@ def card_set(updates):
         raise RuntimeError("card regeneration failed: " + out.strip()[-300:])
 
 
+_LIVE = {"running": False, "again": False, "lock": threading.Lock()}
+
+
+def _live_worker():
+    while True:
+        try:
+            subprocess.run([SELFCHECK_BIN, "--live"], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        with _LIVE["lock"]:
+            if not _LIVE["again"]:
+                _LIVE["running"] = False
+                return
+            _LIVE["again"] = False
+
+
+def refresh_live_verdict():
+    """Every settings change re-reads the box's health NOW (#290 follow-up,
+    the single-box pass 2026-09-16): after the claim the dashboard kept
+    showing the boot report's "not claimed yet" warning for up to an hour.
+    `pipeos-selfcheck --live` takes a few seconds (dozens of forks) and
+    writes only /run/pipeos/health.last. Never on the request's path, and
+    coalesced: a burst of saves runs it once now and once more after, not
+    N times at once on a fanless box (the #306 review)."""
+    with _LIVE["lock"]:
+        if _LIVE["running"]:
+            _LIVE["again"] = True
+            return
+        _LIVE["running"] = True
+    threading.Thread(target=_live_worker, daemon=True).start()
+
+
 def save_state():
     rc, out = run(["pipeos-save"], timeout=300)
+    # refreshed whether or not the save took: a failed save is itself
+    # something the live verdict should be showing
+    refresh_live_verdict()
     return rc == 0, out.strip()[-300:]
 
 
@@ -1790,6 +1827,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_docs(path)
         readers = {
             "/api/status": self.api_status,
+            "/api/services": self.api_services_get,
             "/api/name-suggest": self.api_name_suggest,
             "/api/users": self.api_users,
             "/api/metrics": self.api_metrics,
@@ -2037,20 +2075,23 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, t)
 
     def api_usage_cap(self, body):
-        v = body.get("usd")
+        # "usd" is the field; "cap" is what an agent guesses first (the
+        # single-box pass, 2026-09-16) — accepted, and the error names the field
+        v = body.get("usd", body.get("cap"))
         if isinstance(v, bool) or not isinstance(v, int) or v < 0 or v > 100000:
-            return self.err(400, "the cap is a whole number of dollars, 0 (none) to 100000")
+            return self.err(400, 'the cap is a whole number of dollars, 0 (none) to 100000 — send {"usd": N}')
         try:
             card_ensure_key("MONTHLY_CAP_USD")
             card_set({"MONTHLY_CAP_USD": str(v) if v else ""})
         except RuntimeError as e:
             return self.err(500, str(e))
-        saved, detail = save_state()
-        # lowering under this month's spend pauses now; raising above it resumes now
+        # lowering under this month's spend pauses now; raising above it resumes
+        # now — BEFORE the save, whose live re-check must read the settled marker
         try:
             state = ledger_obj().enforce_cap()
         except Exception as e:
             state = {"error": str(e)}
+        saved, detail = save_state()
         self.send(200, {"ok": True, "cap": v, "state": state, "saved": saved, "save_detail": "" if saved else detail})
 
     # -- scheduled runs (#242) --------------------------------------------------
@@ -2542,6 +2583,12 @@ class Handler(BaseHTTPRequestHandler):
         except (vault.VaultError, OSError, ValueError) as e:
             sys.stderr.write("pipeos-webd: vault init at claim failed: %s\n" % e)
         # The claim IS the provisioning event: from here on, saves persist.
+        # The service set is written NOW, as the sheet promises (Claude on,
+        # the rest off): a claim over the API that never visited the wizard's
+        # services step left no services.conf, and selfcheck's legacy reading
+        # of "no file" is the fleet default — pipe on (zero, 2026-09-16).
+        if not os.path.exists(SERVICES_CONF):
+            write_services(dict(read_services(), claude=True))
         # Save NOW — a claim that exists only in RAM is not a claim.
         with open(PROVISIONED, "a"):
             pass
@@ -3168,6 +3215,11 @@ class Handler(BaseHTTPRequestHandler):
             return ("user terminals stay off until a user has one — give an account a "
                     "browser terminal under Users; that turns them on")
         return ""
+
+    def api_services_get(self):
+        """The declared service set, readable — an agent driving the wizard
+        had no GET for it (the single-box pass, 2026-09-16)."""
+        self.send(200, {"services": read_services()})
 
     def api_services(self, body):
         svcs = read_services()

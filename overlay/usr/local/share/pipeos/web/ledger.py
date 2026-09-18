@@ -313,6 +313,12 @@ class Ledger:
         months = sorted({(now - datetime.timedelta(days=d)).strftime("%Y-%m") for d in (0, 15, 31)})
         key = tuple((m, self._stat(m)) for m in months) + (self._conf_stat(),)
         if self._totals_key == key and self._totals is not None:
+            # the cap's live half is not a function of the files the key
+            # watches: a lifted cap removes the paused marker without a new
+            # row, and /api/status kept saying "paused" for up to a minute
+            # (the single-box pass on zero, 2026-09-16)
+            self._totals["cap"]["paused"] = self.paused_text()
+            self._totals["cap"]["warned"] = os.path.exists(self._marker("warned", now))
             return self._totals
         t0 = {"usd": 0.0, "calls": 0, "in": 0, "out": 0, "cache_read": 0}
         today, d7, d30 = dict(t0), dict(t0), dict(t0)

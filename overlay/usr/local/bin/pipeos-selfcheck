@@ -234,7 +234,11 @@ fi
 # answers were gone. The issue/motd banner shows it at the console; this
 # line puts it in every boot report.
 if [ ! -f /etc/pipeos/provisioned ]; then
-    warnn "UNPROVISIONED: autosave is OFF (no /etc/pipeos/provisioned) — nothing done on this box survives a reboot; finish pipebox-setup (or bake a card: make stick)"
+    # The one line a stranger reads in the lobby before anything else (the
+    # single-box pass on zero, 2026-09-16): a customer sentence, not
+    # the retired provisioning vocabulary (the setup script, "make stick"). Still a warn: nothing
+    # done on this box survives a reboot until it is claimed.
+    warnn "not claimed yet — open http://$(hostname).local/ (or http://pipeos.local/) on any phone or computer and choose a password; until then nothing done on this box survives a reboot"
 fi
 
 # ---- 2. how did the last run end? (marker readable only once /work is up)
@@ -492,7 +496,7 @@ if [ ! -s /root/.ssh/authorized_keys ]; then
     else
         crit "authorized_keys missing/empty and no /work backup — with key-only sshd this box is unreachable by shell"
     fi
-elif [ ! -s /work/.authorized_keys.backup ] && mountpoint -q /work; then
+elif [ -f /etc/pipeos/provisioned ] && [ ! -s /work/.authorized_keys.backup ] && mountpoint -q /work; then
     # seed the backup the first time a healthy key is seen
     cp /root/.ssh/authorized_keys /work/.authorized_keys.backup 2>/dev/null \
         && log "seeded /work/.authorized_keys.backup"
@@ -1144,7 +1148,9 @@ echo "$msg"
 
 if [ "$LIVE" = yes ]; then
     mkdir -p /run/pipeos 2>/dev/null
-    printf '%s\n' "$msg" > "$HEALTH_LAST.new" 2>/dev/null && mv -f "$HEALTH_LAST.new" "$HEALTH_LAST" 2>/dev/null
+    # a private temp name: two --live runs at once (a burst of saves, the hourly cron)
+    # must not truncate each other's file mid-write (the #306 review)
+    _hl=$(mktemp "$HEALTH_LAST.XXXXXX" 2>/dev/null) && printf '%s\n' "$msg" > "$_hl" 2>/dev/null && mv -f "$_hl" "$HEALTH_LAST" 2>/dev/null
     rm -f "$R"; exit 0
 fi
 [ "$BOOT" = yes ] || { rm -f "$R"; exit 0; }
