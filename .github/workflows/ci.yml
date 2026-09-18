@@ -84,6 +84,12 @@ jobs:
       - name: the live verdict — --live skips the heavy sections, writes one file, and every reader prefers it
         run: python3 scripts/check-selfcheck-live.py
 
+      # pipeOS#307: "260 uncommitted change(s)" beside a passing verify. The
+      # count was `lbu status` (an apk audit: every apkovl-added file is "A"
+      # forever); now it is what a save would actually change.
+      - name: pipeos diff and the status count compare the live tree with the canonical apkovl, not an apk audit
+        run: python3 scripts/check-status-diff.py
+
       # the single-box pass on zero (2026-09-16): unclaim is a factory reset —
       # every owner record and sign-in gone, a new CA, the canonical AND the
       # known-good apkovl written as nobody's (lbu commit -d used to delete them)

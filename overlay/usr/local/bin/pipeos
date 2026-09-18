@@ -37,7 +37,8 @@
 # Read-only verbs (status/verify/diff/snapshot) are open to the resident
 # agent; mutating verbs are root/human territory (pipebox-settings.json).
 
-MEDIA=/media/usb
+MEDIA=${PIPEOS_MEDIA:-/media/usb}
+LBU=${PIPEOS_LBU:-lbu}      # the probe's stub; a box never sets it
 REPO_DIR=$MEDIA/apks/pipeos/x86_64
 OVL=$MEDIA/pipeos.apkovl.tar.gz
 KNOWN_GOOD=$MEDIA/pipeos.known-good.tar.gz
@@ -57,6 +58,28 @@ warn() { printf 'WARN  %s\n' "$*"; }
 fail() { printf 'FAIL  %s\n' "$*"; FAILED=1; }
 
 sha() { sha256sum "$1" | cut -d' ' -f1; }
+
+# What would a save change? (#307) `lbu status` is `apk audit`: it lists every
+# file the apkovl adds that no package owns as "A", forever, so its count is
+# never zero on a pipeOS box and the old "N uncommitted change(s)" line
+# contradicted a passing verify. The honest question is the one pipeos-save
+# asks: package the live tree now and compare it with the canonical apkovl.
+# Prints one line per difference (+ only live, - only canonical, ~ size or
+# mtime differs); rc 2 when the comparison itself is not possible.
+uncommitted_list() {
+    _t=$(mktemp -d) || return 2
+    if [ ! -f "$OVL" ] || ! "$LBU" package "$_t/live.tar.gz" >/dev/null 2>&1; then
+        rm -rf "$_t"; return 2
+    fi
+    # path, size, date, time — with any leading ./ dropped so both sides name a file the same way
+    tar -tzvf "$_t/live.tar.gz" 2>/dev/null | awk '$NF !~ /\/$/ {p=$NF; sub(/^\.\//, "", p); print p, $3, $4, $5}' | sort > "$_t/a"
+    tar -tzvf "$OVL" 2>/dev/null | awk '$NF !~ /\/$/ {p=$NF; sub(/^\.\//, "", p); print p, $3, $4, $5}' | sort > "$_t/b"
+    awk 'NR==FNR {b[$1]=$2" "$3" "$4; next}
+         {seen[$1]=1; if (!($1 in b)) print "+ " $1; else if (b[$1] != $2" "$3" "$4) print "~ " $1}
+         END {for (k in b) if (!(k in seen)) print "- " k}' "$_t/b" "$_t/a" | sort -k2
+    rm -rf "$_t"
+    return 0
+}
 
 take_save_lock() {
     # shared with pipeos-save: one media mutator at a time
@@ -210,11 +233,15 @@ cmd_status() {
     else
         fail "canonical apkovl MISSING from media"
     fi
-    dirty=$(lbu status 2>/dev/null | wc -l)
-    if [ "$dirty" -gt 0 ]; then
-        warn "$dirty uncommitted change(s) — see pipeos diff, persist with pipeos save"
+    if _ul=$(uncommitted_list); then
+        dirty=$(printf '%s' "$_ul" | grep -c .)
+        if [ "$dirty" -gt 0 ]; then
+            warn "$dirty uncommitted change(s) vs the canonical apkovl — see pipeos diff, persist with pipeos save"
+        else
+            ok "state committed (the live tree packages to the canonical apkovl)"
+        fi
     else
-        ok "state committed"
+        warn "cannot tell what a save would change (no canonical apkovl, or lbu package failed) — pipeos verify"
     fi
     if [ -f "$KNOWN_GOOD" ]; then
         if [ "$(sha "$KNOWN_GOOD")" = "$(sha "$OVL")" ]; then
@@ -345,10 +372,15 @@ snapshot_path() {
 
 cmd_diff() {
     if [ -z "$1" ]; then
-        if [ -n "$(lbu status 2>/dev/null)" ]; then
-            lbu status -v 2>/dev/null || lbu status
+        if ! _ul=$(uncommitted_list); then
+            echo "cannot compare: no canonical apkovl on the media, or lbu package failed (pipeos verify)" >&2
+            return 2
+        fi
+        if [ -n "$_ul" ]; then
+            echo "--- canonical apkovl   +++ live tree   (+ new  - gone  ~ changed)"
+            printf '%s\n' "$_ul"
         else
-            echo "no uncommitted changes (live state == canonical apkovl)"
+            echo "no uncommitted changes (the live tree packages to the canonical apkovl)"
         fi
         return 0
     fi
