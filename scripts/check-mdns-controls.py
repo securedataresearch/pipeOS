@@ -12,6 +12,9 @@ REPO = os.path.dirname(HERE)
 WEB = os.path.join(REPO, "overlay/usr/local/share/pipeos/web")
 MDNSD = os.path.join(WEB, "mdnsd.py")
 LANID = os.path.join(WEB, "lanid.py")
+sys.path.insert(0, HERE)
+import controls_lib  # noqa: E402
+
 PROBE = os.path.join(HERE, "check-mdns.py")
 
 BREAKS = [
@@ -33,8 +36,8 @@ BREAKS = [
      '            "mac": ident.get("mac", ""),', '            "mac": "",'),
 ]
 
-failed = False
-for name, path, old, new in BREAKS:
+def one(brk):
+    name, path, old, new = brk
     src = open(path).read()
     if src.count(old) != 1:
         sys.exit("control %s: anchor appears %d times — fix the controls before trusting them" % (name[0], src.count(old)))
@@ -44,7 +47,11 @@ for name, path, old, new in BREAKS:
     env = dict(os.environ, **({"CHECK_MDNS_BIN": tmp} if path == MDNSD else {"CHECK_LANID": tmp}))
     p = subprocess.run([sys.executable, PROBE], capture_output=True, text=True, env=env)
     os.unlink(tmp)
-    fails = [l for l in p.stdout.splitlines() if l.startswith("FAIL")]
+    return name, [l for l in p.stdout.splitlines() if l.startswith("FAIL")]
+
+
+failed = False
+for name, fails in controls_lib.pmap(one, BREAKS):
     print("%s\n   -> %d row(s) fail" % (name, len(fails)))
     for l in fails:
         print("      " + l[5:].split("  [")[0])

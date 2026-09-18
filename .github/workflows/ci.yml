@@ -6,9 +6,12 @@ name: ci
 # sandbox. This runs the card gate on every push, which is the difference
 # between "the generator should be byte-stable" and "it is".
 
+# One run per change (2026-09-18): a PR branch used to run twice per push —
+# once as `push`, once as `pull_request` — and the two raced the same
+# runner. Pushes run only on main (the merge); everything else is its PR.
 on:
   push:
-    branches: ["**"]
+    branches: ["main"]
   pull_request:
 
 jobs:

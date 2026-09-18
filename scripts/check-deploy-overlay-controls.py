@@ -3,7 +3,8 @@
 
 A probe that only ever passes has two explanations. Each control below breaks
 ONE property of the shipped script and must make a DIFFERENT row fail, for its
-own reason. pipeos-deploy-overlay is restored after every run.
+own reason. Each runs against a private copy of the tree (controls_lib), in parallel;
+the shipped script is never touched.
 
 The two that matter most are A and G: A removes the second gate that keeps
 per-box generated files off a box, and G removes the fence that keeps a
@@ -137,23 +138,32 @@ controls = [
 ]
 
 rc = 0
-seen = {}
-for entry in controls:
+sys.path.insert(0, HERE)
+import controls_lib  # noqa: E402
+
+
+def one(entry):
     name, f = entry[0], entry[1]
     expect = entry[2] if len(entry) > 2 else "fail"
     mut = f(orig)
     if mut == orig:
+        return name, expect, None, ""
+    root = controls_lib.sandbox({P: mut})
+    try:
+        _, out = controls_lib.run_probe(PROBE, root=root)
+    finally:
+        controls_lib.cleanup(root)
+    return name, expect, controls_lib.fails_in(out), out
+
+
+seen = {}
+for name, expect, fails, out in controls_lib.pmap(one, controls):
+    if fails is None:
         print("--- %s: CONTROL DID NOT APPLY (probe is testing nothing here)" % name)
         rc = 1
         continue
-    open(P, "w").write(mut)
-    try:
-        r = subprocess.run([sys.executable, PROBE], capture_output=True, text=True)
-    finally:
-        open(P, "w").write(orig)
-    fails = [l.split()[1] for l in r.stdout.splitlines() if l.startswith("FAIL")]
     print("--- %s: rows %s fail" % (name, fails or "(none)"))
-    for l in r.stdout.splitlines():
+    for l in out.splitlines():
         if l.startswith("FAIL"):
             print("   ", l.rstrip())
     if expect == "pass":

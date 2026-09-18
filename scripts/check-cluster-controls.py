@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Controls for check-cluster.py (pipeOS#222, #211).
 
-Each control breaks ONE property of the shipped cluster.py or webd.py and
-must make a DIFFERENT row fail, for its own reason. The shipped files are
-restored after every run.
+Each control breaks ONE property of cluster.py or webd.py in a private copy
+of the tree (controls_lib) and must make a DIFFERENT row fail, for its own
+reason. The copies run in parallel; the shipped files are never touched.
 """
 import os
 import subprocess
@@ -87,19 +87,29 @@ controls = [
                          "        if False:\n"), ["9"]),
 ]
 
-rc = 0
-for name, path, f, must in controls:
+sys.path.insert(0, HERE)
+import controls_lib  # noqa: E402
+
+
+def one(ctl):
+    name, path, f, must = ctl
     mut = f(orig[path])
     if mut == orig[path]:
+        return name, None, must, []
+    root = controls_lib.sandbox({path: mut})
+    try:
+        _, out = controls_lib.run_probe(PROBE, root=root)
+    finally:
+        controls_lib.cleanup(root)
+    return name, controls_lib.fails_in(out), must, []
+
+
+rc = 0
+for name, fails, must, _ in controls_lib.pmap(one, controls):
+    if fails is None:
         print("--- %s: CONTROL DID NOT APPLY" % name)
         rc = 1
         continue
-    open(path, "w").write(mut)
-    try:
-        r = subprocess.run([sys.executable, PROBE], capture_output=True, text=True)
-    finally:
-        open(path, "w").write(orig[path])
-    fails = [l.split()[1] for l in r.stdout.splitlines() if l.startswith("FAIL")]
     missing = [m for m in must if m not in fails]
     print("--- %s: rows %s fail%s" % (name, fails or "(none)", "" if not missing else "  — EXPECTED %s TO FAIL" % missing))
     if missing:
