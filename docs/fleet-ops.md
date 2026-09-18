@@ -49,6 +49,8 @@ when host keys have changed (every reflash). Clocks are UTC.
 | `pipeos cluster page` | Cluster → the members card | nothing; every member's two lines and one verdict, gathered over mutual TLS | no |
 | `pipeos cluster reboot-all [--yes]` | Cluster → Reboot everything | every member reboots (this one last); refuses while something is busy unless --yes | each box's shutdown hook |
 | `pipeos cluster services KEY on\|off [ID...]` | Cluster → a service on several Machines | each member's services.conf through its own /api/services | each box saves |
+| `pipeos cluster agents` | Cluster → the agents line under each member | nothing; every member's agents from the page (a grey member's are last-known) | no |
+| `pipeos cluster start NAME --on ID\|NAME\|idlest [--prompt TEXT --cron SPEC [--cwd DIR] [--backend B]]` | Cluster → Start an agent on a Machine | the agent (a scheduled job) is written into THAT member's `schedule.json` through its own `/api/agent/start` and run there; a bare name runs one already there | the member saves |
 | `pipeos cluster call ID\|NAME\|IP METHOD PATH [JSON]` | — (what the cluster page does box-to-box) | nothing here; a request to a member over mutual TLS, and who answered | no |
 | `pipeos selfupdate image on\|off\|status` | System → update automatically | `/etc/pipeos/selfupdate.conf` `IMAGE_UPDATE` | yes |
 | `pipeos nas account NAME` (SMB password on stdin) | Files → Network storage → new account for a share | `users.json` (share-only: no sign-in, no shell), `pipeos-user add --nologin`, vault `nas_passdb`; restarts `pipeos-nas` | yes |

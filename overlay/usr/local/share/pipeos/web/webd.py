@@ -285,12 +285,17 @@ def box_summary():
     if os.path.exists("/run/pipeos/flash-pending"):
         busy.append("a new image is applied, reboot pending")
     verdict, vsrc, vage = lanid.verdict_now(BOOT_REPORT, HEALTH_LAST)
+    pm = proc_metrics()
     return {"id": lanid.mac4(), "name": box_name(), "role": card_get("ROLE") or "GENERIC",
             "host": (box_name() or lanid.lan_name()) + ".local", "ip": primary_ip()[0],
             "verdict": verdict, "verdict_source": vsrc, "verdict_age_s": vage, "boot_report": boot_report(),
             "uptime_s": up, "work_pct": pct, "work_free_mb": free_mb,
             "commit": img["commit"][:12], "built": img["built"],
-            "services": svcs, "busy": busy}
+            "services": svcs, "busy": busy,
+            # the agents that live on this Machine (#300) and the load the
+            # idlest pick compares — an agent is started on a member and
+            # stays; the cluster page lists every member's from this
+            "agents": agents_here(), "load1": pm.get("load1"), "ncpu": pm.get("ncpu")}
 
 
 def run(argv, timeout=60, input_text=None, env=None):
@@ -1919,6 +1924,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/schedule/set": self.api_schedule_set,
             "/api/schedule/del": self.api_schedule_del,
             "/api/schedule/run": self.api_schedule_run,
+            "/api/agent/start": self.api_agent_start,
+            "/api/cluster/start": self.api_cluster_start,
             "/api/usage/cap": self.api_usage_cap,
         }
         fn = handlers.get(path)
@@ -2076,54 +2083,9 @@ class Handler(BaseHTTPRequestHandler):
                         "backends": [{"id": b, "installed": shutil.which(b) is not None} for b in ASSISTANT_BACKENDS]})
 
     def api_schedule_set(self, body):
-        name = (body.get("name") or "").strip().lower()
-        if not JOB_NAME_RE.match(name):
-            return self.err(400, "job names: lowercase letters, digits and dashes, up to 32")
-        jobs = read_schedule()
-        cur = next((j for j in jobs if j["name"] == name), None)
-        job = dict(cur) if cur else {"name": name, "cwd": "", "backend": "claude", "notify": True,
-                                     "enabled": True, "session": "fresh", "prompt": "", "cron": ""}
-        if "cron" in body or not cur:
-            try:
-                spec = cronspec.parse(body.get("cron") or "")
-            except cronspec.CronError as e:
-                return self.err(400, "schedule: %s" % e)
-            job["cron"] = spec.text
-        if "prompt" in body or not cur:
-            prompt = body.get("prompt")
-            if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 8000 or "\0" in prompt:
-                return self.err(400, "a prompt, up to 8000 characters")
-            job["prompt"] = prompt.strip()
-        if "cwd" in body:
-            cwd = (body.get("cwd") or "").strip()
-            if cwd:
-                real = os.path.realpath(cwd)
-                if not (real == "/work" or real.startswith("/work/")) or any(c in cwd for c in "\n\r\0'\""):
-                    return self.err(400, "the working dir must be under /work")
-                job["cwd"] = real
-            else:
-                job["cwd"] = ""
-        if "backend" in body:
-            backend = (body.get("backend") or "claude").strip()
-            if backend not in ASSISTANT_BACKENDS:
-                return self.err(400, "assistant must be one of: " + ", ".join(ASSISTANT_BACKENDS))
-            if shutil.which(backend) is None:
-                return self.err(400, "%s is not installed on this image" % backend)
-            job["backend"] = backend
-        for k in ("notify", "enabled"):
-            if k in body:
-                job[k] = bool(body[k])
-        if "session" in body:
-            if body.get("session") not in ("fresh", "continue"):
-                return self.err(400, "session is fresh or continue")
-            job["session"] = body["session"]
-        if cur is None:
-            if len(jobs) >= SCHEDULE_MAX_JOBS:
-                return self.err(400, "at most %d jobs on one Machine" % SCHEDULE_MAX_JOBS)
-            jobs.append(job)
-        else:
-            jobs[jobs.index(cur)] = job
-        write_schedule(jobs)
+        job, err = schedule_upsert(body)
+        if err:
+            return self.err(400, err)
         saved, detail = save_state()
         self.send(200, {"ok": True, "job": job, "saved": saved, "save_detail": "" if saved else detail})
 
@@ -2158,19 +2120,49 @@ class Handler(BaseHTTPRequestHandler):
     def api_schedule_run(self, body):
         """Run now. Detached, like the tick does it; refused while another
         job runs (one at a time). Writes nothing the apkovl carries."""
-        name = (body.get("name") or "").strip().lower()
-        if not any(j["name"] == name for j in read_schedule()):
-            return self.err(404, "no job named %s" % name)
-        if schedule_running():
-            return self.err(409, "another job is running on this Machine — one at a time; try again when it finishes")
-        if os.path.exists(LEDGER_PAUSED):
-            return self.err(409, "scheduled runs are paused — the monthly cap is reached; raise it under Usage")
-        try:
-            subprocess.Popen([SCHEDULE_RUN_BIN, name], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
-        except OSError as e:
-            return self.err(500, "could not start the runner: %s" % e)
+        st, err = schedule_start((body.get("name") or "").strip().lower())
+        if err:
+            return self.err(st, err)
         self.send(200, {"ok": True, "started": True})
+
+    # -- agents on a cluster (#300): started on a member, they live there ----
+
+    def api_agent_start(self, body):
+        """The member-side half of a placement: this Machine takes an agent
+        (a scheduled job — name, prompt, schedule, working dir, assistant)
+        and runs it now. With only a name, an agent already here is run.
+        What `/api/cluster/start` calls on the chosen member, and what the
+        local arm does directly."""
+        st, out = agent_start_here(body)
+        if st != 200:
+            return self.err(st, out["error"])
+        if out.get("changed"):
+            saved, detail = save_state()
+            out["saved"], out["save_detail"] = saved, ("" if saved else detail)
+        self.send(200, out)
+
+    def api_cluster_start(self, body):
+        """Start an agent on a member (docs/cluster.md §12): `on` is the
+        member's id or name — explicit is the default — or "idlest", the
+        awake member with nothing busy and the least load. The agent lives
+        where it started; nothing here copies it anywhere else."""
+        if not JOB_NAME_RE.match((body.get("name") or "").strip().lower()):
+            return self.err(400, "agent names: lowercase letters, digits and dashes, up to 32")
+        on = (body.get("on") or "").strip()
+        if not on:
+            return self.err(400, "on: which Machine — a member's id or name, or idlest")
+        spec = {k: body[k] for k in ("name", "prompt", "cron", "cwd", "backend", "session", "notify") if k in body}
+
+        def local_start(sp):
+            st, out = agent_start_here(sp)
+            if st == 200 and out.get("changed"):
+                saved, detail = save_state()
+                out["saved"], out["save_detail"] = saved, ("" if saved else detail)
+            return st, out
+        st, out = cluster.start_agent(on, spec, local_start, box_summary)
+        if st != 200:
+            return self.err(st, out.get("error") or "not started")
+        self.send(200, out)
 
     # -- secrets (#244) -------------------------------------------------------
 
@@ -3690,6 +3682,116 @@ def schedule_state():
             return json.load(f).get("jobs", {})
     except (OSError, ValueError):
         return {}
+
+
+def schedule_upsert(body):
+    """Validate and write one job from a request body (the Schedule form's
+    fields). Returns (job, None) or (None, "why"). Shared by the Schedule
+    view's handler and by a placement (#300), so an agent started from the
+    cluster page passes exactly the checks one started here does."""
+    name = (body.get("name") or "").strip().lower()
+    if not JOB_NAME_RE.match(name):
+        return None, "job names: lowercase letters, digits and dashes, up to 32"
+    jobs = read_schedule()
+    cur = next((j for j in jobs if j["name"] == name), None)
+    job = dict(cur) if cur else {"name": name, "cwd": "", "backend": "claude", "notify": True,
+                                 "enabled": True, "session": "fresh", "prompt": "", "cron": ""}
+    if "cron" in body or not cur:
+        try:
+            spec = cronspec.parse(body.get("cron") or "")
+        except cronspec.CronError as e:
+            return None, "schedule: %s" % e
+        job["cron"] = spec.text
+    if "prompt" in body or not cur:
+        prompt = body.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 8000 or "\0" in prompt:
+            return None, "a prompt, up to 8000 characters"
+        job["prompt"] = prompt.strip()
+    if "cwd" in body:
+        cwd = (body.get("cwd") or "").strip()
+        if cwd:
+            real = os.path.realpath(cwd)
+            if not (real == "/work" or real.startswith("/work/")) or any(c in cwd for c in "\n\r\0'\""):
+                return None, "the working dir must be under /work"
+            job["cwd"] = real
+        else:
+            job["cwd"] = ""
+    if "backend" in body:
+        backend = (body.get("backend") or "claude").strip()
+        if backend not in ASSISTANT_BACKENDS:
+            return None, "assistant must be one of: " + ", ".join(ASSISTANT_BACKENDS)
+        if shutil.which(backend) is None:
+            return None, "%s is not installed on this image" % backend
+        job["backend"] = backend
+    for k in ("notify", "enabled"):
+        if k in body:
+            job[k] = bool(body[k])
+    if "session" in body:
+        if body.get("session") not in ("fresh", "continue"):
+            return None, "session is fresh or continue"
+        job["session"] = body["session"]
+    if cur is None:
+        if len(jobs) >= SCHEDULE_MAX_JOBS:
+            return None, "at most %d jobs on one Machine" % SCHEDULE_MAX_JOBS
+        jobs.append(job)
+    else:
+        jobs[jobs.index(cur)] = job
+    write_schedule(jobs)
+    return job, None
+
+
+def schedule_start(name):
+    """Run a job now, detached, one at a time. Returns (200, None) or
+    (status, "why") — the same refusals whoever asks."""
+    if not any(j["name"] == name for j in read_schedule()):
+        return 404, "no job named %s" % name
+    if schedule_running():
+        return 409, "another job is running on this Machine — one at a time; try again when it finishes"
+    if os.path.exists(LEDGER_PAUSED):
+        return 409, "scheduled runs are paused — the monthly cap is reached; raise it under Usage"
+    try:
+        subprocess.Popen([SCHEDULE_RUN_BIN, name], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError as e:
+        return 500, "could not start the runner: %s" % e
+    return 200, None
+
+
+def agent_start_here(body):
+    """Take an agent onto THIS Machine and run it (#300): with a prompt or a
+    schedule in the body the job is written (created or updated) first;
+    with a name alone an agent already here is run. Returns (status, dict);
+    `changed` says whether the job list moved, so the caller saves."""
+    name = (body.get("name") or "").strip().lower()
+    changed = False
+    if any(k in body for k in ("prompt", "cron", "cwd", "backend", "session", "notify")):
+        before = read_schedule()
+        job, err = schedule_upsert(body)
+        if err:
+            return 400, {"error": err}
+        changed = job not in before
+    elif not any(j["name"] == name for j in read_schedule()):
+        return 404, {"error": "no agent named %s on this Machine — give it a prompt and a schedule to place it here" % name}
+    st, err = schedule_start(name)
+    if err:
+        return st, {"error": err}
+    return 200, {"ok": True, "started": True, "name": name, "on": lanid.mac4(), "changed": changed}
+
+
+def agents_here():
+    """The agents that live on this Machine, one row each: what it is, and
+    what it last did — for the summary the cluster page gathers (#300)."""
+    st = schedule_state()
+    running = schedule_running()
+    out = []
+    for j in read_schedule():
+        last = st.get(j["name"], {})
+        out.append({"name": j["name"], "cron": j.get("cron", ""), "backend": j.get("backend", "claude"),
+                    "enabled": bool(j.get("enabled", True)),
+                    "running": bool(running and last.get("running_pid")),
+                    "last_status": last.get("last_status", ""), "last_start": last.get("last_start"),
+                    "last_end": last.get("last_end")})
+    return out
 
 
 def schedule_running():

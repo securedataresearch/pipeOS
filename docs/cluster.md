@@ -248,6 +248,18 @@ Machines runs on the on-board gigabit and every mode above works the same,
 slower. The no-wake-over-SFP+ caveat (docs/hardware.md) is therefore an
 owner-facing fact for Cluster buyers.
 
+- Built (#300): an agent is a scheduled job, and it is placed by being
+  written into one member's `schedule.json` through that member's own
+  `/api/agent/start` and run there — `pipeos cluster start NAME --on
+  ID|NAME|idlest`, Cluster → *Start an agent on a Machine*. Explicit is the
+  default; `idlest` is the awake member with nothing busy and the least
+  load per cpu, then the fewest agents running. Every member's agents ride
+  its summary, so the page and `pipeos cluster agents` list them all; a
+  grey member's row shows the agents it had at its last answer, marked
+  last-known, from a per-member note under `/work/pipeos/cluster/last` —
+  nothing is ever restarted from it. Job placement writes no state on the
+  box that asked.
+
 → #300 (placement + the agent list), #301 (vault copy on demand),
 #302 (caps at every level, the pause names its cap)
 

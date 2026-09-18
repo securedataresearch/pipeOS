@@ -46,6 +46,10 @@ for stub in ("pipebox-card", "pipeos-tls-init"):
     with open(os.path.join(BIN, stub), "w") as f:
         f.write("#!/bin/sh\nexit 0\n")
     os.chmod(os.path.join(BIN, stub), 0o755)
+# the schedule runner an agent start launches (#300): records which job, on which box
+with open(os.path.join(BIN, "pipeos-schedule-run"), "w") as f:
+    f.write("#!/bin/sh\necho \"$1\" >> \"$PIPEOS_TEST_RAN\"\n")
+os.chmod(os.path.join(BIN, "pipeos-schedule-run"), 0o755)
 
 # the instance runner: webd with its state redirected into its own dir,
 # HTTP and HTTPS both on a free port, the CA/server cert tls-init made
@@ -59,6 +63,8 @@ for k in ("ADMIN_CONF", "SERVICES_CONF", "CARD", "PROVISIONED", "BOOT_REPORT", "
 webd.SESS_DIR = os.path.join(d, "sessions"); webd.MDNS_CACHE = os.path.join(d, "peers.json"); webd.MACHINES_ROSTER = os.path.join(d, "machines.json")
 webd.FLASH_IMAGE_TXT = os.path.join(d, "image.txt")
 webd.SCHEDULE_LOCK = os.path.join(d, "sched.lock")
+webd.SCHEDULE_CONF = os.path.join(d, "schedule.json"); webd.SCHEDULE_STATE_DIR = os.path.join(d, "sched-state"); os.makedirs(webd.SCHEDULE_STATE_DIR, exist_ok=True)
+webd.SCHEDULE_RUN_BIN = os.path.join(os.environ["PIPEOS_BIN"], "pipeos-schedule-run"); webd.SCHEDULE_LOGDIR = d; webd.LEDGER_PAUSED = os.path.join(d, "paused")
 webd.TLS_INIT = os.path.join(os.environ["PIPEOS_BIN"], "pipeos-tls-init")
 webd.VAULT = webd.vault.VAULT_FILE = os.path.join(d, "vault.sealed"); webd.SECRETS_DIR = webd.vault.RUN_DIR = os.path.join(d, "secrets")
 webd.vault.ETC = d; webd.vault.ITER = 1500; webd.vault.ident = lambda: {"mac": "aa:bb:cc:dd:" + os.environ["PIPEOS_CLUSTER_SELF"][:2] + ":" + os.environ["PIPEOS_CLUSTER_SELF"][2:], "serial": "PC", "product": "Test Box"}
@@ -94,7 +100,8 @@ class Box:
                         PIPEOS_TEST_SAVES=self.saves, PIPEOS_WEB_HTTPS_PORT="0", PIPEOS_WEB_BUNDLE_POLL="0.2", BOX_NAME=name,
                         PIPEOS_REBOOT_CMD="date +%%s.%%N >> %s" % os.path.join(self.dir, "reboots"),
                         PIPEOS_PTS_GLOB=os.path.join(self.dir, "no-pts", "*"), PIPEOS_BIN=BIN,
-                        PIPEOS_JOIN_TOKEN=os.path.join(self.dir, "join-token"))
+                        PIPEOS_JOIN_TOKEN=os.path.join(self.dir, "join-token"),
+                        PIPEOS_CLUSTER_LAST=os.path.join(self.dir, "last"), PIPEOS_TEST_RAN=os.path.join(self.dir, "ran"))
         r = subprocess.run(["sh", TLS_INIT], env=self.env, capture_output=True, text=True)
         assert r.returncode == 0, "tls-init for %s: %s" % (name, r.stdout + r.stderr)
         self.proc = subprocess.Popen([sys.executable, "-c", RUNNER, os.path.join(WEB, "webd.py"), self.dir],
@@ -427,6 +434,74 @@ check("16 'reboot-all' refuses while a member is busy (a job running on six) and
       and rc_rb == 0 and "2222=rebooting" in out_rb and "1111=rebooting" in out_rb
       and len(reboots(G)) == 1 and len(reboots(H)) == 1 and reboots(H)[0] <= reboots(G)[0],
       repr((rc_rb0, out_rb0[-200:], rc_rb, out_rb[-200:], reboots(G), reboots(H))))
+
+# ── 19-21. agents on a cluster (#300): started on a member, they live there ──
+def jobs_of(box):
+    try:
+        return [j["name"] for j in json.load(open(os.path.join(box.dir, "schedule.json")))["jobs"]]
+    except (OSError, ValueError, KeyError):
+        return []
+
+
+def ran_on(box):
+    try:
+        return open(os.path.join(box.dir, "ran")).read().split()
+    except OSError:
+        return []
+
+
+def page_rows(box):
+    st, pg = json.loads(box.py("st, b, who = cluster.call('local', 'GET', '/api/cluster/page'); print(json.dumps([st, b]))"))
+    return st, pg, {r["id"]: r for r in pg.get("members", [])}
+
+
+h_saves0 = H.nsaves()
+rc_st1, out_st1 = G.cli("start", "nightly", "--on", "2222", "--prompt", "say good night", "--cron", "@daily")
+ran1, saves1 = ran_on(H), H.nsaves()
+rc_st2, out_st2 = G.cli("start", "nightly", "--on", "seven-b")                       # by name; the agent is already there, so it just runs
+rc_st3, out_st3 = G.cli("start", "nightly", "--on", "9999")
+rc_st4, out_st4 = G.cli("start", "ghost", "--on", "1111")                            # a name alone must already live there
+rc_st5, out_st5 = G.cli("start", "bad", "--on", "2222", "--prompt", "x", "--cron", "every tuesday")
+rc_ag, out_ag = G.cli("agents")
+st_p19, pg19, r19 = page_rows(G)
+h_agents = [a["name"] for a in r19.get("2222", {}).get("agents", [])]
+check("19 'cluster start NAME --on ID' places an agent on that member: the job is in ITS schedule.json (not this box's), ITS runner ran it, it saved; --on by name runs the agent already there; 9999 is not a member; a bare name that lives nowhere is refused; a bad schedule is the member's own refusal; every member's agents ride the page and 'cluster agents' lists them",
+      rc_st1 == 0 and "started nightly on 2222" in out_st1 and jobs_of(H) == ["nightly"] and jobs_of(G) == [] and ran1 == ["nightly"] and saves1 == h_saves0 + 1
+      and rc_st2 == 0 and ran_on(H) == ["nightly", "nightly"] and H.nsaves() == h_saves0 + 1
+      and rc_st3 == 1 and "not a member" in out_st3 and rc_st4 == 1 and "no agent named ghost" in out_st4
+      and rc_st5 == 1 and "2222: schedule:" in out_st5 and jobs_of(H) == ["nightly"]
+      and st_p19 == 200 and h_agents == ["nightly"] and r19["1111"]["agents"] == [] and "load1" in r19["2222"] and "ncpu" in r19["2222"]
+      and rc_ag == 0 and "nightly" in out_ag and "2222" in out_ag,
+      repr((rc_st1, out_st1[-160:], jobs_of(H), jobs_of(G), ran1, ran_on(H), saves1 - h_saves0, H.nsaves() - h_saves0, rc_st2, out_st2[-120:], rc_st3, out_st3[-120:], rc_st4, out_st4[-160:], rc_st5, out_st5[-160:], h_agents, rc_ag, out_ag[-200:])))
+
+import fcntl as _f
+lg = open(os.path.join(G.dir, "sched.lock"), "w"); _f.flock(lg, _f.LOCK_EX)          # six is busy: a job is running
+rc_i1, out_i1 = G.cli("start", "pick", "--on", "idlest", "--prompt", "pick me", "--cron", "@hourly")
+g_jobs1, h_jobs1 = jobs_of(G), jobs_of(H)
+_f.flock(lg, _f.LOCK_UN); lg.close()
+lh = open(os.path.join(H.dir, "sched.lock"), "w"); _f.flock(lh, _f.LOCK_EX)          # now seven is the busy one
+rc_i2, out_i2 = G.cli("start", "pick", "--on", "idlest", "--prompt", "pick me", "--cron", "@hourly")
+lg = open(os.path.join(G.dir, "sched.lock"), "w"); _f.flock(lg, _f.LOCK_EX)          # both busy
+rc_i3, out_i3 = G.cli("start", "pick", "--on", "idlest", "--prompt", "pick me", "--cron", "@hourly")
+_f.flock(lg, _f.LOCK_UN); lg.close(); _f.flock(lh, _f.LOCK_UN); lh.close()
+check("20 '--on idlest' lands on the awake member with nothing busy: seven while six runs a job, six while seven does, and a refusal (nothing started anywhere) when both are busy — explicit placement is the default, idlest the option",
+      rc_i1 == 0 and "on 2222 (the idlest member)" in out_i1 and "pick" in h_jobs1 and "pick" not in g_jobs1
+      and rc_i2 == 0 and "on 1111 (the idlest member)" in out_i2 and jobs_of(G) == ["pick"] and ran_on(G) == ["pick"]
+      and rc_i3 == 1 and "no member is idle" in out_i3 and ran_on(G) == ["pick"] and ran_on(H) == ["nightly", "nightly", "pick"],
+      repr((rc_i1, out_i1[-160:], g_jobs1, h_jobs1, rc_i2, out_i2[-160:], rc_i3, out_i3[-160:], jobs_of(G), jobs_of(H), ran_on(G), ran_on(H))))
+
+H.stop()
+st_p21, pg21, r21 = page_rows(G)
+rc_ag2, out_ag2 = G.cli("agents")
+grey = r21.get("2222", {})
+check("21 a grey box's agents are grey too: the row of a member that stopped answering still lists the agents it had at its last answer, marked last-known with nothing claimed running, and nothing restarts them anywhere; 'cluster agents' says grey (box off)",
+      st_p21 == 200 and grey.get("awake") is False and sorted(a["name"] for a in grey.get("agents", [])) == ["nightly", "pick"]
+      and grey.get("agents_stale") is True and all(a.get("running") is None for a in grey["agents"]) and isinstance(grey.get("agents_seen"), int)
+      and ran_on(G) == ["pick"] and jobs_of(G) == ["pick"]
+      and rc_ag2 == 0 and "grey (box off)" in out_ag2 and "nightly" in out_ag2,
+      repr((st_p21, grey.get("awake"), grey.get("agents"), grey.get("agents_stale"), grey.get("agents_seen"), ran_on(G), jobs_of(G), rc_ag2, out_ag2[-240:])))
+H = Box("2222", "seven-c"); H.claim("sevenpassword")
+G.cli("remove", "2222"); G.see(H); G.cli("add", H.addr, stdin="sevenpassword\n"); G.see(H); H.see(G)
 
 # ── 17-18. onboarding the second box (#213): join from the new box, adopt from a member
 J = Box("3333", "nine"); J.claim("ninepassword")
