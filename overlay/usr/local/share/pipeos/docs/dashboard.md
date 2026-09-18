@@ -62,7 +62,11 @@ each scheduled job, each pipe peer's conversation). Every figure is an
 estimate from the published rates shipped with the box; the provider's
 bill is authoritative. Admins set a **monthly cap**: one DM at 80%, and
 at 100% scheduled jobs pause (a session you are sitting in is only
-warned) until the cap is raised or the month turns.
+warned) until the cap is raised or the month turns. Each scheduled job
+can carry **its own cap** too (Usage → each agent's own cap, or the
+Schedule form): at 100% of its own spend that one job pauses and the
+rest keep running. The most restrictive cap wins, and every pause says
+which cap it was — on this page, in the DM, and in the job's log.
 
 ## Network and System
 

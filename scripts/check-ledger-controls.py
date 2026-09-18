@@ -23,16 +23,25 @@ BREAKS = [
     ("D  the 80% DM is sent every time", LEDGER,
      "        if pct >= WARN_PCT and not os.path.exists(warned):", "        if pct >= WARN_PCT:"),
     ("E  the pause is never lifted", LEDGER,
-     "            if os.path.exists(self.paused_path()):\n                os.unlink(self.paused_path())\n                state[\"changed\"] = True\n        if pct >= WARN_PCT",
-     "            pass\n        if pct >= WARN_PCT"),
+     "        elif os.path.exists(self.paused_path()):\n            os.unlink(self.paused_path())\n            changed = True\n",
+     "        elif False:\n            pass\n"),
+    ("H  an agent's own cap never pauses it (#302)", LEDGER,
+     "            if aspent * 100 / acap >= 100:\n", "            if False:\n"),
+    ("K  paused_for answers the agent's cap before the box's (the wrong cap is named, #302)", LEDGER,
+     '    for scope in ("cluster", "box"):\n        if doc.get(scope):\n            return doc[scope].get("text", "")\n    if name and doc.get("agents", {}).get(name):\n        return doc["agents"][name].get("text", "")\n',
+     '    if name and doc.get("agents", {}).get(name):\n        return doc["agents"][name].get("text", "")\n    for scope in ("cluster", "box"):\n        if doc.get(scope):\n            return doc[scope].get("text", "")\n'),
     ("F  the torn tail is swallowed as a complete line", LEDGER,
      '            lines = data.split(b"\\n")[:-1]\n', '            lines = data.split(b"\\n")\n'),
     ("G  a job's session is not looked up (everything is other:)", LEDGER,
      '        if sid and sid in jobs:\n            return {"kind": "job", "name": jobs[sid]}\n', ''),
 ]
 
-failed = False
-for name, path, old, new in BREAKS:
+sys.path.insert(0, HERE)
+import controls_lib  # noqa: E402
+
+
+def one(brk):
+    name, path, old, new = brk
     src = open(path).read()
     if src.count(old) != 1:
         sys.exit("control %s: anchor appears %d times — fix the controls before trusting them" % (name[0], src.count(old)))
@@ -42,7 +51,11 @@ for name, path, old, new in BREAKS:
     env = dict(os.environ, CHECK_LEDGER_BIN=tmp)
     p = subprocess.run([sys.executable, PROBE], capture_output=True, text=True, env=env)
     os.unlink(tmp)
-    fails = [l for l in p.stdout.splitlines() if l.startswith("FAIL")]
+    return name, [l for l in p.stdout.splitlines() if l.startswith("FAIL")]
+
+
+failed = False
+for name, fails in controls_lib.pmap(one, BREAKS):
     print("%s\n   -> %d row(s) fail" % (name, len(fails)))
     for l in fails:
         print("      " + l[5:].split("  [")[0])

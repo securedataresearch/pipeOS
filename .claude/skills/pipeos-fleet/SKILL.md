@@ -76,6 +76,8 @@ pipeos schedule set NAME --notify off           # only the given flags change
 pipeos schedule rm|enable|disable|run|log NAME  # run = Run now (detached); log NAME [N]
 pipeos usage                                    # totals today/7d/30d/month, by actor, the cap
 pipeos usage cap 40 | cap none                  # card MONTHLY_CAP_USD, regenerated, saved, enforced now
+pipeos usage cap --agent NAME 5 | none          # that agent's own monthly cap (cap_usd on the job); most restrictive wins, every pause names its cap (#302)
+pipeos schedule set NAME --cap 5                # the same cap, from the schedule side
 pipeos card set KEY=VALUE ...                   # any card field; regenerate + save
 pipeos secrets phrase [--ack]                   # the vault's pending recovery phrase (tmpfs); --ack forgets it
 printf '%s' PW | pipeos assistant password      # -> vault assistant_pass, pipeos-assistant restarted, saved

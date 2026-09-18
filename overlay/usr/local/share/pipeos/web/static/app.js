@@ -987,6 +987,8 @@ async function dashboard() {
           <input id="schcwd" type="text" autocomplete="off" placeholder="/work/repos/myproject">
           <label for="schbackend">Assistant</label>
           <select id="schbackend"></select>
+          <label for="schcap">This job's own monthly cap (USD; 0 = none — the Machine's cap still applies)</label>
+          <input id="schcap" type="number" min="0" max="100000" step="1" value="0">
           <label class="note" style="display:flex;align-items:center;gap:.5rem;margin-top:.6rem"><input id="schnotify" type="checkbox" checked style="width:auto"> DM me when it starts and finishes</label>
           <label class="note" style="display:flex;align-items:center;gap:.5rem"><input id="schcontinue" type="checkbox" style="width:auto"> Continue the same conversation across runs (default: a fresh one each time)</label>
           <button id="schsave" type="button">Save job</button>
@@ -1058,6 +1060,12 @@ async function dashboard() {
           <div class="cardhead"><h2>Who spent it</h2><span class="note">30 days</span></div>
           <div id="usactors" class="note">loading…</div>
         </div>
+        ${isAdmin ? `
+        <div class="card">
+          <div class="cardhead"><h2>Each agent's own cap</h2><span class="note">this month</span></div>
+          <p class="note">A per-agent cap pauses that one job at 100% of its own spend; the rest keep running. The most restrictive cap wins, and every pause says which cap it was.</p>
+          <div id="usagents" class="note">loading…</div>
+        </div>` : ""}
         ${isAdmin ? `
         <div class="card">
           <div class="cardhead"><h2>Monthly cap</h2><span class="pill" id="uscappill"></span></div>
@@ -1274,7 +1282,8 @@ async function dashboard() {
     Object.entries(st.running).forEach(([k, ok]) => {
       if (!ok) alertItems.push(["bad", k + " is enabled but not running"]);
     });
-    if (st.usage_paused) alertItems.push(["bad", "monthly usage cap reached — scheduled jobs are paused (Usage)"]);
+    if (st.usage_paused) alertItems.push(["bad", (st.usage_paused_by && st.usage_paused_by.text) || "monthly usage cap reached — scheduled jobs are paused (Usage)"]);
+    (st.usage_agents_paused || []).forEach(n => alertItems.push(["warn", "agent " + n + " is paused by its own monthly cap (Usage)"]));
     if (st.save_fence) alertItems.push(["bad", "saves are fenced: " + st.save_fence + " — changes made now are NOT kept"]);
     else if (st.usage_cap && st.usage_cap.usd && st.usage_cap.pct >= 80) alertItems.push(["warn", st.usage_cap.pct + "% of the monthly usage cap (Usage)"]);
     renderAlerts();
@@ -2271,6 +2280,26 @@ async function dashboard() {
     act.className = rows.length ? "" : "note";
     act.innerHTML = rows.length ? rows.map(([k, d]) => `<div class="row"><div><div class="name">${esc(k)}</div><div class="desc">${d.calls} calls · ${d.in + d.cache_read} in · ${d.out} out</div></div><div><b>${usd(d.usd)}</b></div></div>`).join("") : "No calls in the last 30 days.";
     const ratesEl = v.querySelector("#usrates"); if (ratesEl) ratesEl.textContent = "rates as of " + (r.rates_updated || "?");
+    // each agent's own cap (#302): every job, its month-to-date, its cap, and whether its cap paused it
+    const ag = v.querySelector("#usagents");
+    if (ag) {
+      let jobs = [];
+      try { jobs = (await api("/api/schedule")).jobs || []; } catch (e) { jobs = []; }
+      const agents = cap.agents || {};
+      const mba = r.month_by_actor || {};
+      ag.className = jobs.length ? "" : "note";
+      ag.innerHTML = jobs.length ? jobs.map(j => {
+        const a = agents[j.name] || {}; const spent = (mba["job:" + j.name] || {}).usd || 0;
+        return `<div class="row"><div style="min-width:0"><div class="name">${esc(j.name)}${a.paused ? ' <span class="pill status-bad">paused by its cap</span>' : (j.paused ? ' <span class="pill status-warn">paused</span>' : "")}</div>
+          <div class="desc">${usd(spent)} this month${a.usd ? ` · ${a.pct}% of $${a.usd}` : " · no cap of its own"}${a.paused ? `<br>${esc(a.paused)}` : ""}</div></div>
+          <div style="display:flex;gap:.4rem;align-items:center"><input type="number" min="0" max="100000" step="1" value="${a.usd || 0}" data-agcap="${esc(j.name)}" style="width:6rem"><button class="btn small" type="button" data-agcapsave="${esc(j.name)}">Set</button></div></div>`;
+      }).join("") : "No scheduled jobs yet — an agent's cap lives on its job (Schedule).";
+      ag.querySelectorAll("[data-agcapsave]").forEach(b => b.onclick = async () => {
+        const err = v.querySelector("#userr"); if (err) err.hidden = true;
+        try { await api("/api/usage/cap", { scope: "agent", name: b.dataset.agcapsave, usd: parseInt(ag.querySelector(`[data-agcap="${b.dataset.agcapsave}"]`).value || "0", 10) }); loadUsage(); }
+        catch (e) { if (err) { err.textContent = e.message; err.hidden = false; } }
+      });
+    }
     const capIn = v.querySelector("#uscap"), pill = v.querySelector("#uscappill");
     if (capIn && document.activeElement !== capIn) capIn.value = cap.usd || 0;
     if (pill) { pill.textContent = cap.usd ? (cap.paused ? "paused" : cap.pct + "%") : "none"; pill.className = "pill " + (cap.paused ? "status-bad" : cap.usd && cap.pct >= 80 ? "status-warn" : "status-ok"); }
@@ -2287,11 +2316,11 @@ async function dashboard() {
   const schForm = () => ({
     name: v.querySelector("#schname"), cron: v.querySelector("#schcron"), prompt: v.querySelector("#schprompt"),
     cwd: v.querySelector("#schcwd"), backend: v.querySelector("#schbackend"), notify: v.querySelector("#schnotify"),
-    cont: v.querySelector("#schcontinue"), save: v.querySelector("#schsave"), cancel: v.querySelector("#schcancel"), head: v.querySelector("#schformhead"),
+    cont: v.querySelector("#schcontinue"), cap: v.querySelector("#schcap"), save: v.querySelector("#schsave"), cancel: v.querySelector("#schcancel"), head: v.querySelector("#schformhead"),
   });
   const schReset = () => {
     const f = schForm(); if (!f.name) return;
-    schEditing = null; f.name.value = ""; f.name.disabled = false; f.cron.value = ""; f.prompt.value = ""; f.cwd.value = "";
+    schEditing = null; f.name.value = ""; f.name.disabled = false; f.cron.value = ""; f.prompt.value = ""; f.cwd.value = ""; if (f.cap) f.cap.value = 0;
     f.notify.checked = true; f.cont.checked = false; f.head.textContent = "Add a job"; f.save.textContent = "Save job"; f.cancel.hidden = true;
     v.querySelector("#schnext").textContent = "";
   };
@@ -2316,7 +2345,7 @@ async function dashboard() {
         const when = l.last_end ? new Date(l.last_end * 1000).toLocaleString() : "";
         return `<div class="row${j.enabled ? "" : " off"}">
           <div><div class="name">${esc(j.name)} ${j.enabled ? "" : '<span class="pill">paused</span>'} <span class="pill ${cls}">${esc(st)}</span>${(l.consecutive_failures || 0) >= 3 ? ` <span class="pill status-bad">${l.consecutive_failures} failures in a row</span>` : ""}</div>
-          <div class="desc">${esc(j.human || j.cron)} · ${esc(j.backend || "claude")}${j.next_run ? " · next " + esc(j.next_run) : ""}${when ? " · last " + esc(when) : ""}</div></div>
+          <div class="desc">${esc(j.human || j.cron)} · ${esc(j.backend || "claude")}${j.cap_usd ? " · cap $" + j.cap_usd : ""}${j.next_run ? " · next " + esc(j.next_run) : ""}${when ? " · last " + esc(when) : ""}${j.paused ? `<br><span class="status-bad">paused — ${esc(j.paused)}</span>` : ""}</div></div>
           <div>
             <button class="btn ghost" type="button" data-schrun="${esc(j.name)}">Run now</button>
             <button class="btn ghost" type="button" data-schtoggle="${esc(j.name)}" data-on="${j.enabled ? 0 : 1}">${j.enabled ? "Pause" : "Resume"}</button>
@@ -2339,6 +2368,7 @@ async function dashboard() {
         const f = schForm(); schEditing = j.name;
         f.name.value = j.name; f.name.disabled = true; f.cron.value = j.cron; f.prompt.value = j.prompt || ""; f.cwd.value = j.cwd || "";
         if (f.backend) f.backend.value = j.backend || "claude"; f.notify.checked = j.notify !== false; f.cont.checked = j.session === "continue";
+        if (f.cap) f.cap.value = j.cap_usd || 0;
         f.head.textContent = "Edit " + j.name; f.save.textContent = "Save changes"; f.cancel.hidden = false;
         f.name.scrollIntoView({ behavior: "smooth" });
       });
@@ -2353,7 +2383,8 @@ async function dashboard() {
       const err = v.querySelector("#scherr"); err.hidden = true;
       try {
         await api("/api/schedule/set", { name: schf.name.value.trim(), cron: schf.cron.value.trim(), prompt: schf.prompt.value, cwd: schf.cwd.value.trim(),
-          backend: schf.backend.value || "claude", notify: schf.notify.checked, session: schf.cont.checked ? "continue" : "fresh" });
+          backend: schf.backend.value || "claude", notify: schf.notify.checked, session: schf.cont.checked ? "continue" : "fresh",
+          cap_usd: parseInt((schf.cap && schf.cap.value) || "0", 10) || 0 });
         schReset(); loadSchedule();
       } catch (e) { err.textContent = e.message; err.hidden = false; }
     };

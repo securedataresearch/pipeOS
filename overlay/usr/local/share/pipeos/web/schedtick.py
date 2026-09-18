@@ -28,6 +28,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cronspec  # noqa: E402
+import ledger  # noqa: E402  — read_paused/paused_for: which cap says no (#302)
 
 CONF = os.environ.get("PIPEOS_SCHED_CONF", "/etc/pipeos/schedule.json")
 STATE_DIR = os.environ.get("PIPEOS_SCHED_STATE_DIR", "/work/.pipeos/schedule")
@@ -35,6 +36,7 @@ RUN_BIN = os.environ.get("PIPEOS_SCHED_RUN_BIN", "/usr/local/bin/pipeos-schedule
 LOG = os.environ.get("PIPEOS_SCHED_LOG", "/work/logs/schedule.log")
 LOGDIR = os.environ.get("PIPEOS_SCHED_LOGDIR", "/work/logs")
 PAUSED = os.environ.get("PIPEOS_SCHED_PAUSED", "/work/.pipeos/ledger/paused")
+PAUSED_JSON = os.environ.get("PIPEOS_SCHED_PAUSED_JSON", "/work/.pipeos/ledger/paused.json")
 STATE = os.path.join(STATE_DIR, "state.json")
 STATE_LOCK = os.path.join(STATE_DIR, ".state.lock")
 
@@ -73,7 +75,14 @@ def main():
     now = now_minute()
     key = now.strftime("%Y-%m-%dT%H:%M")
     os.makedirs(STATE_DIR, exist_ok=True)
-    paused = os.path.exists(PAUSED)
+    # the plain marker is the box or the cluster (every job); paused.json
+    # adds the per-agent entries — each entry's text names its cap (#302)
+    try:
+        with open(PAUSED) as f:
+            paused = f.read().strip() or "the monthly cap is reached"
+    except OSError:
+        paused = ""
+    pdoc = ledger.read_paused(PAUSED_JSON)
     with open(STATE_LOCK, "a+") as lk:
         fcntl.flock(lk, fcntl.LOCK_EX)
         try:
@@ -103,10 +112,14 @@ def main():
         with open(tmp, "w") as f:
             json.dump(state, f)
         os.replace(tmp, STATE)
-    if paused:
-        for name in fire:
-            log("skipped %s: scheduled runs are paused — the monthly cap is reached (raise it under Usage)" % name, job=name)
-        return 0
+    run = []
+    for name in fire:
+        why = paused or ledger.paused_for(pdoc, name)
+        if why:
+            log("skipped %s: scheduled runs are paused — %s (raise it under Usage)" % (name, why), job=name)
+        else:
+            run.append(name)
+    fire = run
     if not fire:
         return 0
     # Jobs sharing a minute (two "every day 02:00" presets) run one after

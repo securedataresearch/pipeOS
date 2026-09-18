@@ -3,7 +3,8 @@
 
     pipeos-ledger-ingest ingest            tail the transcripts into the ledger
     pipeos-ledger-ingest totals [--json]   today / 7 days / 30 days, by actor
-    pipeos-ledger-ingest enforce           the monthly cap: DM at 80%, pause at 100%
+    pipeos-ledger-ingest enforce           the caps: DM at 80%, pause at 100%, each naming itself
+    pipeos-ledger-ingest paused [--job NAME]   why NAME (or everything) may not run now — empty = go
 
 Nobody on a Machine could say what it spent. The owner found out from the
 bill. This reads what Claude Code already writes — every `assistant` line
@@ -32,14 +33,25 @@ HOW MUCH: rates.json ships with the overlay — the published per-million
 prices — and every number is an ESTIMATE the provider's bill overrides. A
 model the table does not know is counted and shown as unpriced.
 
-THE CAP: MONTHLY_CAP_USD from the card (0 = none). At 80% one DM to the
-owner per month; at 100% a `paused` marker the schedule tick honours, and
-one more DM. Under the cap again (raised, or a new month) the marker goes.
-An attached session is only ever warned, never cut.
+THE CAPS (#246, #302): three scopes, most restrictive wins, and every pause
+names the cap that bit. The BOX cap is MONTHLY_CAP_USD from the card (0 =
+none): at 80% one DM to the owner per month; at 100% the box is paused and
+one more DM. An AGENT cap is `cap_usd` on the job in schedule.json: at 100%
+of its own month-to-date that one agent is paused (one DM naming it), the
+rest keep running. The CLUSTER cap (CLUSTER_CAP_USD, #302 part 2) pauses
+the box against every member's month-to-date summed. State is one file,
+`paused.json` ({"box","cluster","agents":{name}} → {scope,name,cap,spent,
+since,text}), plus the plain `paused` marker every older reader already
+honours, written iff the box or the cluster is paused. `paused_for(doc,
+name)` answers "may this job run?" in the order cluster → box → agent and
+hands back the text of whichever cap said no. Under a cap again (raised,
+or a new month) its entry goes. An attached session is only ever warned,
+never cut.
 
 Seams (the probe, never production): PIPEOS_LEDGER_DIR, _TRANSCRIPTS,
-_RATES, _CONF, _RUNS, _SESSIONS, _WEBCHAT_SID, _PIPE (the DM binary), _NOW
-(an ISO timestamp standing in for the clock).
+_RATES, _CONF, _RUNS, _SESSIONS, _WEBCHAT_SID, _SCHEDULE (the job list,
+for agent caps), _PIPE (the DM binary), _NOW (an ISO timestamp standing in
+for the clock).
 """
 
 import datetime
@@ -59,6 +71,7 @@ CONF = os.environ.get("PIPEOS_LEDGER_CONF", "/etc/pipeos/pipebox.conf")
 RUNS_LOG = os.environ.get("PIPEOS_LEDGER_RUNS", "/work/.pipeos/schedule/runs.log")
 SESSIONS_DIR = os.environ.get("PIPEOS_LEDGER_SESSIONS", "/work/pipebox/sessions")
 WEBCHAT_SID = os.environ.get("PIPEOS_LEDGER_WEBCHAT_SID", "/work/pipebox/webchat/.dashboard-sid")
+SCHEDULE = os.environ.get("PIPEOS_LEDGER_SCHEDULE", "/etc/pipeos/schedule.json")
 PIPE_BIN = os.environ.get("PIPEOS_LEDGER_PIPE", "pipe")
 SEEN_RING = 256
 KEEP_MONTHS = 13
@@ -81,11 +94,13 @@ def _parse_ts(s):
 
 class Ledger:
     def __init__(self, dir=LEDGER_DIR, transcripts=TRANSCRIPTS, rates=RATES, conf=CONF,
-                 runs_log=RUNS_LOG, sessions_dir=SESSIONS_DIR, webchat_sid=WEBCHAT_SID, pipe_bin=PIPE_BIN):
+                 runs_log=RUNS_LOG, sessions_dir=SESSIONS_DIR, webchat_sid=WEBCHAT_SID, pipe_bin=PIPE_BIN,
+                 schedule=SCHEDULE):
         self.dir = dir
         self.transcripts = transcripts
         self.rates_path = rates
         self.conf = conf
+        self.schedule = schedule
         self.runs_log = runs_log
         self.sessions_dir = sessions_dir
         self.webchat_sid = webchat_sid
@@ -311,19 +326,19 @@ class Ledger:
         unpriced count, and the cap state. Cached on the files' size+mtime."""
         now = _now()
         months = sorted({(now - datetime.timedelta(days=d)).strftime("%Y-%m") for d in (0, 15, 31)})
-        key = tuple((m, self._stat(m)) for m in months) + (self._conf_stat(),)
+        key = tuple((m, self._stat(m)) for m in months) + (self._conf_stat(), self._file_stat(self.schedule))
         if self._totals_key == key and self._totals is not None:
             # the cap's live half is not a function of the files the key
             # watches: a lifted cap removes the paused marker without a new
             # row, and /api/status kept saying "paused" for up to a minute
             # (the single-box pass on zero, 2026-09-16)
-            self._totals["cap"]["paused"] = self.paused_text()
-            self._totals["cap"]["warned"] = os.path.exists(self._marker("warned", now))
+            self._refresh_live(self._totals["cap"], now)
             return self._totals
         t0 = {"usd": 0.0, "calls": 0, "in": 0, "out": 0, "cache_read": 0}
         today, d7, d30 = dict(t0), dict(t0), dict(t0)
         month = dict(t0)
         by_actor = {}
+        month_by_actor = {}
         daily = [0.0] * 30
         unpriced = 0
         last_ts = ""
@@ -339,8 +354,12 @@ class Ledger:
                 usd = 0.0
             if r.get("ts", "") > last_ts:
                 last_ts = r["ts"]
+            a = r.get("actor") or {}
+            k = a.get("kind", "other") + (":" + a["name"] if a.get("name") else "")
             if ts.strftime("%Y-%m") == now.strftime("%Y-%m"):
                 _acc(month, r, usd)
+                month_by_actor.setdefault(k, dict(t0))
+                _acc(month_by_actor[k], r, usd)
             if age < 0 or age >= 30:
                 continue
             _acc(d30, r, usd)
@@ -349,22 +368,44 @@ class Ledger:
                 _acc(d7, r, usd)
             if age == 0:
                 _acc(today, r, usd)
-            a = r.get("actor") or {}
-            k = a.get("kind", "other") + (":" + a["name"] if a.get("name") else "")
             by_actor.setdefault(k, dict(t0))
             _acc(by_actor[k], r, usd)
-        for d in (today, d7, d30, month) + tuple(by_actor.values()):
+        for d in (today, d7, d30, month) + tuple(by_actor.values()) + tuple(month_by_actor.values()):
             d["usd"] = round(d["usd"], 4)
         cap = self.cap()
+        agents = {}
+        for name, acap in self.agent_caps().items():
+            spent = month_by_actor.get("job:" + name, t0)["usd"]
+            agents[name] = {"usd": acap, "spent": spent, "pct": (round(spent * 100 / acap) if acap else 0), "paused": ""}
         out = {"today": today, "d7": d7, "d30": d30, "month": month,
                "by_actor": dict(sorted(by_actor.items(), key=lambda kv: -kv[1]["usd"])),
+               "month_by_actor": dict(sorted(month_by_actor.items(), key=lambda kv: -kv[1]["usd"])),
                "daily": [round(x, 4) for x in daily], "unpriced": unpriced, "estimate": True,
                "last_row_ts": last_ts, "last_ingest_ts": self._last_ingest(),
+               # "usd"/"spent"/"pct"/"paused"/"warned" are the box cap, as they always were;
+               # "agents" and "paused_by" are #302's additions
                "cap": {"usd": cap, "spent": month["usd"], "pct": (round(month["usd"] * 100 / cap) if cap else 0),
-                       "warned": os.path.exists(self._marker("warned", now)),
-                       "paused": self.paused_text()}}
+                       "warned": False, "paused": "", "agents": agents, "paused_by": None}}
+        self._refresh_live(out["cap"], now)
         self._totals_key, self._totals = key, out
         return out
+
+    def _refresh_live(self, cap, now):
+        """The half of the cap block that changes without a new ledger row:
+        which caps are paused right now, and whether the 80% DM went."""
+        doc = read_paused(self.paused_json_path())
+        cap["paused"] = self.paused_text()
+        cap["warned"] = os.path.exists(self._marker("warned", now))
+        cap["paused_by"] = doc.get("cluster") or doc.get("box") or None
+        for name, a in cap.get("agents", {}).items():
+            a["paused"] = (doc.get("agents", {}).get(name) or {}).get("text", "")
+
+    def _file_stat(self, path):
+        try:
+            st = os.stat(path)
+            return (st.st_size, st.st_mtime_ns)
+        except OSError:
+            return None
 
     def _stat(self, month):
         try:
@@ -398,8 +439,22 @@ class Ledger:
         return m.group(1).strip() if m else ""
 
     def cap(self):
+        """The box cap (MONTHLY_CAP_USD), 0 = none."""
         v = self.conf_value("MONTHLY_CAP_USD")
         return int(v) if v.isdigit() else 0
+
+    def agent_caps(self):
+        """{job name: cap_usd} for every job in schedule.json that carries one."""
+        try:
+            with open(self.schedule) as f:
+                jobs = json.load(f).get("jobs", [])
+        except (OSError, ValueError, AttributeError):
+            return {}
+        out = {}
+        for j in jobs:
+            if isinstance(j, dict) and j.get("name") and isinstance(j.get("cap_usd"), int) and not isinstance(j.get("cap_usd"), bool) and j["cap_usd"] > 0:
+                out[j["name"]] = j["cap_usd"]
+        return out
 
     def _marker(self, kind, now):
         return os.path.join(self.dir, "%s-%s" % (kind, now.strftime("%Y-%m")))
@@ -407,12 +462,20 @@ class Ledger:
     def paused_path(self):
         return os.path.join(self.dir, "paused")
 
+    def paused_json_path(self):
+        return os.path.join(self.dir, "paused.json")
+
     def paused_text(self):
         try:
             with open(self.paused_path()) as f:
                 return f.read().strip()
         except OSError:
             return ""
+
+    def paused_for(self, name):
+        """Why job `name` may not run now — the text of the most restrictive
+        cap that is reached (cluster, box, then the agent's own) — or ""."""
+        return paused_for(read_paused(self.paused_json_path()), name)
 
     def dm(self, text):
         owner = self.conf_value("OWNER_NICK")
@@ -426,44 +489,126 @@ class Ledger:
             return False
 
     def enforce_cap(self):
-        """Compare this month's spend to the cap. Idempotent: one DM per
-        month per threshold (markers), the pause marker written once and
-        removed the moment the box is under the cap again."""
+        """Compare this month's spend to every cap. Idempotent: one DM per
+        month per threshold per scope (markers); an entry is written into
+        paused.json the moment a cap is reached and removed the moment it is
+        not; the plain `paused` marker follows the box and cluster entries.
+        Every entry carries the text that names its cap."""
         now = _now()
-        cap = self.cap()
+        day = now.strftime("%Y-%m-%d")
         t = self.totals()
-        spent = t["month"]["usd"]
         os.makedirs(self.dir, exist_ok=True)
-        state = {"cap": cap, "spent": spent, "warned": False, "paused": False, "changed": False}
-        if not cap:
-            if os.path.exists(self.paused_path()):
-                os.unlink(self.paused_path())
-                state["changed"] = True
-            return state
-        pct = spent * 100 / cap
-        warned = self._marker("warned", now)
-        paused_m = self._marker("paused", now)
-        if pct >= 100:
-            if not os.path.exists(self.paused_path()):
-                with open(self.paused_path(), "w") as f:
-                    f.write("monthly cap USD %d reached %s (spent %.2f); scheduled jobs resume on the 1st or when the cap is raised under Usage\n"
-                            % (cap, now.strftime("%Y-%m-%d"), spent))
-                state["changed"] = True
-            if not os.path.exists(paused_m):
-                self.dm("usage: this Machine reached its monthly cap (USD %.2f of %d) — scheduled jobs are paused; interactive sessions keep working. Raise the cap under Usage to resume." % (spent, cap))
-                open(paused_m, "w").close()
+        before = read_paused(self.paused_json_path())
+        doc = {"box": None, "cluster": None, "agents": {}}
+        cap = self.cap()
+        spent = t["month"]["usd"]
+        state = {"cap": cap, "spent": spent, "warned": False, "paused": False, "changed": False, "agents_paused": []}
+        if cap:
+            pct = spent * 100 / cap
+            warned = self._marker("warned", now)
+            paused_m = self._marker("paused", now)
+            if pct >= 100:
+                doc["box"] = _entry("box", "", cap, spent, day, (before.get("box") or {}).get("since"))
+                if not os.path.exists(paused_m):
+                    self.dm("usage: this Machine reached its monthly cap (USD %.2f of %d) — scheduled jobs are paused; interactive sessions keep working. Raise the cap under Usage to resume." % (spent, cap))
+                    open(paused_m, "w").close()
+                state["paused"] = True
+            if pct >= WARN_PCT and not os.path.exists(warned):
+                if pct < 100:
+                    self.dm("usage: USD %.2f of this Machine's %d monthly cap (%d%%) — scheduled jobs pause at 100%%" % (spent, cap, pct))
+                open(warned, "w").close()
+                state["warned"] = True
+        doc["cluster"] = self._cluster_hit(t, day, before)
+        if doc["cluster"]:
             state["paused"] = True
-        else:
-            if os.path.exists(self.paused_path()):
-                os.unlink(self.paused_path())
-                state["changed"] = True
-        if pct >= WARN_PCT and not os.path.exists(warned):
-            if pct < 100:
-                self.dm("usage: USD %.2f of this Machine's %d monthly cap (%d%%) — scheduled jobs pause at 100%%" % (spent, cap, pct))
-            open(warned, "w").close()
-            state["warned"] = True
+        for name, acap in self.agent_caps().items():
+            aspent = t["month_by_actor"].get("job:" + name, {}).get("usd", 0.0)
+            if aspent * 100 / acap >= 100:
+                doc["agents"][name] = _entry("agent", name, acap, aspent, day, (before.get("agents", {}).get(name) or {}).get("since"))
+                state["agents_paused"].append(name)
+                m = self._marker("agent-%s-paused" % name, now)
+                if not os.path.exists(m):
+                    self.dm("usage: agent %s reached its monthly cap (USD %.2f of %d) — %s is paused; other jobs keep running. pipeos schedule set %s --cap N to raise it." % (name, aspent, acap, name, name))
+                    open(m, "w").close()
+        state["changed"] = self._write_markers(doc, before)
+        state["paused_by"] = doc["cluster"] or doc["box"]
         self._totals_key = None
         return state
+
+    def _cluster_hit(self, t, day, before):
+        """The cluster scope (#302 part 2) — no cluster cap yet: never a hit."""
+        return None
+
+    def _write_markers(self, doc, before):
+        """paused.json (tmp + rename) and the plain marker; True when
+        anything moved. Both files gone when nothing is paused."""
+        global_entry = doc["cluster"] or doc["box"]
+        changed = (_strip(doc) != _strip(before))
+        if doc["box"] or doc["cluster"] or doc["agents"]:
+            tmp = self.paused_json_path() + ".new"
+            with open(tmp, "w") as f:
+                json.dump(doc, f)
+            os.replace(tmp, self.paused_json_path())
+        elif os.path.exists(self.paused_json_path()):
+            os.unlink(self.paused_json_path())
+        if global_entry:
+            if self.paused_text() != global_entry["text"]:
+                with open(self.paused_path(), "w") as f:
+                    f.write(global_entry["text"] + "\n")
+                changed = True
+        elif os.path.exists(self.paused_path()):
+            os.unlink(self.paused_path())
+            changed = True
+        return changed
+
+
+def pause_text(scope, name, cap, spent, day):
+    """The one sentence a paused scope shows everywhere. The box text keeps
+    its historical prefix — the runner's log, selfcheck and the probes
+    match on "monthly cap"."""
+    if scope == "agent":
+        return ("agent %s: monthly cap USD %d reached %s (spent %.2f; the per-agent cap on %s); %s resumes on the 1st or when its cap is raised (pipeos schedule set %s --cap N)"
+                % (name, cap, day, spent, name, name, name))
+    if scope == "cluster":
+        return ("cluster monthly cap USD %d reached %s (spent %.2f across the cluster; CLUSTER_CAP_USD); scheduled jobs on every member resume on the 1st or when the cluster cap is raised under Usage"
+                % (cap, day, spent))
+    return ("monthly cap USD %d reached %s (spent %.2f; this Machine's cap); scheduled jobs resume on the 1st or when the cap is raised under Usage"
+            % (cap, day, spent))
+
+
+def _entry(scope, name, cap, spent, day, since):
+    return {"scope": scope, "name": name, "cap": cap, "spent": round(spent, 4), "since": since or day,
+            "text": pause_text(scope, name, cap, spent, since or day)}
+
+
+def _strip(doc):
+    """The comparable shape of a paused doc: what is paused, not the cents."""
+    return (bool(doc.get("box")), bool(doc.get("cluster")), tuple(sorted(doc.get("agents", {}))))
+
+
+def read_paused(path):
+    """paused.json as a dict, an empty doc when absent or unreadable."""
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        if not isinstance(d, dict):
+            raise ValueError
+    except (OSError, ValueError):
+        return {"box": None, "cluster": None, "agents": {}}
+    d.setdefault("box", None); d.setdefault("cluster", None); d.setdefault("agents", {})
+    return d
+
+
+def paused_for(doc, name=""):
+    """The text of the most restrictive reached cap that stops `name`:
+    cluster, then the box, then the agent's own. "" when it may run. With
+    no name: the global reason only."""
+    for scope in ("cluster", "box"):
+        if doc.get(scope):
+            return doc[scope].get("text", "")
+    if name and doc.get("agents", {}).get(name):
+        return doc["agents"][name].get("text", "")
+    return ""
 
 
 def _acc(d, r, usd):
@@ -495,10 +640,20 @@ def main(argv):
             if t["unpriced"]:
                 print("unpriced calls (model not in rates.json): %d" % t["unpriced"])
             c = t["cap"]
-            print("cap: %s" % ("none" if not c["usd"] else "USD %d, spent %.2f (%d%%)%s" % (c["usd"], c["spent"], c["pct"], " — PAUSED" if c["paused"] else "")))
+            print("cap: %s" % ("none" if not c["usd"] else "USD %d, spent %.2f (%d%%)%s" % (c["usd"], c["spent"], c["pct"], " — PAUSED: " + c["paused"] if c["paused"] else "")))
+            for name, a in c.get("agents", {}).items():
+                print("  agent %-18s cap USD %d, spent %.2f (%d%%)%s" % (name, a["usd"], a["spent"], a["pct"], " — PAUSED" if a["paused"] else ""))
             return 0
         if argv[0] == "enforce":
             print(json.dumps(L.enforce_cap()))
+            return 0
+        if argv[0] == "paused":
+            # the runner's and the tick's question: may this job run? An
+            # empty line is yes; a sentence is the cap that says no.
+            name = argv[argv.index("--job") + 1] if "--job" in argv and argv.index("--job") + 1 < len(argv) else ""
+            why = L.paused_for(name)
+            if why:
+                print(why)
             return 0
         print("unknown verb: " + argv[0], file=sys.stderr)
         return 2

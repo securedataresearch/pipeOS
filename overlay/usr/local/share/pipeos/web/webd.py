@@ -2076,15 +2076,27 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_usage_cap(self, body):
         # "usd" is the field; "cap" is what an agent guesses first (the
-        # single-box pass, 2026-09-16) — accepted, and the error names the field
+        # single-box pass, 2026-09-16) — accepted, and the error names the field.
+        # scope (#302): "box" (default, the card) or "agent" + name (the job)
         v = body.get("usd", body.get("cap"))
         if isinstance(v, bool) or not isinstance(v, int) or v < 0 or v > 100000:
             return self.err(400, 'the cap is a whole number of dollars, 0 (none) to 100000 — send {"usd": N}')
-        try:
-            card_ensure_key("MONTHLY_CAP_USD")
-            card_set({"MONTHLY_CAP_USD": str(v) if v else ""})
-        except RuntimeError as e:
-            return self.err(500, str(e))
+        scope = body.get("scope") or "box"
+        if scope not in ("box", "agent"):
+            return self.err(400, 'scope is "box" (this Machine) or "agent" with a name')
+        if scope == "agent":
+            name = (body.get("name") or "").strip().lower()
+            if not any(j["name"] == name for j in read_schedule()):
+                return self.err(404, "no job named %s — an agent's cap lives on its job (Schedule)" % name)
+            job, err = schedule_upsert({"name": name, "cap_usd": v})
+            if err:
+                return self.err(400, err)
+        else:
+            try:
+                card_ensure_key("MONTHLY_CAP_USD")
+                card_set({"MONTHLY_CAP_USD": str(v) if v else ""})
+            except RuntimeError as e:
+                return self.err(500, str(e))
         # lowering under this month's spend pauses now; raising above it resumes
         # now — BEFORE the save, whose live re-check must read the settled marker
         try:
@@ -2092,7 +2104,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             state = {"error": str(e)}
         saved, detail = save_state()
-        self.send(200, {"ok": True, "cap": v, "state": state, "saved": saved, "save_detail": "" if saved else detail})
+        self.send(200, {"ok": True, "cap": v, "scope": scope, "name": body.get("name") if scope == "agent" else "",
+                        "state": state, "saved": saved, "save_detail": "" if saved else detail})
 
     # -- scheduled runs (#242) --------------------------------------------------
 
@@ -2103,6 +2116,8 @@ class Handler(BaseHTTPRequestHandler):
         out = []
         for j in jobs:
             row = {k: j.get(k) for k in ("name", "cron", "prompt", "cwd", "backend", "notify", "enabled", "session")}
+            row["cap_usd"] = j.get("cap_usd") or 0
+            row["paused"] = paused_reason(j["name"])          # "" or the text of the cap that stops this one (#302)
             try:
                 spec = cronspec.parse(j.get("cron", ""))
                 nxt = cronspec.next_run(spec, now) if j.get("enabled", True) else None
@@ -2193,7 +2208,7 @@ class Handler(BaseHTTPRequestHandler):
         on = (body.get("on") or "").strip()
         if not on:
             return self.err(400, "on: which Machine — a member's id or name, or idlest")
-        spec = {k: body[k] for k in ("name", "prompt", "cron", "cwd", "backend", "session", "notify") if k in body}
+        spec = {k: body[k] for k in ("name", "prompt", "cron", "cwd", "backend", "session", "notify", "cap_usd") if k in body}
 
         def local_start(sp):
             st, out = agent_start_here(sp)
@@ -2656,6 +2671,8 @@ class Handler(BaseHTTPRequestHandler):
             "spend_month_usd": spend.get("month", {}).get("usd", 0),
             "usage_cap": spend.get("cap", {}),
             "usage_paused": bool(spend.get("cap", {}).get("paused")),
+            "usage_paused_by": spend.get("cap", {}).get("paused_by"),
+            "usage_agents_paused": sorted(n for n, a in spend.get("cap", {}).get("agents", {}).items() if a.get("paused")),
             # saves are fenced: a new image applied (tmpfs marker) or a rollback
             # staged — every change until the reboot answers saved:false
             "save_fence": ("new image applied — reboot to boot it" if os.path.exists("/run/pipeos/flash-pending")
@@ -3643,6 +3660,7 @@ JOB_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 # sessions for attribution, the dashboard chat's own session id.
 LEDGER_DIR = "/work/.pipeos/ledger"
 LEDGER_PAUSED = LEDGER_DIR + "/paused"
+LEDGER_PAUSED_JSON = LEDGER_DIR + "/paused.json"    # the per-scope entries (#302); the plain marker is the box/cluster half
 LEDGER_TRANSCRIPTS = "/work/claude/projects"
 LEDGER_RATES = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rates.json"))
 LEDGER_CONF = ETC + "/pipebox.conf"
@@ -3676,7 +3694,7 @@ def ledger_obj():
         if L is None or L.dir != LEDGER_DIR or L.transcripts != LEDGER_TRANSCRIPTS:
             L = ledger.Ledger(dir=LEDGER_DIR, transcripts=LEDGER_TRANSCRIPTS, rates=LEDGER_RATES, conf=LEDGER_CONF,
                               runs_log=os.path.join(SCHEDULE_STATE_DIR, "runs.log"), sessions_dir=LEDGER_SESSIONS,
-                              webchat_sid=WEBCHAT_SID)
+                              webchat_sid=WEBCHAT_SID, schedule=SCHEDULE_CONF)     # the agents' own caps ride the job list (#302)
             LEDGER_STATE["obj"] = L
         return L
 
@@ -3783,6 +3801,15 @@ def schedule_upsert(body):
         if body.get("session") not in ("fresh", "continue"):
             return None, "session is fresh or continue"
         job["session"] = body["session"]
+    if "cap_usd" in body:
+        # this agent's own monthly cap (#302): 0/null clears it
+        c = body.get("cap_usd")
+        if c in (None, 0, "", "none"):
+            job.pop("cap_usd", None)
+        elif isinstance(c, bool) or not isinstance(c, int) or c < 1 or c > 100000:
+            return None, "cap_usd is a whole number of dollars, 1-100000, or 0 for none"
+        else:
+            job["cap_usd"] = c
     if cur is None:
         if len(jobs) >= SCHEDULE_MAX_JOBS:
             return None, "at most %d jobs on one Machine" % SCHEDULE_MAX_JOBS
@@ -3800,14 +3827,29 @@ def schedule_start(name):
         return 404, "no job named %s" % name
     if schedule_running():
         return 409, "another job is running on this Machine — one at a time; try again when it finishes"
-    if os.path.exists(LEDGER_PAUSED):
-        return 409, "scheduled runs are paused — the monthly cap is reached; raise it under Usage"
+    why = paused_reason(name)
+    if why:
+        return 409, "%s is paused — %s" % (name, why)
     try:
         subprocess.Popen([SCHEDULE_RUN_BIN, name], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError as e:
         return 500, "could not start the runner: %s" % e
     return 200, None
+
+
+def paused_reason(name=""):
+    """Why `name` may not run now: the plain marker (the box or the cluster,
+    every job) or its own entry in paused.json — the text names the cap
+    (#302). "" when it may run."""
+    try:
+        with open(LEDGER_PAUSED) as f:
+            t = f.read().strip()
+        if t:
+            return t
+    except OSError:
+        pass
+    return ledger.paused_for(ledger.read_paused(LEDGER_PAUSED_JSON), name)
 
 
 def agent_start_here(body):
@@ -3817,7 +3859,7 @@ def agent_start_here(body):
     `changed` says whether the job list moved, so the caller saves."""
     name = (body.get("name") or "").strip().lower()
     changed = False
-    if any(k in body for k in ("prompt", "cron", "cwd", "backend", "session", "notify")):
+    if any(k in body for k in ("prompt", "cron", "cwd", "backend", "session", "notify", "cap_usd")):
         before = read_schedule()
         job, err = schedule_upsert(body)
         if err:
@@ -3852,6 +3894,7 @@ def agents_here():
         last = st.get(j["name"], {})
         out.append({"name": j["name"], "cron": j.get("cron", ""), "backend": j.get("backend", "claude"),
                     "enabled": bool(j.get("enabled", True)),
+                    "cap_usd": j.get("cap_usd") or 0, "paused": paused_reason(j["name"]),
                     "running": bool(running and _alive(last.get("running_pid"))),
                     "last_status": last.get("last_status", ""), "last_start": last.get("last_start"),
                     "last_end": last.get("last_end")})

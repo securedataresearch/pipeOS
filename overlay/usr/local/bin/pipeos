@@ -25,7 +25,7 @@
 #   pipeos cluster agents | start NAME --on ID|NAME|idlest [--prompt TEXT --cron SPEC]   every member's agents; start one ON a member — it lives there (#300)
 #   pipeos vault status|list|set|get|del|export|unlock|rephrase   the sealed secret store
 #   pipeos schedule ls|add|set|rm|enable|disable|run|log   the Machine's scheduled jobs (what the dashboard's Schedule view edits)
-#   pipeos usage [totals|cap N|cap none]   the ledger's totals; the monthly cap (card, saved, enforced now)
+#   pipeos usage [totals|cap [--box|--agent NAME] N|none]   the ledger's totals; the caps (box: card; agent: the job), saved, enforced now; every pause names its cap
 #   pipeos card set KEY=VALUE...   a card field, regenerated and saved (what the dashboard's forms write)
 #   pipeos secrets phrase [--ack]  the vault's pending recovery phrase; --ack forgets the tmpfs copy
 #   pipeos assistant password      the assistant terminal's password from stdin -> vault, restarted, saved
@@ -49,6 +49,7 @@ CARD=${PIPEOS_CARD:-/etc/pipeos/card.conf}
 CARD_GEN=${PIPEOS_CARD_GEN:-/usr/local/bin/pipebox-card}
 SAVE_BIN=${PIPEOS_SAVE_BIN:-/usr/local/bin/pipeos-save}
 LEDGER_PY=${PIPEOS_LEDGER:-/usr/local/share/pipeos/web/ledger.py}
+SCHEDCTL_PY=${PIPEOS_SCHEDCTL:-/usr/local/share/pipeos/web/schedctl.py}
 VAULT_PHRASE=${PIPEOS_VAULT_PHRASE:-/run/pipeos/vault-phrase}
 BASE_REF=${PIPEOS_BASE_REF:-origin/main}
 
@@ -188,6 +189,20 @@ cmd_status() {
     for svc in $svcs; do
         if rc-service "$svc" status >/dev/null 2>&1; then ok "$svc running"; else fail "$svc not running"; fi
     done
+    # the caps (#302): which one, if any, is stopping work right now — named
+    if _ut=$(python3 "$LEDGER_PY" totals --json 2>/dev/null) && [ -n "$_ut" ] && command -v jq >/dev/null 2>&1; then
+        _up=$(printf '%s' "$_ut" | jq -r '.cap.paused // ""')
+        _uc=$(printf '%s' "$_ut" | jq -r '.cap.usd // 0'); _us=$(printf '%s' "$_ut" | jq -r '.cap.spent // 0'); _upc=$(printf '%s' "$_ut" | jq -r '.cap.pct // 0')
+        _ua=$(printf '%s' "$_ut" | jq -r '[.cap.agents // {} | to_entries[] | select(.value.paused != "") | .key] | join(", ")')
+        if [ -n "$_up" ]; then
+            fail "usage: PAUSED — $_up"
+        elif [ "${_uc:-0}" -gt 0 ] 2>/dev/null; then
+            ok "usage: USD $_us of the USD $_uc monthly cap ($_upc%)${_ua:+; agent(s) paused by their own cap: $_ua}"
+        else
+            ok "usage: USD $_us this month, no cap${_ua:+; agent(s) paused by their own cap: $_ua}"
+        fi
+        [ -n "$_ua" ] && [ -z "$_up" ] && printf '%s' "$_ut" | jq -r '.cap.agents | to_entries[] | select(.value.paused != "") | "        \(.value.paused)"'
+    fi
     # A running daemon with a revoked token is not healthy: it silently
     # destroys every inbound sealed message (pipe#641) and cannot send the
     # boot report (pipeOS#13/#19). Liveness above says nothing about this —
@@ -562,16 +577,28 @@ cmd_usage() {
     case "${1:-totals}" in
         totals) [ $# -gt 0 ] && shift; exec python3 "$LEDGER_PY" totals "$@" ;;
         cap)
-            v=${2:-}
-            case "$v" in
-                none|0) cmd_card_set "MONTHLY_CAP_USD=" ;;
-                ''|*[!0-9]*) echo "usage: pipeos usage cap N|none   (whole dollars, 1-100000)" >&2; exit 2 ;;
-                *) [ "$v" -ge 1 ] && [ "$v" -le 100000 ] || { echo "the cap is 1-100000 dollars (or none)" >&2; exit 2; }
-                   cmd_card_set "MONTHLY_CAP_USD=$v" ;;
+            # scopes (#302): --box (the default; the card) or --agent NAME (the job's own cap)
+            shift; scope=box; agent=
+            case "${1:-}" in
+                --box) shift ;;
+                --agent) agent=${2:-}; [ -n "$agent" ] || { echo "usage: pipeos usage cap --agent NAME N|none" >&2; exit 2; }; scope=agent; shift 2 ;;
             esac
-            # enforce now: lowering under this month's spend pauses jobs at once, raising lifts it
+            v=${1:-}
+            case "$v" in
+                none|0) v=none ;;
+                ''|*[!0-9]*) echo "usage: pipeos usage cap [--box|--agent NAME] N|none   (whole dollars, 1-100000)" >&2; exit 2 ;;
+                *) [ "$v" -ge 1 ] && [ "$v" -le 100000 ] || { echo "the cap is 1-100000 dollars (or none)" >&2; exit 2; } ;;
+            esac
+            if [ "$scope" = agent ]; then
+                python3 "$SCHEDCTL_PY" set "$agent" --cap "$v" || exit $?
+            elif [ "$v" = none ]; then
+                cmd_card_set "MONTHLY_CAP_USD="
+            else
+                cmd_card_set "MONTHLY_CAP_USD=$v"
+            fi
+            # enforce now: lowering under this month's spend pauses at once, raising lifts it
             python3 "$LEDGER_PY" enforce ;;
-        *) echo "usage: pipeos usage [totals [--json]|cap N|cap none]" >&2; exit 2 ;;
+        *) echo "usage: pipeos usage [totals [--json]|cap [--box|--agent NAME] N|none]" >&2; exit 2 ;;
     esac
 }
 
