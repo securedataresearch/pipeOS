@@ -192,6 +192,65 @@ The second box's secrets are its own: claiming it mints its own vault and
 recovery phrase (#244). A stick moved between Machines needs the phrase
 once, then belongs to the chassis it is in.
 
+## 12. What a cluster does together — the modes (2026-09-18)
+
+Sections 3–11 are plumbing: membership, the page, join. This section is
+the answer to *what several Machines do that one cannot*. Sam's answers
+of 2026-09-18; the modes are all wanted, in this order.
+
+- **Fleet view first.** One page: health, usage, release, one update
+  button, one reboot button. It is the pilot deliverable and §10 already
+  carries most of it.
+- **Agent pool second — a placement rule, not a scheduler.** An agent is
+  *started on* a member and lives there for its whole life. Its work stays
+  on that box's `/data` (there is no cluster NAS today; §8's index is a
+  view, not a home), its secrets stay in that box's vault. The one new
+  primitive is "start this on box X, or on the idlest member", plus a
+  cluster-wide list of where every agent lives. No migration. **A grey
+  box's agents are grey too**: they are not restarted elsewhere from a
+  snapshot; they come back when the box does.
+- **Role split third.** The service set learns that a role is *filled
+  elsewhere* ("streaming is on Miura"); the cluster page shows the role
+  map. This is §6 and §7 knowing about other members, nothing more.
+- **Distributed compute last, and reframed.** Of the workloads named
+  (local inference, batch jobs agents emit, many parallel agents, a
+  capability on the spec sheet), the one today's hardware carries is
+  **batch jobs the agents emit** — builds, tests, transcodes fanned out to
+  idle members. That is the agent pool plus a `run` verb, not a second
+  scheduler; slurm is not wanted. Local inference is a hardware decision
+  before it is a cluster feature: the reference Machine (M920q, integrated
+  GPU) does not add up to useful inference at any count, so the honest
+  shape is *a GPU box joins the cluster and advertises an inference role*
+  — role split again. The spec sheet may say "distributed compute" as long
+  as it says which of these it means.
+
+**Caps: every level, most restrictive wins.** The owner may set a cap on
+the cluster, on a box, and on an agent or role. Any exhausted cap pauses
+the agent. Because the owner can then see room on the cluster meter next
+to a paused agent, **every pause names the cap that caused it** — on the
+status page, in the DM, in `pipeos usage`.
+
+**Vault: per box, copy on demand — the one exception to no propagation.**
+Secrets live in the vault of the box they were entered on. They reach
+another member two ways, both wanted:
+
+- *Pre-share*: each secret on the vault page carries a member list.
+- *Request*: an agent on box two needs a key held on box one; the
+  dashboard (whichever box the owner has open) shows a share request; the
+  owner taps approve once; the copy travels over the existing mutual TLS
+  (§3). This is the single case of one member writing state into another,
+  and it happens only on the owner's tap. §5 stands otherwise.
+
+**Hardware: 10 GbE is a Cluster part, not a Machine part.** The 10 GbE
+NIC is fitted only in Machines sold as a pipe Cluster; it is part of why a
+Cluster costs more than four Machines. A self-assembled cluster of four
+Machines runs on the on-board gigabit and every mode above works the same,
+slower. The no-wake-over-SFP+ caveat (docs/hardware.md) is therefore an
+owner-facing fact for Cluster buyers.
+
+→ #300 (placement + the agent list), #301 (vault copy on demand),
+#302 (caps at every level, the pause names its cap)
+
 ## Order of work
 
 1. §1 identity (hostname = id, alias = name, suggester) — small, unblocks
@@ -200,3 +259,6 @@ once, then belongs to the chassis it is in.
 3. §11 join/adopt — the customer path.
 4. §6 roles, §5 users view, §9 rolling updates.
 5. §4 netgaze map, §2 labels, §8 `/data` rename and file index.
+6. §12 the modes, in the order given there: fleet view is the pilot
+   deliverable; then placement + the agent list; then roles filled
+   elsewhere; then `run` on idle members.
