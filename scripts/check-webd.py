@@ -638,6 +638,11 @@ r = req("/api/usage/cap", {"scope": "agent", "name": "nightly", "usd": 0})
 assert r["ok"] and {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["paused"] == "" and not os.path.exists(webd.LEDGER_PAUSED_JSON)
 req("/api/usage/cap", {"scope": "cluster", "usd": 1}, expect=400)
 req("/api/schedule/set", {"name": "nightly", "cap_usd": True}, expect=400)
+req("/api/schedule/set", {"name": "nightly", "cap_usd": 3}); req("/api/schedule/set", {"name": "nightly", "cap_usd": False}, expect=400); req("/api/schedule/set", {"name": "nightly", "cap_usd": 0.0}, expect=400)
+assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["cap_usd"] == 3    # a bool/float never cleared it
+r = req("/api/schedule/set", {"name": "nightly", "cap_usd": 1})                              # from the Schedule side: enforced at once
+assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["paused"].startswith("agent nightly")
+req("/api/schedule/set", {"name": "nightly", "cap_usd": 0})
 req("/api/schedule/set", {"name": "nightly", "cap_usd": 100001}, expect=400)
 req("/api/schedule/del", {"name": "nightly"}); req("/api/schedule/del", {"name": "other"})
 webd.card_set = _card_set

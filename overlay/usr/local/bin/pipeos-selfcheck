@@ -877,9 +877,13 @@ if mountpoint -q /work && [ -x /usr/local/bin/pipeos-ledger-ingest ]; then
         elif [ "${_lc:-0}" -gt 0 ] 2>/dev/null && [ "${_lp:-0}" -ge 80 ] 2>/dev/null; then
             warnn "usage: USD $_ls of the USD $_lc monthly cap ($_lp%) — scheduled jobs pause at 100%"
         fi
-        printf '%s' "$_lt" | jq -r '.cap.agents // {} | to_entries[] | select(.value.paused != "") | .value.paused' 2>/dev/null | while IFS= read -r _lap; do
+        # in the parent shell, not a pipeline: warnn counts, and a subshell's count is lost
+        _laps=$(printf '%s' "$_lt" | jq -r '.cap.agents // {} | to_entries[] | select(.value.paused != "") | .value.paused' 2>/dev/null)
+        while IFS= read -r _lap; do
             [ -n "$_lap" ] && warnn "usage: $_lap"
-        done
+        done <<EOF_LAPS
+$_laps
+EOF_LAPS
     fi
 fi
 

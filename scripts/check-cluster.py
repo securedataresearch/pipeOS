@@ -64,7 +64,7 @@ webd.SESS_DIR = os.path.join(d, "sessions"); webd.MDNS_CACHE = os.path.join(d, "
 webd.FLASH_IMAGE_TXT = os.path.join(d, "image.txt")
 webd.SCHEDULE_LOCK = os.path.join(d, "sched.lock")
 webd.SCHEDULE_CONF = os.path.join(d, "schedule.json"); webd.SCHEDULE_STATE_DIR = os.path.join(d, "sched-state"); os.makedirs(webd.SCHEDULE_STATE_DIR, exist_ok=True)
-webd.SCHEDULE_RUN_BIN = os.path.join(os.environ["PIPEOS_BIN"], "pipeos-schedule-run"); webd.SCHEDULE_LOGDIR = d; webd.LEDGER_PAUSED = os.path.join(d, "paused")
+webd.SCHEDULE_RUN_BIN = os.path.join(os.environ["PIPEOS_BIN"], "pipeos-schedule-run"); webd.SCHEDULE_LOGDIR = d; webd.LEDGER_PAUSED = os.path.join(d, "paused"); webd.LEDGER_PAUSED_JSON = os.path.join(d, "paused.json"); webd.LEDGER_DIR = os.path.join(d, "ledger")
 webd.TLS_INIT = os.path.join(os.environ["PIPEOS_BIN"], "pipeos-tls-init")
 webd.VAULT = webd.vault.VAULT_FILE = os.path.join(d, "vault.sealed"); webd.SECRETS_DIR = webd.vault.RUN_DIR = os.path.join(d, "secrets")
 webd.vault.ETC = d; webd.vault.ITER = 1500; webd.vault.ident = lambda: {"mac": "aa:bb:cc:dd:" + os.environ["PIPEOS_CLUSTER_SELF"][:2] + ":" + os.environ["PIPEOS_CLUSTER_SELF"][2:], "serial": "PC", "product": "Test Box"}

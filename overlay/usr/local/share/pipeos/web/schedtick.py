@@ -77,12 +77,6 @@ def main():
     os.makedirs(STATE_DIR, exist_ok=True)
     # the plain marker is the box or the cluster (every job); paused.json
     # adds the per-agent entries — each entry's text names its cap (#302)
-    try:
-        with open(PAUSED) as f:
-            paused = f.read().strip() or "the monthly cap is reached"
-    except OSError:
-        paused = ""
-    pdoc = ledger.read_paused(PAUSED_JSON)
     with open(STATE_LOCK, "a+") as lk:
         fcntl.flock(lk, fcntl.LOCK_EX)
         try:
@@ -114,7 +108,7 @@ def main():
         os.replace(tmp, STATE)
     run = []
     for name in fire:
-        why = paused or ledger.paused_for(pdoc, name)
+        why = ledger.why_paused(name, PAUSED, PAUSED_JSON)     # the box's or cluster's marker, else this agent's own entry (#302)
         if why:
             log("skipped %s: scheduled runs are paused — %s (raise it under Usage)" % (name, why), job=name)
         else:

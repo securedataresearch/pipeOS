@@ -160,13 +160,9 @@ def cmd_ls():
         print("no scheduled jobs")
         return 0
     st = state()
-    pdoc = ledger.read_paused(PAUSED_JSON)
-    gpaused = os.path.exists(PAUSED)
+    gpaused = ledger.why_paused("", PAUSED, PAUSED_JSON)
     if gpaused:
-        try:
-            print("PAUSED (every job): %s" % (open(PAUSED).read().strip() or "the monthly cap is reached"))
-        except OSError:
-            print("PAUSED (every job): the monthly cap is reached")
+        print("PAUSED (every job): %s" % gpaused)
     for j in jobs:
         try:
             spec = cronspec.parse(j.get("cron", ""))
@@ -176,7 +172,7 @@ def cmd_ls():
         s = st.get(j["name"], {})
         last = s.get("last_status", "never run")
         fails = s.get("consecutive_failures", 0)
-        pw = ledger.paused_for(pdoc, j["name"]) if not gpaused else ""
+        pw = ledger.why_paused(j["name"], PAUSED, PAUSED_JSON) if not gpaused else ""
         print("%-32s %-18s %-9s %-8s %-8s %s%s%s%s" % (
             j["name"], j.get("cron", ""), "enabled" if j.get("enabled", True) else "disabled",
             j.get("backend", "claude"), j.get("session", "fresh"),
@@ -211,7 +207,20 @@ def cmd_add_set(argv, new):
         jobs[jobs.index(cur)] = job
     write_jobs(jobs)
     print("%s %s: %s — %s" % ("added" if new else "set", name, job["cron"], cronspec.describe(cronspec.parse(job["cron"]))))
+    if "cap" in flags:
+        enforce_now()
     return save()
+
+
+def enforce_now():
+    """A cap moved: the pause state follows at once, not at the worker's next
+    minute. Best effort — a box with no ledger dir yet just says so."""
+    try:
+        st = ledger.Ledger(schedule=CONF).enforce_cap()
+        if st.get("agents_paused"):
+            print("paused by their own cap: %s" % ", ".join(st["agents_paused"]))
+    except (OSError, ValueError) as e:
+        print("note: the caps were not re-checked now (%s); the ledger's next minute will" % e, file=sys.stderr)
 
 
 def cmd_rm(argv):
@@ -246,16 +255,10 @@ def cmd_run(argv):
     name = (argv[0] if argv else "").strip().lower()
     if not any(j["name"] == name for j in read_jobs()):
         raise Refused("no job named %s" % name)
-    if os.path.exists(PAUSED):
-        # the runner refuses too (rc 75), but "started" would be a lie — the dashboard answers 409 here
-        try:
-            why = open(PAUSED).read().strip()
-        except OSError:
-            why = "the monthly cap is reached"
-        raise Refused("scheduled runs are paused — %s (pipeos usage cap N|none)" % why)
-    why = ledger.paused_for(ledger.read_paused(PAUSED_JSON), name)
+    # the runner refuses too (rc 75), but "started" would be a lie — the dashboard answers 409 here
+    why = ledger.why_paused(name, PAUSED, PAUSED_JSON)
     if why:
-        raise Refused("%s is paused — %s" % (name, why))
+        raise Refused("scheduled runs are paused — %s (pipeos usage cap N|none)" % why)
     subprocess.Popen([RUN_BIN, name], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, start_new_session=True)
     print("started %s — pipeos schedule log %s" % (name, name))

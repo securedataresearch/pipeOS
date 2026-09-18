@@ -94,7 +94,7 @@ def jobs(*js):
 def tick(now, run_bin=RUN_STUB):
     env = dict(os.environ, PIPEOS_SCHED_CONF=CONF, PIPEOS_SCHED_STATE_DIR=STATE_DIR, PIPEOS_SCHED_RUN_BIN=run_bin,
                PIPEOS_SCHED_LOG=os.path.join(LOGDIR, "schedule.log"), PIPEOS_SCHED_LOGDIR=LOGDIR, PIPEOS_SCHED_PAUSED=PAUSED,
-               PIPEOS_SCHED_NOW=now)
+               PIPEOS_SCHED_PAUSED_JSON=os.environ.get("PIPEOS_SCHED_PAUSED_JSON", os.path.join(D, "no-paused.json")), PIPEOS_SCHED_NOW=now)
     p = subprocess.run([sys.executable, os.path.join(D, "schedtick.py")], capture_output=True, text=True, env=env)
     time.sleep(0.2)
     return p.returncode
@@ -183,7 +183,7 @@ BIG_PROMPT = "line one with 'quotes' and \"doubles\" and $dollar and `ticks`\n" 
 def runner(job, extra_env=None, wait=True):
     env = dict(os.environ, PATH=BIN + ":" + os.environ.get("PATH", ""), PIPEOS_SCHED_CONF=CONF, PIPEOS_SCHED_STATE_DIR=RSTATE,
                PIPEOS_SCHED_LOCK=LOCK, PIPEOS_SCHED_LOGDIR=RLOGS, PIPEOS_SCHED_PIPEBOX_CONF=PBCONF, PIPEOS_SCHED_SETTINGS=SETTINGS,
-               PIPEOS_SCHED_SECRETS=SECRETS, PIPEOS_SCHED_WORK=WORK, PIPEOS_SCHED_PAUSED=os.path.join(D, "rpaused"))
+               PIPEOS_SCHED_SECRETS=SECRETS, PIPEOS_SCHED_WORK=WORK, PIPEOS_SCHED_PAUSED=os.path.join(D, "rpaused"), PIPEOS_SCHED_PAUSED_JSON=os.path.join(D, "no-rpaused.json"))
     env.pop("CLAUDE_TIMEOUT", None)
     if extra_env:
         env.update(extra_env)

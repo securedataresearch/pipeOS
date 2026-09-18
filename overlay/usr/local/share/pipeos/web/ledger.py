@@ -472,10 +472,10 @@ class Ledger:
         except OSError:
             return ""
 
-    def paused_for(self, name):
+    def paused_for(self, name=""):
         """Why job `name` may not run now — the text of the most restrictive
         cap that is reached (cluster, box, then the agent's own) — or ""."""
-        return paused_for(read_paused(self.paused_json_path()), name)
+        return why_paused(name, self.paused_path(), self.paused_json_path())
 
     def dm(self, text):
         owner = self.conf_value("OWNER_NICK")
@@ -540,21 +540,28 @@ class Ledger:
         return None
 
     def _write_markers(self, doc, before):
-        """paused.json (tmp + rename) and the plain marker; True when
-        anything moved. Both files gone when nothing is paused."""
-        global_entry = doc["cluster"] or doc["box"]
+        """paused.json and the plain marker, both tmp + rename; True when
+        what is paused changed. Written once per pause: the entries carry the
+        spend at the moment the cap bit, not a number that keeps moving while
+        an attached session spends (a reader mid-rewrite must never see an
+        empty marker). Both files gone when nothing is paused."""
         changed = (_strip(doc) != _strip(before))
+        for scope in ("box", "cluster"):
+            if doc[scope] and before.get(scope) and before[scope].get("cap") == doc[scope]["cap"]:
+                doc[scope] = before[scope]                       # same pause, same sentence
+        for name in list(doc["agents"]):
+            b = before.get("agents", {}).get(name)
+            if b and b.get("cap") == doc["agents"][name]["cap"]:
+                doc["agents"][name] = b
+        global_entry = doc["cluster"] or doc["box"]
         if doc["box"] or doc["cluster"] or doc["agents"]:
-            tmp = self.paused_json_path() + ".new"
-            with open(tmp, "w") as f:
-                json.dump(doc, f)
-            os.replace(tmp, self.paused_json_path())
+            if changed or doc != before:
+                _replace(self.paused_json_path(), json.dumps(doc))
         elif os.path.exists(self.paused_json_path()):
             os.unlink(self.paused_json_path())
         if global_entry:
             if self.paused_text() != global_entry["text"]:
-                with open(self.paused_path(), "w") as f:
-                    f.write(global_entry["text"] + "\n")
+                _replace(self.paused_path(), global_entry["text"] + "\n")
                 changed = True
         elif os.path.exists(self.paused_path()):
             os.unlink(self.paused_path())
@@ -579,6 +586,30 @@ def pause_text(scope, name, cap, spent, day):
 def _entry(scope, name, cap, spent, day, since):
     return {"scope": scope, "name": name, "cap": cap, "spent": round(spent, 4), "since": since or day,
             "text": pause_text(scope, name, cap, spent, since or day)}
+
+
+def _replace(path, text):
+    tmp = path + ".new"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def why_paused(name="", marker=None, doc_path=None):
+    """THE reader every gate uses (the runner's shell twin reads the same two
+    files): the plain marker's sentence when it is there (the box or the
+    cluster: every job stops), else `name`'s own entry in paused.json. ""
+    means go. Defaults to this box's ledger dir."""
+    marker = marker or os.path.join(LEDGER_DIR, "paused")
+    doc_path = doc_path or os.path.join(LEDGER_DIR, "paused.json")
+    try:
+        with open(marker) as f:
+            t = f.read().strip()
+        if t:
+            return t
+    except OSError:
+        pass
+    return paused_for(read_paused(doc_path), name)
 
 
 def _strip(doc):

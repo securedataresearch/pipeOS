@@ -60,7 +60,9 @@ ENV = dict(os.environ, PATH=BIN + ":/usr/bin:/bin",   # not the workstation PATH
            PIPEOS_SCHED_LOGDIR=LOGS, PIPEOS_SCHED_RUN_BIN=os.path.join(BIN, "pipeos-schedule-run"),
            PIPEOS_SAVE_BIN=os.path.join(BIN, "pipeos-save"), PIPEOS_SCHED_WORK=WORK,
            PIPEOS_CARD=CARD, PIPEOS_CARD_GEN=os.path.join(BIN, "pipebox-card"), PIPEOS_VAULT_PHRASE=PHRASE,
-           PIPEOS_LEDGER=os.path.join(D, "ledger-stub.py"), PIPEOS_SCHEDCTL=os.path.join(WEB, "schedctl.py"))
+           PIPEOS_LEDGER=os.path.join(D, "ledger-stub.py"), PIPEOS_SCHEDCTL=os.path.join(WEB, "schedctl.py"),
+           PIPEOS_SCHED_PAUSED=os.path.join(D, "no-paused"), PIPEOS_SCHED_PAUSED_JSON=os.path.join(D, "no-paused.json"),
+           PIPEOS_LEDGER_DIR=os.path.join(D, "ledger-dir"))
 with open(os.path.join(D, "ledger-stub.py"), "w") as f:
     f.write("import sys, os\nopen(os.path.join(%r, 'ledger.log'), 'a').write(' '.join(sys.argv[1:]) + '\\n')\nprint('{\"stub\": true}')\n" % D)
 

@@ -2282,7 +2282,7 @@ async function dashboard() {
     const ratesEl = v.querySelector("#usrates"); if (ratesEl) ratesEl.textContent = "rates as of " + (r.rates_updated || "?");
     // each agent's own cap (#302): every job, its month-to-date, its cap, and whether its cap paused it
     const ag = v.querySelector("#usagents");
-    if (ag) {
+    if (ag && !ag.contains(document.activeElement)) {      // never re-render under the owner's cursor (the poll is every 5 s)
       let jobs = [];
       try { jobs = (await api("/api/schedule")).jobs || []; } catch (e) { jobs = []; }
       const agents = cap.agents || {};

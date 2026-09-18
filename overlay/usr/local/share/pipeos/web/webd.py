@@ -2143,6 +2143,8 @@ class Handler(BaseHTTPRequestHandler):
         job, err = schedule_upsert(body)
         if err:
             return self.err(400, err)
+        if "cap_usd" in body:
+            enforce_caps_now()
         saved, detail = save_state()
         self.send(200, {"ok": True, "job": job, "saved": saved, "save_detail": "" if saved else detail})
 
@@ -2153,6 +2155,8 @@ class Handler(BaseHTTPRequestHandler):
         if len(keep) == len(jobs):
             return self.err(404, "no job named %s" % name)
         write_schedule(keep)
+        if any(j.get("cap_usd") for j in jobs if j["name"] == name):
+            enforce_caps_now()
         # its runtime leftovers on /work: the session, the state row
         for p in (os.path.join(SCHEDULE_STATE_DIR, "sessions", name),):
             try:
@@ -3804,9 +3808,11 @@ def schedule_upsert(body):
     if "cap_usd" in body:
         # this agent's own monthly cap (#302): 0/null clears it
         c = body.get("cap_usd")
+        if isinstance(c, bool) or (c is not None and not isinstance(c, int) and c not in ("", "none")):
+            return None, "cap_usd is a whole number of dollars, 1-100000, or 0 for none"
         if c in (None, 0, "", "none"):
             job.pop("cap_usd", None)
-        elif isinstance(c, bool) or not isinstance(c, int) or c < 1 or c > 100000:
+        elif c < 1 or c > 100000:
             return None, "cap_usd is a whole number of dollars, 1-100000, or 0 for none"
         else:
             job["cap_usd"] = c
@@ -3839,17 +3845,19 @@ def schedule_start(name):
 
 
 def paused_reason(name=""):
-    """Why `name` may not run now: the plain marker (the box or the cluster,
-    every job) or its own entry in paused.json — the text names the cap
-    (#302). "" when it may run."""
+    """Why `name` may not run now — the text of the cap that stops it (#302),
+    "" when it may run. One reader (ledger.why_paused) for every gate."""
+    return ledger.why_paused(name, LEDGER_PAUSED, LEDGER_PAUSED_JSON)
+
+
+def enforce_caps_now():
+    """A cap moved (a job's cap_usd, a capped job gone): the pause state must
+    follow at once, not at the worker's next minute — the class of lag the
+    single-box pass found on the box cap. Never raises."""
     try:
-        with open(LEDGER_PAUSED) as f:
-            t = f.read().strip()
-        if t:
-            return t
-    except OSError:
-        pass
-    return ledger.paused_for(ledger.read_paused(LEDGER_PAUSED_JSON), name)
+        return ledger_obj().enforce_cap()
+    except Exception as e:      # noqa: BLE001 — a broken ledger must not block a settings save
+        return {"error": str(e)}
 
 
 def agent_start_here(body):
@@ -3865,6 +3873,8 @@ def agent_start_here(body):
         if err:
             return 400, {"error": err, "changed": False}
         changed = job not in before
+        if "cap_usd" in body:
+            enforce_caps_now()          # the cap must gate THIS run, not the next minute's
     elif not any(j["name"] == name for j in read_schedule()):
         return 404, {"error": "no agent named %s on this Machine — give it a prompt and a schedule to place it here" % name, "changed": False}
     st, err = schedule_start(name)
@@ -3872,7 +3882,8 @@ def agent_start_here(body):
         # the job is on the box now even though it did not run: the caller
         # saves it, or the next boot would drop what the owner just placed
         return st, {"error": err, "changed": changed, "name": name, "on": lanid.mac4()}
-    return 200, {"ok": True, "started": True, "name": name, "on": lanid.mac4(), "changed": changed}
+    cap = next((j.get("cap_usd") or 0 for j in read_schedule() if j["name"] == name), 0)
+    return 200, {"ok": True, "started": True, "name": name, "on": lanid.mac4(), "changed": changed, "cap_usd": cap}
 
 
 def _alive(pid):

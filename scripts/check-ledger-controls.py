@@ -27,13 +27,9 @@ BREAKS = [
      "        elif False:\n            pass\n"),
     ("H  an agent's own cap never pauses it (#302)", LEDGER,
      "            if aspent * 100 / acap >= 100:\n", "            if False:\n"),
-    ("K  paused_for answers the agent's cap before the box's (the wrong cap is named, #302)", LEDGER,
-     '    for scope in ("cluster", "box"):\n        if doc.get(scope):\n            return doc[scope].get("text", "")\n    if name and doc.get("agents", {}).get(name):\n        return doc["agents"][name].get("text", "")\n',
-     '    if name and doc.get("agents", {}).get(name):\n        return doc["agents"][name].get("text", "")\n    for scope in ("cluster", "box"):\n        if doc.get(scope):\n            return doc[scope].get("text", "")\n'),
-    ("F  the torn tail is swallowed as a complete line", LEDGER,
-     '            lines = data.split(b"\\n")[:-1]\n', '            lines = data.split(b"\\n")\n'),
-    ("G  a job's session is not looked up (everything is other:)", LEDGER,
-     '        if sid and sid in jobs:\n            return {"kind": "job", "name": jobs[sid]}\n', ''),
+    ("K  the box pause writes no plain marker (every older reader — runner, tick, selfcheck — keeps running, #302)", LEDGER,
+     "        if global_entry:\n            if self.paused_text() != global_entry[\"text\"]:\n",
+     "        if False:\n            if self.paused_text() != global_entry[\"text\"]:\n"),
 ]
 
 sys.path.insert(0, HERE)
