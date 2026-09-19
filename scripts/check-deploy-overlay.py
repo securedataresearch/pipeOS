@@ -295,6 +295,32 @@ check("8b --install-card carries on-box owner fills over an empty repo card",
           == "NICK=box9\nROLE=BUILD\nOWNER_NICK=sam\nCOHORT_ID=7\n",
       "rc=%d card=%r" % (c6b.rc, c6b.live("etc/pipeos/card.conf")))
 
+# ── 8c. a rewritten history: same files, a stamp naming a commit on no remote branch ──
+c8c = case().run()
+first = (c8c.stamp() or "").split("\n")[0]
+c8c.run()
+quiet = "nothing to do" in c8c.log and "re-stamp" not in c8c.log and (c8c.stamp() or "").split("\n")[0] == first
+# a sibling ref with identical bytes is NOT a rewrite: the stamp stays main's
+git(c8c.repo, "branch", "feat", "main"); git(c8c.repo, "checkout", "-q", "feat"); git(c8c.repo, "commit", "--allow-empty", "-qm", "a sibling with the same tree"); git(c8c.repo, "checkout", "-q", "main")
+c8c.run(ref="feat")
+sibling_kept = "nothing to do" in c8c.log and "re-stamp" not in c8c.log and (c8c.stamp() or "").split("\n")[0] == first
+# a stamp this checkout cannot resolve is "cannot tell", not a rewrite
+sp = os.path.join(c8c.root, "etc/pipeos/.overlay-stamp"); body = open(sp).read()
+write(sp, body.replace(first, "commit unknown", 1))
+c8c.run()
+unknown_kept = "nothing to do" in c8c.log and "re-stamp" not in c8c.log and (c8c.stamp() or "").startswith("commit unknown")
+write(sp, body)
+# the rewrite: main amended to an identical tree; the old tip is on no remote branch (the fixture repo IS the remote)
+git(c8c.repo, "commit", "--amend", "--allow-empty", "-qm", "the same tree under a corrected message")
+new_head = git(c8c.repo, "rev-parse", "main").stdout.strip()
+c8c.run("--dry-run")
+dry = "would re-stamp" in c8c.log and (c8c.stamp() or "").split("\n")[0] == first
+c8c.run()
+check("8c the stamp is re-written only for a real rewrite (the stamped commit resolves, is not an ancestor, and is on no remote branch): a no-change re-run, a sibling ref with the same bytes, and an unresolvable stamp all leave it alone; the dry run previews the re-stamp; the real run writes the new hash and logs it",
+      quiet and sibling_kept and unknown_kept and dry and c8c.rc == 0 and "re-stamping as" in c8c.log
+      and (c8c.stamp() or "").split("\n")[0] == "commit " + new_head and "re-stamp " in (c8c.live("deploy-overlay.log") or ""),
+      "quiet=%s sibling=%s unknown=%s dry=%s rc=%d stamp=%r log=%r" % (quiet, sibling_kept, unknown_kept, dry, c8c.rc, (c8c.stamp() or "")[:50], c8c.log[-300:]))
+
 # ── 9. an unprovisioned box skips the gate rather than blocking ─────────
 c7 = case(card="NICK=\n").run()
 check("9 an unprovisioned box deploys with the card gate skipped",

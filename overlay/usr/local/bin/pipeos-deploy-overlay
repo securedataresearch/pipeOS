@@ -184,6 +184,19 @@ commit=$(git -C "$REPO" rev-parse --verify "$REF^{commit}" 2>/dev/null) \
 subject=$(git -C "$REPO" log -1 --format=%s "$commit")
 cdate=$(git -C "$REPO" log -1 --format=%cI "$commit")
 
+write_stamp_file() {
+    {
+        echo "commit $commit"
+        echo "ref $REF"
+        echo "commit_date $cdate"
+        echo "deployed_at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "deployed_by $(id -un)@$(hostname)"
+        echo "#  sha256 of every file this deploy is responsible for"
+        sort -k2 "$stamp_body"
+    } > "$STAMP.new" && mv -f "$STAMP.new" "$STAMP" || die "cannot write $STAMP"
+    say "recorded $STAMP"
+}
+
 # ---- 2. the card gate (R19) ------------------------------------------------
 # NICK comes from the on-box card. An unprovisioned box has none, and there is
 # no repo card to compare against either, so the gate reports and steps aside
@@ -379,17 +392,47 @@ say "$n_new new, $n_mod changed, $n_same unchanged, $n_skip never-deployed"
 
 n_stale=$(wc -l < "$stale_rels" 2>/dev/null | tr -d ' '); n_stale=${n_stale:-0}
 if [ "$n_new" = 0 ] && [ "$n_mod" = 0 ] && [ "$n_stale" = 0 ] && [ "$card_action" = none ]; then
-    say "already at $REF — nothing to do."
-    # The stamp is still worth writing on a box that predates it: it is what
-    # lets `pipeos status` and selfcheck say how old this overlay is instead
-    # of guessing from a local checkout's branch.
-    if [ "$DRY" = no ] && [ ! -f "$STAMP" ]; then
-        say "writing the missing stamp so status and selfcheck can age this overlay."
-        write_stamp=yes
-        ASSUME_YES=yes
-    else
+    # Nothing to install. Two reasons the stamp may still need writing: the
+    # box predates stamps (pipeOS#97), or history was rewritten under it — the
+    # files are byte-identical but the commit it names is on no remote branch
+    # any more (a merge message fixed on main, 2026-09-19), and status read
+    # "deployed commit … is NOT on origin/main" forever. Not a reason: an
+    # older or sibling ref with identical bytes (`--from feat`), or a stamp
+    # naming a commit this checkout cannot resolve — status and selfcheck
+    # already say "cannot tell" for that, honestly.
+    reason=""
+    stamped=$(sed -n 's/^commit //p' "$STAMP" 2>/dev/null | head -1)
+    if [ ! -f "$STAMP" ]; then
+        reason="no stamp on this box yet"
+    elif [ -n "$stamped" ] && [ "$stamped" != "$commit" ] \
+         && git -C "$REPO" rev-parse --verify -q "$stamped^{commit}" >/dev/null 2>&1 \
+         && ! git -C "$REPO" merge-base --is-ancestor "$stamped" "$commit" 2>/dev/null \
+         && [ -z "$(git -C "$REPO" branch -r --contains "$stamped" 2>/dev/null)" ]; then
+        reason="the stamp names $(echo "$stamped" | cut -c1-12), a commit on no remote branch any more (history rewritten; the files are identical)"
+    fi
+    if [ -z "$reason" ]; then
+        say "already at $REF — nothing to do."
         exit 0
     fi
+    if [ "$DRY" = yes ]; then
+        say "already at $REF — would re-stamp as $(echo "$commit" | cut -c1-12): $reason (then save and verify)"
+        say "dry run — nothing written."
+        exit 0
+    fi
+    say "already at $REF — re-stamping as $(echo "$commit" | cut -c1-12): $reason"
+    log "re-stamp ${stamped:-none} -> $commit on $REF ($reason)"
+    write_stamp_file
+    if [ "$NO_PERSIST" = 1 ]; then
+        log "OK re-stamped $REF=$commit into ${ROOT:-/} (no-persist)"
+        exit 0
+    fi
+    say "saving…"
+    /usr/local/bin/pipeos-save || die "pipeos-save FAILED — the stamp is written but NOT persisted; fix and re-save"
+    say "verifying…"
+    pipeos verify || die "pipeos verify FAILED after the re-stamp (nothing else changed) — read its rows"
+    log "OK re-stamped $REF=$commit"
+    say "re-stamped $REF = $(echo "$commit" | cut -c1-12), saved and verified."
+    exit 0
 fi
 
 if [ "$DRY" = yes ]; then
@@ -421,7 +464,7 @@ fi
 # ---- 4. install ------------------------------------------------------------
 watcher_changed=no
 installed_rels=$(mktemp)
-[ "${write_stamp:-no}" = yes ] || log "deploying $REF=$commit ($n_new new, $n_mod changed)"
+log "deploying $REF=$commit ($n_new new, $n_mod changed)"
 
 while read -r mode type blob path; do
     [ "$type" = blob ] || continue
@@ -510,16 +553,7 @@ card_outputs_step() {
 }
 card_outputs_step
 
-{
-    echo "commit $commit"
-    echo "ref $REF"
-    echo "commit_date $cdate"
-    echo "deployed_at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    echo "deployed_by $(id -un)@$(hostname)"
-    echo "#  sha256 of every file this deploy is responsible for"
-    sort -k2 "$stamp_body"
-} > "$STAMP.new" && mv -f "$STAMP.new" "$STAMP" || die "cannot write $STAMP"
-say "recorded $STAMP"
+write_stamp_file
 
 # ---- 5. re-seed the watcher if its code changed ---------------------------
 # A changed cohort-watch has a changed idea of what it has already seen; its
