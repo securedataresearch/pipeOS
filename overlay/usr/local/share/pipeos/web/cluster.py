@@ -1106,11 +1106,13 @@ def main(argv):
                     print("cluster: %s needs a value" % rest[i], file=sys.stderr); return 2
                 else:
                     name = ""; break
-            if not name or "on" not in flags or set(flags) - {"on", "prompt", "cron", "cwd", "backend", "session", "notify", "cap"}:
-                print("usage: pipeos cluster start NAME --on ID|NAME|idlest [--prompt TEXT [--cron \"M H D M W\"|manual] [--cwd DIR] [--backend claude|hermes] [--session fresh|continue] [--notify on|off] [--cap N|none]]   (no --cron: runs now, then only when started)", file=sys.stderr); return 2
+            if not name or "on" not in flags or set(flags) - {"on", "prompt", "cron", "cwd", "backend", "session", "notify", "cap", "needs"}:
+                print("usage: pipeos cluster start NAME --on ID|NAME|idlest [--prompt TEXT [--cron \"M H D M W\"|manual] [--cwd DIR] [--backend claude|hermes] [--session fresh|continue] [--notify on|off] [--cap N|none] [--needs jobs.a,jobs.b]]   (no --cron: runs now, then only when started)", file=sys.stderr); return 2
             body = dict(flags, name=name)
             if "notify" in body:
                 body["notify"] = body["notify"] == "on"
+            if "needs" in body:
+                body["needs"] = [x.strip().lower() for x in body.pop("needs").replace(";", ",").split(",") if x.strip()]
             if "cap" in body:
                 c = body.pop("cap")
                 if c in ("none", "0"):

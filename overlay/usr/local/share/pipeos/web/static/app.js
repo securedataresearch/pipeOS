@@ -989,6 +989,8 @@ async function dashboard() {
           <select id="schbackend"></select>
           <label for="schcap">This job's own monthly cap (USD; 0 = none — the Machine's cap still applies)</label>
           <input id="schcap" type="number" min="0" max="100000" step="1" value="0">
+          <label for="schneeds">Secrets this job needs (names, comma-separated — a missing one is asked for from the cluster and the run waits for your approval)</label>
+          <input id="schneeds" type="text" placeholder="jobs.github_token, jobs.api_key" autocomplete="off">
           <label class="note" style="display:flex;align-items:center;gap:.5rem;margin-top:.6rem"><input id="schnotify" type="checkbox" checked style="width:auto"> DM me when it starts and finishes</label>
           <label class="note" style="display:flex;align-items:center;gap:.5rem"><input id="schcontinue" type="checkbox" style="width:auto"> Continue the same conversation across runs (default: a fresh one each time)</label>
           <button id="schsave" type="button">Save job</button>
@@ -2335,11 +2337,11 @@ async function dashboard() {
   const schForm = () => ({
     name: v.querySelector("#schname"), cron: v.querySelector("#schcron"), prompt: v.querySelector("#schprompt"),
     cwd: v.querySelector("#schcwd"), backend: v.querySelector("#schbackend"), notify: v.querySelector("#schnotify"),
-    cont: v.querySelector("#schcontinue"), cap: v.querySelector("#schcap"), save: v.querySelector("#schsave"), cancel: v.querySelector("#schcancel"), head: v.querySelector("#schformhead"),
+    cont: v.querySelector("#schcontinue"), cap: v.querySelector("#schcap"), needs: v.querySelector("#schneeds"), save: v.querySelector("#schsave"), cancel: v.querySelector("#schcancel"), head: v.querySelector("#schformhead"),
   });
   const schReset = () => {
     const f = schForm(); if (!f.name) return;
-    schEditing = null; f.name.value = ""; f.name.disabled = false; f.cron.value = ""; f.prompt.value = ""; f.cwd.value = ""; if (f.cap) f.cap.value = 0;
+    schEditing = null; f.name.value = ""; f.name.disabled = false; f.cron.value = ""; f.prompt.value = ""; f.cwd.value = ""; if (f.cap) f.cap.value = 0; if (f.needs) f.needs.value = "";
     f.notify.checked = true; f.cont.checked = false; f.head.textContent = "Add a job"; f.save.textContent = "Save job"; f.cancel.hidden = true;
     v.querySelector("#schnext").textContent = "";
   };
@@ -2364,7 +2366,7 @@ async function dashboard() {
         const when = l.last_end ? new Date(l.last_end * 1000).toLocaleString() : "";
         return `<div class="row${j.enabled ? "" : " off"}">
           <div><div class="name">${esc(j.name)} ${j.enabled ? "" : '<span class="pill">paused</span>'} <span class="pill ${cls}">${esc(st)}</span>${(l.consecutive_failures || 0) >= 3 ? ` <span class="pill status-bad">${l.consecutive_failures} failures in a row</span>` : ""}</div>
-          <div class="desc">${esc(j.human || j.cron)} · ${esc(j.backend || "claude")}${j.cap_usd ? " · cap $" + j.cap_usd : ""}${j.next_run ? " · next " + esc(j.next_run) : ""}${when ? " · last " + esc(when) : ""}${j.paused ? `<br><span class="status-bad">paused — ${esc(j.paused)}</span>` : ""}</div></div>
+          <div class="desc">${esc(j.human || j.cron)} · ${esc(j.backend || "claude")}${j.cap_usd ? " · cap $" + j.cap_usd : ""}${(j.needs || []).length ? " · needs " + esc(j.needs.join(", ")) : ""}${j.next_run ? " · next " + esc(j.next_run) : ""}${when ? " · last " + esc(when) : ""}${j.paused ? `<br><span class="status-bad">paused — ${esc(j.paused)}</span>` : ""}</div></div>
           <div>
             <button class="btn ghost" type="button" data-schrun="${esc(j.name)}">Run now</button>
             <button class="btn ghost" type="button" data-schtoggle="${esc(j.name)}" data-on="${j.enabled ? 0 : 1}">${j.enabled ? "Pause" : "Resume"}</button>
@@ -2388,6 +2390,7 @@ async function dashboard() {
         f.name.value = j.name; f.name.disabled = true; f.cron.value = j.cron; f.prompt.value = j.prompt || ""; f.cwd.value = j.cwd || "";
         if (f.backend) f.backend.value = j.backend || "claude"; f.notify.checked = j.notify !== false; f.cont.checked = j.session === "continue";
         if (f.cap) f.cap.value = j.cap_usd || 0;
+        if (f.needs) f.needs.value = (j.needs || []).join(", ");
         f.head.textContent = "Edit " + j.name; f.save.textContent = "Save changes"; f.cancel.hidden = false;
         f.name.scrollIntoView({ behavior: "smooth" });
       });
@@ -2403,7 +2406,8 @@ async function dashboard() {
       try {
         await api("/api/schedule/set", { name: schf.name.value.trim(), cron: schf.cron.value.trim(), prompt: schf.prompt.value, cwd: schf.cwd.value.trim(),
           backend: schf.backend.value || "claude", notify: schf.notify.checked, session: schf.cont.checked ? "continue" : "fresh",
-          cap_usd: parseInt((schf.cap && schf.cap.value) || "0", 10) || 0 });
+          cap_usd: parseInt((schf.cap && schf.cap.value) || "0", 10) || 0,
+          needs: (schf.needs && schf.needs.value) || "" });
         schReset(); loadSchedule();
       } catch (e) { err.textContent = e.message; err.hidden = false; }
     };

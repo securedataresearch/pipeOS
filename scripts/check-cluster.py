@@ -486,7 +486,7 @@ def page_rows(box):
 
 
 h_saves0 = H.nsaves()
-rc_st1, out_st1 = G.cli("start", "nightly", "--on", "2222", "--prompt", "say good night", "--cron", "@daily")
+rc_st1, out_st1 = G.cli("start", "nightly", "--on", "2222", "--prompt", "say good night", "--cron", "@daily", "--needs", "jobs.gh_token,jobs.api")
 ran1, saves1 = ran_on(H), H.nsaves()
 rc_st2, out_st2 = G.cli("start", "nightly", "--on", "seven-b")                       # by name; the agent is already there, so it just runs
 rc_st3, out_st3 = G.cli("start", "nightly", "--on", "9999")
@@ -495,8 +495,9 @@ rc_st5, out_st5 = G.cli("start", "bad", "--on", "2222", "--prompt", "x", "--cron
 rc_ag, out_ag = G.cli("agents")
 st_p19, pg19, r19 = page_rows(G)
 h_agents = [a["name"] for a in r19.get("2222", {}).get("agents", [])]
-check("19 'cluster start NAME --on ID' places an agent on that member: the job is in ITS schedule.json (not this box's), ITS runner ran it, it saved; --on by name runs the agent already there; 9999 is not a member; a bare name that lives nowhere is refused; a bad schedule is the member's own refusal; every member's agents ride the page and 'cluster agents' lists them",
+check("19 'cluster start NAME --on ID' places an agent on that member: the job is in ITS schedule.json (not this box's) with its --needs list, ITS runner ran it, it saved; --on by name runs the agent already there; 9999 is not a member; a bare name that lives nowhere is refused; a bad schedule is the member's own refusal; every member's agents ride the page and 'cluster agents' lists them",
       rc_st1 == 0 and "started nightly on 2222" in out_st1 and jobs_of(H) == ["nightly"] and jobs_of(G) == [] and ran1 == ["nightly"] and saves1 == h_saves0 + 1
+      and json.load(open(os.path.join(H.dir, "schedule.json")))["jobs"][0].get("needs") == ["jobs.api", "jobs.gh_token"]     # the placement carries the needs list (#319)
       and rc_st2 == 0 and ran_on(H) == ["nightly", "nightly"] and H.nsaves() == h_saves0 + 1
       and rc_st3 == 1 and "not a member" in out_st3 and rc_st4 == 1 and "no agent named ghost" in out_st4
       and rc_st5 == 1 and "2222: schedule:" in out_st5 and jobs_of(H) == ["nightly"]

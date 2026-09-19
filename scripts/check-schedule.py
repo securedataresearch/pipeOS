@@ -317,6 +317,34 @@ check("18b the runner refuses an agent whose OWN cap is reached (rc 75, claude n
       "pj=%s started=%r root=%s" % (rc_pj, not none_started, rc_pj2))
 os.unlink(RPJ)
 clear("claude")
+# 18c. the secrets a job needs (#319): a missing one is asked for and the run waits (75); present -> runs
+REQ_LOG = os.path.join(D, "requests")
+REQ_STUB = os.path.join(D, "request-stub")
+open(REQ_STUB, "w").write("#!/bin/sh\necho \"$*\" >> %s\necho \"asked for $1 (request deadbeef) — the owner approves it on a Machine that holds it\"\n" % REQ_LOG)
+os.chmod(REQ_STUB, 0o755)
+jobs({"name": "blank", "cron": "0 2 * * *", "prompt": "p", "cwd": ""},
+     {"name": "root", "cron": "0 2 * * *", "prompt": "p", "cwd": WORK},
+     {"name": "flaky", "cron": "0 3 * * *", "prompt": "p", "notify": False, "session": "continue"},
+     {"name": "needy", "cron": "0 2 * * *", "prompt": "p", "needs": ["jobs.token", "jobs.gh_token"]},
+     {"name": "custom", "cron": "0 2 * * *", "prompt": "p", "needs": ["deploy.key"]})
+rc_n1, _ = runner("needy", {"PIPEOS_SCHED_REQUEST": REQ_STUB})
+asked1 = open(REQ_LOG).read().splitlines() if os.path.exists(REQ_LOG) else []
+none_started_n = not argv("claude")
+log_n = open(os.path.join(RLOGS, "schedule-needy.log")).read()
+open(os.path.join(SECRETS, "jobs.env"), "a").write("TOKEN='t0k'\n")            # the copy landed: the export carries it
+rc_n2, _ = runner("needy", {"PIPEOS_SCHED_REQUEST": REQ_STUB})
+asked2 = open(REQ_LOG).read().splitlines() if os.path.exists(REQ_LOG) else []
+started_n2 = len(argv("claude"))
+rc_c1, _ = runner("custom", {"PIPEOS_SCHED_REQUEST": REQ_STUB})
+asked3 = open(REQ_LOG).read().splitlines() if os.path.exists(REQ_LOG) else []
+open(os.path.join(SECRETS, "custom.env"), "w").write("DEPLOY_KEY='k'\n")
+rc_c2, _ = runner("custom", {"PIPEOS_SCHED_REQUEST": REQ_STUB})
+check("18c a job's `needs`: the first missing name is asked for (pipeos secrets request NAME 'job X needs it') and the run waits — rc 75, claude not started, the log says waiting and repeats the verb's answer; once the export carries it (jobs.env TOKEN=) the run starts; a non-jobs name is looked up in custom.env",
+      rc_n1 == 75 and asked1 == ["jobs.token job needy needs it"] and none_started_n and "waiting for jobs.token" in log_n and "request deadbeef" in log_n
+      and rc_n2 == 0 and asked2 == asked1 and started_n2 == 1
+      and rc_c1 == 75 and asked3 == asked1 + ["deploy.key job custom needs it"] and rc_c2 == 0 and len(argv("claude")) == 2,
+      "n1=%s asked=%r started=%r n2=%s asked2=%r started_n2=%d c1=%s asked3=%r c2=%s claude=%d log=%r" % (rc_n1, asked1, not none_started_n, rc_n2, asked2, started_n2, rc_c1, asked3, rc_c2, len(argv("claude")), log_n[-300:]))
+clear("claude")
 runner("flaky", {"STUB_RC": "1"}); f1 = argv("claude"); clear("claude")
 runner("flaky"); f2 = argv("claude"); clear("claude")
 runner("flaky"); f3 = argv("claude")

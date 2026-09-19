@@ -2296,6 +2296,7 @@ class Handler(BaseHTTPRequestHandler):
         for j in jobs:
             row = {k: j.get(k) for k in ("name", "cron", "prompt", "cwd", "backend", "notify", "enabled", "session")}
             row["cap_usd"] = j.get("cap_usd") or 0
+            row["needs"] = j.get("needs") or []
             row["paused"] = paused_reason(j["name"])          # "" or the text of the cap that stops this one (#302)
             try:
                 spec = cronspec.parse(j.get("cron", ""))
@@ -2391,7 +2392,7 @@ class Handler(BaseHTTPRequestHandler):
         on = (body.get("on") or "").strip()
         if not on:
             return self.err(400, "on: which Machine — a member's id or name, or idlest")
-        spec = {k: body[k] for k in ("name", "prompt", "cron", "cwd", "backend", "session", "notify", "cap_usd") if k in body}
+        spec = {k: body[k] for k in ("name", "prompt", "cron", "cwd", "backend", "session", "notify", "cap_usd", "needs") if k in body}
 
         def local_start(sp):
             st, out = agent_start_here(sp)
@@ -4332,6 +4333,19 @@ def schedule_upsert(body):
             return None, "cap_usd is a whole number of dollars, 1-100000, or 0 for none"
         else:
             job["cap_usd"] = c
+    if "needs" in body:
+        # the secrets this job needs before it runs (#319): vault names the
+        # runner checks in the export; a missing one becomes a share request
+        # (the agent's door, #316) and the run waits. A list, or "a,b" from a form.
+        n = body.get("needs")
+        if isinstance(n, str):
+            n = [x.strip().lower() for x in n.replace(";", ",").split(",") if x.strip()]
+        if n in (None, "", []):
+            job.pop("needs", None)
+        elif not isinstance(n, list) or any(not isinstance(x, str) or not vault.NAME_RE.match(x) or not vault.shareable(x) for x in n):
+            return None, "needs is a list of secret names a member could hand over (jobs.NAME, …)"
+        else:
+            job["needs"] = sorted(set(n))
     if cur is None:
         if len(jobs) >= SCHEDULE_MAX_JOBS:
             return None, "at most %d jobs on one Machine" % SCHEDULE_MAX_JOBS

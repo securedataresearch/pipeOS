@@ -35,7 +35,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cronspec  # noqa: E402
-import ledger  # noqa: E402
+import ledger
+import vault  # noqa: E402  — NAME_RE/shareable for --needs (#319)
 
 CONF = os.environ.get("PIPEOS_SCHED_CONF", "/etc/pipeos/schedule.json")
 STATE_DIR = os.environ.get("PIPEOS_SCHED_STATE_DIR", "/work/.pipeos/schedule")
@@ -143,6 +144,14 @@ def apply(job, flags, new):
             raise Refused("--cap is a whole number of dollars, 1-100000, or none")
         else:
             job["cap_usd"] = int(c)
+    if "needs" in flags:
+        n = [x.strip().lower() for x in flags["needs"].replace(";", ",").split(",") if x.strip()]
+        if not n or n == ["none"]:
+            job.pop("needs", None)
+        elif any(not vault.NAME_RE.match(x) or not vault.shareable(x) for x in n):
+            raise Refused("--needs is a comma-separated list of secret names a member could hand over (jobs.NAME), or none")
+        else:
+            job["needs"] = sorted(set(n))
     for k in ("notify", "enabled"):
         if k in flags:
             v = flags[k].strip().lower()
@@ -175,11 +184,12 @@ def cmd_ls():
         last = s.get("last_status", "never run")
         fails = s.get("consecutive_failures", 0)
         pw = ledger.why_paused(j["name"], PAUSED, PAUSED_JSON) if not gpaused else ""
-        print("%-32s %-18s %-9s %-8s %-8s %s%s%s%s" % (
+        print("%-32s %-18s %-9s %-8s %-8s %s%s%s%s%s" % (
             j["name"], j.get("cron", ""), "enabled" if j.get("enabled", True) else "disabled",
             j.get("backend", "claude"), j.get("session", "fresh"),
             last, " (%d failures in a row)" % fails if fails else "",
             " cap USD %d" % j["cap_usd"] if j.get("cap_usd") else "",
+            " needs %s" % ",".join(j["needs"]) if j.get("needs") else "",
             " PAUSED: %s" % pw if pw else ""))
         print("    %s — %s" % (human, (j.get("prompt", "")[:70] + "…") if len(j.get("prompt", "")) > 70 else j.get("prompt", "")))
     return 0
@@ -191,7 +201,7 @@ def cmd_add_set(argv, new):
     name = argv[0].strip().lower()
     if not NAME_RE.match(name):
         raise Refused("job names: lowercase letters, digits and dashes, up to 32")
-    flags = parse_flags(argv[1:], ("cron", "prompt", "cwd", "backend", "notify", "session", "cap"))
+    flags = parse_flags(argv[1:], ("cron", "prompt", "cwd", "backend", "notify", "session", "cap", "needs"))
     jobs = read_jobs()
     cur = next((j for j in jobs if j["name"] == name), None)
     if new and cur is not None:

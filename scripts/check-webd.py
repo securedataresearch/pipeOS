@@ -663,6 +663,15 @@ assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["cap_usd"
 r = req("/api/schedule/set", {"name": "nightly", "cap_usd": 1})                              # from the Schedule side: enforced at once
 assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["paused"].startswith("agent nightly")
 req("/api/schedule/set", {"name": "nightly", "cap_usd": 0})
+# needs (#319): a list or a comma string of shareable names; refused otherwise; rides the row; cleared by []/""
+req("/api/schedule/set", {"name": "nightly", "needs": "jobs.token, jobs.gh"})
+assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["needs"] == ["jobs.gh", "jobs.token"]
+req("/api/schedule/set", {"name": "nightly", "needs": ["assistant_pass"]}, expect=400)     # a per-box secret: never handed over
+req("/api/schedule/set", {"name": "nightly", "needs": ["not a name!"]}, expect=400)
+req("/api/schedule/set", {"name": "nightly", "needs": 7}, expect=400)
+assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["needs"] == ["jobs.gh", "jobs.token"]   # a refused set changed nothing
+req("/api/schedule/set", {"name": "nightly", "needs": ""})
+assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["needs"] == []
 req("/api/schedule/set", {"name": "nightly", "cap_usd": 100001}, expect=400)
 req("/api/schedule/del", {"name": "nightly"}); req("/api/schedule/del", {"name": "other"})
 webd.card_set = _card_set
