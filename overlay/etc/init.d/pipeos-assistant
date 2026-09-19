@@ -19,8 +19,8 @@ supervisor=supervise-daemon
 respawn_delay=5
 respawn_max=0
 
-output_log=/work/logs/pipeos-assistant.log
-error_log=/work/logs/pipeos-assistant.log
+output_log=/data/logs/pipeos-assistant.log
+error_log=/data/logs/pipeos-assistant.log
 
 CONF=/etc/pipeos/assistant.conf
 
@@ -45,8 +45,8 @@ start_pre() {
 	command -v ttyd >/dev/null 2>&1 || { eerror "ttyd is not installed on this image"; return 1; }
 	command -v tmux >/dev/null 2>&1 || { eerror "tmux is not installed on this image"; return 1; }
 	command -v claude >/dev/null 2>&1 || { eerror "claude is not installed on this image"; return 1; }
-	checkpath -d -m 0755 /work/logs || return 1
-	checkpath -d -m 0700 /work/pipebox/webchat || return 1
+	checkpath -d -m 0755 /data/logs || return 1
+	checkpath -d -m 0700 /data/pipebox/webchat || return 1
 	checkpath -d -m 0755 /run/pipeos || return 1
 	checkpath -d -m 0750 -o root:users /run/pipeos/assistant || return 1
 }

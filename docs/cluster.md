@@ -119,16 +119,12 @@ ROLE) are named where the design reuses them.
 
 ## 8. Data — `/data`, with a cluster-wide index
 
-- The bulk volume is renamed **`/data`**; `/work` is reserved for
-  something else. (Today `/work` is `LABEL=PIPEWORK`, `restore-work`,
-  `/work/repos`, 79 files mention it — the rename is its own PR and
-  needs a compatibility symlink for a release or two.)
-- The **file index** of every member is visible to the cluster (the Files
-  view grows a box selector); bytes stay where they are.
-- An agent on one box reaching another box's files may use **any of
-  SMB, pipe, or ssh between boxes**. All three stay available.
-- Agents on a cluster whose owner is on pipe are wired together
-  **automatically** (a cohort, in pipe's terms); nothing to configure.
+- The bulk volume is **`/data`** (renamed 2026-09-19, #219); `/work` is
+  reserved for something else and stays a symlink to `/data` for a release
+  or two. The filesystem label stays `PIPEWORK` — a label the owner never
+  sees, and relabelling sticks in the field could only lose a volume. On a
+  live box the rename takes effect at the next reboot; until then
+  `/data -> /work` and every path resolves either way.
 
 → #219, #220
 
@@ -256,7 +252,7 @@ owner-facing fact for Cluster buyers.
   load per cpu, then the fewest agents running. Every member's agents ride
   its summary, so the page and `pipeos cluster agents` list them all; a
   grey member's row shows the agents it had at its last answer, marked
-  last-known, from a per-member note under `/work/pipeos/cluster/last` —
+  last-known, from a per-member note under `/data/pipeos/cluster/last` —
   nothing is ever restarted from it. Job placement writes no state on the
   box that asked. A placement without a schedule is a `manual` job: it
   runs now and then only when started (Run now, `pipeos schedule run`,

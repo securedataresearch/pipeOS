@@ -18,7 +18,7 @@
 #   identity/pipe/{identity,credentials}.dat   plain copies of the pipe keys,
 #                                   so a human can find them without untarring
 #   identity/MANIFEST               what this is, from which box, when, sha256
-#   work/                           /work mirrored (rsync), minus caches and
+#   work/                           /data mirrored (rsync), minus caches and
 #                                   rebuildable build output
 #   boot-media/                     /media/usb mirrored (apks, kernel — a
 #                                   restore without network), unless
@@ -45,7 +45,7 @@ R=${PIPEOS_BACKUP_ROOT:-}
 ETC=$R/etc/pipeos
 PIPEDIR=$R/root/.pipe
 MEDIA=$R/media/usb
-WORK=$R/work
+WORK=$R/data
 RUN=$R/run/pipeos
 LOCK=$R/run/pipeos-save.lock
 STATE=$RUN/backup.state
@@ -201,7 +201,7 @@ store_identity "$ROOT/identity" "$TMP"
 
 if [ "$IDENTITY_ONLY" = no ]; then
     state work
-    mirror "$WORK" "$ROOT/work" work "$FS"
+    mirror "$WORK" "$ROOT/data" work "$FS"
     state media
     mirror "$MEDIA" "$ROOT/boot-media" boot-media "$FS"
 fi

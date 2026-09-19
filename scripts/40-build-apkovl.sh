@@ -118,7 +118,7 @@ chmod 600 "$STAGE/etc/shadow"
 awk -F: 'BEGIN{OFS=":"} $1=="root"{$7="/bin/bash"} {print}' \
     "$CHROOT/etc/passwd" > "$STAGE/etc/passwd"
 
-# Service accounts for the de-rooted daemons (fixed uids so files on /work
+# Service accounts for the de-rooted daemons (fixed uids so files on /data
 # never change owner across reflashes). svc-stream renders arbitrary URLs in
 # chromium — the box's largest exposure — and needs video for VAAPI
 # (/dev/dri/renderD128 is group video under mdev). Their shadow field is '!'

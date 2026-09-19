@@ -49,13 +49,13 @@ password is not membership; only the list is.
 
 AGENTS (#300, docs/cluster.md §12). An agent (a scheduled job) is started
 ON a member and lives there: its record in that box's schedule.json, its
-work on that box's /work. `start_agent` places one — on the member named,
+work on that box's /data. `start_agent` places one — on the member named,
 or on the idlest awake member — through that member's own /api/agent/start
 (this box through the same function directly), the way a service switch
 fans out. Every member's agents ride its summary, so the page lists them
 all; a member that has gone grey shows the agents it had at its last
 answer, marked stale, from a per-member last-known copy under
-/work/pipeos/cluster/last (a note of what was seen, not a copy of state —
+/data/pipeos/cluster/last (a note of what was seen, not a copy of state —
 nothing is ever restarted from it).
 
 Seams (env, the check-cluster.py probe): PIPEOS_CLUSTER_JSON, PIPEOS_CLUSTER_BUNDLE,
@@ -82,14 +82,14 @@ import lanid  # noqa: E402
 CLUSTER_JSON = os.environ.get("PIPEOS_CLUSTER_JSON", "/etc/pipeos/cluster.json")
 BUNDLE = os.environ.get("PIPEOS_CLUSTER_BUNDLE", "/run/pipeos/cluster-ca.pem")
 STATUS = os.environ.get("PIPEOS_CLUSTER_STATUS", "/run/pipeos/cluster.status")
-LAST_DIR = os.environ.get("PIPEOS_CLUSTER_LAST", "/work/pipeos/cluster/last")   # a member's last summary, for its grey row (#300)
+LAST_DIR = os.environ.get("PIPEOS_CLUSTER_LAST", "/data/pipeos/cluster/last")   # a member's last summary, for its grey row (#300)
 TLS_DIR = os.environ.get("PIPEOS_TLS_DIR", "/etc/pipeos/tls")
 CA_CRT = os.path.join(TLS_DIR, "ca.crt")
 SRV_CRT = os.path.join(TLS_DIR, "server.crt")
 SRV_KEY = os.path.join(TLS_DIR, "server.key")
 SAVE_BIN = os.environ.get("PIPEOS_SAVE_BIN", "/usr/local/bin/pipeos-save")
 MDNS_CACHE = os.environ.get("PIPEOS_MDNS_CACHE", "/run/pipeos/mdns/peers.json")
-MDNS_ROSTER = os.environ.get("PIPEOS_MDNS_ROSTER", "/work/pipeos/mdns/machines.json")
+MDNS_ROSTER = os.environ.get("PIPEOS_MDNS_ROSTER", "/data/pipeos/mdns/machines.json")
 JOIN_TOKEN = os.environ.get("PIPEOS_JOIN_TOKEN", "/run/pipeos/join-token")
 ADVERTISE = os.environ.get("PIPEOS_CLUSTER_ADVERTISE", "")   # the probe's loopback instances: ip:port a member should use for us
 JOIN_TOKEN_TTL = 600
@@ -473,7 +473,7 @@ def _roster():
 
 def resolve(target):
     """An id, a name, or an address → (ip, tls port), from what the
-    responder knows (the live cache first, then the roster on /work). An
+    responder knows (the live cache first, then the roster on /data). An
     address may carry a port (the probe's loopback instances do)."""
     if target in _PORTS:
         return _PORTS[target]
@@ -729,8 +729,8 @@ def _remember(mid, summary):
     cluster cap (#302). Written only when the agent list changed or the
     month-to-date moved by a whole dollar (the cap is judged in whole
     dollars; the page polls every few seconds and the worker every minute —
-    /work must be allowed to idle, #264). Best effort: a full or read-only
-    /work loses nothing but the last-known figures."""
+    /data must be allowed to idle, #264). Best effort: a full or read-only
+    /data loses nothing but the last-known figures."""
     agents = summary.get("agents") or []
     month_usd, month = summary.get("spend_month_usd"), summary.get("month")
     prev = _last(mid)

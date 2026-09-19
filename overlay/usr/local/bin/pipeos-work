@@ -1,21 +1,21 @@
 #!/bin/sh
-# pipeos-work — /work's hot set lives in RAM; the disk sees a flush, not a
+# pipeos-work — /data's hot set lives in RAM; the disk sees a flush, not a
 # stream (pipeOS#264).
 #
 #   pipeos work status         what is staged, when it was last flushed, parked or not
 #   pipeos work flush          RAM -> disk now (rsync, --delete), one sync
-#   pipeos work park           flush, then remount /work read-only: the stick idles
-#   pipeos work unpark         remount /work read-write
+#   pipeos work park           flush, then remount /data read-only: the stick idles
+#   pipeos work unpark         remount /data read-write
 #   pipeos-work hot-up|hot-down   the init script's start/stop (not for hands)
 #
-# WHY: the Machines have no internal disk — the boot stick IS /work — and a
+# WHY: the Machines have no internal disk — the boot stick IS /data — and a
 # stick that takes a log line every few seconds and a journal flush every
-# five runs hot (Sam, 2026-09-11: "kill the write churn; unmount /work in
+# five runs hot (Sam, 2026-09-11: "kill the write churn; unmount /data in
 # between operations; do more in RAM"). So the paths that churn — logs, the
 # mDNS roster, the ledger, the schedule state; the list is hot.list — are
 # bind-mounted from a tmpfs at boot, seeded from the disk copy, and written
 # back by `flush`: hourly (periodic), before every pipeos save, at shutdown
-# (pipeos-hot stop), and before `park`. Everything else on /work (Claude's
+# (pipeos-hot stop), and before `park`. Everything else on /data (Claude's
 # transcripts, repos, homes, backups) stays on the disk: large, and the
 # source of truth for `--resume`.
 #
@@ -26,7 +26,7 @@
 # the same minute. Nothing here is the only copy of anything that matters.
 #
 # park: with the hot set in RAM, an idle Machine holds nothing open for
-# writing on /work, so `mount -o remount,ro` succeeds and the stick stops
+# writing on /data, so `mount -o remount,ro` succeeds and the stick stops
 # taking writes altogether. A Machine that is busy (a session, a job) says
 # who is holding it and stays rw. The schedule runner unparks for a run and
 # re-parks after (pipeos-schedule-run); pipeos save flushes first.
@@ -34,14 +34,14 @@
 # Seams (the probe): PIPEOS_WORK, PIPEOS_HOT, PIPEOS_WORK_DISK, PIPEOS_HOT_LIST,
 # PIPEOS_WORK_NO_MOUNT=1 (directories only — no tmpfs, no binds, no remount).
 set -u
-WORK=${PIPEOS_WORK:-/work}
+WORK=${PIPEOS_WORK:-/data}
 HOT=${PIPEOS_HOT:-/run/pipeos/hot}
-DISK=${PIPEOS_WORK_DISK:-/run/pipeos/work-disk}
+DISK=${PIPEOS_WORK_DISK:-/run/pipeos/data-disk}
 LIST=${PIPEOS_HOT_LIST:-/usr/local/share/pipeos/hot.list}
 NOMOUNT=${PIPEOS_WORK_NO_MOUNT:-0}
 RUN=${PIPEOS_WORK_RUN:-/run/pipeos}
-STATUS=$RUN/work.status
-LOCK=$RUN/work.lock
+STATUS=$RUN/data.status
+LOCK=$RUN/data.lock
 HOT_SIZE=${PIPEOS_HOT_SIZE:-256m}
 
 say() { echo "pipeos-work: $*"; }
@@ -71,7 +71,7 @@ hot_up() {
     mkdir -p "$HOT" "$DISK" "$RUN"
     if [ "$NOMOUNT" != 1 ]; then
         mountpoint -q "$HOT" || mount -t tmpfs -o "size=$HOT_SIZE,mode=0755" tmpfs "$HOT" || die "cannot mount the hot tmpfs"
-        # the disk as it is under the binds: flush writes here, never through /work
+        # the disk as it is under the binds: flush writes here, never through /data
         mountpoint -q "$DISK" || mount --bind "$WORK" "$DISK" || die "cannot bind $WORK at $DISK"
         mount --make-private "$DISK" 2>/dev/null || true
     fi

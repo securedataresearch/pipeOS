@@ -8,8 +8,8 @@
 
 Nobody on a Machine could say what it spent. The owner found out from the
 bill. This reads what Claude Code already writes — every `assistant` line
-in /work/claude/projects/*/*.jsonl carries the model and a usage block —
-and appends one row per API call to /work/.pipeos/ledger/YYYY-MM.jsonl:
+in /data/claude/projects/*/*.jsonl carries the model and a usage block —
+and appends one row per API call to /data/.pipeos/ledger/YYYY-MM.jsonl:
 
   {ts, sid, id, source:"transcript", actor:{kind,name}, backend, provider,
    model, in, out, cache_read, cache_w5m, cache_w1h, cost_usd|null,
@@ -65,15 +65,15 @@ import subprocess
 import sys
 import time
 
-LEDGER_DIR = os.environ.get("PIPEOS_LEDGER_DIR", "/work/.pipeos/ledger")
-TRANSCRIPTS = os.environ.get("PIPEOS_LEDGER_TRANSCRIPTS", "/work/claude/projects")
+LEDGER_DIR = os.environ.get("PIPEOS_LEDGER_DIR", "/data/.pipeos/ledger")
+TRANSCRIPTS = os.environ.get("PIPEOS_LEDGER_TRANSCRIPTS", "/data/claude/projects")
 RATES = os.environ.get("PIPEOS_LEDGER_RATES", "/usr/local/share/pipeos/rates.json")
 CONF = os.environ.get("PIPEOS_LEDGER_CONF", "/etc/pipeos/pipebox.conf")
-RUNS_LOG = os.environ.get("PIPEOS_LEDGER_RUNS", "/work/.pipeos/schedule/runs.log")
-SESSIONS_DIR = os.environ.get("PIPEOS_LEDGER_SESSIONS", "/work/pipebox/sessions")
-WEBCHAT_SID = os.environ.get("PIPEOS_LEDGER_WEBCHAT_SID", "/work/pipebox/webchat/.dashboard-sid")
+RUNS_LOG = os.environ.get("PIPEOS_LEDGER_RUNS", "/data/.pipeos/schedule/runs.log")
+SESSIONS_DIR = os.environ.get("PIPEOS_LEDGER_SESSIONS", "/data/pipebox/sessions")
+WEBCHAT_SID = os.environ.get("PIPEOS_LEDGER_WEBCHAT_SID", "/data/pipebox/webchat/.dashboard-sid")
 SCHEDULE = os.environ.get("PIPEOS_LEDGER_SCHEDULE", "/etc/pipeos/schedule.json")
-CLUSTER_LAST = os.environ.get("PIPEOS_LEDGER_CLUSTER_LAST", "/work/pipeos/cluster/last")   # what each other member last said (cluster.py)
+CLUSTER_LAST = os.environ.get("PIPEOS_LEDGER_CLUSTER_LAST", "/data/pipeos/cluster/last")   # what each other member last said (cluster.py)
 PIPE_BIN = os.environ.get("PIPEOS_LEDGER_PIPE", "pipe")
 SEEN_RING = 256
 KEEP_MONTHS = 13
@@ -195,9 +195,9 @@ class Ledger:
         if sid and dash and sid == dash:
             return {"kind": "dashboard", "name": ""}
         c = (cwd or "").rstrip("/")
-        if c == "/work/pipebox":
+        if c == "/data/pipebox":
             return {"kind": "watch", "name": ""}
-        if c == "/work/pipebox/webchat":
+        if c == "/data/pipebox/webchat":
             return {"kind": "assistant", "name": ""}
         return {"kind": "other", "name": os.path.basename(c) or c}
 

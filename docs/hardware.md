@@ -1,7 +1,7 @@
 # Hardware notes — the reference Machine
 
 The reference Machine is a Lenovo ThinkCentre M920q (type 10RR): Intel
-I219 gigabit on board, one NVMe or SATA disk for `/work`, the boot stick
+I219 gigabit on board, one NVMe or SATA disk for `/data`, the boot stick
 on a USB port. This page is the firmware side of things the OS cannot do
 from inside — the settings an operator makes once with a keyboard plugged
 in, and how to tell from the box that they were made.
@@ -73,7 +73,7 @@ drill below.
   sibling Machines are on the same segment, which is the case this is
   built for.
 - The sender is any Machine that has ever seen the target — the roster is
-  per Machine, on its `/work`. A freshly flashed box has an empty roster
+  per Machine, on its `/data`. A freshly flashed box has an empty roster
   until the others announce (about ten seconds).
 
 ### The drill (first-boot acceptance §5)

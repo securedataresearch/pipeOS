@@ -14,7 +14,7 @@
 
 # One artifact cache per box (pipeOS#90 item 1). Every checkout shares it:
 # the canonical clones, PR-review scratch, probe trees. Measured on box1 the
-# day this was written — /work 92% full, 36G of it repos/pipe/target, and a
+# day this was written — /data 92% full, 36G of it repos/pipe/target, and a
 # pr677-review checkout on box3 carrying its own 1.7G duplicate of artifacts
 # the canonical clone already had.
 #
@@ -24,10 +24,10 @@
 # accept "/" to make one fleet-wide constant configurable is the wrong trade.
 # This is policy, identical on every box; the card carries identity.
 #
-# The mountpoint test is not ceremony. /work is the ext4 workspace on a
+# The mountpoint test is not ceremony. /data is the ext4 workspace on a
 # diskless box whose root is tmpfs. If it did not mount, exporting this
 # writes gigabytes of build output into RAM, and every byte of it disappears
-# under the filesystem the next time /work mounts correctly. Unset, cargo
+# under the filesystem the next time /data mounts correctly. Unset, cargo
 # falls back to a per-repo target/ — the old behaviour, which is the right
 # direction to fail in.
 #
@@ -37,11 +37,11 @@
 # working tree repeatedly with small edits. A box does short-lived
 # clone-build-verdict-discard cycles across several checkouts, so the
 # incremental caches are written, never read, and then counted against a
-# shared /work — which is what filled it. cargo's own CI guidance is the same
+# shared /data — which is what filled it. cargo's own CI guidance is the same
 # call for the same reason.
 #
 # Set OUTSIDE the mountpoint guard on purpose: it is a size policy, not a
-# location one, and it is the correct setting whether or not /work mounted.
+# location one, and it is the correct setting whether or not /data mounted.
 # Nothing about it can strand data in RAM.
 CARGO_INCREMENTAL=0
 export CARGO_INCREMENTAL

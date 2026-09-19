@@ -92,21 +92,21 @@ for i in range(5):
     mid = "msg_A%d" % i
     ts = "2026-09-10T02:0%d:00Z" % i
     for _ in range(2 if i % 2 else 3):
-        A.append(line(SID_JOB, "/work/pipebox/jobs/nightly", mid, "claude-opus-5", ts, inp=1000, out=200, cr=10000, w5=500, w1=0))
-A.append(line(SID_JOB, "/work/pipebox/jobs/nightly", "msg_Aside", "claude-opus-5", "2026-09-10T02:06:00Z", inp=10, out=10, cr=0, sidechain=True))
-A.append(line(SID_JOB, "/work/pipebox/jobs/nightly", "msg_Auser", "claude-opus-5", "2026-09-10T02:07:00Z", typ="user"))
-A.append(line(SID_JOB, "/work/pipebox/jobs/nightly", "msg_Anousage", "claude-opus-5", "2026-09-10T02:08:00Z", usage=False))
+        A.append(line(SID_JOB, "/data/pipebox/jobs/nightly", mid, "claude-opus-5", ts, inp=1000, out=200, cr=10000, w5=500, w1=0))
+A.append(line(SID_JOB, "/data/pipebox/jobs/nightly", "msg_Aside", "claude-opus-5", "2026-09-10T02:06:00Z", inp=10, out=10, cr=0, sidechain=True))
+A.append(line(SID_JOB, "/data/pipebox/jobs/nightly", "msg_Auser", "claude-opus-5", "2026-09-10T02:07:00Z", typ="user"))
+A.append(line(SID_JOB, "/data/pipebox/jobs/nightly", "msg_Anousage", "claude-opus-5", "2026-09-10T02:08:00Z", usage=False))
 pA = write_transcript("-work-pipebox-jobs-nightly/%s.jsonl" % SID_JOB, A)
 # session B: unknown model, the listener, a 1h cache write, legacy cache field
-B = [line(SID_LISTENER, "/work/pipebox", "msg_B0", "claude-mystery-9", "2026-09-10T10:00:00Z", inp=100, out=100, cr=0),
-     line(SID_LISTENER, "/work/pipebox", "msg_B1", "claude-sonnet-5-20260901", "2026-09-10T10:01:00Z", inp=1000, out=1000, cr=0, w5=0, w1=2000),
-     line(SID_LISTENER, "/work/pipebox", "msg_B2", "claude-sonnet-5", "2026-09-10T10:02:00Z", inp=0, out=0, cr=0, legacy_cc=4000)]
+B = [line(SID_LISTENER, "/data/pipebox", "msg_B0", "claude-mystery-9", "2026-09-10T10:00:00Z", inp=100, out=100, cr=0),
+     line(SID_LISTENER, "/data/pipebox", "msg_B1", "claude-sonnet-5-20260901", "2026-09-10T10:01:00Z", inp=1000, out=1000, cr=0, w5=0, w1=2000),
+     line(SID_LISTENER, "/data/pipebox", "msg_B2", "claude-sonnet-5", "2026-09-10T10:02:00Z", inp=0, out=0, cr=0, legacy_cc=4000)]
 pB = write_transcript("-work-pipebox/%s.jsonl" % SID_LISTENER, B)
 # dashboard, assistant, other, and old rows (35 days ago) — plus a torn tail
-C = [line(SID_DASH, "/work/pipebox/webchat", "msg_C0", "claude-opus-5", "2026-09-10T12:00:00Z", inp=1000, out=0, cr=0),
-     line(SID_ASSIST, "/work/pipebox/webchat", "msg_C1", "claude-opus-5", "2026-09-09T12:00:00Z", inp=1000, out=0, cr=0),
-     line(SID_OTHER, "/work/repos/thing", "msg_C2", "claude-opus-5", "2026-08-21T12:00:00Z", inp=1000, out=0, cr=0),
-     line(SID_OTHER, "/work/repos/thing", "msg_C3", "claude-opus-5", "2026-08-06T12:00:00Z", inp=1000000, out=0, cr=0)]
+C = [line(SID_DASH, "/data/pipebox/webchat", "msg_C0", "claude-opus-5", "2026-09-10T12:00:00Z", inp=1000, out=0, cr=0),
+     line(SID_ASSIST, "/data/pipebox/webchat", "msg_C1", "claude-opus-5", "2026-09-09T12:00:00Z", inp=1000, out=0, cr=0),
+     line(SID_OTHER, "/data/repos/thing", "msg_C2", "claude-opus-5", "2026-08-21T12:00:00Z", inp=1000, out=0, cr=0),
+     line(SID_OTHER, "/data/repos/thing", "msg_C3", "claude-opus-5", "2026-08-06T12:00:00Z", inp=1000000, out=0, cr=0)]
 pC = write_transcript("-work-pipebox-webchat/%s.jsonl" % SID_DASH, C, torn='{"type":"assistant","message":{"id":"msg_torn","usage":{"input_tokens":5')
 
 # ── 1. ingest: distinct ids, attribution, cost ──────────────────────────
@@ -138,13 +138,13 @@ check("5 rows land in the month file their timestamp names", os.path.exists(os.p
 n2 = L().ingest()
 check("6 a second ingest with nothing new adds zero rows", n2 == 0 and len(list(L().rows(["2026-09"]))) == 11, "n2=%d" % n2)
 with open(pA, "a") as f:
-    f.write(line(SID_JOB, "/work/pipebox/jobs/nightly", "msg_A5", "claude-opus-5", "2026-09-10T02:09:00Z"))
-    f.write(line(SID_JOB, "/work/pipebox/jobs/nightly", "msg_A5", "claude-opus-5", "2026-09-10T02:09:00Z"))
-    f.write(line(SID_JOB, "/work/pipebox/jobs/nightly", "msg_A6", "claude-opus-5", "2026-09-10T02:10:00Z"))
+    f.write(line(SID_JOB, "/data/pipebox/jobs/nightly", "msg_A5", "claude-opus-5", "2026-09-10T02:09:00Z"))
+    f.write(line(SID_JOB, "/data/pipebox/jobs/nightly", "msg_A5", "claude-opus-5", "2026-09-10T02:09:00Z"))
+    f.write(line(SID_JOB, "/data/pipebox/jobs/nightly", "msg_A6", "claude-opus-5", "2026-09-10T02:10:00Z"))
 n3 = L().ingest()
 check("7 appending two new turns (one written twice) yields exactly two rows", n3 == 2, "n3=%d" % n3)
 with open(pC, "a") as f:
-    f.write(',"output_tokens":5,"cache_read_input_tokens":0},"model":"claude-opus-5"},"sessionId":"%s","cwd":"/work/pipebox/webchat","timestamp":"2026-09-10T12:30:00Z"}\n' % SID_DASH)
+    f.write(',"output_tokens":5,"cache_read_input_tokens":0},"model":"claude-opus-5"},"sessionId":"%s","cwd":"/data/pipebox/webchat","timestamp":"2026-09-10T12:30:00Z"}\n' % SID_DASH)
 n4 = L().ingest()
 check("8 the torn tail is ingested once its newline arrives — exactly once", n4 == 1 and "msg_torn" in {r["id"] for r in L().rows(["2026-09"])}, "n4=%d" % n4)
 # rewrite A from scratch (same content, new inode/size) -> no duplicates
@@ -177,7 +177,7 @@ def dms():
 
 # a big row so whole-dollar caps have room: 3M input tokens of opus = $15
 with open(pA, "a") as f:
-    f.write(line(SID_JOB, "/work/pipebox/jobs/nightly", "msg_big", "claude-opus-5", "2026-09-10T03:00:00Z", inp=3000000, out=0, cr=0))
+    f.write(line(SID_JOB, "/data/pipebox/jobs/nightly", "msg_big", "claude-opus-5", "2026-09-10T03:00:00Z", inp=3000000, out=0, cr=0))
 L().ingest()
 spent = L().totals()["month"]["usd"]
 cap_warn = int(spent / 0.85)   # ~85% spent
@@ -336,10 +336,10 @@ check("16 the CLI prints totals as JSON (for selfcheck) and as text, and ingest 
 rates = json.load(open(os.path.join(REPO, "overlay/usr/local/share/pipeos/rates.json")))
 sweep = open(os.path.join(REPO, "overlay/etc/periodic/weekly/pipeos-worksweep")).read()
 card = open(os.path.join(REPO, "overlay/etc/pipeos/card.conf")).read()
-check("17 the shipped rate table names its date and prices every current family with all five columns; the worksweep spares /work/.pipeos; the card declares MONTHLY_CAP_USD and CLUSTER_CAP_USD",
+check("17 the shipped rate table names its date and prices every current family with all five columns; the worksweep spares /data/.pipeos; the card declares MONTHLY_CAP_USD and CLUSTER_CAP_USD",
       rates.get("updated") and all(set(v) == {"in", "out", "cache_read", "cache_w5m", "cache_w1h"} for v in rates["per_mtok"].values())
       and {"claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"} <= set(rates["per_mtok"])
-      and "/work/.pipeos|/work/.pipeos/*" in sweep and "\nMONTHLY_CAP_USD=" in card and "\nCLUSTER_CAP_USD=" in card, "")
+      and "/data/.pipeos|/data/.pipeos/*" in sweep and "\nMONTHLY_CAP_USD=" in card and "\nCLUSTER_CAP_USD=" in card, "")
 
 shutil.rmtree(D, ignore_errors=True)
 print("%d/%d" % (sum(RESULTS), len(RESULTS)))

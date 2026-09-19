@@ -33,7 +33,7 @@ BREAKS = [
      '    124|143)  log "claude was CUT OFF', '    999)  log "claude was CUT OFF'),
     ("G  session continue never resumes", RUNNER,
      '[ "$session" = continue ] && [ -f "$STATE_DIR/sessions/.started-$sid" ] && resume_args="--resume $sid"', ''),
-    ("H  a cwd outside /work is accepted", RUNNER,
+    ("H  a cwd outside /data is accepted", RUNNER,
      'case "$cwd" in "$WORKROOT"|"$WORKROOT"/*) ;; *) refuse "cwd $cwd is not under $WORKROOT" ;; esac', ''),
     ("I  a blank cwd is kept as \"\" instead of the default", RUNNER,
      'if $1 == null or $1 == \\"\\" then', 'if $1 == null then'),

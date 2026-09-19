@@ -24,7 +24,7 @@ export PIPE_NO_SPAWN=1
 
 # Agent auth token (secret; provisioned into the box's env file, never in git)
 # and the build toolchain on PATH, so a BUILD/TEST box's agent can run
-# cargo/rustc/cc from /work/buildroot when present.
+# cargo/rustc/cc from /data/buildroot when present.
 # The Claude credential comes from the vault's export under /run (#244);
 # the /etc file is the pre-vault location, read only until the first boot
 # that migrates it, so a deploy-overlay without a reboot keeps working.
@@ -32,7 +32,7 @@ AUTH=/run/pipeos/secrets/claude.env
 [ -r "$AUTH" ] || AUTH=/etc/pipeos/claude-auth.env
 # shellcheck disable=SC1090
 [ -r "$AUTH" ] && . "$AUTH"
-[ -d /work/buildroot/usr/bin ] && export PATH="/work/buildroot/usr/bin:$PATH"
+[ -d /data/buildroot/usr/bin ] && export PATH="/data/buildroot/usr/bin:$PATH"
 # The generated shell environment. Its header says /etc/profile sources it,
 # and for an ssh session that is true — but nothing on this path is a login
 # shell: crond -> sh -c pipebox-cohort-watch -> claude -p -> sh -c. The agent
@@ -46,8 +46,8 @@ AUTH=/run/pipeos/secrets/claude.env
 # board work; exit and let the listener handle DMs.
 COHORT_ID="${COHORT_ID:-}"
 [ -n "$COHORT_ID" ] || exit 0
-LOG=/work/logs/pipebox-cohort-watch.log
-STATE=/work/pipebox/state
+LOG=/data/logs/pipebox-cohort-watch.log
+STATE=/data/pipebox/state
 SEEN="$STATE/cohort-$COHORT_ID.seen"
 SESSION="$STATE/cohort-$COHORT_ID.session"
 MANDATE=/etc/pipeos/mandate.md
@@ -178,7 +178,7 @@ log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG"; }
 # THE TRAILING SLASH IS THE WHOLE FIX FOR pipeOS#100, AND IT IS NOT COSMETIC.
 # `find` does not follow a symlink given as its start path, and on every box
 # with the DOCUMENTED layout (#80) `/root/.claude/projects` IS a symlink to
-# `/work/claude/projects`. So `find <link> …` treats the link as a plain file,
+# `/data/claude/projects`. So `find <link> …` treats the link as a plain file,
 # descends nowhere, matches nothing — while the `[ -d ]` guard one line up
 # passes, because test DOES follow links. The predicate was reachable and
 # always answered no, so `--resume` never fired anywhere in the fleet and the
@@ -207,7 +207,7 @@ conversation_exists() {
     [ -n "$(find "$CLAUDE_PROJECTS/" -mindepth 2 -maxdepth 2 -name "$1.jsonl" -print -quit 2>/dev/null)" ]
 }
 
-mkdir -p "$STATE" /work/logs 2>/dev/null || exit 1
+mkdir -p "$STATE" /data/logs 2>/dev/null || exit 1
 
 [ -r "$MANDATE" ]  || { log "missing $MANDATE — refusing to run unguarded"; exit 1; }
 [ -r "$SETTINGS" ] || { log "missing $SETTINGS — refusing to run unguarded"; exit 1; }
@@ -932,10 +932,10 @@ if [ "$holds_claim" = yes ] && [ -s "$SESSION" ] && [ -s "$SESSION_META" ]; then
     # files answer different questions and only this one answers this one.
     # AND THE MARKER STILL IS NOT ENOUGH (pipeOS#51). It says a prompt was
     # handed to this id; it does not say the conversation still EXISTS. The
-    # marker, $SESSION and $SESSION_META all live under /work and survive a
+    # marker, $SESSION and $SESSION_META all live under /data and survive a
     # reboot. The conversation store did not, when this was written: on box3
     # `/root/.claude/projects` was then a real tmpfs directory rather than the
-    # symlink to `/work/claude/projects` the machine notes describe, so every
+    # symlink to `/data/claude/projects` the machine notes describe, so every
     # transcript died with the boot. #80 has since made all four boxes match the
     # documented symlink layout, which is what exposed pipeOS#100 above — but
     # the predicate is kept, because it is the check that survives conversation
@@ -1157,9 +1157,9 @@ log "handling $(printf '%s\n' "$changed" | grep -c .) changed thread(s)${ANNOUNC
 # with E2BIG and the dispatch is silently dropped. claude -p reads the prompt
 # from stdin, which has no such limit.
 rc=0
-(cd /work/pipebox && printf '%s' "$prompt" | timeout "$CLAUDE_TIMEOUT" claude -p \
+(cd /data/pipebox && printf '%s' "$prompt" | timeout "$CLAUDE_TIMEOUT" claude -p \
         --settings "$SETTINGS" $resume_args \
-        >> /work/logs/pipebox-cohort-claude.log 2>&1 9>&-) || rc=$?
+        >> /data/logs/pipebox-cohort-claude.log 2>&1 9>&-) || rc=$?
 # MARK ONLY IF THE SESSION ACTUALLY EXISTS NOW. rc 126/127 means claude never
 # started, so the id in $SESSION names a session that was minted and never
 # created. This touch was unconditional, which made the marker mean "an
@@ -1241,16 +1241,16 @@ else
     # CLEAN_AFTER_RUN (card, Sam 2026-08-16): "the builder is always filling
     # up with build artifacts, so it needs to clear itself every time." After
     # EVERY completed run, drop the shared artifact cache — the shim keys all
-    # builds into /work/cargo-target, so one rm clears every checkout's
+    # builds into /data/cargo-target, so one rm clears every checkout's
     # artifacts and nothing else. The next build is cold; that trades idle
     # CPU (pipeOS#59: we have plenty) for the disk that kept running out.
     # After the run, never before or during: a cut-off run (rc=143) resumes,
     # but its artifacts do not need to survive to the next wake — resume is
     # conversation state, not build state.
-    if [ "${CLEAN_AFTER_RUN:-0}" = 1 ] && [ -d /work/cargo-target ]; then
-        _freed=$(du -sk /work/cargo-target 2>/dev/null | cut -f1)
-        rm -rf /work/cargo-target/* 2>/dev/null
-        log "clean-after-run: cleared /work/cargo-target (${_freed:-?}K)"
+    if [ "${CLEAN_AFTER_RUN:-0}" = 1 ] && [ -d /data/cargo-target ]; then
+        _freed=$(du -sk /data/cargo-target 2>/dev/null | cut -f1)
+        rm -rf /data/cargo-target/* 2>/dev/null
+        log "clean-after-run: cleared /data/cargo-target (${_freed:-?}K)"
     fi
     # $SEEN and the reply cursors advance TOGETHER and only here, under exactly
     # the conditions $SEEN always did. Advancing cursors at fetch time would

@@ -4,19 +4,19 @@
 # next stick.
 #
 #   pipeos flash check              what is running vs the latest release
-#   pipeos flash fetch              download + verify the image into /work
+#   pipeos flash fetch              download + verify the image into /data
 #   pipeos flash apply [--yes] [--image FILE]   rewrite the boot partition
 #   pipeos flash apply --to DEV [--yes] [--image FILE]   write a SPARE whole
 #                                               disk as this box's next stick
 #   pipeos flash restore-identity FILE          stage a backup bundle as the
 #                                               next boot's apkovl
 #
-# `apply` writes ONLY partition 1 (the PIPEOS FAT): /work is partition 2 of
+# `apply` writes ONLY partition 1 (the PIPEOS FAT): /data is partition 2 of
 # the same disk and is never touched — the write goes through the partition
 # node, so the kernel bounds it. Before a byte lands: the image is digest-
 # verified and loop-mounted and its repo verified; the geometry must match
 # (both p1 start at sector 2048, image p1 <= disk p1); a fresh identity is
-# packaged to /work; the box's apkovl and the image's are MERGED — the
+# packaged to /data; the box's apkovl and the image's are MERGED — the
 # image's overlay paths and a world union over the box's identity — and the
 # merged world must resolve against the image's repos; then the media is
 # quiesced (modloop re-looped from RAM, every mount of p1 unmounted) or the
@@ -26,13 +26,13 @@
 # Reboot is the owner's move; this never reboots.
 #
 # `apply --to DEV` writes the WHOLE image to a spare disk — never the disk
-# behind /media/usb or /work, never a mounted one, never a partition — then
+# behind /media/usb or /data, never a mounted one, never a partition — then
 # carves the rest as PIPEWORK (grow.sh's stanza) and installs the same
 # merged apkovl as canonical AND known-good on the new stick's p1, so it
 # boots as this box. Then it prints the swap. The old stick must be REMOVED
 # before the new one boots: both carry LABEL=PIPEOS/PIPEWORK and
 # fstab/workspace.sh mount by label. The running box is untouched; nothing
-# here reboots. /work is not copied — that is `pipeos restore-work` (from a
+# here reboots. /data is not copied — that is `pipeos restore-work` (from a
 # backup dir, the old stick's p2, or --onto the new stick's p2 before the
 # swap). Typed confirmation is the device path: the thing that can go wrong
 # is the target, so the target is what the operator types.
@@ -59,17 +59,17 @@ set -u
 # real media cannot be relocated with it.
 FROOT=${PIPEOS_FLASH_ROOT:-}
 MEDIA=$FROOT/media/usb
-STAGE=$FROOT/work/.pipeos/flash
+STAGE=$FROOT/data/.pipeos/flash
 RUN=$FROOT/run/pipeos
 STATE=$RUN/flash.state
 PROGRESS=$RUN/flash.progress
-LOG=$FROOT/work/logs/flash.log
-APPLIED=$FROOT/work/.pipeos/flash.applied
+LOG=$FROOT/data/logs/flash.log
+APPLIED=$FROOT/data/.pipeos/flash.applied
 CONF=$FROOT/etc/pipeos/selfupdate.conf
 IMG_ASSET=pipeos-usb.img.xz
 IMGMNT=$RUN/flash-img
 VERIFY=/usr/local/share/pipeos/verify-repo.sh
-[ -x "$VERIFY" ] || VERIFY=/work/repos/pipeOS/scripts/verify-repo.sh
+[ -x "$VERIFY" ] || VERIFY=/data/repos/pipeOS/scripts/verify-repo.sh
 
 SYS=${PIPEOS_FLASH_SYS:-/sys}
 MOUNTS=${PIPEOS_FLASH_MOUNTS:-/proc/mounts}
@@ -186,7 +186,7 @@ fits() {   # img_start img_size tgt_start tgt_size
 # nothing mounted, not the system disk, typed path) ported to the box and
 # read through $SYS/$MOUNTS so the probe can drive them, plus the size guard
 # the host-side flasher never had. "System disk" is decided by what is
-# MOUNTED — /media/usb, /work, a /dev root — not by label: an old, unmounted
+# MOUNTED — /media/usb, /data, a /dev root — not by label: an old, unmounted
 # pipeOS stick is exactly the spare this is for.
 whole_disk() {   # DEV
     case "$1" in
@@ -218,8 +218,8 @@ not_system_disk() {   # DEV
     _mu=$(disk_of_mount /media/usb)
     [ -n "$_mu" ] || { say "cannot tell which disk carries /media/usb — refusing rather than guessing" >&2; return 1; }
     [ "$_mu" != "$1" ] || { say "$1 holds this box's boot media (/media/usb) — in-place is \`pipeos flash apply\`" >&2; return 1; }
-    _mw=$(disk_of_mount /work)
-    [ "$_mw" != "$1" ] || { say "$1 holds this box's work disk (/work) — refusing" >&2; return 1; }
+    _mw=$(disk_of_mount /data)
+    [ "$_mw" != "$1" ] || { say "$1 holds this box's work disk (/data) — refusing" >&2; return 1; }
     _mr=$(disk_of_mount /)
     [ -z "$_mr" ] || [ "$_mr" != "$1" ] || { say "$1 holds the root filesystem — refusing" >&2; return 1; }
     return 0
@@ -238,7 +238,7 @@ big_enough() {   # DEV IMG
     _img=$(( $(wc -c < "$2") / 512 ))
     [ "$_dev" -ge "$_img" ] || { say "$1 is $(( _dev / 2048 ))MB and the image needs $(( _img / 2048 ))MB — use a bigger disk" >&2; return 1; }
     [ $(( _dev - _img )) -ge $(( 8 * 1024 * 2048 )) ] \
-        || say "NOTE: only ~$(( (_dev - _img) / 2048 ))MB will be left for /work on $1"
+        || say "NOTE: only ~$(( (_dev - _img) / 2048 ))MB will be left for /data on $1"
     return 0
 }
 
@@ -290,7 +290,7 @@ print_swap() {   # DEV P2
         say "identity as canonical + known-good, and an empty PIPEWORK on $2."
         say ""
         say "Optional, before the swap (no downtime for your data):"
-        say "  pipeos restore-work /work --onto $2"
+        say "  pipeos restore-work /data --onto $2"
     else
         say "identity as canonical + known-good. PIPEWORK was not carved — first boot makes it."
     fi
@@ -301,7 +301,7 @@ print_swap() {   # DEV P2
     say "  3. REMOVE the old stick. Both sticks say PIPEOS/PIPEWORK and the box"
     say "     mounts by label — two attached is a coin toss."
     say "  4. Boot from $1 (UEFI, Secure Boot off)."
-    say "  5. If /work is empty: plug the old stick back in and run"
+    say "  5. If /data is empty: plug the old stick back in and run"
     say "     pipeos restore-work /dev/<old>2     (or from a backup dir)."
     say "Keep the old stick until the new one has booted and saved once."
 }
@@ -414,12 +414,12 @@ cmd_check() {
     say "latest release image: $_rd"
     _sd=$(staged_digest)
     [ "$_sd" = "$_rd" ] && say "staged: current ($STAGE/$IMG_ASSET)" || say "staged: ${_sd:-nothing}"
-    _free=$(df -k /work | awk 'NR==2{printf "%d", $4/1024}')
-    say "/work free: ${_free}MB (fetch+apply wants ~6000MB)"
+    _free=$(df -k /data | awk 'NR==2{printf "%d", $4/1024}')
+    say "/data free: ${_free}MB (fetch+apply wants ~6000MB)"
 }
 
 cmd_fetch() {
-    mountpoint -q /work || die "/work not mounted"
+    mountpoint -q /data || die "/data not mounted"
     _url=$(release_url)
     _rd=$(remote_digest "$_url")
     [ -n "$_rd" ] || die "the release publishes no image digest"
@@ -428,8 +428,8 @@ cmd_fetch() {
         say "already staged and current"
         return 0
     fi
-    _free_mb=$(df -k /work | awk 'NR==2{printf "%d", $4/1024}')
-    [ "$_free_mb" -ge 6000 ] || die "only ${_free_mb}MB free on /work — fetch+decompress wants ~6000MB"
+    _free_mb=$(df -k /data | awk 'NR==2{printf "%d", $4/1024}')
+    [ "$_free_mb" -ge 6000 ] || die "only ${_free_mb}MB free on /data — fetch+decompress wants ~6000MB"
     state fetching
     say "fetching $IMG_ASSET (~2GB) ..."
     if ! err=$(fetch "$_url/$IMG_ASSET" "$STAGE/$IMG_ASSET.new"); then
@@ -457,7 +457,7 @@ cmd_apply() {
     [ -f "$FROOT/etc/pipeos/provisioned" ] || die "this box is not claimed — flash the generic image from any machine instead"
     [ -f "$FROOT/etc/pipeos/rollback-pending" ] && die "a rollback is staged — reboot first"
     if [ "$NO_MOUNT" != 1 ]; then
-        mountpoint -q /work || die "/work not mounted"
+        mountpoint -q /data || die "/data not mounted"
     fi
     # pipeos-selfupdate holds this lock while IT drives the apply (pipeOS#275);
     # its caller seam says "that lock is mine, proceed". Any other caller still
@@ -557,7 +557,7 @@ cmd_apply() {
         else
             say "ready to rewrite $P1 in place ($(( IMG_SIZE / 2048 ))MB)."
             say "power loss mid-write leaves the box unbootable until reflashed;"
-            say "identity copies are on /work at $STAGE. Type the box's hostname to continue:"
+            say "identity copies are on /data at $STAGE. Type the box's hostname to continue:"
             read -r _ans
             [ "$_ans" = "$(hostname)" ] || die "confirmation did not match $(hostname) — nothing written"
         fi

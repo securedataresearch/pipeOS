@@ -15,8 +15,8 @@
 Same table, same rules, same persistence as the dashboard's Schedule view:
 /etc/pipeos/schedule.json, names [a-z0-9-] up to 32, a five-field cron
 expression, an @alias or `manual` (runs only when started; the default
-for a job made without --cron), the working dir under /work or blank for
-/work/pipebox/jobs/<name>, and every change saved through pipeos-save at
+for a job made without --cron), the working dir under /data or blank for
+/data/pipebox/jobs/<name>, and every change saved through pipeos-save at
 once (the rule from #238). This exists so an operator — human or the
 owner's agent on a workstation — can drive a Machine's jobs over ssh
 without the dashboard login; the dashboard and this tool never disagree
@@ -38,13 +38,13 @@ import cronspec  # noqa: E402
 import ledger  # noqa: E402
 
 CONF = os.environ.get("PIPEOS_SCHED_CONF", "/etc/pipeos/schedule.json")
-STATE_DIR = os.environ.get("PIPEOS_SCHED_STATE_DIR", "/work/.pipeos/schedule")
-LOGDIR = os.environ.get("PIPEOS_SCHED_LOGDIR", "/work/logs")
+STATE_DIR = os.environ.get("PIPEOS_SCHED_STATE_DIR", "/data/.pipeos/schedule")
+LOGDIR = os.environ.get("PIPEOS_SCHED_LOGDIR", "/data/logs")
 RUN_BIN = os.environ.get("PIPEOS_SCHED_RUN_BIN", "/usr/local/bin/pipeos-schedule-run")
 SAVE_BIN = os.environ.get("PIPEOS_SAVE_BIN", "/usr/local/bin/pipeos-save")
-PAUSED = os.environ.get("PIPEOS_SCHED_PAUSED", "/work/.pipeos/ledger/paused")
-PAUSED_JSON = os.environ.get("PIPEOS_SCHED_PAUSED_JSON", "/work/.pipeos/ledger/paused.json")
-WORK = os.environ.get("PIPEOS_SCHED_WORK", "/work")
+PAUSED = os.environ.get("PIPEOS_SCHED_PAUSED", "/data/.pipeos/ledger/paused")
+PAUSED_JSON = os.environ.get("PIPEOS_SCHED_PAUSED_JSON", "/data/.pipeos/ledger/paused.json")
+WORK = os.environ.get("PIPEOS_SCHED_WORK", "/data")
 MAX_JOBS = 32
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 BACKENDS = ("claude", "hermes")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""/work's hot set in RAM (#264): pipeos-work stages hot.list from a tmpfs,
-flushes RAM -> disk, parks /work read-only; the listener idles on a policy
+"""/data's hot set in RAM (#264): pipeos-work stages hot.list from a tmpfs,
+flushes RAM -> disk, parks /data read-only; the listener idles on a policy
 denial instead of respawning; the mount carries commit=120. Rows run the
 shipped script through its no-mount seam over a throwaway tree (mounts are
 the box's; the probe pins the logic around them)."""
@@ -30,7 +30,7 @@ LIST = os.path.join(D, "hot.list")
 open(LIST, "w").write("# comment\nlogs\n\npipeos/mdns\n.pipeos/ledger\n")
 ENV = dict(os.environ, PIPEOS_WORK=WORK, PIPEOS_HOT=HOT, PIPEOS_WORK_DISK=DISK, PIPEOS_HOT_LIST=LIST,
            PIPEOS_WORK_NO_MOUNT="1", PIPEOS_WORK_RUN=RUN)
-# under the seam the "disk" view is a separate dir, so seed it as the box's /work would be
+# under the seam the "disk" view is a separate dir, so seed it as the box's /data would be
 os.makedirs(os.path.join(DISK, "logs"))
 open(os.path.join(DISK, "logs", "old.log"), "w").write("from disk\n")
 open(os.path.join(DISK, "logs", "stale.log"), "w").write("gone after flush\n")
@@ -88,10 +88,10 @@ check("8 wiring: hot.list names logs, the roster, the ledger and the schedule st
       and all(s in init for s in ("pipeos-web", "pipeos-mdns", "pipebox-listener", "crond", "pipeos-vault"))
       and "+etc/init.d/pipeos-hot" in lbu and "pipeos-workspace pipeos-hot " in build and os.access(hourly, os.X_OK) and "pipeos-work flush" in open(hourly).read(),
       repr(hotlist))
-check("9 /work mounts with commit=120,lazytime,noatime; pipeos save flushes the hot set first; the schedule runner unparks a parked /work for the run and re-parks after (also on the one-at-a-time refusal)",
+check("9 /data mounts with commit=120,lazytime,noatime; pipeos save flushes the hot set first; the schedule runner unparks a parked /data for the run and re-parks after (also on the one-at-a-time refusal)",
       "noatime,lazytime,commit=120" in ws and "pipeos-work flush" in save and save.index("pipeos-work flush") < save.index("pipeos-worksweep")
       and "pipeos-work unpark" in runner and runner.count("repark") >= 3 and "mount -o remount" not in runner, "")
-check("10 the listener idles an hour on a policy denial (rc 5) and writes /run/pipeos/listener.status, instead of exiting into supervise-daemon's respawn loop (#258); selfcheck WARNs on that status and on a hot path that is not a mountpoint, and notes a parked /work",
+check("10 the listener idles an hour on a policy denial (rc 5) and writes /run/pipeos/listener.status, instead of exiting into supervise-daemon's respawn loop (#258); selfcheck WARNs on that status and on a hot path that is not a mountpoint, and notes a parked /data",
       "sleep 3600; continue" in listener and "policy-denied" in listener and 'exit 1 ;;' not in listener.split('5) # terminal')[1].split('0) ;;')[0]
       and "listener.status" in selfcheck and "hot set not staged" in selfcheck and "parked" in selfcheck, "")
 

@@ -227,7 +227,7 @@ fi
 # already established that no store disagrees about which key that is.
 mkdir -p "$OUT/keys"
 # SIGNING_KEY_DIR defaults outside the repo, so unlike out/ it can land
-# somewhere the build user cannot create — /work on a host that is not this
+# somewhere the build user cannot create — /data on a host that is not this
 # appliance. Falling back to skipping it would quietly reinstate the bug this
 # whole section exists to fix, so escalate once, then say what to set.
 if [ ! -d "$SIGNING_KEY_DIR" ]; then

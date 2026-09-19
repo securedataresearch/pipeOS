@@ -1,7 +1,7 @@
 #!/sbin/openrc-run
-description="/work's hot set (logs, roster, ledger, schedule state) staged in RAM; flushed to the stick hourly, at save, at stop"
+description="/data's hot set (logs, roster, ledger, schedule state) staged in RAM; flushed to the stick hourly, at save, at stop"
 
-# After the mount, before anything that writes to /work — every supervised
+# After the mount, before anything that writes to /data — every supervised
 # service and crond (the tick, the periodic flush) start once the binds are
 # up, so no writer ever opens the disk copy. See pipeos-work's header.
 depend() {
@@ -12,13 +12,13 @@ depend() {
 }
 
 start() {
-	ebegin "Staging /work's hot set in RAM"
+	ebegin "Staging /data's hot set in RAM"
 	/usr/local/bin/pipeos-work hot-up
 	eend $?
 }
 
 stop() {
-	ebegin "Flushing /work's hot set to disk"
+	ebegin "Flushing /data's hot set to disk"
 	/usr/local/bin/pipeos-work hot-down
 	eend $?
 }

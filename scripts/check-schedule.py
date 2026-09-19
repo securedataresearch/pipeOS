@@ -279,7 +279,7 @@ rc_e, _ = runner("elsewhere")
 rc_u, _ = runner("no-such-job")
 rc_bad, _ = runner("../etc")
 st_e = json.load(open(os.path.join(RSTATE, "state.json")))["jobs"].get("elsewhere", {})
-check("14 a cwd outside the /work root is refused (rc 2) AND recorded — state failed(2) with the reason, a runs.log line, a DM; an unknown job is rc 2, a hostile name is rc 2",
+check("14 a cwd outside the /data root is refused (rc 2) AND recorded — state failed(2) with the reason, a runs.log line, a DM; an unknown job is rc 2, a hostile name is rc 2",
       rc_e == 2 and rc_u == 2 and rc_bad == 2 and st_e.get("last_status") == "failed(2)" and st_e.get("consecutive_failures") == 1
       and "not under" in st_e.get("last_error", "") and "elsewhere failed(2)" in open(os.path.join(RSTATE, "runs.log")).read()
       and "job elsewhere: refused" in open(D + "/pipe.argv").read(),
@@ -295,7 +295,7 @@ jobs({"name": "blank", "cron": "0 2 * * *", "prompt": "p", "cwd": ""},
      {"name": "flaky", "cron": "0 3 * * *", "prompt": "p", "notify": False, "session": "continue"})
 rc_b, out_b = runner("blank")
 rc_r, out_r = runner("root")
-check("17 a blank working dir (what the dashboard stores for the documented default) runs under /work/pipebox/jobs/<name>, and /work itself is accepted",
+check("17 a blank working dir (what the dashboard stores for the documented default) runs under /data/pipebox/jobs/<name>, and /data itself is accepted",
       rc_b == 0 and rc_r == 0 and os.path.isdir(os.path.join(WORK, "pipebox", "jobs", "blank")) and len(argv("claude")) == 2,
       "b=%s %s r=%s %s" % (rc_b, out_b[-120:], rc_r, out_r[-120:]))
 clear("claude")

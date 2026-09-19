@@ -112,11 +112,11 @@ refusals = {
     "set unknown": sched("set", "ghost", "--prompt", "x"),
 }
 bad = {k: v for k, v in refusals.items() if v[0] != 2}
-check("2 every refusal the dashboard makes, this makes (rc 2): hostile name, bad/shell cron, no prompt, cwd outside /work, unknown/uninstalled assistant, bad session, unknown flag, duplicate add, set on a ghost — and none of them saved",
+check("2 every refusal the dashboard makes, this makes (rc 2): hostile name, bad/shell cron, no prompt, cwd outside /data, unknown/uninstalled assistant, bad session, unknown flag, duplicate add, set on a ghost — and none of them saved",
       not bad and len(jobs()) == 1 and saves() == 1, "bad=%r saves=%d" % ({k: v[1][-80:] for k, v in bad.items()}, saves()))
 rc, out = sched("set", "nightly", "--cwd", os.path.join(WORK, "repos", "proj"), "--notify", "off", "--session", "continue")
 j = jobs()[0]
-check("3 schedule set changes only the given flags (cwd realpath'd under /work, notify off, continue) and keeps the rest",
+check("3 schedule set changes only the given flags (cwd realpath'd under /data, notify off, continue) and keeps the rest",
       rc == 0 and j["cwd"] == os.path.realpath(os.path.join(WORK, "repos", "proj")) and j["notify"] is False and j["session"] == "continue"
       and j["cron"] == "0 2 * * *" and j["prompt"] == "tidy the repo" and saves() == 2, "rc=%s j=%r" % (rc, j))
 rc_d, _ = sched("disable", "nightly"); en_d = jobs()[0]["enabled"]

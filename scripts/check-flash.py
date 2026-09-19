@@ -248,7 +248,7 @@ check("9 whole_disk takes /dev/sdX and /dev/nvmeXn1 and refuses partitions and l
 sysd = fakesys(d, {"sda": (60000000, ["sda1", "sda2"]), "sdb": (60000000, ["sdb1"]),
                    "sdc": (60000000, []), "nvme0n1": (500000000, ["nvme0n1p1", "nvme0n1p2"])})
 box_mounts = fakemounts(d, ["tmpfs / tmpfs rw 0 0", "/dev/sda1 /media/usb vfat ro 0 0",
-                            "/dev/sda2 /work ext4 rw 0 0", "/dev/sdb1 /media/ext/sdb1 ext4 rw 0 0"])
+                            "/dev/sda2 /data ext4 rw 0 0", "/dev/sdb1 /media/ext/sdb1 ext4 rw 0 0"])
 genv = dict(guard_env, PIPEOS_FLASH_SYS=sysd, PIPEOS_FLASH_MOUNTS=box_mounts)
 rc1, out1 = run_fns('not_mounted /dev/sdb', genv)
 rc2, out2 = run_fns('not_mounted /dev/sdc', genv)
@@ -258,7 +258,7 @@ check("10 a disk with a mounted partition is refused, naming the mount; an idle 
 rc1, out1 = run_fns('not_system_disk /dev/sda', genv)
 rc2, out2 = run_fns('not_system_disk /dev/sdc', genv)
 root_mounts = fakemounts(d, ["/dev/nvme0n1p2 / ext4 rw 0 0", "/dev/sda1 /media/usb vfat ro 0 0",
-                             "/dev/sda2 /work ext4 rw 0 0"])
+                             "/dev/sda2 /data ext4 rw 0 0"])
 rc3, out3 = run_fns('not_system_disk /dev/nvme0n1', dict(genv, PIPEOS_FLASH_MOUNTS=root_mounts))
 blind = fakemounts(d, ["tmpfs / tmpfs rw 0 0"])
 rc4, out4 = run_fns('not_system_disk /dev/sdc', dict(genv, PIPEOS_FLASH_MOUNTS=blind))
@@ -303,7 +303,7 @@ data = open(fake, "rb").read()
 imgb = open(img, "rb").read()
 table = subprocess.run(["sfdisk", "-d", fake], capture_output=True, text=True).stdout
 parts = re.findall(r"^\S+ : start=\s*(\d+), size=\s*(\d+), type=([0-9A-F-]+)", table, re.M)
-merged = sorted(os.listdir(froot + "/work/.pipeos/flash")) if os.path.isdir(froot + "/work/.pipeos/flash") else []
+merged = sorted(os.listdir(froot + "/data/.pipeos/flash")) if os.path.isdir(froot + "/data/.pipeos/flash") else []
 merged = [m for m in merged if m.startswith("merged-") and m.endswith(".tar.gz")]
 def same(a, b):
     try:
@@ -333,7 +333,7 @@ check("14c apply --to does NOT fence this box's saves — its own media was not 
       not os.path.exists(froot + "/run/pipeos/flash-pending"))
 check("14b the swap procedure is printed, with the removal rule and the restore-work verb, and this box's flash.applied is untouched",
       rc == 0 and "REMOVE the old stick" in out and "restore-work" in out
-      and not os.path.exists(froot + "/work/.pipeos/flash.applied")
+      and not os.path.exists(froot + "/data/.pipeos/flash.applied")
       and "step=done" in open(froot + "/run/pipeos/flash.state").read(),
       out[-600:])
 

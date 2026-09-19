@@ -167,7 +167,7 @@ Alpine chroot, and no box has a Rust toolchain (box0 has none, box1 has one
 off-`PATH`, box2 has none).
 
     # 1. sources
-    export PIPE_SRC=/path/to/pipe            # or /work/repos/pipe; see config.sh
+    export PIPE_SRC=/path/to/pipe            # or /data/repos/pipe; see config.sh
     git -C "$PIPE_SRC" fetch --tags && git -C "$PIPE_SRC" checkout v<version>
 
     # 2. chroot, then the musl payload + the three apks
@@ -210,7 +210,7 @@ change to the build, which wants its own issue and its own review.
 
 ## What box2 could not do, and who has to
 
-- **Build anything.** No `cargo`, no `rustc`, no `/work/buildroot` on box2;
+- **Build anything.** No `cargo`, no `rustc`, no `/data/buildroot` on box2;
   `apk` is hard-banned, so installing a toolchain is not available either. The
   musl apk in Path B is specified here, not produced.
 - **Verify the fleet's current version.** `pipe --version` is refused by the
@@ -245,15 +245,15 @@ copy, so every box keeps paying the old cost until the overlay is installed.
 **A box cannot read the installed script, but it CAN tell whether the new one
 has run.** Those are different questions and only the first is fenced: the
 agent sandbox refuses `/usr/local/bin/pipebox-cohort-watch`, but the new code
-writes `/work/pipebox/state/cohort-<id>.cursors` on every tick that has a
-changed thread, and `/work` is readable. Absent cursors file on a box whose
+writes `/data/pipebox/state/cohort-<id>.cursors` on every tick that has a
+changed thread, and `/data` is readable. Absent cursors file on a box whose
 `.seen` is recent means the old watcher is still running:
 
 ```sh
 . /etc/pipeos/pipebox.conf                     # sets COHORT_ID for this box
 cid=${COHORT_ID:-3}                            # same fallback the watcher uses
-ls -l /work/pipebox/state/cohort-$cid.seen \
-      /work/pipebox/state/cohort-$cid.cursors
+ls -l /data/pipebox/state/cohort-$cid.seen \
+      /data/pipebox/state/cohort-$cid.cursors
 ```
 
 Measured 2026-08-11 on two boxes independently, both with a `.seen` only
@@ -274,8 +274,8 @@ pipebox-cohort-watch --seed
 ```
 
 Why it is not optional. The fix keeps per-thread reply cursors in a new file,
-`/work/pipebox/state/cohort-<id>.cursors`. A fresh install has no such file,
-while `$SEEN` survives (it lives on `/work`, not in the apkovl). So the first
+`/data/pipebox/state/cohort-<id>.cursors`. A fresh install has no such file,
+while `$SEEN` survives (it lives on `/data`, not in the apkovl). So the first
 thread that changes after the deploy has no cursor, reads as a first sighting,
 and is delivered **whole** — one full-thread wake per box, which is the exact
 cost the change exists to remove. `--seed` writes both files together and
@@ -293,7 +293,7 @@ both.
 ```sh
 . /etc/pipeos/pipebox.conf                       # sets COHORT_ID
 cid=${COHORT_ID:-3}                              # same fallback the watcher uses
-ls -l /work/pipebox/state/cohort-$cid.cursors    # MUST exist after --seed
+ls -l /data/pipebox/state/cohort-$cid.cursors    # MUST exist after --seed
 ```
 
 **Read `COHORT_ID` from the box, never paste a literal.** Every box is cohort 3

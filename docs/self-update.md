@@ -18,7 +18,7 @@ pipe 0.41.15 to 0.41.31.
    = disabled**.
 2. Probes for change cheaply — release mode hashes `SHA256SUMS`, URL mode
    the remote `APKINDEX.tar.gz` — and **exits early if it matches the last
-   applied digest** (`/work/.pipeos/selfupdate.applied`), so the daily run
+   applied digest** (`/data/.pipeos/selfupdate.applied`), so the daily run
    is nearly free on a current box.
 3. On change: fetches the repo (release mode: `pipeos-repo.tar.gz`, checked
    against `SHA256SUMS`; URL mode: each apk) into ext4 staging and runs
@@ -79,8 +79,8 @@ selfupdate` once to apply immediately.
 The mechanism needs a canonical origin the boxes can reach. Two options:
 
 - **Pilot (today):** the BUILD box already produces the repo at
-  `/work/repos/pipeOS/out/repo/pipeos`. Serve that directory over HTTP
-  (`busybox httpd -f -p 8080 -h /work/repos/pipeOS/out/repo`) and it becomes
+  `/data/repos/pipeOS/out/repo/pipeos`. Serve that directory over HTTP
+  (`busybox httpd -f -p 8080 -h /data/repos/pipeOS/out/repo`) and it becomes
   the fleet's update origin — a closed loop where the build box publishes and
   the others pull.
 - **Endgame (#651):** the netboot server serves this repo as part of the same
@@ -99,7 +99,7 @@ step is the **image**: if the latest release's tag names a commit other than
 the one in the running `pipeos-image.txt` (or its image digest differs from
 what a flash last applied), the box `pipeos flash fetch`es it (verified),
 `apply --yes` in place (identity merged, saves fenced until the reboot —
-docs/live-disk.md step 12), writes `/work/.pipeos/image-updated`, and
+docs/live-disk.md step 12), writes `/data/.pipeos/image-updated`, and
 **reboots**. The boot report then says "this boot is a self-applied image
 update". It holds, and retries next hour, while a scheduled run holds the
 schedule lock or any terminal session is live. Default **on**, client boxes
