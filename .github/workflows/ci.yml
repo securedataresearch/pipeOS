@@ -84,10 +84,11 @@ jobs:
       - name: the live verdict — --live skips the heavy sections, writes one file, and every reader prefers it
         run: python3 scripts/check-selfcheck-live.py
 
-      # pipeOS#307: "260 uncommitted change(s)" beside a passing verify. The
-      # count was `lbu status` (an apk audit: every apkovl-added file is "A"
-      # forever); now it is what a save would actually change.
-      - name: pipeos diff and the status count compare the live tree with the canonical apkovl, not an apk audit
+      # pipeOS#307: "260 uncommitted change(s)" beside a passing verify. lbu
+      # compares against <hostname>.apkovl.tar.gz, a file pipeOS never writes
+      # (the canonical is pipeos.apkovl.tar.gz), so it listed every file as
+      # Added forever. pipeos now hands lbu the canonical through LBU_BACKUPDIR.
+      - name: pipeos status/diff run lbu against the canonical apkovl (a hostname-named link in a tmpfs dir), gated on its integrity
         run: python3 scripts/check-status-diff.py
 
       # the single-box pass on zero (2026-09-16): unclaim is a factory reset —

@@ -32,7 +32,7 @@ packages do not all live in the same Alpine repository:
 ```sh
 extra-add diffutils findutils gawk grep sed      # Alpine main
 extra-add --repo community github-cli            # community
-lbu status && pipeos-save
+pipeos diff && pipeos save
 # then reboot and re-run `pipeos verify` — it must reach PASS
 ```
 

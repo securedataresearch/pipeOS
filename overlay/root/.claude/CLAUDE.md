@@ -110,7 +110,7 @@ a workaround, because you do not control the flags the initramfs passes at boot.
 ## 6. lbu workflow — always dry-run before committing
 
 ```sh
-lbu status                    # what has changed since the last commit
+pipeos diff                    # what a save would change (lbu against the canonical apkovl; bare `lbu status` compares against a file pipeOS never writes)
 lbu package /tmp/probe        # write a CANDIDATE apkovl to tmpfs — free, non-destructive
 tar -tzf /tmp/probe/pipeos.apkovl.tar.gz | grep <thing-you-expect>
 lbu commit                    # only after the probe looks right
