@@ -92,6 +92,7 @@ printf '%s' PW | pipeos nas account NAME        # share-only account (no sign-in
 pipeos vault status|list|get|set|export         # the sealed store; set reads stdin: printf '%s' V | pipeos vault set NAME [CONSUMER]
 pipeos vault share NAME two | unshare NAME two   # copy a text secret to a member (it saves it as a copy from this box); unshare only forgets — the single exception to no-propagation, on the owner's tap (#301)
 pipeos wake NAME|ID|--all|--list                # magic packet to a Machine this box has seen
+pipeos lan [--refresh]                          # the network map (#217): everything netgaze sees from this box, Machines and members marked; --refresh runs the pass now
 pipeos work status|flush|park|unpark            # the RAM-staged hot set; park = flush + /work read-only so the stick idles
 ```
 

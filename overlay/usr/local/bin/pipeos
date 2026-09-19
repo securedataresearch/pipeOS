@@ -21,6 +21,7 @@
 #   pipeos deploy-overlay      install a repo commit's overlay onto this box
 #   pipeos unclaim [--yes]     nobody's box again: drop the claim, name, users; reboot
 #   pipeos wake NAME|ID|--all|--list|--forget ID   magic packet to a Machine this box has seen
+#   pipeos lan [--refresh] [--json]   the network map: every device netgaze sees, Machines marked (#217)
 #   pipeos cluster init [NAME]|status|ca|add|remove|sync|join MEMBER|adopt ID [NAME]|page|reboot-all|services KEY on|off [ID...]|call ID|NAME|IP METHOD PATH [JSON]   the cluster: identity (its CA), member list, the page, the two cluster-wide acts (#222, #211, #212)
 #   pipeos cluster agents | start NAME --on ID|NAME|idlest [--prompt TEXT [--cron SPEC|manual]]   every member's agents; start one ON a member — it lives there; no --cron = runs now, then only when started (#300)
 #   pipeos vault status|list|set|get|del|share|unshare|export|unlock|rephrase   the sealed secret store; share copies a text secret to a member (#301)
@@ -693,6 +694,7 @@ case "$1" in
     selfupdate)  shift; exec /usr/local/bin/pipeos-selfupdate "$@" ;;
     unclaim)     shift; cmd_unclaim "$@" ;;
     wake)        shift; exec /usr/local/bin/pipeos-wake "$@" ;;
+    lan)         shift; exec python3 "${PIPEOS_LAN:-/usr/local/share/pipeos/web/lan.py}" "$@" ;;
     cluster)     shift; exec python3 /usr/local/share/pipeos/web/cluster.py "$@" ;;
     vault)       shift; exec /usr/local/bin/pipeos-vault "$@" ;;
     schedule)    shift; exec python3 /usr/local/share/pipeos/web/schedctl.py "$@" ;;

@@ -4,7 +4,7 @@ SHELL := /bin/bash
 VARIANT ?= vm
 export VARIANT
 
-.PHONY: all host-deps chroot pipe apks apkovl image usb metal images stick vm flash release clean-chroot clean cards check-cards
+.PHONY: all host-deps chroot pipe netgaze apks apkovl image usb metal images stick vm flash release clean-chroot clean cards check-cards
 
 all: image
 
@@ -64,7 +64,10 @@ chroot:
 pipe:
 	./scripts/20-build-pipe.sh
 
-apks: chroot
+netgaze:
+	./scripts/20-build-netgaze.sh
+
+apks: chroot netgaze
 	./scripts/30-build-apks.sh
 
 apkovl:
