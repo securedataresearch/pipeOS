@@ -2306,7 +2306,7 @@ async function dashboard() {
     }
     const ccap = cap.cluster || {}, ccapIn = v.querySelector("#usccap"), ccapNote = v.querySelector("#usccapnote");
     if (ccapIn && document.activeElement !== ccapIn) ccapIn.value = ccap.usd || 0;
-    if (ccapNote) ccapNote.textContent = ccap.usd ? `${usd(ccap.spent)} across ${(ccap.members || []).length + 1} Machine(s) this month · ${ccap.pct}% of $${ccap.usd}` : "";
+    if (ccapNote) ccapNote.textContent = ccap.usd ? `${usd(ccap.spent)} across ${(ccap.members || []).length + 1} Machine(s) this month · ${ccap.pct}% of $${ccap.usd}` + ((ccap.not_reporting || []).length ? ` · NOT reporting their spend: ${ccap.not_reporting.join(", ")}` : "") : "";
     const capIn = v.querySelector("#uscap"), pill = v.querySelector("#uscappill");
     if (capIn && document.activeElement !== capIn) capIn.value = cap.usd || 0;
     if (pill) { pill.textContent = cap.usd ? (cap.paused ? "paused" : cap.pct + "%") : "none"; pill.className = "pill " + (cap.paused ? "status-bad" : cap.usd && cap.pct >= 80 ? "status-warn" : "status-ok"); }
@@ -2575,7 +2575,7 @@ async function dashboard() {
         const agentTxt = (m.agents || []).map(a => `${esc(a.name)} <span class="note">(${m.awake ? (a.running ? "running" : a.paused ? `<span class="status-bad">paused — ${esc(a.paused)}</span>` : esc(a.last_status || "never ran")) : "grey"})</span>`).join(", ");
         const agents = agentTxt ? `<div class="desc">agents${m.awake ? "" : " (last known)"}: ${agentTxt}</div>` : "";
         const disk = m.awake && m.work_pct != null ? `disk ${m.work_pct}% · ${gb(m.work_free_mb)}` : "";
-        const spend = m.awake && m.spend_month_usd != null ? `$${Number(m.spend_month_usd).toFixed(2)} this month` : "";
+        const spend = !m.awake ? "" : m.spend_month_usd != null ? `$${Number(m.spend_month_usd).toFixed(2)} this month` : "spend not reported";
         const rel = m.awake && m.commit ? `release ${m.commit.slice(0, 12)}${m.built ? " · " + m.built.slice(0, 10) : ""}` : "";
         const pills = (m.self ? '<span class="pill">this one</span>' : "") + (m.in_sync ? "" : '<span class="pill status-warn">list differs</span>')
           + `<span class="pill">${esc(m.role || "GENERIC")}</span>`;

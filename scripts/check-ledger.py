@@ -279,12 +279,17 @@ def set_cluster_cap(v):
     open(CONF, "w").write('NICK="box"\nOWNER_NICK="sam"\nMONTHLY_CAP_USD=""\nCLUSTER_CAP_USD="%s"\n' % v)
 
 
+MEMBERS = ["c2b0", "c360", "b010"]
+
+
 def LC():
-    return lg.Ledger(dir=LDIR, transcripts=TR, rates=RATES, conf=CONF, runs_log=RUNS, sessions_dir=SESS, webchat_sid=WSID, pipe_bin=PIPE, schedule=SCHED, cluster_last=LAST)
+    return lg.Ledger(dir=LDIR, transcripts=TR, rates=RATES, conf=CONF, runs_log=RUNS, sessions_dir=SESS, webchat_sid=WSID, pipe_bin=PIPE, schedule=SCHED, cluster_last=LAST, members=lambda: MEMBERS)
 
 
 json.dump({"t": 1, "agents": [], "month_usd": 10.0, "month": "2026-09"}, open(os.path.join(LAST, "c2b0.json"), "w"))     # two: this month
 json.dump({"t": 1, "agents": [], "month_usd": 99.0, "month": "2026-08"}, open(os.path.join(LAST, "c360.json"), "w"))     # three: off since August — counts for nothing
+json.dump({"t": 1, "agents": [], "month_usd": 500.0, "month": "2026-09"}, open(os.path.join(LAST, "dead.json"), "w"))    # a box removed from the cluster: its note must not count
+json.dump({"t": 1, "agents": [], "month_usd": None, "month": None}, open(os.path.join(LAST, "b010.json"), "w"))          # one: an older release — reports no spend: listed, never silently dropped
 local = LC().totals()["month"]["usd"]
 t22 = LC().totals()
 set_cluster_cap(int(local + 10.0))          # 100%+ of local + two's month, whole dollars
@@ -296,6 +301,7 @@ set_cluster_cap(int(local + 10.0) + 100)
 s22b = LC().enforce_cap()
 set_cluster_cap("")
 clauses22 = {"sum": abs(t22["cap"]["cluster"]["spent"] - (local + 10.0)) < 1e-6, "members": [m["id"] for m in t22["cap"]["cluster"]["members"]] == ["c2b0"],
+             "not reporting named": t22["cap"]["cluster"]["not_reporting"] == ["b010"], "dm names the silent": len(dms()) > d22 and "1 Machine(s) not reporting" in dms()[-1],
              "paused": bool(s22["paused"]), "scope": (s22.get("paused_by") or {}).get("scope") == "cluster",
              "text": ptxt22.startswith("cluster monthly cap USD %d reached 2026-09-10" % int(local + 10.0)) and "CLUSTER_CAP_USD" in ptxt22,
              "gates every job": gate22 == ptxt22 and bool(gate22), "one dm": len(dms()) == d22 + 1,
@@ -303,6 +309,14 @@ clauses22 = {"sum": abs(t22["cap"]["cluster"]["spent"] - (local + 10.0)) < 1e-6,
              "lifted": not s22b["paused"] and not os.path.exists(os.path.join(LDIR, "paused"))}
 check("22 the cluster cap sums this box's month with every member's LAST-REPORTED month (a member's note from another month counts for nothing); at 100% the plain marker carries the cluster text — every job on this member stops and the text names the cluster cap — with one DM naming the cluster; raising it lifts at once",
       all(clauses22.values()), repr(([k for k, v in clauses22.items() if not v], len(dms()) - d22, s22, s22b)))
+# 22b. the memo sees a member's new figure at once (no new ledger row): a warm totals() must not judge on last minute's notes
+set_cluster_cap(int(local + 10.0) + 30)
+LX = LC(); LX.totals(); s0 = LX.enforce_cap()
+json.dump({"t": 2, "agents": [], "month_usd": 40.0, "month": "2026-09"}, open(os.path.join(LAST, "c2b0.json"), "w"))
+s1 = LX.enforce_cap()
+check("22b a member's new figure is judged by the SAME Ledger at once — the totals memo watches the notes dir, so a warm cache never judges the cluster cap on the previous minute's peers",
+      not s0["paused"] and s1["paused"] and (s1.get("paused_by") or {}).get("scope") == "cluster", repr((s0, s1)))
+set_cluster_cap(""); LC().enforce_cap()
 set_cap("")
 
 # ── 16. the CLI ────────────────────────────────────────────────────────

@@ -2109,10 +2109,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.err(500, str(e))
         # lowering under this month's spend pauses now; raising above it resumes
         # now — BEFORE the save, whose live re-check must read the settled marker
-        try:
-            state = ledger_obj().enforce_cap()
-        except Exception as e:
-            state = {"error": str(e)}
+        state = enforce_caps_now()
         saved, detail = save_state()
         self.send(200, {"ok": True, "cap": v, "scope": scope, "name": body.get("name") if scope == "agent" else "",
                         "state": state, "saved": saved, "save_detail": "" if saved else detail})
@@ -3709,14 +3706,17 @@ def ledger_obj():
             L = ledger.Ledger(dir=LEDGER_DIR, transcripts=LEDGER_TRANSCRIPTS, rates=LEDGER_RATES, conf=LEDGER_CONF,
                               runs_log=os.path.join(SCHEDULE_STATE_DIR, "runs.log"), sessions_dir=LEDGER_SESSIONS,
                               webchat_sid=WEBCHAT_SID, schedule=SCHEDULE_CONF,     # the agents' own caps ride the job list (#302)
-                              cluster_last=cluster.LAST_DIR)                       # the members' month-to-date, for the cluster cap
+                              cluster_last=cluster.LAST_DIR,                       # the members' month-to-date, for the cluster cap
+                              members=lambda: [r["id"] for r in cluster.view()["members"] if not r["self"]])
             LEDGER_STATE["obj"] = L
         return L
 
 
-def ledger_refresh(force=False):
+def ledger_refresh(force=False, fanout=False):
     """Ingest + enforce, at most once per LEDGER_INGEST_S unless forced.
-    Never raises: the ledger is a view of the box, not the box."""
+    Never raises: the ledger is a view of the box, not the box. `fanout`
+    (the worker only — never a request thread) refreshes the members'
+    figures first when a cluster cap is set."""
     now = time.time()
     if not force and now - LEDGER_STATE["last"] < LEDGER_INGEST_S:
         return
@@ -3724,7 +3724,7 @@ def ledger_refresh(force=False):
     try:
         L = ledger_obj()
         L.ingest()
-        if L.cluster_cap() > 0:
+        if fanout and L.cluster_cap() > 0:
             # a cluster cap is a sum: refresh what the other members last said
             # (their own /api/cluster/summary over mutual TLS) before judging.
             # Only when a cluster cap is set — a lone box does no fan-out.
@@ -3739,7 +3739,7 @@ def ledger_refresh(force=False):
 
 def ledger_worker():
     while True:
-        ledger_refresh()
+        ledger_refresh(fanout=True)
         time.sleep(LEDGER_INGEST_S)
 
 
@@ -3878,7 +3878,13 @@ def enforce_caps_now():
     follow at once, not at the worker's next minute — the class of lag the
     single-box pass found on the box cap. Never raises."""
     try:
-        return ledger_obj().enforce_cap()
+        L = ledger_obj()
+        if L.cluster_cap() > 0:
+            try:                # "enforced now": with the members' figures of now, best effort
+                cluster.refresh_last(timeout=5)
+            except Exception:   # noqa: BLE001
+                pass
+        return L.enforce_cap()
     except Exception as e:      # noqa: BLE001 — a broken ledger must not block a settings save
         return {"error": str(e)}
 

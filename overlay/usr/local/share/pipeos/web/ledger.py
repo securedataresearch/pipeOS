@@ -97,13 +97,14 @@ def _parse_ts(s):
 class Ledger:
     def __init__(self, dir=LEDGER_DIR, transcripts=TRANSCRIPTS, rates=RATES, conf=CONF,
                  runs_log=RUNS_LOG, sessions_dir=SESSIONS_DIR, webchat_sid=WEBCHAT_SID, pipe_bin=PIPE_BIN,
-                 schedule=SCHEDULE, cluster_last=CLUSTER_LAST):
+                 schedule=SCHEDULE, cluster_last=CLUSTER_LAST, members=None):
         self.dir = dir
         self.transcripts = transcripts
         self.rates_path = rates
         self.conf = conf
         self.schedule = schedule
         self.cluster_last = cluster_last
+        self.members = members      # callable -> the OTHER members' ids, or None = every note counts (the probe)
         self.runs_log = runs_log
         self.sessions_dir = sessions_dir
         self.webchat_sid = webchat_sid
@@ -329,7 +330,7 @@ class Ledger:
         unpriced count, and the cap state. Cached on the files' size+mtime."""
         now = _now()
         months = sorted({(now - datetime.timedelta(days=d)).strftime("%Y-%m") for d in (0, 15, 31)})
-        key = tuple((m, self._stat(m)) for m in months) + (self._conf_stat(), self._file_stat(self.schedule))
+        key = tuple((m, self._stat(m)) for m in months) + (self._conf_stat(), self._file_stat(self.schedule), self._file_stat(self.cluster_last))
         if self._totals_key == key and self._totals is not None:
             # the cap's live half is not a function of the files the key
             # watches: a lifted cap removes the paused marker without a new
@@ -377,7 +378,7 @@ class Ledger:
             d["usd"] = round(d["usd"], 4)
         cap = self.cap()
         ccap = self.cluster_cap()
-        peers, prow = self.peers_month_usd(now)
+        peers, prow, silent = self.peers_month_usd(now)
         cspent = round(month["usd"] + peers, 4)
         agents = {}
         for name, acap in self.agent_caps().items():
@@ -393,7 +394,7 @@ class Ledger:
                "cap": {"usd": cap, "spent": month["usd"], "pct": (round(month["usd"] * 100 / cap) if cap else 0),
                        "warned": False, "paused": "", "agents": agents, "paused_by": None,
                        "cluster": {"usd": ccap, "spent": cspent, "pct": (round(cspent * 100 / ccap) if ccap else 0),
-                                   "members": prow}}}
+                                   "members": prow, "not_reporting": silent}}}
         self._refresh_live(out["cap"], now)
         self._totals_key, self._totals = key, out
         return out
@@ -458,29 +459,46 @@ class Ledger:
         return int(v) if v.isdigit() else 0
 
     def peers_month_usd(self, now):
-        """Every other member's month-to-date as this box last saw it
+        """Every other CURRENT member's month-to-date as this box last saw it
         (cluster.py's last-known notes): an unreachable member counts at its
         last reported figure; a note from another month counts for nothing
-        (a box off since August must not count August against September).
-        Returns (total, [{"id","month_usd","t"}])."""
+        (a box off since August must not count August against September); a
+        member whose note carries no figure (an older release, a broken
+        ledger) is listed as not reporting — never silently dropped — and a
+        note for a box that is no longer a member is ignored.
+        Returns (total, [{"id","month_usd","t"}], [ids not reporting])."""
         month = now.strftime("%Y-%m")
-        rows = []
+        ids = None
+        if self.members is not None:
+            try:
+                ids = set(self.members())
+            except Exception:       # noqa: BLE001 — a broken member list must not stop the sum
+                ids = None
+        rows, silent = [], []
         try:
             names = sorted(n for n in os.listdir(self.cluster_last) if n.endswith(".json"))
         except OSError:
-            return 0.0, rows
+            names = []
+        seen = set()
         for n in names:
+            mid = n[:-5]
+            if ids is not None and mid not in ids:
+                continue
+            seen.add(mid)
             try:
                 with open(os.path.join(self.cluster_last, n)) as f:
                     d = json.load(f)
             except (OSError, ValueError):
+                silent.append(mid); continue
+            usd = d.get("month_usd") if isinstance(d, dict) else None
+            if not isinstance(usd, (int, float)) or isinstance(usd, bool):
+                silent.append(mid); continue
+            if d.get("month") != month:
                 continue
-            if not isinstance(d, dict) or d.get("month") != month:
-                continue
-            usd = d.get("month_usd")
-            if isinstance(usd, (int, float)) and not isinstance(usd, bool):
-                rows.append({"id": n[:-5], "month_usd": round(float(usd), 4), "t": d.get("t")})
-        return round(sum(r["month_usd"] for r in rows), 4), rows
+            rows.append({"id": mid, "month_usd": round(float(usd), 4), "t": d.get("t")})
+        if ids is not None:
+            silent += sorted(ids - seen)        # a member this box has never heard from
+        return round(sum(r["month_usd"] for r in rows), 4), rows, sorted(set(silent))
 
     def agent_caps(self):
         """{job name: cap_usd} for every job in schedule.json that carries one."""
@@ -542,24 +560,19 @@ class Ledger:
         cap = self.cap()
         spent = t["month"]["usd"]
         state = {"cap": cap, "spent": spent, "warned": False, "paused": False, "changed": False, "agents_paused": []}
-        if cap:
-            pct = spent * 100 / cap
-            warned = self._marker("warned", now)
-            paused_m = self._marker("paused", now)
-            if pct >= 100:
-                doc["box"] = _entry("box", "", cap, spent, day, (before.get("box") or {}).get("since"))
-                if not os.path.exists(paused_m):
-                    self.dm("usage: this Machine reached its monthly cap (USD %.2f of %d) — scheduled jobs are paused; interactive sessions keep working. Raise the cap under Usage to resume." % (spent, cap))
-                    open(paused_m, "w").close()
-                state["paused"] = True
-            if pct >= WARN_PCT and not os.path.exists(warned):
-                if pct < 100:
-                    self.dm("usage: USD %.2f of this Machine's %d monthly cap (%d%%) — scheduled jobs pause at 100%%" % (spent, cap, pct))
-                open(warned, "w").close()
-                state["warned"] = True
-        doc["cluster"] = self._cluster_hit(t, day, before)
-        if doc["cluster"]:
-            state["paused"] = True
+        doc["box"], state["warned"] = self._scope_hit(
+            "box", "", cap, spent, day, now, before,
+            pause_msg="usage: this Machine reached its monthly cap (USD %.2f of %d) — scheduled jobs are paused; interactive sessions keep working. Raise the cap under Usage to resume." % (spent, cap),
+            warn_msg="usage: USD %.2f of this Machine's %d monthly cap (%d%%) — scheduled jobs pause at 100%%" % (spent, cap, spent * 100 / cap if cap else 0))
+        c = t["cap"]["cluster"]
+        nm = len(c["members"]) + 1
+        silent = c.get("not_reporting") or []
+        tail = (" — %d Machine(s) not reporting their spend" % len(silent)) if silent else ""
+        doc["cluster"], _ = self._scope_hit(
+            "cluster", "", c["usd"], c["spent"], day, now, before,
+            pause_msg="usage: the cluster reached its monthly cap (USD %.2f of %d across %d Machines%s) — scheduled jobs are paused on every member; interactive sessions keep working. Raise the cluster cap under Usage to resume." % (c["spent"], c["usd"], nm, tail),
+            warn_msg="usage: USD %.2f of the cluster's %d monthly cap (%d%%%s) — scheduled jobs on every member pause at 100%%" % (c["spent"], c["usd"], c["pct"], tail))
+        state["paused"] = bool(doc["box"] or doc["cluster"])
         for name, acap in self.agent_caps().items():
             aspent = t["month_by_actor"].get("job:" + name, {}).get("usd", 0.0)
             if aspent * 100 / acap >= 100:
@@ -574,32 +587,31 @@ class Ledger:
         self._totals_key = None
         return state
 
-    def _cluster_hit(self, t, day, before):
-        """The cluster scope (#302 part 2): this box's month plus every other
-        member's last-reported month against CLUSTER_CAP_USD. Evaluated here,
-        on this box, from the notes cluster.refresh_last keeps — leaderless,
-        no network on this path. One DM per month per threshold."""
-        c = t["cap"]["cluster"]
-        cap = c["usd"]
+    def _scope_hit(self, scope, name, cap, spent, day, now, before, pause_msg, warn_msg):
+        """One threshold machine for the box and the cluster: at 100% an
+        entry (and one DM per month), at 80% one DM per month. Marker files
+        keep their historical names (warned-/paused-YYYY-MM for the box,
+        cluster-warned-/cluster-paused- for the cluster). Returns (entry or
+        None, warned-now)."""
         if not cap:
-            return None
-        now = _now()
-        spent = c["spent"]
+            return None, False
         pct = spent * 100 / cap
-        warned = self._marker("cluster-warned", now)
-        paused_m = self._marker("cluster-paused", now)
+        prefix = "" if scope == "box" else scope + "-"
+        warned = self._marker(prefix + "warned", now)
+        paused_m = self._marker(prefix + "paused", now)
         hit = None
         if pct >= 100:
-            hit = _entry("cluster", "", cap, spent, day, (before.get("cluster") or {}).get("since"))
+            hit = _entry(scope, name, cap, spent, day, (before.get(scope) or {}).get("since"))
             if not os.path.exists(paused_m):
-                self.dm("usage: the cluster reached its monthly cap (USD %.2f of %d across %d Machines) — scheduled jobs are paused on every member; interactive sessions keep working. Raise the cluster cap under Usage to resume."
-                        % (spent, cap, len(c["members"]) + 1))
+                self.dm(pause_msg)
                 open(paused_m, "w").close()
+        warned_now = False
         if pct >= WARN_PCT and not os.path.exists(warned):
             if pct < 100:
-                self.dm("usage: USD %.2f of the cluster's %d monthly cap (%d%%) — scheduled jobs on every member pause at 100%%" % (spent, cap, pct))
+                self.dm(warn_msg)
             open(warned, "w").close()
-        return hit
+            warned_now = True
+        return hit, warned_now
 
     def _write_markers(self, doc, before):
         """paused.json and the plain marker, both tmp + rename; True when
@@ -736,11 +748,18 @@ def main(argv):
             print("cap: %s" % ("none" if not c["usd"] else "USD %d, spent %.2f (%d%%)%s" % (c["usd"], c["spent"], c["pct"], " — PAUSED: " + c["paused"] if c["paused"] else "")))
             cc = c.get("cluster") or {}
             if cc.get("usd"):
-                print("cluster cap: USD %d, spent %.2f across %d Machines (%d%%)" % (cc["usd"], cc["spent"], len(cc.get("members", [])) + 1, cc["pct"]))
+                print("cluster cap: USD %d, spent %.2f across %d Machines (%d%%)%s" % (cc["usd"], cc["spent"], len(cc.get("members", [])) + 1, cc["pct"],
+                      (" — not reporting: " + ", ".join(cc["not_reporting"])) if cc.get("not_reporting") else ""))
             for name, a in c.get("agents", {}).items():
                 print("  agent %-18s cap USD %d, spent %.2f (%d%%)%s" % (name, a["usd"], a["spent"], a["pct"], " — PAUSED" if a["paused"] else ""))
             return 0
         if argv[0] == "enforce":
+            if L.cluster_cap():
+                try:            # "enforced now" means with the members' figures of now, not the worker's last minute
+                    import cluster  # noqa: PLC0415 — same dir; only when a cluster cap is set
+                    cluster.refresh_last(timeout=5)
+                except Exception:   # noqa: BLE001 — an unreachable member counts at its last figure
+                    pass
             print(json.dumps(L.enforce_cap()))
             return 0
         if argv[0] == "paused":
