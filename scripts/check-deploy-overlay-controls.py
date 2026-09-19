@@ -40,7 +40,7 @@ MODEGUARD = """    case "$mode" in
 # still be GREEN (that is the second gate doing its job, and it is the whole
 # reason the second gate exists); A widens the list AND removes the filter,
 # and row 2 must then fail.
-WIDEN = ("DEPLOY_PATHS=\"usr/local/bin", "DEPLOY_PATHS=\"etc/pipeos\nroot/.pipe\nusr/local/bin")
+WIDEN = ("DEPLOY_PATHS=\"usr/local/share/pipeos", "DEPLOY_PATHS=\"etc/pipeos\nroot/.pipe\nusr/local/share/pipeos")
 
 controls = [
     ("A0: the deploy list is widened to include the per-box paths "

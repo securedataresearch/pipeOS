@@ -79,31 +79,15 @@ sha() { sha256sum "$1" | cut -d' ' -f1; }
 # a tarball; anything lbu says on stderr (apk's ERROR when the db is
 # broken, which lbu itself swallows into an all-D listing) is "could not".
 # rc 0 = compared; 2 = could not (the reason on stderr).
-lbu_canonical() {
-    if [ "$(id -u)" != 0 ] && [ -z "${PIPEOS_LBU:-}" ]; then
-        echo "compare needs root (lbu package reads root's files)" >&2; return 2
-    fi
-    if [ ! -f "$OVL" ] || ! tar -tzf "$OVL" >/dev/null 2>&1; then
-        echo "no readable canonical apkovl on the media (pipeos verify)" >&2; return 2
-    fi
-    _d=$(mktemp -d) || return 2
-    ln -s "$OVL" "$_d/$(hostname).apkovl.tar.gz"
-    mkdir -p "$_d/bin"
-    for _m in mount umount; do
-        # shellcheck disable=SC2016  # the shim's own $_a/$@ must reach its file unexpanded
-        printf '#!/bin/sh\nfor _a; do [ "$_a" = "%s" ] && exit 0; done\nexec /bin/%s "$@"\n' "$_d" "$_m" > "$_d/bin/$_m"
-        chmod 755 "$_d/bin/$_m"
-    done
-    _out=$(PATH="$_d/bin:$PATH" LBU_BACKUPDIR=$_d "$LBU" "$@" 2>"$_d/err")
-    _rc=$?
-    _err=$(cat "$_d/err" 2>/dev/null)
-    rm -rf "$_d"
-    if [ -n "$_err" ]; then
-        echo "lbu: $_err" >&2; return 2
-    fi
-    printf '%s\n' "$_out"
-    return $_rc
-}
+# lbu against OUR canonical (status, diff) lives in one shared file. Guarded:
+# a missing `.` target kills a POSIX shell, and every verb would die with it.
+_lbu_lib="$(dirname "$0")/../share/pipeos/lbu-canonical.sh"
+if [ -r "$_lbu_lib" ]; then
+    # shellcheck source=overlay/usr/local/share/pipeos/lbu-canonical.sh
+    . "$_lbu_lib"
+else
+    lbu_canonical() { echo "cannot compare: $_lbu_lib is missing (redeploy usr/local/share/pipeos)" >&2; return 2; }
+fi
 
 take_save_lock() {
     # shared with pipeos-save: one media mutator at a time

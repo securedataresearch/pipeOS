@@ -20,8 +20,14 @@
 # DELETED the canonical and the known-good — verify failed on every unclaimed
 # box and a later claim's save sat beside a stale twin at the next boot.
 UNCLAIM=${PIPEOS_SAVE_UNCLAIM:-}
-[ -f /etc/pipeos/provisioned ] || [ -n "$UNCLAIM" ] || exit 0
-[ -n "$(lbu status 2>/dev/null)" ] || [ -n "$UNCLAIM" ] || exit 0
+# the probe's seams (check-save.py); a box never sets them
+MEDIA=${PIPEOS_MEDIA:-/media/usb}
+LBU=${PIPEOS_LBU:-lbu}
+LOCK=${PIPEOS_SAVE_LOCK:-/run/pipeos-save.lock}
+WORK_BIN=${PIPEOS_SAVE_WORK_BIN:-/usr/local/bin/pipeos-work}
+WORKSWEEP=${PIPEOS_SAVE_WORKSWEEP:-/etc/periodic/weekly/pipeos-worksweep}
+MOUNT=${PIPEOS_SAVE_MOUNT:-mount}
+[ -f "${PIPEOS_PROVISIONED:-/etc/pipeos/provisioned}" ] || [ -n "$UNCLAIM" ] || exit 0
 
 # Fences. Exit 3 = REFUSED (nothing wrong with the box; do not fall back to
 # lbu commit — pipebox-setup and the provisioner read this code). Checked
@@ -45,7 +51,7 @@ fenced && exit 3
 
 # one save at a time (15min cron, shutdown hook, selfcheck promotion and
 # humans all collide here); busybox flock has no -w, so poll
-exec 9> /run/pipeos-save.lock
+exec 9> "$LOCK"
 _i=0
 until flock -n 9; do
     _i=$((_i+1))
@@ -54,11 +60,22 @@ until flock -n 9; do
 done
 fenced && exit 3   # the apply that held the lock may have fenced while we waited
 
-. /etc/lbu/lbu.conf 2>/dev/null
-MEDIA=/media/usb
+# shellcheck disable=SC1091  # the box's own; absent on the probe host (a missing `.` target kills a POSIX shell)
+[ -f /etc/lbu/lbu.conf ] && . /etc/lbu/lbu.conf
 OVL=$MEDIA/pipeos.apkovl.tar.gz
 KNOWN_GOOD=$MEDIA/pipeos.known-good.tar.gz
 LIMIT=${BACKUP_LIMIT:-3}
+
+# There is no "nothing changed" gate before the package (pipeOS#318): the one
+# that stood here — `[ -n "$(lbu status)" ] || exit 0` — compared against
+# <hostname>.apkovl.tar.gz, which pipeOS never writes, so it listed every
+# file as Added and never fired; and lbu's status IS a full `lbu package`
+# plus an unpack and a tree walk, so even a working one would have packaged
+# the tree once to decide whether to package it again. Its verdict is also
+# mtime-gated (a chmod, a same-second rewrite, a retargeted symlink read as
+# "nothing"), where the sha256 below sees the tar bytes. So: package once,
+# compare once, and that comparison is the only decision — the change the
+# #318 review asked for.
 
 free_kb=$(df -k "$MEDIA" | awk 'NR==2{print $4}')
 if [ "${free_kb:-0}" -lt 204800 ]; then
@@ -66,25 +83,16 @@ if [ "${free_kb:-0}" -lt 204800 ]; then
     exit 1
 fi
 
-# Garbage-collect before we persist, so the box's storage stays lean on EVERY
-# save rather than only on the weekly sweep (operator request: "GC before every
-# persist so the drive stays healthy all the time"). We reuse the bounded,
-# the hot set first (logs, roster, ledger, schedule state live in RAM — pipeos-work):
-# a save is the moment the owner expects the disk to hold everything
-[ -x /usr/local/bin/pipeos-work ] && /usr/local/bin/pipeos-work flush >/dev/null 2>&1 || true
-# allowlist-based worksweep — it only ever reclaims rebuildable build output on
-# /work, never source — and never let a slow or failing sweep block the save it
-# precedes: a save that does not happen is far worse than a sweep that is
-# skipped this round.
-if [ -x /etc/periodic/weekly/pipeos-worksweep ]; then
-    timeout 120 /etc/periodic/weekly/pipeos-worksweep >/dev/null 2>&1 \
-        || logger -s -t pipeos-save "pre-save worksweep skipped (nonzero or timed out; continuing)"
-fi
+# The hot set first (logs, roster, ledger, schedule state live in RAM —
+# pipeos-work): a save is the moment the owner expects the disk to hold
+# everything, whether or not the apkovl changes — "flush is the save"
+# (docs/fleet-ops.md). Cheap, and never skipped.
+[ -x "$WORK_BIN" ] && "$WORK_BIN" flush >/dev/null 2>&1 || true
 
 tmp=/tmp/.pipeos-save.$$
 trap 'rm -f "$tmp"' EXIT
 
-lbu package "$tmp" >/dev/null 2>&1 || { logger -s -t pipeos-save "lbu package failed"; exit 1; }
+"$LBU" package "$tmp" >/dev/null 2>&1 || { logger -s -t pipeos-save "lbu package failed"; exit 1; }
 
 # never let a corrupt candidate near the media
 if ! gzip -t "$tmp" 2>/dev/null || ! tar -tzf "$tmp" >/dev/null 2>&1; then
@@ -99,14 +107,27 @@ if [ "$need_kb" -ge "$free_kb" ]; then
 fi
 
 # identical content -> nothing to do (the 15min cron would otherwise burn
-# ~96 vfat write windows a day on no-op commits)
+# ~96 vfat write windows a day on no-op commits). This is THE decision: the
+# tar bytes, not mtimes.
 if [ -z "$UNCLAIM" ] && [ -f "$OVL" ] && \
    [ "$(sha256sum "$tmp" | cut -d' ' -f1)" = "$(sha256sum "$OVL" | cut -d' ' -f1)" ]; then
     exit 0
 fi
 
-mount -o remount,rw "$MEDIA" || { logger -s -t pipeos-save "cannot remount media rw"; exit 1; }
-trap 'rm -f "$tmp" "$OVL.new"; sync; mount -o remount,ro "$MEDIA" 2>/dev/null' EXIT
+# Garbage-collect before we persist, so the box's storage stays lean on EVERY
+# persist rather than only on the weekly sweep (operator request: "GC before
+# every persist so the drive stays healthy all the time"). Every persist —
+# not every tick: a quiet box's 96 no-op ticks a day used to run this too
+# (#318). The allowlist-based worksweep only ever reclaims rebuildable build
+# output on /work, never source, and never blocks the save it precedes: a
+# save that does not happen is far worse than a sweep that is skipped.
+if [ -x "$WORKSWEEP" ]; then
+    timeout 120 "$WORKSWEEP" >/dev/null 2>&1 \
+        || logger -s -t pipeos-save "pre-save worksweep skipped (nonzero or timed out; continuing)"
+fi
+
+"$MOUNT" -o remount,rw "$MEDIA" || { logger -s -t pipeos-save "cannot remount media rw"; exit 1; }
+trap 'rm -f "$tmp" "$OVL.new"; sync; "$MOUNT" -o remount,ro "$MEDIA" 2>/dev/null' EXIT
 
 cp "$tmp" "$OVL.new" || { logger -s -t pipeos-save "write to media failed"; exit 1; }
 sync
