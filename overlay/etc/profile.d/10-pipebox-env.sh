@@ -10,7 +10,7 @@
 # Edit the card and re-run `pipebox-card generate`; a hand edit here is
 # detected by `pipebox-card verify` and lost at the next generation.
 #
-# card sha256:d63e82082f9433159dd5f5706655ec3377410f3e20ab60f9924220befc9f416b
+# card sha256:d48ec7aa46ede9a2fa1bd42640a800e681cfeecc77998f08015b8eba782e7a9a
 
 # One artifact cache per box (pipeOS#90 item 1). Every checkout shares it:
 # the canonical clones, PR-review scratch, probe trees. Measured on box1 the

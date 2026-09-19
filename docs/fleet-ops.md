@@ -36,6 +36,7 @@ when host keys have changed (every reflash). Clocks are UTC.
 | `pipeos schedule ls\|add\|set\|rm\|enable\|disable\|run\|log` | Schedule view | `/etc/pipeos/schedule.json` | every mutating verb |
 | `pipeos usage [totals]` | Usage view | — | — |
 | `pipeos usage cap [--box] N\|none` | Usage → monthly cap | card `MONTHLY_CAP_USD`, regenerated; enforced at once | yes |
+| `pipeos usage cap --cluster N\|none` | Usage → cluster cap | card `CLUSTER_CAP_USD` on THIS member (set it on each); each member sums every member's month-to-date (an unreachable one at its last figure) and pauses itself; the pause names the cluster cap (#302) | yes |
 | `pipeos usage cap --agent NAME N\|none` | Usage → an agent's cap; Schedule → cap field | `cap_usd` on the job in `schedule.json`; enforced at once against that agent's month-to-date; a pause names the agent (#302) | yes |
 | `pipeos watchdog kernel\|off\|status` | — (card `WATCHDOG`, no form yet) | card `WATCHDOG`, regenerated; `rc-service watchdog restart` at once | yes |
 | `pipeos card set KEY=VALUE…` | every card-backed form | `/etc/pipeos/card.conf` + `pipebox-card generate` | yes |

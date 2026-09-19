@@ -648,7 +648,11 @@ u = req("/api/usage")
 assert u["cap"]["agents"]["nightly"]["usd"] == 1 and u["cap"]["agents"]["nightly"]["paused"] and abs(u["month_by_actor"]["job:nightly"]["usd"] - 2.0) < 1e-6
 r = req("/api/usage/cap", {"scope": "agent", "name": "nightly", "usd": 0})
 assert r["ok"] and {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["paused"] == "" and not os.path.exists(webd.LEDGER_PAUSED_JSON)
-req("/api/usage/cap", {"scope": "cluster", "usd": 1}, expect=400)
+_card_set2, webd.card_set = webd.card_set, (lambda updates: open(webd.LEDGER_CONF, "a").write("".join('%s="%s"\n' % kv for kv in updates.items())))
+r = req("/api/usage/cap", {"scope": "cluster", "usd": 250})
+assert r["ok"] and r["scope"] == "cluster" and "CLUSTER_CAP_USD=" in open(webd.CARD).read() and req("/api/usage")["cap"]["cluster"]["usd"] == 250 and req("/api/usage")["cap"]["cluster"]["members"] == []
+webd.card_set = _card_set2
+req("/api/usage/cap", {"scope": "fleet", "usd": 1}, expect=400)
 req("/api/schedule/set", {"name": "nightly", "cap_usd": True}, expect=400)
 req("/api/schedule/set", {"name": "nightly", "cap_usd": 3}); req("/api/schedule/set", {"name": "nightly", "cap_usd": False}, expect=400); req("/api/schedule/set", {"name": "nightly", "cap_usd": 0.0}, expect=400)
 assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["cap_usd"] == 3    # a bool/float never cleared it

@@ -704,13 +704,17 @@ def _remember(mid, summary):
     allowed to idle, #264). Best effort: a full or read-only /work loses
     nothing but the grey list."""
     agents = summary.get("agents") or []
-    if _last(mid).get("agents") == agents:
+    month_usd, month = summary.get("spend_month_usd"), summary.get("month")
+    prev = _last(mid)
+    if prev.get("agents") == agents and prev.get("month_usd") == month_usd and prev.get("month") == month:
         return
     try:
         os.makedirs(LAST_DIR, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix=mid + ".", dir=LAST_DIR)
         with os.fdopen(fd, "w") as f:
-            json.dump({"t": int(time.time()), "agents": agents}, f)
+            # the month-to-date rides along for the cluster cap (#302): an
+            # unreachable member counts at this, its last reported figure
+            json.dump({"t": int(time.time()), "agents": agents, "month_usd": month_usd, "month": month}, f)
         os.rename(tmp, os.path.join(LAST_DIR, mid + ".json"))
     except (OSError, TypeError, ValueError):
         pass
@@ -723,6 +727,21 @@ def _last(mid):
         return d if isinstance(d, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def refresh_last(timeout=8):
+    """Ask every other member for its summary and note it — what the
+    ledger's cluster cap reads. The page does the same as a side effect of
+    rendering; the ledger worker calls this when a cluster cap is set so the
+    sum is never older than a minute. Returns the ids that answered."""
+    v = view()
+    others = [r["id"] for r in v["members"] if not r["self"]]
+    got = []
+    for mid, (st, b) in fanout(others, "GET", "/api/cluster/summary", timeout=timeout).items():
+        if st == 200 and isinstance(b, dict):
+            _remember(mid, b)
+            got.append(mid)
+    return got
 
 
 def page(local_summary):
@@ -1009,7 +1028,7 @@ def main(argv):
                     act = ", ".join(r.get("busy") or []) or "idle"
                     src = r.get("verdict_source") or "boot"
                     when = ("live, %dm ago" % (int(r.get("verdict_age_s") or 0) // 60)) if src == "live" else "at boot"
-                    l2 = "%s (%s) · %s · disk %s%% · %s %s" % (r.get("verdict") or "?", when, act, r.get("work_pct", "?"), (r.get("commit") or "")[:12], r.get("built") or "")
+                    l2 = "%s (%s) · %s · disk %s%% · USD %.2f this month · %s %s" % (r.get("verdict") or "?", when, act, r.get("work_pct", "?"), float(r.get("spend_month_usd") or 0), (r.get("commit") or "")[:12], r.get("built") or "")
                 else:
                     l2 = "off · last seen %s · %s" % (time.strftime("%Y-%m-%d %H:%MZ", time.gmtime(r.get("last_seen") or 0)), r.get("error", ""))
                 print("member    %s\n          %s" % (l1, l2))
