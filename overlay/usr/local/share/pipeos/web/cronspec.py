@@ -37,7 +37,16 @@ MANUAL = "manual"
 
 
 class Spec:
-    __slots__ = ("text", "minute", "hour", "day", "month", "weekday", "day_star", "weekday_star", "manual")
+    __slots__ = ("text", "minute", "hour", "day", "month", "weekday", "day_star", "weekday_star")
+
+    def __init__(self, text=""):
+        self.text = text
+        self.minute = self.hour = self.day = self.month = self.weekday = frozenset()
+        self.day_star = self.weekday_star = False
+
+    @property
+    def manual(self):
+        return self.text == MANUAL
 
     def __repr__(self):
         return "Spec(%r)" % self.text
@@ -88,19 +97,12 @@ def parse(text):
     if not _CHARS.match(t):
         raise CronError("only digits, * , - / and month/day names belong in a schedule")
     if t == MANUAL:
-        s = Spec()
-        s.text = MANUAL
-        s.manual = True
-        s.minute = s.hour = s.day = s.month = s.weekday = frozenset()
-        s.day_star = s.weekday_star = False
-        return s
+        return Spec(MANUAL)
     t = _ALIASES.get(t, t)
     parts = t.split(" ")
     if len(parts) != 5:
         raise CronError("five fields: minute hour day month weekday (or @daily, @hourly, @weekly, @monthly)")
-    s = Spec()
-    s.text = t
-    s.manual = False
+    s = Spec(t)
     for (label, lo, hi, names), tok in zip(_FIELDS, parts):
         vals = _field(tok, label, lo, hi, names)
         if label == "weekday" and 7 in vals:
@@ -112,6 +114,17 @@ def parse(text):
     s.day_star = parts[2].startswith("*")
     s.weekday_star = parts[4].startswith("*")
     return s
+
+
+def parse_for_job(text, new):
+    """The schedule a job gets from what was typed: a NEW job with nothing
+    (or blanks) typed is manual — the dashboard form sends "" for an empty
+    field, the verbs omit the flag; an EXISTING job's schedule cannot be
+    blanked by accident (that stays a refusal). One rule for webd and
+    schedctl, so the form and the verb cannot drift."""
+    if new and not (text or "").strip():
+        return Spec(MANUAL)
+    return parse(text if text is not None else "")
 
 
 def matches(spec, dt):

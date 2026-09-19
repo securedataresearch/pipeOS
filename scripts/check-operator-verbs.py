@@ -194,9 +194,14 @@ check("12 usage cap N writes MONTHLY_CAP_USD, regenerates, saves, then enforces 
 rc_m, out_m = sched("add", "once", "--prompt", "when asked")
 jm0 = {j["name"]: j for j in jobs()}
 rc_ml, out_ml = sched("ls")
-sched("rm", "once")
-check("1b schedule add with no --cron makes a manual job (cron 'manual'); ls says it runs only when started",
-      rc_m == 0 and jm0.get("once", {}).get("cron") == "manual" and rc_ml == 0 and "runs only when started" in out_ml,
+rc_mb, _ = sched("add", "once2", "--prompt", "when asked", "--cron", "")
+cron_mb = {j["name"]: j for j in jobs()}.get("once2", {}).get("cron")
+sched("disable", "once")
+rc_md, out_md = sched("run", "once")
+sched("rm", "once"); sched("rm", "once2")
+check("1b schedule add with no --cron (or --cron '') makes a manual job (cron 'manual'); ls says it runs only when started; a disabled job refuses run",
+      rc_m == 0 and jm0.get("once", {}).get("cron") == "manual" and rc_ml == 0 and "runs only when started" in out_ml
+      and rc_mb == 0 and cron_mb == "manual" and rc_md == 2 and "paused (disabled)" in out_md,
       "rc=%s %s job=%r ls=%s" % (rc_m, out_m[-120:], jm0.get("once"), out_ml[-200:]))
 
 # ── 12b. the agent scope (#302): the cap lives on the job ─────────────────

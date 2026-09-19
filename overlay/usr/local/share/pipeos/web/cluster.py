@@ -912,8 +912,20 @@ def _report(r):
     return ", ".join("%s=%s" % kv for kv in sorted(r.items())) or "(no other members)"
 
 
+def _agent_state(a, awake=True):
+    """One ladder for every printer: grey (box off) > running > PAUSED (the
+    cap that stopped it) > what it last did."""
+    if not awake:
+        return "grey (box off)"
+    if a.get("running"):
+        return "running"
+    if a.get("paused"):
+        return "PAUSED — " + a["paused"]
+    return a.get("last_status") or "never ran"
+
+
 def _agents_line(agents, stale=False):
-    return ", ".join("%s (%s)" % (a.get("name"), "grey" if stale else ("running" if a.get("running") else (a.get("last_status") or "never ran"))) for a in agents)
+    return ", ".join("%s (%s)" % (a.get("name"), _agent_state(a, not stale)) for a in agents)
 
 
 def main(argv):
@@ -1010,8 +1022,7 @@ def main(argv):
                 print("cluster: the page did not answer (%s)" % st, file=sys.stderr); return 1
             for r in out.get("members", []):
                 for a in r.get("agents") or []:
-                    state = ("grey (box off)" if not r.get("awake") else "running" if a.get("running")
-                             else "PAUSED — " + a["paused"] if a.get("paused") else (a.get("last_status") or "never ran"))
+                    state = _agent_state(a, bool(r.get("awake")))
                     print("%-12s %s  %-32s %-10s %s" % (r.get("name") or "", r["id"], a.get("name"), a.get("backend") or "claude", state))
             return 0
         if verb == "start":

@@ -14,7 +14,8 @@
 
 Same table, same rules, same persistence as the dashboard's Schedule view:
 /etc/pipeos/schedule.json, names [a-z0-9-] up to 32, a five-field cron
-expression or an @alias, the working dir under /work or blank for
+expression, an @alias or `manual` (runs only when started; the default
+for a job made without --cron), the working dir under /work or blank for
 /work/pipebox/jobs/<name>, and every change saved through pipeos-save at
 once (the rule from #238). This exists so an operator — human or the
 owner's agent on a workstation — can drive a Machine's jobs over ssh
@@ -108,7 +109,7 @@ def parse_flags(argv, allowed):
 def apply(job, flags, new):
     if "cron" in flags or new:
         try:
-            job["cron"] = cronspec.parse(flags.get("cron", cronspec.MANUAL if new else "")).text
+            job["cron"] = cronspec.parse_for_job(flags.get("cron"), new).text
         except cronspec.CronError as e:
             raise Refused("schedule: %s" % e)
     if "prompt" in flags or new:
@@ -254,8 +255,11 @@ def cmd_toggle(argv, on):
 
 def cmd_run(argv):
     name = (argv[0] if argv else "").strip().lower()
-    if not any(j["name"] == name for j in read_jobs()):
+    job = next((j for j in read_jobs() if j["name"] == name), None)
+    if job is None:
         raise Refused("no job named %s" % name)
+    if not job.get("enabled", True):
+        raise Refused("%s is paused (disabled) — pipeos schedule enable %s first" % (name, name))
     # the runner refuses too (rc 75), but "started" would be a lie — the dashboard answers 409 here
     why = ledger.why_paused(name, PAUSED, PAUSED_JSON)
     if why:

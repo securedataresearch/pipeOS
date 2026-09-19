@@ -2559,7 +2559,7 @@ async function dashboard() {
         const mvt = mvt0 + when;
         const act = m.awake ? ((m.busy && m.busy.length) ? m.busy.join(", ") : "idle") : (m.error || "no answer");
         // the agents that live on this Machine (#300): started here, they stay here; a grey box's are last-known
-        const agentTxt = (m.agents || []).map(a => `${esc(a.name)} <span class="note">(${m.awake ? (a.running ? "running" : esc(a.last_status || "never ran")) : "grey"})</span>`).join(", ");
+        const agentTxt = (m.agents || []).map(a => `${esc(a.name)} <span class="note">(${m.awake ? (a.running ? "running" : a.paused ? `<span class="status-bad">paused — ${esc(a.paused)}</span>` : esc(a.last_status || "never ran")) : "grey"})</span>`).join(", ");
         const agents = agentTxt ? `<div class="desc">agents${m.awake ? "" : " (last known)"}: ${agentTxt}</div>` : "";
         const disk = m.awake && m.work_pct != null ? `disk ${m.work_pct}% · ${gb(m.work_free_mb)}` : "";
         const rel = m.awake && m.commit ? `release ${m.commit.slice(0, 12)}${m.built ? " · " + m.built.slice(0, 10) : ""}` : "";
