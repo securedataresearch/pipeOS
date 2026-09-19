@@ -183,11 +183,16 @@ rc_c, out_c = pipeos("usage", "cap", "25")
 led = open(os.path.join(D, "ledger.log")).read()
 rc_n, _ = pipeos("usage", "cap", "none")
 card3 = open(CARD).read()
-bad = [a for a in (("cap", "-1"), ("cap", "100001"), ("cap", "ten"), ("cap",), ("bogus",)) if pipeos("usage", *a)[0] != 2]
+rc_cl, out_cl = pipeos("usage", "cap", "--cluster", "200")
+card_cl = open(CARD).read()
+rc_cln, _ = pipeos("usage", "cap", "--cluster", "none")
+card_cln = open(CARD).read()
+bad = [a for a in (("cap", "-1"), ("cap", "100001"), ("cap", "ten"), ("cap",), ("bogus",), ("cap", "--cluster", "ten")) if pipeos("usage", *a)[0] != 2]
 rc_t, out_t = pipeos("usage")
-check("12 usage cap N writes MONTHLY_CAP_USD, regenerates, saves, then enforces the cap at once; cap none clears it; totals is the default verb; -1, 100001, 'ten', bare cap and a bogus verb are refused",
+check("12 usage cap N writes MONTHLY_CAP_USD, regenerates, saves, then enforces the cap at once; cap none clears it; --cluster N|none does the same for CLUSTER_CAP_USD; totals is the default verb; -1, 100001, 'ten', bare cap and a bogus verb are refused",
       rc_c == 0 and "MONTHLY_CAP_USD=25" in out_c and "enforce" in led and rc_n == 0 and "MONTHLY_CAP_USD=\n" in card3 and not bad
-      and rc_t == 0 and "stub" in out_t and led.strip().split("\n")[-1] == "enforce" and saves() == n1 + 2,
+      and rc_cl == 0 and "CLUSTER_CAP_USD=200" in card_cl and rc_cln == 0 and "CLUSTER_CAP_USD=\n" in card_cln
+      and rc_t == 0 and "stub" in out_t and led.strip().split("\n")[-1] == "enforce" and saves() == n1 + 4,
       "c=%s %s n=%s card=%r led=%r bad=%r t=%s" % (rc_c, out_c, rc_n, card3, led, bad, out_t))
 
 # ── 1b. a job without a schedule is manual (run once, now) ───────────────

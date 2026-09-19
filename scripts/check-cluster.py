@@ -478,6 +478,8 @@ check("19 'cluster start NAME --on ID' places an agent on that member: the job i
       and rc_st3 == 1 and "not a member" in out_st3 and rc_st4 == 1 and "no agent named ghost" in out_st4
       and rc_st5 == 1 and "2222: schedule:" in out_st5 and jobs_of(H) == ["nightly"]
       and st_p19 == 200 and h_agents == ["nightly"] and r19["1111"]["agents"] == [] and "load1" in r19["2222"] and "ncpu" in r19["2222"]
+      and "spend_month_usd" in r19["2222"] and r19["2222"].get("month") == time.strftime("%Y-%m", time.gmtime())
+      and json.load(open(os.path.join(G.dir, "last", "2222.json"))).get("month") == time.strftime("%Y-%m", time.gmtime())
       and rc_ag == 0 and "nightly" in out_ag and "2222" in out_ag,
       repr((rc_st1, out_st1[-160:], jobs_of(H), jobs_of(G), ran1, ran_on(H), saves1 - h_saves0, H.nsaves() - h_saves0, rc_st2, out_st2[-120:], rc_st3, out_st3[-120:], rc_st4, out_st4[-160:], rc_st5, out_st5[-160:], h_agents, rc_ag, out_ag[-200:])))
 

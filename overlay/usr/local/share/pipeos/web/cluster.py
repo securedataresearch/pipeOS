@@ -699,18 +699,27 @@ def fanout(ids, method, path, body=None, timeout=8):
 
 
 def _remember(mid, summary):
-    """Keep what a member last said — for its grey row (#300). Written only
-    when the list changed (the page polls every few seconds; /work must be
-    allowed to idle, #264). Best effort: a full or read-only /work loses
-    nothing but the grey list."""
+    """Keep what a member last said — for its grey row (#300) and for the
+    cluster cap (#302). Written only when the agent list changed or the
+    month-to-date moved by a whole dollar (the cap is judged in whole
+    dollars; the page polls every few seconds and the worker every minute —
+    /work must be allowed to idle, #264). Best effort: a full or read-only
+    /work loses nothing but the last-known figures."""
     agents = summary.get("agents") or []
-    if _last(mid).get("agents") == agents:
+    month_usd, month = summary.get("spend_month_usd"), summary.get("month")
+    prev = _last(mid)
+
+    def dollars(x):
+        return int(x) if isinstance(x, (int, float)) and not isinstance(x, bool) else None
+    if prev.get("agents") == agents and dollars(prev.get("month_usd")) == dollars(month_usd) and prev.get("month") == month:
         return
     try:
         os.makedirs(LAST_DIR, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix=mid + ".", dir=LAST_DIR)
         with os.fdopen(fd, "w") as f:
-            json.dump({"t": int(time.time()), "agents": agents}, f)
+            # the month-to-date rides along for the cluster cap (#302): an
+            # unreachable member counts at this, its last reported figure
+            json.dump({"t": int(time.time()), "agents": agents, "month_usd": month_usd, "month": month}, f)
         os.rename(tmp, os.path.join(LAST_DIR, mid + ".json"))
     except (OSError, TypeError, ValueError):
         pass
@@ -725,6 +734,33 @@ def _last(mid):
         return {}
 
 
+def forget_last(keep):
+    """Drop the notes of boxes that are no longer members: a removed
+    member's last figure must not count against the cluster cap."""
+    try:
+        for n in os.listdir(LAST_DIR):
+            if n.endswith(".json") and n[:-5] not in keep:
+                os.unlink(os.path.join(LAST_DIR, n))
+    except OSError:
+        pass
+
+
+def refresh_last(timeout=8):
+    """Ask every other member for its summary and note it — what the
+    ledger's cluster cap reads. The page does the same as a side effect of
+    rendering; the ledger worker calls this when a cluster cap is set so the
+    sum is never older than a minute. Returns the ids that answered."""
+    v = view()
+    others = [r["id"] for r in v["members"] if not r["self"]]
+    forget_last(set(others))
+    got = []
+    for mid, (st, b) in fanout(others, "GET", "/api/cluster/summary", timeout=timeout).items():
+        if st == 200 and isinstance(b, dict):
+            _remember(mid, b)
+            got.append(mid)
+    return got
+
+
 def page(local_summary):
     """One row per member, two lines' worth of fields each: the local box
     from `local_summary()`, every other member from its /api/cluster/summary
@@ -733,6 +769,7 @@ def page(local_summary):
     v = view()
     me = v["self"]
     others = [r["id"] for r in v["members"] if not r["self"]]
+    forget_last(set(others))
     answers = fanout(others, "GET", "/api/cluster/summary")
     rows = []
     for r in v["members"]:
@@ -1009,7 +1046,10 @@ def main(argv):
                     act = ", ".join(r.get("busy") or []) or "idle"
                     src = r.get("verdict_source") or "boot"
                     when = ("live, %dm ago" % (int(r.get("verdict_age_s") or 0) // 60)) if src == "live" else "at boot"
-                    l2 = "%s (%s) · %s · disk %s%% · %s %s" % (r.get("verdict") or "?", when, act, r.get("work_pct", "?"), (r.get("commit") or "")[:12], r.get("built") or "")
+                    sp = r.get("spend_month_usd")
+                    l2 = "%s (%s) · %s · disk %s%% · %s · %s %s" % (r.get("verdict") or "?", when, act, r.get("work_pct", "?"),
+                                                                  ("USD %.2f this month" % sp) if isinstance(sp, (int, float)) else "spend not reported",
+                                                                  (r.get("commit") or "")[:12], r.get("built") or "")
                 else:
                     l2 = "off · last seen %s · %s" % (time.strftime("%Y-%m-%d %H:%MZ", time.gmtime(r.get("last_seen") or 0)), r.get("error", ""))
                 print("member    %s\n          %s" % (l1, l2))

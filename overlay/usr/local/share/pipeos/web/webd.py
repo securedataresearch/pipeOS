@@ -296,7 +296,16 @@ def box_summary():
             # the agents that live on this Machine (#300) and the load the
             # idlest pick compares — an agent is started on a member and
             # stays; the cluster page lists every member's from this
-            "agents": agents_here(), "load1": pm.get("load1"), "ncpu": pm.get("ncpu")}
+            "agents": agents_here(), "load1": pm.get("load1"), "ncpu": pm.get("ncpu"),
+            # this month's spend, for the cluster cap every member sums on its own (#302)
+            "spend_month_usd": _spend_month(), "month": time.strftime("%Y-%m", time.gmtime())}
+
+
+def _spend_month():
+    try:
+        return ledger_obj().totals()["month"]["usd"]
+    except Exception:       # noqa: BLE001 — the summary must answer even with a broken ledger
+        return None
 
 
 def run(argv, timeout=60, input_text=None, env=None):
@@ -2082,8 +2091,8 @@ class Handler(BaseHTTPRequestHandler):
         if isinstance(v, bool) or not isinstance(v, int) or v < 0 or v > 100000:
             return self.err(400, 'the cap is a whole number of dollars, 0 (none) to 100000 — send {"usd": N}')
         scope = body.get("scope") or "box"
-        if scope not in ("box", "agent"):
-            return self.err(400, 'scope is "box" (this Machine) or "agent" with a name')
+        if scope not in ("box", "agent", "cluster"):
+            return self.err(400, 'scope is "box" (this Machine), "cluster" (every member, summed), or "agent" with a name')
         if scope == "agent":
             name = (body.get("name") or "").strip().lower()
             if not any(j["name"] == name for j in read_schedule()):
@@ -2092,17 +2101,15 @@ class Handler(BaseHTTPRequestHandler):
             if err:
                 return self.err(400, err)
         else:
+            key = "CLUSTER_CAP_USD" if scope == "cluster" else "MONTHLY_CAP_USD"
             try:
-                card_ensure_key("MONTHLY_CAP_USD")
-                card_set({"MONTHLY_CAP_USD": str(v) if v else ""})
+                card_ensure_key(key)
+                card_set({key: str(v) if v else ""})
             except RuntimeError as e:
                 return self.err(500, str(e))
         # lowering under this month's spend pauses now; raising above it resumes
         # now — BEFORE the save, whose live re-check must read the settled marker
-        try:
-            state = ledger_obj().enforce_cap()
-        except Exception as e:
-            state = {"error": str(e)}
+        state = enforce_caps_now()
         saved, detail = save_state()
         self.send(200, {"ok": True, "cap": v, "scope": scope, "name": body.get("name") if scope == "agent" else "",
                         "state": state, "saved": saved, "save_detail": "" if saved else detail})
@@ -3698,14 +3705,18 @@ def ledger_obj():
         if L is None or L.dir != LEDGER_DIR or L.transcripts != LEDGER_TRANSCRIPTS:
             L = ledger.Ledger(dir=LEDGER_DIR, transcripts=LEDGER_TRANSCRIPTS, rates=LEDGER_RATES, conf=LEDGER_CONF,
                               runs_log=os.path.join(SCHEDULE_STATE_DIR, "runs.log"), sessions_dir=LEDGER_SESSIONS,
-                              webchat_sid=WEBCHAT_SID, schedule=SCHEDULE_CONF)     # the agents' own caps ride the job list (#302)
+                              webchat_sid=WEBCHAT_SID, schedule=SCHEDULE_CONF,     # the agents' own caps ride the job list (#302)
+                              cluster_last=cluster.LAST_DIR,                       # the members' month-to-date, for the cluster cap
+                              members=lambda: [r["id"] for r in cluster.view()["members"] if not r["self"]])
             LEDGER_STATE["obj"] = L
         return L
 
 
-def ledger_refresh(force=False):
+def ledger_refresh(force=False, fanout=False):
     """Ingest + enforce, at most once per LEDGER_INGEST_S unless forced.
-    Never raises: the ledger is a view of the box, not the box."""
+    Never raises: the ledger is a view of the box, not the box. `fanout`
+    (the worker only — never a request thread) refreshes the members'
+    figures first when a cluster cap is set."""
     now = time.time()
     if not force and now - LEDGER_STATE["last"] < LEDGER_INGEST_S:
         return
@@ -3713,6 +3724,14 @@ def ledger_refresh(force=False):
     try:
         L = ledger_obj()
         L.ingest()
+        if fanout and L.cluster_cap() > 0:
+            # a cluster cap is a sum: refresh what the other members last said
+            # (their own /api/cluster/summary over mutual TLS) before judging.
+            # Only when a cluster cap is set — a lone box does no fan-out.
+            try:
+                cluster.refresh_last()
+            except Exception as e:  # noqa: BLE001 — an unreachable member counts at its last figure
+                sys.stderr.write("pipeos-webd: cluster spend refresh: %s\n" % e)
         L.enforce_cap()
     except Exception as e:  # a bad transcript line must never kill the dashboard
         sys.stderr.write("pipeos-webd: ledger: %s\n" % e)
@@ -3720,7 +3739,7 @@ def ledger_refresh(force=False):
 
 def ledger_worker():
     while True:
-        ledger_refresh()
+        ledger_refresh(fanout=True)
         time.sleep(LEDGER_INGEST_S)
 
 
@@ -3859,7 +3878,13 @@ def enforce_caps_now():
     follow at once, not at the worker's next minute — the class of lag the
     single-box pass found on the box cap. Never raises."""
     try:
-        return ledger_obj().enforce_cap()
+        L = ledger_obj()
+        if L.cluster_cap() > 0:
+            try:                # "enforced now": with the members' figures of now, best effort
+                cluster.refresh_last(timeout=5)
+            except Exception:   # noqa: BLE001
+                pass
+        return L.enforce_cap()
     except Exception as e:      # noqa: BLE001 — a broken ledger must not block a settings save
         return {"error": str(e)}
 

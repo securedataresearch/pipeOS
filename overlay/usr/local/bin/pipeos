@@ -25,7 +25,7 @@
 #   pipeos cluster agents | start NAME --on ID|NAME|idlest [--prompt TEXT [--cron SPEC|manual]]   every member's agents; start one ON a member — it lives there; no --cron = runs now, then only when started (#300)
 #   pipeos vault status|list|set|get|del|export|unlock|rephrase   the sealed secret store
 #   pipeos schedule ls|add|set|rm|enable|disable|run|log   the Machine's scheduled jobs (what the dashboard's Schedule view edits)
-#   pipeos usage [totals|cap [--box|--agent NAME] N|none]   the ledger's totals; the caps (box: card; agent: the job), saved, enforced now; every pause names its cap
+#   pipeos usage [totals|cap [--box|--cluster|--agent NAME] N|none]   the ledger's totals; the caps (box + cluster: card; agent: the job), saved, enforced now; every pause names its cap
 #   pipeos card set KEY=VALUE...   a card field, regenerated and saved (what the dashboard's forms write)
 #   pipeos secrets phrase [--ack]  the vault's pending recovery phrase; --ack forgets the tmpfs copy
 #   pipeos assistant password      the assistant terminal's password from stdin -> vault, restarted, saved
@@ -639,24 +639,26 @@ cmd_usage() {
             shift; scope=box; agent=
             case "${1:-}" in
                 --box) shift ;;
+                --cluster) scope=cluster; shift ;;
                 --agent) agent=${2:-}; [ -n "$agent" ] || { echo "usage: pipeos usage cap --agent NAME N|none" >&2; exit 2; }; scope=agent; shift 2 ;;
             esac
             v=${1:-}
             case "$v" in
                 none|0) v=none ;;
-                ''|*[!0-9]*) echo "usage: pipeos usage cap [--box|--agent NAME] N|none   (whole dollars, 1-100000)" >&2; exit 2 ;;
+                ''|*[!0-9]*) echo "usage: pipeos usage cap [--box|--cluster|--agent NAME] N|none   (whole dollars, 1-100000)" >&2; exit 2 ;;
                 *) [ "$v" -ge 1 ] && [ "$v" -le 100000 ] || { echo "the cap is 1-100000 dollars (or none)" >&2; exit 2; } ;;
             esac
+            key=MONTHLY_CAP_USD; [ "$scope" = cluster ] && key=CLUSTER_CAP_USD
             if [ "$scope" = agent ]; then
                 python3 "$SCHEDCTL_PY" set "$agent" --cap "$v" || exit $?
             elif [ "$v" = none ]; then
-                cmd_card_set "MONTHLY_CAP_USD="
+                cmd_card_set "$key="
             else
-                cmd_card_set "MONTHLY_CAP_USD=$v"
+                cmd_card_set "$key=$v"
             fi
             # enforce now: lowering under this month's spend pauses at once, raising lifts it
             python3 "$LEDGER_PY" enforce ;;
-        *) echo "usage: pipeos usage [totals [--json]|cap [--box|--agent NAME] N|none]" >&2; exit 2 ;;
+        *) echo "usage: pipeos usage [totals [--json]|cap [--box|--cluster|--agent NAME] N|none]" >&2; exit 2 ;;
     esac
 }
 
