@@ -464,6 +464,34 @@ check("17d a deploy with nothing to install (same ref) still heals card outputs 
       and real_verify(c17d) == 0 and c17d.stamp() == stamp_before,
       "dry=%s rc=%d verify=%d stamp_same=%s log=%r" % (dry_d, c17d.rc, real_verify(c17d), c17d.stamp() == stamp_before, c17d.log[-400:]))
 
+# ── 17e. a regenerated output is only live for whoever re-reads it (pipeOS#329):
+# the deploy bounces the services that read a CHANGED output at their own start,
+# and nobody else — a card write must not take down the owner's terminals for a
+# file they do not read
+c17e = case(fixture=REAL_FIXTURE, card=REAL_CARD)
+write(os.path.join(c17e.root, "etc/pipeos/provisioned"), "")
+c17e.run()
+g = subprocess.run(["sh", PBC, "generate", "--card", os.path.join(c17e.root, "etc/pipeos/card.conf"),
+                    "--root", c17e.root, "--templates", TMPL_DIR], capture_output=True, text=True)
+assert g.returncode == 0, "row 17e setup: generate failed: " + g.stderr
+first = [l for l in g.stdout.splitlines() if l.startswith("restart ")]
+g2 = subprocess.run(["sh", PBC, "generate", "--card", os.path.join(c17e.root, "etc/pipeos/card.conf"),
+                     "--root", c17e.root, "--templates", TMPL_DIR], capture_output=True, text=True)
+again = [l for l in g2.stdout.splitlines() if l.startswith("restart ") or l.startswith("changed ")]
+# bend only the mandate — read on each agent run, so nobody is bounced for it
+mp = os.path.join(c17e.root, "etc/pipeos/mandate.md")
+write(mp, open(mp).read() + "\nedited under the box\n")
+c17e.run()
+mandate_only = "reads one of them at its start" not in c17e.log and "regenerated the card outputs" in c17e.log
+# now bend the policy, which pipe-daemon reads once when it starts
+pp = os.path.join(c17e.root, "root/.pipe/policy.json")
+write(pp, '{"default":{"allow":[]}}\n')
+c17e.run()
+check("17e pipebox-card names the service that read a CHANGED output at its own start (pipe-daemon for policy.json, pipebox-listener for pipebox.conf) and names nobody when a regeneration reproduces the same bytes; the deploy acts on exactly those names — a bent mandate (read on each run) bounces nobody, a bent policy names pipe-daemon (pipeOS#329)",
+      sorted(first) == ["restart pipe-daemon", "restart pipebox-listener"] and again == []
+      and mandate_only and "pipe-daemon reads one of them at its start" in c17e.log and "pipebox-listener" not in c17e.log.split("regenerated the card outputs")[-1],
+      "first=%r again=%r mandate_only=%s log=%r" % (first, again, mandate_only, c17e.log[-400:]))
+
 # ── 17b. a box generate has never run on is left alone ──────────────────
 # verify's exit 2 is "cannot tell", not "divergent". Regenerating there would
 # be this tool deciding a box's identity from a card nobody has acted on yet.

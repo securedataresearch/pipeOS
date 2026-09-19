@@ -595,7 +595,18 @@ cmd_card_set() {
         sed -i "s|^$k=.*|$k=$v|" "$CARD"
         echo "card: $k=$v"
     done
-    "$CARD_GEN" generate --card "$CARD" >/dev/null || { echo "card set: regeneration FAILED — the card is edited but the derived files are stale; fix the value (pipebox-card generate says what)" >&2; exit 1; }
+    _gen=$("$CARD_GEN" generate --card "$CARD" 2>&1) || { echo "card set: regeneration FAILED — the card is edited but the derived files are stale; fix the value (pipebox-card generate says what)" >&2; exit 1; }
+    # A regenerated output is only live for whoever re-reads it: pipebox-card
+    # names the services that read a CHANGED one at their own start, and only
+    # those are bounced (pipeOS#329). Nothing changed -> nobody is touched.
+    for _svc in $(printf '%s\n' "$_gen" | sed -n 's/^restart //p'); do
+        rc-service "$_svc" status >/dev/null 2>&1 || continue
+        if rc-service "$_svc" restart >/dev/null 2>&1; then
+            echo "restarted $_svc (it read a card output that just changed)"
+        else
+            echo "card set: $_svc did NOT restart — it is running on the old bytes; rc-service $_svc status" >&2
+        fi
+    done
     "$SAVE_BIN" >/dev/null && echo "saved" || { echo "saved: NO — run pipeos save" >&2; exit 1; }
 }
 
