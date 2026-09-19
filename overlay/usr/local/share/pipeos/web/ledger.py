@@ -657,6 +657,19 @@ def pause_text(scope, name, cap, spent, day):
             % (cap, day, spent))
 
 
+def lift_hint(text):
+    """The verb that lifts the cap a pause sentence names — the hint every
+    refusal appends. The sentence itself is the key (the plain marker
+    carries only the text): a cluster pause is lifted with --cluster, an
+    agent's with its job's --cap, the box's with the bare cap."""
+    if text.startswith("cluster monthly cap"):
+        return "pipeos usage cap --cluster N|none"
+    m = re.match(r"agent ([^:\s]+):", text)
+    if m:
+        return "pipeos schedule set %s --cap N|none" % m.group(1)
+    return "pipeos usage cap N|none"
+
+
 def _entry(scope, name, cap, spent, day, since):
     return {"scope": scope, "name": name, "cap": cap, "spent": round(spent, 4), "since": since or day,
             "text": pause_text(scope, name, cap, spent, since or day)}

@@ -332,13 +332,13 @@ check("7 'cluster sync' pushes the list to every member ('same' when it already 
 # ── 8. the list endpoint: from a non-member; a list for another cluster; self-removal
 B = Box("bbbb", "two-b"); B.claim("twopassword")            # the same Machine back: a re-flash, a NEW CA
 A.see(B, C)
-rc_rmoff, _ = A.cli("remove", "bbbb")
+rc_rmoff, _ = A.cli("remove", "pipeos-bbbb")                # the host form the status table and mDNS print (#317 polish)
 rc_ra, out_ra = A.cli("add", B.addr, stdin="twopassword\n")
 A.see(B, C)
 st_c, body_c = https(A, "POST", "/api/cluster/members", json.dumps({"cluster": C.doc()}).encode(), cert_of=C)
 st_o, body_o = https(A, "POST", "/api/cluster/members", json.dumps({"cluster": C.doc()}).encode(), cert_of=B)
 rc_self, out_self = A.cli("remove", "aaaa")
-check("8 a re-flashed Machine (new CA, same id) is removed and added again; a list POSTed with a non-member's certificate fails the handshake; a member's list for another cluster id is answered 'other-cluster' and changes nothing; a Machine does not remove itself",
+check("8 a re-flashed Machine (new CA, same id) is removed (by its pipeos-ID host form) and added again; a list POSTed with a non-member's certificate fails the handshake; a member's list for another cluster id is answered 'other-cluster' and changes nothing; a Machine does not remove itself",
       rc_rmoff == 0 and rc_ra == 0 and sorted(A.doc()["members"]) == ["aaaa", "bbbb"] and A.doc()["members"]["bbbb"]["ca"] == B.ca()
       and st_c == 0 and "handshake" in body_c["error"]
       and st_o == 200 and body_o["result"] == "other-cluster" and sorted(A.doc()["members"]) == ["aaaa", "bbbb"]
@@ -417,7 +417,7 @@ check("14 a member that does not answer is a grey row (off, last seen, the reaso
       st_pg2 == 200 and r2["2222"]["awake"] is False and "unreachable" in r2["2222"].get("error", "") and r2["1111"]["awake"]
       and page2["verdict"] == "1 member off", repr((st_pg2, page2)))
 H = Box("2222", "seven-b"); H.claim("sevenpassword")
-G.cli("remove", "2222"); G.see(H); G.cli("add", H.addr, stdin="sevenpassword\n"); G.see(H); H.see(G)
+G.cli("remove", "seven"); G.see(H); G.cli("add", H.addr, stdin="sevenpassword\n"); G.see(H); H.see(G)    # removed by NAME (#317 polish)
 
 
 def svc_on(box, key):

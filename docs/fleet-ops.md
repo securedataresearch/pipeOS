@@ -45,7 +45,7 @@ when host keys have changed (every reflash). Clocks are UTC.
 | `pipeos assistant password` (stdin) | Assistant → password | vault `assistant_pass`; restarts `pipeos-assistant` | yes |
 | `pipeos cluster init [NAME]\|status\|ca` | Cluster → this Machine's identity (its CA) and member list | `/etc/pipeos/cluster.json` | `init`: yes |
 | `pipeos cluster add ID\|NAME\|IP` (its admin password on stdin) | Cluster → Add a Machine | the target joins (takes the list), this list gains its CA, the list is pushed to every member | yes |
-| `pipeos cluster remove ID` | Cluster → Remove | the list loses it, pushed to the rest (the removed one finds out at its next call and becomes a cluster of one) | yes |
+| `pipeos cluster remove ID\|NAME` | Cluster → Remove | the list loses it, pushed to the rest (the removed one finds out at its next call and becomes a cluster of one) | yes |
 | `pipeos cluster sync` | Cluster → push the list | nothing here; the list to every member | no |
 | `pipeos cluster join MEMBER` (that member's password on stdin) | the wizard's Join this cluster | this box asks the member to add it (a one-time token, no password crosses) | yes |
 | `pipeos cluster adopt ID\|IP [NAME]` (this Machine's password on stdin) | Network → Adopt on an unclaimed Machine | claims it with the same password, adds it, names it; prints its recovery phrase once | yes |

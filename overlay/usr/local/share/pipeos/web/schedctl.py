@@ -263,7 +263,7 @@ def cmd_run(argv):
     # the runner refuses too (rc 75), but "started" would be a lie — the dashboard answers 409 here
     why = ledger.why_paused(name, PAUSED, PAUSED_JSON)
     if why:
-        raise Refused("scheduled runs are paused — %s (pipeos usage cap N|none)" % why)
+        raise Refused("scheduled runs are paused — %s (%s)" % (why, ledger.lift_hint(why)))
     subprocess.Popen([RUN_BIN, name], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, start_new_session=True)
     print("started %s — pipeos schedule log %s" % (name, name))

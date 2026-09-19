@@ -133,12 +133,15 @@ rc_rg, _ = sched("run", "ghost")
 PAUSED = os.path.join(D, "paused")
 open(PAUSED, "w").write("monthly cap USD 1 reached")
 rc_rp, out_rp = sched("run", "nightly", env=dict(ENV, PIPEOS_SCHED_PAUSED=PAUSED))
+open(PAUSED, "w").write("cluster monthly cap USD 1 reached 2026-09-19 (spent 9.11 across the cluster; CLUSTER_CAP_USD)")
+rc_rc, out_rc = sched("run", "nightly", env=dict(ENV, PIPEOS_SCHED_PAUSED=PAUSED))
 os.unlink(PAUSED)
 time.sleep(0.3)
 ran_p = open(os.path.join(D, "ran")).read().split()
-check("5 run starts the runner detached for a known job and refuses a ghost; under the cap's pause marker it refuses with the reason instead of saying 'started' (the runner would exit 75 anyway); no save",
-      rc_r == 0 and ran == ["nightly"] and rc_rg == 2 and rc_rp == 2 and "paused" in out_rp and "USD 1" in out_rp and ran_p == ["nightly"] and saves() == 4,
-      "rc=%s ran=%r ghost=%s paused=%s %s" % (rc_r, ran, rc_rg, rc_rp, out_rp))
+check("5 run starts the runner detached for a known job and refuses a ghost; under the cap's pause marker it refuses with the reason instead of saying 'started' (the runner would exit 75 anyway) and the hint names the verb that lifts THAT cap (bare for the box, --cluster for the cluster); no save",
+      rc_r == 0 and ran == ["nightly"] and rc_rg == 2 and rc_rp == 2 and "paused" in out_rp and "USD 1" in out_rp and "(pipeos usage cap N|none)" in out_rp
+      and rc_rc == 2 and "(pipeos usage cap --cluster N|none)" in out_rc and ran_p == ["nightly"] and saves() == 4,
+      "rc=%s ran=%r ghost=%s paused=%s %s cluster=%s %s" % (rc_r, ran, rc_rg, rc_rp, out_rp, rc_rc, out_rc))
 open(os.path.join(LOGS, "schedule-nightly.log"), "w").write("\n".join("line %d" % i for i in range(60)) + "\n")
 rc_lg, out_lg = sched("log", "nightly", "5")
 rc_lx, out_lx = sched("log", "../../etc/passwd")

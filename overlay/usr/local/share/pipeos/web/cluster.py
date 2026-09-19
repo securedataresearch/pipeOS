@@ -287,10 +287,24 @@ def add_member(box_id, ca_pem, name=""):
     return d
 
 
+def member_id(d, target):
+    """A member's id from what the owner typed: the short id (`a4e0`), the
+    host form (`pipeos-a4e0`) or the name (`two`) — the forms the status
+    table prints. ClusterError when none of them is a member."""
+    t = (target or "").strip().lower()
+    if t.startswith("pipeos-"):
+        t = t[len("pipeos-"):]
+    if d is not None and t in d["members"]:
+        return t
+    for pid, r in (d or {"members": {}})["members"].items():
+        if t and (r.get("name") or "").lower() == t:
+            return pid
+    raise ClusterError("%s is not a member" % target)
+
+
 def drop_member(box_id):
     d = read()
-    if d is None or box_id not in d["members"]:
-        raise ClusterError("%s is not a member" % box_id)
+    box_id = member_id(d, box_id)
     if box_id == self_id():
         raise ClusterError("a Machine does not remove itself — remove it from another member, or 'pipeos cluster init --force' to be a cluster of one")
     del d["members"][box_id]
@@ -1003,7 +1017,7 @@ def main(argv):
             return _save()
         if verb == "remove":
             if len(argv) < 2:
-                print("usage: pipeos cluster remove ID", file=sys.stderr); return 2
+                print("usage: pipeos cluster remove ID|NAME", file=sys.stderr); return 2
             report = remove(argv[1])
             print("removed %s; list pushed: %s" % (argv[1], _report(report)))
             return _save()
@@ -1129,7 +1143,7 @@ def main(argv):
     except ClusterError as e:
         print("cluster: %s" % e, file=sys.stderr)
         return 1
-    print("usage: pipeos cluster init [NAME] [--force] | status | ca | add ID|NAME|IP [NAME] | remove ID | sync | join MEMBER | adopt ID|IP [NAME] | page | agents | start NAME --on ID|NAME|idlest [--prompt TEXT [--cron SPEC|manual] ...] | reboot-all [--yes] | services KEY on|off [ID...] | call ID|NAME|IP METHOD PATH [JSON]", file=sys.stderr)
+    print("usage: pipeos cluster init [NAME] [--force] | status | ca | add ID|NAME|IP [NAME] | remove ID|NAME | sync | join MEMBER | adopt ID|IP [NAME] | page | agents | start NAME --on ID|NAME|idlest [--prompt TEXT [--cron SPEC|manual] ...] | reboot-all [--yes] | services KEY on|off [ID...] | call ID|NAME|IP METHOD PATH [JSON]", file=sys.stderr)
     return 2
 
 

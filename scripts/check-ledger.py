@@ -268,6 +268,9 @@ pt = subprocess.run([sys.executable, LEDGER, "totals"], capture_output=True, tex
 check("21 the CLI: `paused --job NAME` prints the cap that stops NAME (empty for a job that may run); `totals` lists each agent's cap and PAUSED",
       pn.returncode == 0 and pn.stdout.startswith("agent nightly: monthly cap") and po.returncode == 0 and po.stdout == ""
       and pt.returncode == 0 and "agent nightly" in pt.stdout and "PAUSED" in pt.stdout, repr((pn.stdout[:80], po.stdout, pt.stdout[-200:])))
+hints = (lg.lift_hint(pn.stdout.strip()), lg.lift_hint(lg.pause_text("cluster", "", 5, 9.1, "2026-09-19")), lg.lift_hint(lg.pause_text("box", "", 40, 41.0, "2026-09-19")), lg.lift_hint(""))
+check("21b lift_hint names the verb that lifts the cap a pause sentence came from: the job's --cap for an agent, --cluster for the cluster, the bare cap for the box (and for an unknown sentence)",
+      hints == ("pipeos schedule set nightly --cap N|none", "pipeos usage cap --cluster N|none", "pipeos usage cap N|none", "pipeos usage cap N|none"), repr(hints))
 set_agent_cap("nightly", 0); set_cap(""); LS().enforce_cap()
 
 # ── 22. the cluster cap (#302 part 2): this box + every member's last-reported month ──
