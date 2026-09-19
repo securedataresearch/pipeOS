@@ -9,8 +9,11 @@ each `*`, a number, a range `a-b`, a list `a,b,c`, a step `*/n` or
 `a-b/n`, month and weekday names (jan..dec, sun..sat; 0 and 7 are both
 Sunday); and the aliases @hourly @daily @midnight @weekly @monthly
 @yearly @annually. Vixie's rule when BOTH day fields are restricted: the
-job runs when either matches. Refused: anything else — a shell character,
-a sixth field, a value out of range, a zero step, more than 64 characters.
+job runs when either matches. And `manual`: a job that never fires from
+the tick and runs only when started (Run now, `pipeos schedule run`, a
+placement) — the value a job made without a schedule gets (#302 wave,
+"run once, now"). Refused: anything else — a shell character, a sixth
+field, a value out of range, a zero step, more than 64 characters.
 Time base is the box clock, which is UTC on a Machine.
 """
 
@@ -30,8 +33,20 @@ class CronError(ValueError):
     pass
 
 
+MANUAL = "manual"
+
+
 class Spec:
     __slots__ = ("text", "minute", "hour", "day", "month", "weekday", "day_star", "weekday_star")
+
+    def __init__(self, text=""):
+        self.text = text
+        self.minute = self.hour = self.day = self.month = self.weekday = frozenset()
+        self.day_star = self.weekday_star = False
+
+    @property
+    def manual(self):
+        return self.text == MANUAL
 
     def __repr__(self):
         return "Spec(%r)" % self.text
@@ -81,12 +96,13 @@ def parse(text):
         raise CronError("a schedule is 1 to %d characters" % MAX_LEN)
     if not _CHARS.match(t):
         raise CronError("only digits, * , - / and month/day names belong in a schedule")
+    if t == MANUAL:
+        return Spec(MANUAL)
     t = _ALIASES.get(t, t)
     parts = t.split(" ")
     if len(parts) != 5:
         raise CronError("five fields: minute hour day month weekday (or @daily, @hourly, @weekly, @monthly)")
-    s = Spec()
-    s.text = t
+    s = Spec(t)
     for (label, lo, hi, names), tok in zip(_FIELDS, parts):
         vals = _field(tok, label, lo, hi, names)
         if label == "weekday" and 7 in vals:
@@ -100,8 +116,21 @@ def parse(text):
     return s
 
 
+def parse_for_job(text, new):
+    """The schedule a job gets from what was typed: a NEW job with nothing
+    (or blanks) typed is manual — the dashboard form sends "" for an empty
+    field, the verbs omit the flag; an EXISTING job's schedule cannot be
+    blanked by accident (that stays a refusal). One rule for webd and
+    schedctl, so the form and the verb cannot drift."""
+    if new and not (text or "").strip():
+        return Spec(MANUAL)
+    return parse(text if text is not None else "")
+
+
 def matches(spec, dt):
     """Does this minute fire? dt is a naive or aware datetime; seconds ignored."""
+    if spec.manual:
+        return False
     if dt.minute not in spec.minute or dt.hour not in spec.hour or dt.month not in spec.month:
         return False
     wd = (dt.weekday() + 1) % 7   # python: Monday=0; cron: Sunday=0
@@ -123,6 +152,8 @@ def day_ok(spec, dom_ok, dow_ok):
 def next_run(spec, after, limit_days=366):
     """The first minute strictly after `after` that matches, or None
     within limit_days. Walks days, then the allowed hours and minutes."""
+    if spec.manual:
+        return None
     start = after.replace(second=0, microsecond=0) + datetime.timedelta(minutes=1)
     hours = sorted(spec.hour)
     minutes = sorted(spec.minute)
@@ -148,6 +179,8 @@ def next_run(spec, after, limit_days=366):
 def describe(spec):
     """A short human line for the dashboard; falls back to the text."""
     t = spec.text
+    if spec.manual:
+        return "manual — runs only when started"
     if t == "0 * * * *":
         return "every hour"
     if t == "0 0 * * *":

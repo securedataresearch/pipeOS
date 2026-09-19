@@ -44,7 +44,7 @@ pipeos cluster status    # this Machine's cluster identity (its CA) + member lis
 pipeos cluster adopt ID  # (this box's password on stdin) claim an unclaimed Machine + add it in one step (#213); join MEMBER from the new box
 pipeos cluster page      # the pilot's one page (#212): every member's two lines + one verdict; reboot-all [--yes]; services KEY on|off [ID...]
 pipeos cluster add two   # (two's admin password on stdin) marks two out of the lobby into this cluster; remove ID / sync push the list (#211)
-pipeos cluster agents    # every member's agents and what each last did; start NAME --on two|idlest [--prompt TEXT --cron SPEC] places one ON a member — it lives there, a grey box's agents are grey (#300)
+pipeos cluster agents    # every member's agents and what each last did; start NAME --on two|idlest [--prompt TEXT [--cron SPEC|manual] [--cap N]] places one ON a member (no --cron = manual: runs now, then only when started) — it lives there, a grey box's agents are grey (#300)
 ```
 
 ## Deploy a merged commit
@@ -71,7 +71,7 @@ pipeos deploy-overlay --yes        # install, restart changed services, enrol ne
 
 ```sh
 pipeos schedule ls
-pipeos schedule add NAME --cron "0 2 * * *" --prompt "..." [--cwd /work/...] [--backend claude|hermes] [--notify on|off] [--session fresh|continue]
+pipeos schedule add NAME --prompt "..." [--cron "0 2 * * *"|manual] [--cwd /work/...] [--backend claude|hermes] [--notify on|off] [--session fresh|continue] [--cap N]   # no --cron = manual: runs only when started
 pipeos schedule set NAME --notify off           # only the given flags change
 pipeos schedule rm|enable|disable|run|log NAME  # run = Run now (detached); log NAME [N]
 pipeos usage                                    # totals today/7d/30d/month, by actor, the cap

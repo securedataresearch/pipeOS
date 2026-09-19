@@ -979,7 +979,7 @@ async function dashboard() {
           <input id="schname" type="text" autocomplete="off" placeholder="nightly-tests">
           <label for="schcron">When</label>
           <div class="chips" id="schpresets"></div>
-          <input id="schcron" type="text" autocomplete="off" placeholder="0 2 * * *  (minute hour day month weekday)">
+          <input id="schcron" type="text" autocomplete="off" placeholder="0 2 * * *  (minute hour day month weekday) — blank or manual: runs only when you press Run now">
           <p class="note" id="schnext"></p>
           <label for="schprompt">Prompt</label>
           <textarea id="schprompt" rows="4" style="width:100%;font-family:inherit" placeholder="What should the assistant do?"></textarea>
@@ -1107,7 +1107,7 @@ async function dashboard() {
           <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
             <input id="clagname" placeholder="name (a-z 0-9 -)" style="width:11rem" autocomplete="off">
             <select id="clagon"></select>
-            <input id="clagcron" placeholder="schedule, e.g. @daily or 0 7 * * 1-5" style="width:16rem" autocomplete="off">
+            <input id="clagcron" placeholder="schedule, e.g. @daily — blank: runs now, then only when started" style="width:16rem" autocomplete="off">
           </div>
           <textarea id="clagprompt" rows="2" placeholder="what it does (the prompt) — leave empty to run an agent that already lives on that Machine" style="width:100%;margin-top:.4rem"></textarea>
           <div style="margin-top:.4rem"><button id="claggo" class="btn small" type="button">Start</button></div>
@@ -2559,7 +2559,7 @@ async function dashboard() {
         const mvt = mvt0 + when;
         const act = m.awake ? ((m.busy && m.busy.length) ? m.busy.join(", ") : "idle") : (m.error || "no answer");
         // the agents that live on this Machine (#300): started here, they stay here; a grey box's are last-known
-        const agentTxt = (m.agents || []).map(a => `${esc(a.name)} <span class="note">(${m.awake ? (a.running ? "running" : esc(a.last_status || "never ran")) : "grey"})</span>`).join(", ");
+        const agentTxt = (m.agents || []).map(a => `${esc(a.name)} <span class="note">(${m.awake ? (a.running ? "running" : a.paused ? `<span class="status-bad">paused — ${esc(a.paused)}</span>` : esc(a.last_status || "never ran")) : "grey"})</span>`).join(", ");
         const agents = agentTxt ? `<div class="desc">agents${m.awake ? "" : " (last known)"}: ${agentTxt}</div>` : "";
         const disk = m.awake && m.work_pct != null ? `disk ${m.work_pct}% · ${gb(m.work_free_mb)}` : "";
         const rel = m.awake && m.commit ? `release ${m.commit.slice(0, 12)}${m.built ? " · " + m.built.slice(0, 10) : ""}` : "";
@@ -2622,7 +2622,7 @@ async function dashboard() {
     const body = { name: v.querySelector("#clagname").value.trim(), on: v.querySelector("#clagon").value };
     const prompt = v.querySelector("#clagprompt").value, cron = v.querySelector("#clagcron").value.trim();
     if (prompt.trim()) body.prompt = prompt;
-    if (cron) body.cron = cron;
+    if (cron) body.cron = cron;              // no schedule + a prompt = a manual job (runs when started)
     try {
       const r = await api("/api/cluster/start", body);
       n.textContent = `started ${r.name} on ${r.on}${r.picked ? " (the idlest member)" : ""}` + (r.saved === false ? " — NOT saved: " + r.save_detail : "");

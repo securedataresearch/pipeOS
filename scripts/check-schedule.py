@@ -76,6 +76,12 @@ check("3 next_run crosses the hour, the day, the month and the year, is strictly
       and nexts["0 0 31 2 *"] is None and nexts["0 8 * * mon-fri"] == T(2026, 9, 11, 8, 0) and nexts["30 17 * * *"] == T(2026, 9, 11, 17, 30),
       repr(nexts))
 
+# ── 3b. manual: never from the tick, described as such, no next run ──────
+man = cs.parse("manual")
+man_hits = [m for m in range(0, 1440, 7) if cs.matches(man, T(2026, 9, 10, 0, 0) + __import__("datetime").timedelta(minutes=m))]
+check("3b 'manual' parses (also 'MANUAL '), matches no minute of a whole day, has no next run, and is described as runs-only-when-started",
+      man.manual and cs.parse(" MANUAL ").manual and not man_hits and cs.next_run(man, now) is None and "when started" in cs.describe(man), repr((man_hits[:3], cs.describe(man))))
+
 # ── 4-6. the tick ────────────────────────────────────────────────────────
 CONF = os.path.join(D, "schedule.json")
 STATE_DIR = os.path.join(D, "state")
@@ -135,14 +141,16 @@ check("6 the state file remembers the last minute each job fired, atomically", s
 PAUSED_JSON = os.path.join(D, "paused.json")
 json.dump({"box": None, "cluster": None, "agents": {"every-15": {"scope": "agent", "name": "every-15", "cap": 5, "spent": 5.2, "since": "2026-09-10",
            "text": "agent every-15: monthly cap USD 5 reached 2026-09-10 (spent 5.20; the per-agent cap on every-15); every-15 resumes on the 1st or when its cap is raised (pipeos schedule set every-15 --cap N)"}}}, open(PAUSED_JSON, "w"))
-jobs({"name": "every-15", "cron": "*/15 * * * *", "prompt": "p", "enabled": True}, {"name": "also-15", "cron": "*/15 * * * *", "prompt": "q", "enabled": True})
+jobs({"name": "every-15", "cron": "*/15 * * * *", "prompt": "p", "enabled": True}, {"name": "also-15", "cron": "*/15 * * * *", "prompt": "q", "enabled": True},
+     {"name": "once", "cron": "manual", "prompt": "m", "enabled": True})
 os.environ["PIPEOS_SCHED_PAUSED_JSON"] = PAUSED_JSON
 tick("2026-09-10T18:30")
 e = fired()
 del os.environ["PIPEOS_SCHED_PAUSED_JSON"]
 os.unlink(PAUSED_JSON)
-check("5b under an agent's own pause entry in paused.json that job is skipped and its log names ITS cap, while another job sharing the minute fires",
-      e == c + ["also-15"] and "agent every-15: monthly cap USD 5" in open(jl).read() and "skipped every-15" in open(os.path.join(LOGDIR, "schedule.log")).read(),
+check("5b under an agent's own pause entry in paused.json that job is skipped and its log names ITS cap, while another job sharing the minute fires — and a manual job never fires from the tick",
+      e == c + ["also-15"] and "agent every-15: monthly cap USD 5" in open(jl).read() and "skipped every-15" in open(os.path.join(LOGDIR, "schedule.log")).read()
+      and "once" not in e and not os.path.exists(os.path.join(LOGDIR, "schedule-once.log")),
       "e=%r c=%r" % (e, c))
 jobs({"name": "every-15", "cron": "*/15 * * * *", "prompt": "p", "enabled": True})
 

@@ -545,6 +545,16 @@ ok("schedule: pause is an edit that saves; a partial edit keeps the rest; an ali
 for bad in ("* * * * * ; rm -rf /", "60 * * * *", "*/0 * * * *", "1 2 3 4 5 6", "x" * 3000, "$(id)"):
     req("/api/schedule/set", {"name": "evil", "cron": bad, "prompt": "x"}, expect=400)
 req("/api/schedule/set", {"name": "Bad Name", "cron": "* * * * *", "prompt": "x"}, expect=400)
+r = req("/api/schedule/set", {"name": "once", "prompt": "run me when asked", "cron": ""})          # exactly what the form sends for a blank When
+row = {j["name"]: j for j in req("/api/schedule")["jobs"]}["once"]
+assert r["job"]["cron"] == "manual" and row["next_run"] == "" and "manual" in row["human"] and "when started" in row["human"]
+req("/api/schedule/set", {"name": "once", "cron": ""}, expect=400)                                  # an existing job's schedule cannot be blanked by accident
+req("/api/schedule/set", {"name": "once", "cron": "manual"})
+req("/api/schedule/set", {"name": "once", "enabled": False})
+assert "paused (disabled)" in req("/api/schedule/run", {"name": "once"}, expect=409)["error"]        # Pause means pause, for Run now too
+req("/api/schedule/set", {"name": "once", "enabled": True})
+req("/api/schedule/del", {"name": "once"})
+ok("schedule: a job made with a blank schedule (the form's payload) is manual — no next run, described as runs-only-when-started; `manual` is also an explicit value; a paused job refuses Run now")
 req("/api/schedule/set", {"name": "noprompt", "cron": "* * * * *", "prompt": ""}, expect=400)
 req("/api/schedule/set", {"name": "long", "cron": "* * * * *", "prompt": "x" * 9000}, expect=400)
 req("/api/schedule/set", {"name": "etc", "cron": "* * * * *", "prompt": "x", "cwd": "/etc"}, expect=400)
@@ -560,6 +570,8 @@ _orig_popen = webd.subprocess.Popen
 _spawned = []
 def _wait_popen(*a, **k):
     pr = _orig_popen(*a, **k); _spawned.append(list(a[0])); pr.wait(); return pr
+assert "paused (disabled)" in req("/api/schedule/run", {"name": "nightly"}, expect=409)["error"]   # still paused from the edit row above
+req("/api/schedule/set", {"name": "nightly", "enabled": True})
 webd.subprocess.Popen = _wait_popen
 r = req("/api/schedule/run", {"name": "nightly"})
 assert r["started"] and _spawned == [[webd.SCHEDULE_RUN_BIN, "nightly"]], _spawned

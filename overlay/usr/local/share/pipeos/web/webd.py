@@ -3773,7 +3773,7 @@ def schedule_upsert(body):
                                  "enabled": True, "session": "fresh", "prompt": "", "cron": ""}
     if "cron" in body or not cur:
         try:
-            spec = cronspec.parse(body.get("cron") or "")
+            spec = cronspec.parse_for_job(body.get("cron"), new=cur is None)   # a new job with no schedule is manual
         except cronspec.CronError as e:
             return None, "schedule: %s" % e
         job["cron"] = spec.text
@@ -3829,8 +3829,12 @@ def schedule_upsert(body):
 def schedule_start(name):
     """Run a job now, detached, one at a time. Returns (200, None) or
     (status, "why") — the same refusals whoever asks."""
-    if not any(j["name"] == name for j in read_schedule()):
+    job = next((j for j in read_schedule() if j["name"] == name), None)
+    if job is None:
         return 404, "no job named %s" % name
+    if not job.get("enabled", True):
+        # Pause means pause — Run now, a placement and `schedule run` are not ways around it
+        return 409, "%s is paused (disabled) — resume it first (Schedule → Resume, pipeos schedule enable %s)" % (name, name)
     if schedule_running():
         return 409, "another job is running on this Machine — one at a time; try again when it finishes"
     why = paused_reason(name)
@@ -3876,7 +3880,7 @@ def agent_start_here(body):
         if "cap_usd" in body:
             enforce_caps_now()          # the cap must gate THIS run, not the next minute's
     elif not any(j["name"] == name for j in read_schedule()):
-        return 404, {"error": "no agent named %s on this Machine — give it a prompt and a schedule to place it here" % name, "changed": False}
+        return 404, {"error": "no agent named %s on this Machine — give it a prompt to place it here (a schedule is optional: without one it runs only when started)" % name, "changed": False}
     st, err = schedule_start(name)
     if err:
         # the job is on the box now even though it did not run: the caller
