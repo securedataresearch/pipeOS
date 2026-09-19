@@ -248,6 +248,17 @@ Machines runs on the on-board gigabit and every mode above works the same,
 slower. The no-wake-over-SFP+ caveat (docs/hardware.md) is therefore an
 owner-facing fact for Cluster buyers.
 
+- Built (#319): a job can say which secrets it needs — `needs` on the job
+  (Schedule form, `pipeos schedule add|set NAME --needs jobs.a,jobs.b`,
+  carried by a placement). Before a run the runner checks each name in the
+  vault's export; the first missing one is asked for through the agent's
+  door (`pipeos secrets request`, #301) and the run waits — exit 75, the
+  Schedule row reads *waiting* with the reason, one DM per new ask — until
+  the owner approves on a holder and the copy lands: a cron job runs at
+  its next match, a manual job is run the moment the copy arrives. A
+  denied ask is not repeated for a day. Only `jobs.*` names (the export
+  the runner sources). An agent placed on a member that lacks its secrets
+  asks at once instead of failing its first run.
 - Built (#300): an agent is a scheduled job, and it is placed by being
   written into one member's `schedule.json` through that member's own
   `/api/agent/start` and run there — `pipeos cluster start NAME --on

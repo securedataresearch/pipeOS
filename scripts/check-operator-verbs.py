@@ -223,13 +223,19 @@ cap_a = jm().get("capped", {}).get("cap_usd")
 rc_an, _ = pipeos("usage", "cap", "--agent", "capped", "none")
 cap_an = jm().get("capped", {}).get("cap_usd")
 rc_as, _ = sched("set", "capped", "--cap", "7")
+rc_nd, _ = sched("set", "capped", "--needs", "jobs.b,jobs.a")
+needs_set = jm()["capped"].get("needs")
+rc_ndb, out_ndb = sched("set", "capped", "--needs", "assistant_pass")
+rc_ndn, _ = sched("set", "capped", "--needs", "none")
+needs_none = jm()["capped"].get("needs")
 bad_a = [a for a in (("cap", "--agent"), ("cap", "--agent", "capped", "ten"), ("cap", "--agent", "capped", "0.5")) if pipeos("usage", *a)[0] != 2]
 rc_ag, out_ag = pipeos("usage", "cap", "--agent", "ghost", "5")
 led2 = open(os.path.join(D, "ledger.log")).read()
-check("12b usage cap --agent NAME N writes cap_usd on that job (through schedctl, which saves) and enforces at once; none clears it; schedule set --cap does the same; a missing name, a non-number and a fraction are refused; an unknown job fails without saving",
+check("12b usage cap --agent NAME N writes cap_usd on that job (through schedctl, which saves) and enforces at once; none clears it; schedule set --cap does the same; a missing name, a non-number and a fraction are refused; an unknown job fails without saving; schedule set --needs a,b writes the sorted list (#319), a per-box secret is refused, none clears it",
       rc_a == 0 and cap_a == 5 and rc_an == 0 and cap_an is None and rc_as == 0 and jm()["capped"]["cap_usd"] == 7
-      and not bad_a and rc_ag != 0 and "no job named ghost" in out_ag and saves() == n2 + 3 and led2.strip().split("\n")[-1] == "enforce",
-      "a=%s %s cap=%r an=%s %r as=%s bad=%r ag=%s %s saves=%d" % (rc_a, out_a[-120:], cap_a, rc_an, cap_an, rc_as, bad_a, rc_ag, out_ag[-120:], saves() - n2))
+      and rc_nd == 0 and needs_set == ["jobs.a", "jobs.b"] and rc_ndb != 0 and "hand them over" in out_ndb and rc_ndn == 0 and needs_none is None
+      and not bad_a and rc_ag != 0 and "no job named ghost" in out_ag and saves() == n2 + 5 and led2.strip().split("\n")[-1] == "enforce",
+      "a=%s cap=%r an=%s %r as=%s nd=%s %r ndb=%s %s ndn=%s %r bad=%r ag=%s saves=%d" % (rc_a, cap_a, rc_an, cap_an, rc_as, rc_nd, needs_set, rc_ndb, out_ndb[-80:], rc_ndn, needs_none, bad_a, rc_ag, saves() - n2))
 sched("rm", "capped")
 
 # ── secrets phrase ───────────────────────────────────────────────────────

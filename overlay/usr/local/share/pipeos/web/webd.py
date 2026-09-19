@@ -2296,6 +2296,7 @@ class Handler(BaseHTTPRequestHandler):
         for j in jobs:
             row = {k: j.get(k) for k in ("name", "cron", "prompt", "cwd", "backend", "notify", "enabled", "session")}
             row["cap_usd"] = j.get("cap_usd") or 0
+            row["needs"] = j.get("needs") or []
             row["paused"] = paused_reason(j["name"])          # "" or the text of the cap that stops this one (#302)
             try:
                 spec = cronspec.parse(j.get("cron", ""))
@@ -2391,7 +2392,7 @@ class Handler(BaseHTTPRequestHandler):
         on = (body.get("on") or "").strip()
         if not on:
             return self.err(400, "on: which Machine — a member's id or name, or idlest")
-        spec = {k: body[k] for k in ("name", "prompt", "cron", "cwd", "backend", "session", "notify", "cap_usd") if k in body}
+        spec = {k: body[k] for k in ("name", "prompt", "cron", "cwd", "backend", "session", "notify", "cap_usd", "needs") if k in body}
 
         def local_start(sp):
             st, out = agent_start_here(sp)
@@ -2593,6 +2594,10 @@ class Handler(BaseHTTPRequestHandler):
         if rec is not None:
             _req_update(VAULT_REQUESTS, rid, state="done", decided_by=body.get("decided_by") or "", decided_at=int(time.time()), holder=peer["peer"])
         problems = restart_claude_consumers() if name == "claude_token" else []
+        try:
+            resume_waiting_jobs(name)      # a copy that lands must never fail the copy: the run is a courtesy
+        except Exception as e:
+            print("needs: resume after %s failed: %s" % (name, e), file=sys.stderr, flush=True)
         if rec is not None:
             # answer the holder before the save: a slow stick must not time out its call
             # (the save's outcome shows in this box's own status, as every save does)
@@ -2698,8 +2703,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(409, "not in a cluster — nobody to ask")
         me = v["self"]
         others = [m["id"] for m in v["members"] if not m["self"]]
-        if any(_req_live(r) == "pending" and r.get("name") == name for r in _req_load(VAULT_REQUESTS)["requests"]):
+        recs = _req_load(VAULT_REQUESTS)["requests"]
+        if any(_req_live(r) == "pending" and r.get("name") == name for r in recs):
             return self.err(409, "a request for %s is already open — the owner has not decided yet" % name)
+        denied = [r for r in recs if r.get("name") == name and r.get("state") == "denied" and time.time() - int(r.get("decided_at") or 0) < REQUEST_TTL_S]
+        if denied:
+            d = denied[-1]
+            return self.err(409, "the owner denied %s on %s (%s); it is not asked again for a day — a job that needs it waits (pipeos schedule set JOB --needs none drops the need)"
+                            % (name, time.strftime("%Y-%m-%d %H:%MZ", time.gmtime(int(d.get("decided_at") or 0))), d.get("decided_by") or "?"))
         holders = [mid for mid, (st, b) in cluster.fanout(others, "POST", "/api/secrets/have", {"name": name}).items()
                    if st == 200 and isinstance(b, dict) and b.get("have")]
         if not holders:
@@ -4332,6 +4343,18 @@ def schedule_upsert(body):
             return None, "cap_usd is a whole number of dollars, 1-100000, or 0 for none"
         else:
             job["cap_usd"] = c
+    if "needs" in body:
+        # the secrets this job needs before it runs (#319): jobs.* names the
+        # runner checks in the export; a missing one becomes a share request
+        # (the agent's door, #316) and the run waits. One parser (vault.parse_needs).
+        try:
+            n = vault.parse_needs(body.get("needs"))
+        except ValueError as e:
+            return None, str(e)
+        if n:
+            job["needs"] = n
+        else:
+            job.pop("needs", None)
     if cur is None:
         if len(jobs) >= SCHEDULE_MAX_JOBS:
             return None, "at most %d jobs on one Machine" % SCHEDULE_MAX_JOBS
@@ -4386,6 +4409,26 @@ def enforce_caps_now():
         return {"error": str(e)}
 
 
+def resume_waiting_jobs(secret):
+    """A copy just landed (#319): a MANUAL job that names it in `needs` and
+    whose needs are now all here is run now — it asked, waited (exit 75)
+    and nothing else would ever start it (the tick fires on cron matches
+    only; a cron job simply runs at its next match). Refusals are the
+    runner's own and land in its log."""
+    have = set(vault_names())
+    for j in read_schedule():
+        needs = j.get("needs") or []
+        if secret not in needs or not set(needs) <= have or not j.get("enabled", True):
+            continue
+        try:
+            manual = cronspec.parse(j.get("cron") or cronspec.MANUAL).manual
+        except Exception:
+            manual = False
+        if manual:
+            st, err = schedule_start(j["name"])
+            print("needs: %s landed — %s %s" % (secret, j["name"], "started" if not err else "not started: %s" % err), file=sys.stderr, flush=True)
+
+
 def agent_start_here(body):
     """Take an agent onto THIS Machine and run it (#300): with a prompt or a
     schedule in the body the job is written (created or updated) first;
@@ -4393,7 +4436,7 @@ def agent_start_here(body):
     `changed` says whether the job list moved, so the caller saves."""
     name = (body.get("name") or "").strip().lower()
     changed = False
-    if any(k in body for k in ("prompt", "cron", "cwd", "backend", "session", "notify", "cap_usd")):
+    if any(k in body for k in ("prompt", "cron", "cwd", "backend", "session", "notify", "cap_usd", "needs")):
         before = read_schedule()
         job, err = schedule_upsert(body)
         if err:
@@ -4408,8 +4451,8 @@ def agent_start_here(body):
         # the job is on the box now even though it did not run: the caller
         # saves it, or the next boot would drop what the owner just placed
         return st, {"error": err, "changed": changed, "name": name, "on": lanid.mac4()}
-    cap = next((j.get("cap_usd") or 0 for j in read_schedule() if j["name"] == name), 0)
-    return 200, {"ok": True, "started": True, "name": name, "on": lanid.mac4(), "changed": changed, "cap_usd": cap}
+    j = next((j for j in read_schedule() if j["name"] == name), {})
+    return 200, {"ok": True, "started": True, "name": name, "on": lanid.mac4(), "changed": changed, "cap_usd": j.get("cap_usd") or 0, "needs": j.get("needs") or []}
 
 
 def _alive(pid):
