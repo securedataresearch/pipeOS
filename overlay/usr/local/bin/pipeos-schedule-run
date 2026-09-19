@@ -144,7 +144,7 @@ command -v "$backend" >/dev/null 2>&1 || refuse "$backend is not installed on th
 # The monthly cap (#246): the tick skips, and so does every other way in —
 # Run now, an agent's `pipeos-schedule-run` — this is the one choke point.
 if [ -f "$PAUSED" ]; then
-    log "job $job: scheduled runs are paused — $(cat "$PAUSED" 2>/dev/null || echo "the monthly cap is reached") (raise it under Usage)"
+    log "job $job: scheduled runs are paused — $(cat "$PAUSED" 2>/dev/null || echo "the monthly cap is reached (pipeos usage cap N|none)")"
     exit 75
 fi
 # this agent's own cap (#302): the plain marker above is the box or the cluster;

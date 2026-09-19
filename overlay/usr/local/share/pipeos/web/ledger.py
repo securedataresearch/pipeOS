@@ -622,11 +622,11 @@ class Ledger:
         changed = (_strip(doc) != _strip(before))
         for scope in ("box", "cluster"):
             if doc[scope] and before.get(scope) and before[scope].get("cap") == doc[scope]["cap"]:
-                doc[scope] = before[scope]                       # same pause, same sentence
+                doc[scope] = _rendered(before[scope])            # same pause (its spend and since), today's sentence
         for name in list(doc["agents"]):
             b = before.get("agents", {}).get(name)
             if b and b.get("cap") == doc["agents"][name]["cap"]:
-                doc["agents"][name] = b
+                doc["agents"][name] = _rendered(b)
         global_entry = doc["cluster"] or doc["box"]
         if doc["box"] or doc["cluster"] or doc["agents"]:
             if changed or doc != before:
@@ -644,17 +644,30 @@ class Ledger:
 
 
 def pause_text(scope, name, cap, spent, day):
-    """The one sentence a paused scope shows everywhere. The box text keeps
-    its historical prefix — the runner's log, selfcheck and the probes
-    match on "monthly cap"."""
+    """The one sentence a paused scope shows everywhere, ending with the verb
+    that lifts THAT cap (every reader — the 409, the runner's log, the
+    banner, selfcheck — shows the sentence as is, so the verb rides with
+    it; the plain marker carries only the text). The box text keeps its
+    historical prefix — the runner's log, selfcheck and the probes match
+    on "monthly cap"."""
     if scope == "agent":
-        return ("agent %s: monthly cap USD %d reached %s (spent %.2f; the per-agent cap on %s); %s resumes on the 1st or when its cap is raised (pipeos schedule set %s --cap N)"
+        return ("agent %s: monthly cap USD %d reached %s (spent %.2f; the per-agent cap on %s); %s resumes on the 1st or when its cap is raised (pipeos schedule set %s --cap N|none)"
                 % (name, cap, day, spent, name, name, name))
     if scope == "cluster":
-        return ("cluster monthly cap USD %d reached %s (spent %.2f across the cluster; CLUSTER_CAP_USD); scheduled jobs on every member resume on the 1st or when the cluster cap is raised under Usage"
+        return ("cluster monthly cap USD %d reached %s (spent %.2f across the cluster; CLUSTER_CAP_USD); scheduled jobs on every member resume on the 1st or when the cluster cap is raised under Usage (pipeos usage cap --cluster N|none)"
                 % (cap, day, spent))
-    return ("monthly cap USD %d reached %s (spent %.2f; this Machine's cap); scheduled jobs resume on the 1st or when the cap is raised under Usage"
+    return ("monthly cap USD %d reached %s (spent %.2f; this Machine's cap); scheduled jobs resume on the 1st or when the cap is raised under Usage (pipeos usage cap N|none)"
             % (cap, day, spent))
+
+
+def _rendered(e):
+    """A kept entry with its sentence rendered by THIS pause_text: the
+    spend and the day stay what they were when the cap bit, the words are
+    today's — a deploy that rewords the sentence reaches a box that was
+    already paused (else the old words would sit in the marker till the 1st)."""
+    e = dict(e)
+    e["text"] = pause_text(e.get("scope", "box"), e.get("name", ""), e.get("cap", 0), e.get("spent", 0.0), e.get("since", ""))
+    return e
 
 
 def _entry(scope, name, cap, spent, day, since):

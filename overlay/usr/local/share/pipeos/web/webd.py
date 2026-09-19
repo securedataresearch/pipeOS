@@ -955,10 +955,13 @@ def restart_claude_consumers():
 def _member_ids(tokens):
     """{token: member id or None} — a token is an id or a name (one lookup
     serves share and unshare, so the two cannot disagree)."""
-    members = {r["id"]: r for r in cluster.view()["members"]}
+    doc = {"members": {r["id"]: r for r in cluster.view()["members"]}}
     out = {}
     for t in tokens:
-        out[t] = next((i for i, r in members.items() if t in (i, (r.get("name") or "").lower())), None)
+        try:
+            out[t] = cluster.member_id(doc, t)                 # id, pipeos-ID[.local] or name — the one matcher
+        except cluster.ClusterError:
+            out[t] = None
     return out
 
 
@@ -2918,11 +2921,11 @@ class Handler(BaseHTTPRequestHandler):
     def api_cluster_remove(self, body):
         mid = (body.get("id") or "").strip()
         try:
-            report = cluster.remove(mid)
+            gone, report = cluster.remove(mid)
         except cluster.ClusterError as e:
             return self.err(409, str(e))
         saved, out = save_state()
-        self.send(200, {"ok": True, "id": mid, "pushed": report, "saved": saved, "save_output": out})
+        self.send(200, {"ok": True, "id": gone, "pushed": report, "saved": saved, "save_output": out})
 
     def api_cluster_sync(self, _body):
         try:
