@@ -581,6 +581,20 @@ if [ "$watcher_changed" = yes ] && [ -x "$ROOT/usr/local/bin/pipebox-cohort-watc
     fi
 fi
 
+# ---- 5a. the workspace script is idempotent by contract, and this deploy may
+# have brought a new one (the /data link, pipeOS#219). Run it rather than
+# restarting pipeos-workspace: an rc-service restart would stop and start
+# everything that `need`s it — pipe-daemon, the assistant, the owner's
+# browser terminals, a live stream — for a start whose live effect is one
+# symlink (the #325 review).
+if grep -qxF "etc/local.d/workspace.sh" "$installed_rels" 2>/dev/null; then
+    if sh "$ROOT/etc/local.d/workspace.sh" >/dev/null 2>&1; then
+        say "ran the workspace script (it is idempotent; this lays /data and the skeleton without bouncing a service)"
+    else
+        say "the workspace script returned nonzero — run 'sh /etc/local.d/workspace.sh' and read it (the volume is untouched either way)"
+    fi
+fi
+
 # ---- 5b. a deploy reaches files, not running services (box0, #102 review) --
 # The rename-install keeps an executing script on its old inode ON PURPOSE —
 # which means a supervised service keeps RUNNING the old code after a deploy
