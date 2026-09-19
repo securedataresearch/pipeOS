@@ -8,7 +8,7 @@
 #
 #   pipeos status              box health + persistence state at a glance
 #   pipeos verify              will a reboot reproduce this state? (rc!=0: no)
-#   pipeos diff [TS|known-good]  uncommitted changes / vs a snapshot
+#   pipeos diff [--content|TS|known-good]  what a save would change (lbu vs the canonical apkovl) / vs a snapshot
 #   pipeos pkg add PKG...      install software persistently (verified)
 #   pipeos pkg del PKG...      remove software persistently
 #   pipeos snapshot ls         apkovl generations on the media
@@ -37,7 +37,8 @@
 # Read-only verbs (status/verify/diff/snapshot) are open to the resident
 # agent; mutating verbs are root/human territory (pipebox-settings.json).
 
-MEDIA=/media/usb
+MEDIA=${PIPEOS_MEDIA:-/media/usb}
+LBU=${PIPEOS_LBU:-lbu}      # the probe's stub; a box never sets it
 REPO_DIR=$MEDIA/apks/pipeos/x86_64
 OVL=$MEDIA/pipeos.apkovl.tar.gz
 KNOWN_GOOD=$MEDIA/pipeos.known-good.tar.gz
@@ -58,6 +59,46 @@ warn() { printf 'WARN  %s\n' "$*"; }
 fail() { printf 'FAIL  %s\n' "$*"; FAILED=1; }
 
 sha() { sha256sum "$1" | cut -d' ' -f1; }
+
+# lbu against OUR apkovl (#307). `lbu status` and `lbu diff` are real
+# comparisons — the last committed apkovl unpacked against a fresh `lbu
+# package` — but lbu looks for <hostname>.apkovl.tar.gz on the media, and
+# pipeOS's canonical is pipeos.apkovl.tar.gz (one generic name, so the boot
+# never prefers a stale hostname-named file; pipeos-save removes any). With
+# no file to compare against, lbu listed every persisted file as "A",
+# forever: "260 uncommitted change(s)" beside a passing verify on zero.
+# LBU_BACKUPDIR is lbu's own door: a tmpfs dir holding a hostname-named
+# symlink to the canonical. lbu still tries to `mount` that dir (lbu.conf's
+# LBU_MEDIA=usb wins over the environment), so a shim mount in front of it
+# answers yes for the tmp dir and hands anything else to the real mount.
+# Root only (lbu package reads root's files); the apkovl's integrity is
+# checked first, the way pipeos-save and pipeos-flash check before trusting
+# a tarball; anything lbu says on stderr (apk's ERROR when the db is
+# broken, which lbu itself swallows into an all-D listing) is "could not".
+# rc 0 = compared; 2 = could not (the reason on stderr).
+lbu_canonical() {
+    if [ "$(id -u)" != 0 ] && [ -z "${PIPEOS_LBU:-}" ]; then
+        echo "compare needs root (lbu package reads root's files)" >&2; return 2
+    fi
+    if [ ! -f "$OVL" ] || ! tar -tzf "$OVL" >/dev/null 2>&1; then
+        echo "no readable canonical apkovl on the media (pipeos verify)" >&2; return 2
+    fi
+    _d=$(mktemp -d) || return 2
+    ln -s "$OVL" "$_d/$(hostname).apkovl.tar.gz"
+    mkdir -p "$_d/bin"
+    # shellcheck disable=SC2016  # the shim's own $_a/$@ must reach its file unexpanded
+    printf '#!/bin/sh\nfor _a; do [ "$_a" = "%s" ] && exit 0; done\nexec /bin/mount "$@"\n' "$_d" > "$_d/bin/mount"
+    chmod 755 "$_d/bin/mount"
+    _out=$(PATH="$_d/bin:$PATH" LBU_BACKUPDIR=$_d "$LBU" "$@" 2>"$_d/err")
+    _rc=$?
+    _err=$(cat "$_d/err" 2>/dev/null)
+    rm -rf "$_d"
+    if [ -n "$_err" ]; then
+        echo "lbu: $_err" >&2; return 2
+    fi
+    printf '%s\n' "$_out"
+    return $_rc
+}
 
 take_save_lock() {
     # shared with pipeos-save: one media mutator at a time
@@ -225,12 +266,18 @@ cmd_status() {
     else
         fail "canonical apkovl MISSING from media"
     fi
-    dirty=$(lbu status 2>/dev/null | wc -l)
-    if [ "$dirty" -gt 0 ]; then
-        warn "$dirty uncommitted change(s) — see pipeos diff, persist with pipeos save"
+    _why=$(mktemp)
+    if _ul=$(lbu_canonical status 2>"$_why"); then
+        dirty=$(printf '%s' "$_ul" | grep -c .)
+        if [ "$dirty" -gt 0 ]; then
+            warn "$dirty uncommitted change(s) vs the canonical apkovl — see pipeos diff, persist with pipeos save"
+        else
+            ok "state committed (the live tree == the canonical apkovl)"
+        fi
     else
-        ok "state committed"
+        warn "cannot tell what a save would change: $(cat "$_why" 2>/dev/null)"
     fi
+    rm -f "$_why"
     if [ -f "$KNOWN_GOOD" ]; then
         if [ "$(sha "$KNOWN_GOOD")" = "$(sha "$OVL")" ]; then
             ok "known-good == current apkovl"
@@ -359,11 +406,18 @@ snapshot_path() {
 }
 
 cmd_diff() {
-    if [ -z "$1" ]; then
-        if [ -n "$(lbu status 2>/dev/null)" ]; then
-            lbu status -v 2>/dev/null || lbu status
+    if [ -z "$1" ] || [ "$1" = --content ]; then
+        # lbu's own status (A added, D deleted, U updated — vs the canonical
+        # apkovl), or with --content its full diff
+        if [ "$1" = --content ]; then
+            lbu_canonical diff
+            case $? in 0|1) return 0 ;; *) return 2 ;; esac     # diff's 1 = trees differ, the normal case
+        fi
+        _ul=$(lbu_canonical status) || return 2
+        if [ -n "$_ul" ]; then
+            printf '%s\n' "$_ul"
         else
-            echo "no uncommitted changes (live state == canonical apkovl)"
+            echo "no uncommitted changes (the live tree == the canonical apkovl)"
         fi
         return 0
     fi

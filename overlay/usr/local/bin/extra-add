@@ -72,4 +72,4 @@ apk add "$@"
 [ -n "$restore_ro" ] && mount -o remount,ro /media/usb
 
 echo "installed: $*"
-echo "now run: lbu status; pipeos-save   (verify across a reboot before trusting)"
+echo "now run: pipeos diff; pipeos save   (verify across a reboot before trusting)"
