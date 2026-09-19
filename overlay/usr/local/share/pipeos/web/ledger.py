@@ -644,30 +644,20 @@ class Ledger:
 
 
 def pause_text(scope, name, cap, spent, day):
-    """The one sentence a paused scope shows everywhere. The box text keeps
-    its historical prefix — the runner's log, selfcheck and the probes
-    match on "monthly cap"."""
+    """The one sentence a paused scope shows everywhere, ending with the verb
+    that lifts THAT cap (every reader — the 409, the runner's log, the
+    banner, selfcheck — shows the sentence as is, so the verb rides with
+    it; the plain marker carries only the text). The box text keeps its
+    historical prefix — the runner's log, selfcheck and the probes match
+    on "monthly cap"."""
     if scope == "agent":
-        return ("agent %s: monthly cap USD %d reached %s (spent %.2f; the per-agent cap on %s); %s resumes on the 1st or when its cap is raised (pipeos schedule set %s --cap N)"
+        return ("agent %s: monthly cap USD %d reached %s (spent %.2f; the per-agent cap on %s); %s resumes on the 1st or when its cap is raised (pipeos schedule set %s --cap N|none)"
                 % (name, cap, day, spent, name, name, name))
     if scope == "cluster":
-        return ("cluster monthly cap USD %d reached %s (spent %.2f across the cluster; CLUSTER_CAP_USD); scheduled jobs on every member resume on the 1st or when the cluster cap is raised under Usage"
+        return ("cluster monthly cap USD %d reached %s (spent %.2f across the cluster; CLUSTER_CAP_USD); scheduled jobs on every member resume on the 1st or when the cluster cap is raised under Usage (pipeos usage cap --cluster N|none)"
                 % (cap, day, spent))
-    return ("monthly cap USD %d reached %s (spent %.2f; this Machine's cap); scheduled jobs resume on the 1st or when the cap is raised under Usage"
+    return ("monthly cap USD %d reached %s (spent %.2f; this Machine's cap); scheduled jobs resume on the 1st or when the cap is raised under Usage (pipeos usage cap N|none)"
             % (cap, day, spent))
-
-
-def lift_hint(text):
-    """The verb that lifts the cap a pause sentence names — the hint every
-    refusal appends. The sentence itself is the key (the plain marker
-    carries only the text): a cluster pause is lifted with --cluster, an
-    agent's with its job's --cap, the box's with the bare cap."""
-    if text.startswith("cluster monthly cap"):
-        return "pipeos usage cap --cluster N|none"
-    m = re.match(r"agent ([^:\s]+):", text)
-    if m:
-        return "pipeos schedule set %s --cap N|none" % m.group(1)
-    return "pipeos usage cap N|none"
 
 
 def _entry(scope, name, cap, spent, day, since):

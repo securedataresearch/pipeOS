@@ -287,16 +287,23 @@ def add_member(box_id, ca_pem, name=""):
     return d
 
 
+def _norm(target):
+    """What the owner typed, as the short id or name it stands for: `a4e0`,
+    `pipeos-a4e0`, `pipeos-a4e0.local`, `A4E0` and `two` all reduce to what
+    the list is keyed or named by. The one normaliser for every matcher."""
+    t = (target or "").strip().lower().removesuffix(".local")
+    return t[len("pipeos-"):] if t.startswith("pipeos-") else t
+
+
 def member_id(d, target):
-    """A member's id from what the owner typed: the short id (`a4e0`), the
-    host form (`pipeos-a4e0`) or the name (`two`) — the forms the status
-    table prints. ClusterError when none of them is a member."""
-    t = (target or "").strip().lower()
-    if t.startswith("pipeos-"):
-        t = t[len("pipeos-"):]
-    if d is not None and t in d["members"]:
+    """A member's id from what the owner typed — the short id, the host
+    form or the name, the forms the status table, mDNS and the page print.
+    ClusterError when none of them is a member."""
+    t = _norm(target)
+    ms = (d or {"members": {}})["members"]
+    if t in ms:
         return t
-    for pid, r in (d or {"members": {}})["members"].items():
+    for pid, r in ms.items():
         if t and (r.get("name") or "").lower() == t:
             return pid
     raise ClusterError("%s is not a member" % target)
@@ -470,11 +477,10 @@ def resolve(target):
         port, target = int(p), host
     if target.count(".") == 3 and target.replace(".", "").isdigit():
         return target, port
-    t = target.lower()
+    t = _norm(target)
     for rows in (_peers(), _roster()):
         for pid, r in rows.items():
-            if t in (pid, (r.get("name") or "").lower(), (r.get("host") or "").lower(),
-                     (r.get("host") or "").lower().removesuffix(".local")) and r.get("ip"):
+            if t in (pid, (r.get("name") or "").lower(), _norm(r.get("host"))) and r.get("ip"):
                 return r["ip"], int(r.get("tls_port") or port)
     raise ClusterError("%s: not a Machine this box knows — pipeos wake --list" % target)
 
@@ -601,6 +607,7 @@ def remove(box_id):
     if d is None:
         raise ClusterError("not in a cluster")
     was = set(d["members"])
+    box_id = member_id(d, box_id)          # the id, whatever form was typed — it must leave the push set too
     d = drop_member(box_id)
     return push(d, only=was - {self_id(), box_id})
 
@@ -865,9 +872,8 @@ def start_agent(on, spec, local_start, local_summary):
         if not mid:
             return 409, {"error": "no member is idle right now — every one is busy or off; name one to start there anyway"}
     else:
-        want = on.strip().lower()
-        want = want[:-6] if want.endswith(".local") else want
-        hit = [r for r in v["members"] if want in (r["id"], (r["name"] or "").lower(), (r.get("host") or "").lower().removesuffix(".local"))]
+        want = _norm(on)
+        hit = [r for r in v["members"] if want in (r["id"], (r["name"] or "").lower(), _norm(r.get("host")))]
         if not hit:
             return 404, {"error": "%s is not a member" % on}
         mid = hit[0]["id"]

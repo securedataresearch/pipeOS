@@ -332,17 +332,17 @@ check("7 'cluster sync' pushes the list to every member ('same' when it already 
 # ── 8. the list endpoint: from a non-member; a list for another cluster; self-removal
 B = Box("bbbb", "two-b"); B.claim("twopassword")            # the same Machine back: a re-flash, a NEW CA
 A.see(B, C)
-rc_rmoff, _ = A.cli("remove", "pipeos-bbbb")                # the host form the status table and mDNS print (#317 polish)
+rc_rmoff, out_rmoff = A.cli("remove", "PIPEOS-BBBB.local")   # the mDNS host form, any case (#317 polish); the push set must not name it
 rc_ra, out_ra = A.cli("add", B.addr, stdin="twopassword\n")
 A.see(B, C)
 st_c, body_c = https(A, "POST", "/api/cluster/members", json.dumps({"cluster": C.doc()}).encode(), cert_of=C)
 st_o, body_o = https(A, "POST", "/api/cluster/members", json.dumps({"cluster": C.doc()}).encode(), cert_of=B)
 rc_self, out_self = A.cli("remove", "aaaa")
-check("8 a re-flashed Machine (new CA, same id) is removed (by its pipeos-ID host form) and added again; a list POSTed with a non-member's certificate fails the handshake; a member's list for another cluster id is answered 'other-cluster' and changes nothing; a Machine does not remove itself",
-      rc_rmoff == 0 and rc_ra == 0 and sorted(A.doc()["members"]) == ["aaaa", "bbbb"] and A.doc()["members"]["bbbb"]["ca"] == B.ca()
+check("8 a re-flashed Machine (new CA, same id) is removed (by its pipeos-ID.local host form; the push report does not name the removed one) and added again; a list POSTed with a non-member's certificate fails the handshake; a member's list for another cluster id is answered 'other-cluster' and changes nothing; a Machine does not remove itself",
+      rc_rmoff == 0 and "bbbb" not in out_rmoff.split("list pushed:")[-1] and rc_ra == 0 and sorted(A.doc()["members"]) == ["aaaa", "bbbb"] and A.doc()["members"]["bbbb"]["ca"] == B.ca()
       and st_c == 0 and "handshake" in body_c["error"]
       and st_o == 200 and body_o["result"] == "other-cluster" and sorted(A.doc()["members"]) == ["aaaa", "bbbb"]
-      and rc_self == 1 and "does not remove itself" in out_self, repr((rc_rmoff, rc_ra, out_ra[-160:], st_c, body_c, st_o, body_o, rc_self, out_self)))
+      and rc_self == 1 and "does not remove itself" in out_self, repr((rc_rmoff, out_rmoff[-120:], rc_ra, out_ra[-160:], st_c, body_c, st_o, body_o, rc_self, out_self)))
 
 # ── 9. §3: a member seen in ANOTHER cluster is dropped on read, after its own request was admitted
 A.see(B, C, bbbb={"cl": "someothercluster0"})
