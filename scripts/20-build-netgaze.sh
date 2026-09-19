@@ -33,5 +33,9 @@ file "$OUT/payloads/netgaze" | grep -q 'static' \
     || { echo "ERROR: netgaze is not statically linked" >&2; exit 1; }
 NETGAZE_VERSION=$(grep -m1 '^version' "$NETGAZE_SRC/Cargo.toml" | cut -d'"' -f2)
 NETGAZE_SHA=$(git -C "$NETGAZE_SRC" rev-parse --short HEAD)
-echo "${NETGAZE_VERSION}_git${NETGAZE_SHA}" > "$OUT/payloads/netgaze.version"
-echo "netgaze $NETGAZE_VERSION ($NETGAZE_SHA) built: $OUT/payloads/netgaze"
+# an apk pkgver: digits, and a _git suffix must be digits too (the commit's
+# date) — the sha is for the log, not the version
+NETGAZE_DATE=$(git -C "$NETGAZE_SRC" log -1 --format=%cd --date=format:%Y%m%d)
+echo "${NETGAZE_VERSION}_git${NETGAZE_DATE}" > "$OUT/payloads/netgaze.version"
+echo "$NETGAZE_SHA" > "$OUT/payloads/netgaze.sha"
+echo "netgaze $NETGAZE_VERSION ($NETGAZE_SHA, ${NETGAZE_DATE}) built: $OUT/payloads/netgaze"
