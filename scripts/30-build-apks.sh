@@ -40,9 +40,15 @@ HERMES_VERSION=$(grep -m1 '^version' "$PIPEOS_ROOT/vendor/hermes-agent/pyproject
 [ -f "$OUT/payloads/pipe" ] || { echo "run 20-build-pipe.sh first" >&2; exit 1; }
 PIPE_VERSION=$(cat "$OUT/payloads/pipe.version")
 
+# ---------------------------------------------------------------- netgaze payload (#217)
+if [[ " $PIPEOS_PKGS " == *" netgaze "* ]]; then
+    [ -f "$OUT/payloads/netgaze" ] || { echo "run 20-build-netgaze.sh first" >&2; exit 1; }
+    NETGAZE_VERSION=$(cat "$OUT/payloads/netgaze.version")
+fi
+
 # ---------------------------------------------------------------- abuild all
 # Work copies live under out/pipeos/<pkg> so REPODEST repo name is "pipeos".
-declare -A VERS=( [pipe]="$PIPE_VERSION" [claude-code]="$CLAUDE_VERSION" [hermes-agent]="$HERMES_VERSION" )
+declare -A VERS=( [pipe]="$PIPE_VERSION" [claude-code]="$CLAUDE_VERSION" [hermes-agent]="$HERMES_VERSION" [netgaze]="${NETGAZE_VERSION:-}" )
 mkdir -p "$OUT/pipeos" "$OUT/repo"
 for pkg in $PIPEOS_PKGS; do
     mkdir -p "$OUT/pipeos/$pkg"
