@@ -98,19 +98,6 @@ fi
 
 # ---- 1b. /work is the declared block device, not just "something mounted
 # there" (pipe#650 item 11). box0's /work was tmpfs silently masking an
-# /data is the name the bulk volume is getting (#219): this release makes the
-# name work as a symlink to /work. Say when it is missing or is something else
-# — a box whose agents write to /data would be writing to RAM.
-if mountpoint -q /work 2>/dev/null; then
-    if [ "$(readlink -f /data 2>/dev/null)" = /work ]; then
-        ok "/data resolves to the volume (/work; the name is a symlink this release)"
-    elif [ ! -e /data ]; then
-        warn "/data does not exist yet — the name the docs use reaches nothing; sh /etc/local.d/workspace.sh lays it (it is laid at every boot)"
-    else
-        crit "/data is not a link to /work — anything written under /data is in RAM and gone at the next boot; move it into /work and remove /data"
-    fi
-fi
-
 # unmounted PIPEWORK partition; `mountpoint -q /work` was true the whole
 # time, so section 1's check above would not have caught it — a tmpfs
 # mount is still a mountpoint. LABEL=PIPEWORK is the declared device (same
@@ -135,6 +122,26 @@ if mountpoint -q /work; then
         crit "/work is a mountpoint but /proc/mounts shows no entry for it — cannot verify the backing device"
     elif [ "$_have" != "$_want" ]; then
         crit "/work is mounted from $_have, not the declared device $_want (LABEL=PIPEWORK) — writes may not persist across reboot"
+    fi
+fi
+
+# ---- 1ba. /data is the bulk volume's NAME (#219). This release makes the name
+# work without moving anything: the volume mounts at /work and /data is a
+# symlink to it, laid at every boot by /etc/local.d/workspace.sh. A box whose
+# agents write under /data when that link is absent or points elsewhere is
+# writing to RAM, and loses it at the next boot — so say which of the three
+# this box is. Silent success: the report has no per-check "ok" line, and a
+# name that resolves is not news.
+if mountpoint -q /work 2>/dev/null; then
+    _data_to=$(readlink /data 2>/dev/null)
+    if [ -L /data ] && [ "$_data_to" = /work ]; then
+        :
+    elif [ -L /data ]; then
+        crit "/data is a symlink to ${_data_to:-nowhere}, not to /work — anything written under /data misses the volume; rm /data and run 'sh /etc/local.d/workspace.sh' to lay it again"
+    elif [ ! -e /data ]; then
+        warnn "/data does not exist — the name the docs and a job's working dir use reaches nothing; 'sh /etc/local.d/workspace.sh' lays it, and so does every boot"
+    else
+        crit "/data is a real directory, not a link to /work — anything written under it is in RAM and gone at the next boot; move what is in it into /work, remove it, then 'sh /etc/local.d/workspace.sh'"
     fi
 fi
 

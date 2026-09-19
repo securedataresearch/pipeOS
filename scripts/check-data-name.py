@@ -13,6 +13,7 @@ _DATA, _NO_MOUNT — a box never sets them); the rest asserts the wiring that
 lays the link on a live box and the row that says when it is wrong.
 """
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -71,13 +72,36 @@ check("5 a real directory with content in it is left alone and said (moving an u
       rc5 == 0 and not os.path.islink(data5) and os.path.isfile(os.path.join(data5, "someones.file")) and "is not a link to" in out5,
       "rc=%s out=%r" % (rc5, out5[-200:]))
 
-# 6. the wiring: a deploy that installs the script runs it (no service bounce), selfcheck says when the name is wrong
+# 6. a link that points somewhere else is OURS to repoint — the name belongs to
+# the volume, and leaving it would make every boot and deploy a no-op while
+# selfcheck asked for one
+d6, w6, data6 = case(); os.symlink(os.path.join(d6, "elsewhere"), data6)
+rc6, out6 = run(w6, data6)
+check("6 a symlink at /data that points somewhere else (a dangling one, or somebody's own) is repointed at the volume and said — not left, which would make every boot and every deploy a no-op",
+      rc6 == 0 and os.path.islink(data6) and os.readlink(data6) == w6 and "repointing it at the volume" in out6,
+      "rc=%s target=%r out=%r" % (rc6, os.path.realpath(data6), out6[-200:]))
+
+# 7. the wiring: a deploy that installs the script runs it and shows what it said
 dep = open(os.path.join(REPO, "overlay/usr/local/bin/pipeos-deploy-overlay")).read()
+check("7 a deploy that installs a new workspace.sh runs it (idempotent, so no rc-service restart bounces pipe-daemon, the assistant or the owner's terminals) and prints what the script said — the script exits 0 when it REFUSES a /data that is not ours, so swallowing its line would have the deploy claim a link it did not lay",
+      'grep -qxF "etc/local.d/workspace.sh" "$installed_rels"' in dep and 'sh "$ROOT/etc/local.d/workspace.sh" 2>&1' in dep
+      and "rc-service pipeos-workspace" not in dep and '_ws_out' in dep, "")
+
+# 8. selfcheck reports it — and calls helpers that EXIST. selfcheck has no root
+# seam, so a probe cannot run it; a row that greps for message text passes just
+# as happily when the line calls `warn` (no such function: the report gets
+# nothing, the DM gets nothing) as when it calls `warnn`. So: read the helpers
+# the file defines, then check every reporting call in the file against them.
 sc = open(os.path.join(REPO, "overlay/usr/local/bin/pipeos-selfcheck")).read()
-check("6 a deploy that installs a new workspace.sh runs it (idempotent, so no rc-service restart bounces pipe-daemon, the assistant or the owner's terminals); selfcheck has a row for the name — ok when it resolves to the volume, a warning when it is missing, CRITICAL when it is a real directory (writes there are in RAM)",
-      'grep -qxF "etc/local.d/workspace.sh" "$installed_rels"' in dep and 'sh "$ROOT/etc/local.d/workspace.sh"' in dep
-      and "rc-service pipeos-workspace" not in dep
-      and '/data resolves to the volume' in sc and "/data does not exist yet" in sc and "is not a link to /work" in sc, "")
+defined = set(re.findall(r"^(\w+)\(\)\s*\{", sc, re.M))
+REPORTERS = {"ok", "warn", "warnn", "crit", "critstate", "note", "noten", "fixed", "fix", "would", "info", "pass"}
+called = set(re.findall(r"^\s*(\w+)\s+\"", sc, re.M)) & REPORTERS
+undefined = sorted(called - defined)
+sec = re.search(r"^# ---- 1ba\..*?(?=^# ---- )", sc, re.M | re.S)
+sec = sec.group(0) if sec else ""
+check("8 selfcheck's /data section is its own numbered section (not spliced into 1b's comment) and reports through helpers the file actually defines — no call anywhere in selfcheck goes to a reporting function that does not exist",
+      sec and "warnn " in sec and "crit " in sec and "is a real directory" in sec and "does not exist" in sec and not undefined,
+      "undefined reporters called: %r; section found: %s" % (undefined, bool(sec)))
 
 print("%d/%d" % (sum(RESULTS), len(RESULTS)))
 sys.exit(0 if all(RESULTS) else 1)

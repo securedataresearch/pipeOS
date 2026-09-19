@@ -17,7 +17,7 @@ until dev=$(findfs LABEL=PIPEWORK 2>/dev/null) || [ -n "${PIPEOS_WORKSPACE_NO_MO
 	fi
 	sleep 1
 done
-mkdir -p /work
+mkdir -p "$WORK"
 # -t ext4 EXPLICITLY: busybox mount auto-detection misread this ext4
 # partition as FAT on the first customer boot (kernel: "FAT-fs (sda2): utf8
 # is not a recommended IO charset") and failed — /work then never mounted
@@ -38,8 +38,14 @@ mkdir -p "$WORK"/repos "$WORK"/logs "$WORK"/cache "$WORK"/claude "$WORK"/pipebox
 # A real directory at /data is not ours (something wrote there before the link
 # existed): empty, it is replaced; with content in it, it is left alone and
 # said, because moving an unknown directory is not this script's call.
-if [ -L "$DATA" ]; then
+if [ -L "$DATA" ] && [ "$(readlink "$DATA")" = "$WORK" ]; then
 	:
+elif [ -L "$DATA" ]; then
+	# a link, but not to the volume (a dangling one, or somebody's own): ours
+	# to repoint — the name belongs to the volume, and leaving it would make
+	# every boot and every deploy a no-op while selfcheck asked for one
+	logger -s -t workspace "$DATA pointed at $(readlink "$DATA") — repointing it at the volume ($WORK)"
+	rm -f "$DATA" && ln -s "$WORK" "$DATA"
 elif [ ! -e "$DATA" ]; then
 	ln -s "$WORK" "$DATA"
 elif [ -d "$DATA" ] && rmdir "$DATA" 2>/dev/null; then

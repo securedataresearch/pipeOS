@@ -588,10 +588,15 @@ fi
 # browser terminals, a live stream — for a start whose live effect is one
 # symlink (the #325 review).
 if grep -qxF "etc/local.d/workspace.sh" "$installed_rels" 2>/dev/null; then
-    if sh "$ROOT/etc/local.d/workspace.sh" >/dev/null 2>&1; then
-        say "ran the workspace script (it is idempotent; this lays /data and the skeleton without bouncing a service)"
+    _ws_out=$(sh "$ROOT/etc/local.d/workspace.sh" 2>&1); _ws_rc=$?
+    # its own diagnostics are the point: the script exits 0 when it REFUSES to
+    # touch a /data that is not ours, and swallowing that line would have the
+    # deploy claim it laid a link it did not lay
+    [ -n "$_ws_out" ] && printf '%s\n' "$_ws_out" | sed 's/^/  /'
+    if [ "$_ws_rc" = 0 ]; then
+        say "ran the workspace script (it is idempotent; it lays /data and the skeleton without bouncing a service)"
     else
-        say "the workspace script returned nonzero — run 'sh /etc/local.d/workspace.sh' and read it (the volume is untouched either way)"
+        say "the workspace script returned $_ws_rc — run 'sh /etc/local.d/workspace.sh' and read it (the volume is untouched either way)"
     fi
 fi
 
