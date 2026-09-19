@@ -1,0 +1,19 @@
+# Maintainer: Sam Reeves <samtreeves@gmail.com>
+# Prebuilt static musl binary produced by scripts/20-build-netgaze.sh
+# (host cross-compile of SamReeves/netgaze). pkgver is rewritten by
+# scripts/30-build-apks.sh. The LAN collector behind the dashboard's
+# network map (pipeOS#217, docs/cluster.md §4).
+pkgname=netgaze
+pkgver=0.0.0
+pkgrel=0
+pkgdesc="netgaze — LAN monitor and collector (netgaze probe lan --json feeds the network map)"
+url="https://github.com/SamReeves/netgaze"
+arch="x86_64"
+license="MIT"
+depends="iproute2-minimal"
+options="!check !strip !tracedeps"
+source=""
+
+package() {
+	install -Dm755 /pipeOS/out/payloads/netgaze "$pkgdir"/usr/bin/netgaze
+}

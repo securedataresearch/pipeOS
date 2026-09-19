@@ -1135,6 +1135,11 @@ async function dashboard() {
           <div class="cardhead"><h2>Machines on this network</h2><span class="note" id="nmnote"></span></div>
           <div id="nmrows" class="note">looking…</div>
         </div>
+        <div class="card">
+          <div class="cardhead"><h2>Everything on this network</h2><span><span class="note" id="lannote"></span> <button id="lanrefresh" class="ghost small" type="button" data-vok>look again</button></span></div>
+          <p class="sub">What netgaze sees from here: every device that answered a ping or sits in the neighbour table — the switch, the router, laptops, printers — with the Machines marked. A network is a room; this is who is in it.</p>
+          <div id="lanrows" class="note">looking…</div>
+        </div>
         <div class="stats">
           <div class="tile"><div class="k">Address</div><div class="val small" id="nip">…</div><div class="note" id="nif"></div></div>
           <div class="tile"><div class="k">Down</div><div class="val small" id="nrx">…</div></div>
@@ -2214,8 +2219,33 @@ async function dashboard() {
       pollSystem();
     };
   });
+  // ---- the network map (#217): netgaze's pass, every row marked ----
+  const KIND = { self: "this Machine", member: "member of this cluster", machine: "a Machine", other: "" };
+  const renderLan = (d) => {
+    const rows = v.querySelector("#lanrows"), note = v.querySelector("#lannote");
+    if (!rows) return;
+    const ds = d.devices || [];
+    if (d.error && !ds.length) { rows.className = "note"; rows.textContent = d.error; note.textContent = ""; return; }
+    rows.className = "";
+    rows.innerHTML = `<table class="tbl"><thead><tr><th>address</th><th>name</th><th>mac</th><th>rtt</th><th>what</th></tr></thead><tbody>${ds.map(r => `<tr class="${r.awake === false ? "dim" : ""}">
+      <td class="mono">${esc(r.ip)}</td>
+      <td>${esc(r.name || r.host || "")}${r.model ? ` <span class="note">${esc(r.model)}</span>` : ""}</td>
+      <td class="mono">${esc(r.mac || "")}</td>
+      <td>${r.rtt_ms != null ? r.rtt_ms.toFixed(1) + " ms" : (r.awake === false ? "off" : "—")}</td>
+      <td>${r.kind === "self" ? '<span class="pill status-ok">this Machine</span>' : r.kind === "member" ? '<span class="pill status-ok">member</span>' : r.kind === "machine" ? '<span class="pill">a Machine</span>' : ""}</td>
+    </tr>`).join("")}</tbody></table>`;
+    const when = d.at ? new Date(d.at * 1000) : null;
+    note.textContent = `${ds.length} device${ds.length === 1 ? "" : "s"}${when ? " · " + when.toLocaleTimeString() : ""}${d.error ? " · " + d.error : ""}`;
+  };
+  const pollLan = async (refresh) => {
+    try { renderLan(await api("/api/lan" + (refresh ? "?refresh=1" : ""))); }
+    catch (e) { const rows = v.querySelector("#lanrows"); if (rows) { rows.className = "note"; rows.textContent = e.message; } }
+  };
+  const lanBtn = v.querySelector("#lanrefresh");
+  if (lanBtn) lanBtn.onclick = async () => { lanBtn.disabled = true; v.querySelector("#lannote").textContent = "asking the network…"; await pollLan(true); lanBtn.disabled = false; };
   // ---- network tiles + traffic chart ----
   const pollNetwork = async () => {
+    pollLan(false);
     try {
       const r = await api("/api/lobby");
       const rows = v.querySelector("#nmrows"), note = v.querySelector("#nmnote");

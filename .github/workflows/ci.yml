@@ -92,6 +92,8 @@ jobs:
         run: python3 scripts/check-status-diff.py
       - name: "pipeos-save packages once and the sha256 is the only nothing-changed decision; flush every tick, GC only on a persist (#318)"
         run: python3 scripts/check-save.py
+      - name: "the network map (#217): netgaze's pass parsed, cached, every row marked; a missing netgaze is a sentence, not an error"
+        run: python3 scripts/check-lan.py
 
       # the single-box pass on zero (2026-09-16): unclaim is a factory reset —
       # every owner record and sign-in gone, a new CA, the canonical AND the
