@@ -175,6 +175,9 @@ for _n in $needs; do
     fi
     # shellcheck disable=SC2086  # REQUEST is a command with its arguments
     _ans=$($REQUEST "$_n" "job $job needs it" 2>&1 | tail -1); _rc=$?
+    # the verb's own sentence, with its "secrets:" prefix and any echo of the
+    # arguments trimmed — the row already says which job and which secret
+    _ans=$(printf '%s' "${_ans#secrets: }" | sed "s/ *job $job needs it\$//")
     _why="waiting for $_n — ${_ans:-asked the cluster}"
     log "job $job: $_why"
     # the wait is a state the Schedule row and `schedule ls` show (not only

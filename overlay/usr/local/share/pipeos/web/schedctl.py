@@ -184,7 +184,7 @@ def cmd_ls():
         s = st.get(j["name"], {})
         last = s.get("last_status", "never run")
         if last == "waiting" and s.get("last_error"):
-            last = "waiting — %s" % s["last_error"]
+            last = s["last_error"]          # it already begins "waiting for NAME — …"
         fails = s.get("consecutive_failures", 0)
         pw = ledger.why_paused(j["name"], PAUSED, PAUSED_JSON) if not gpaused else ""
         print("%-32s %-18s %-9s %-8s %-8s %s%s%s%s%s" % (
