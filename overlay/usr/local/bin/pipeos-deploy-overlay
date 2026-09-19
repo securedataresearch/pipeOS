@@ -384,6 +384,53 @@ if [ -s "$stale_rels" ]; then
 fi
 rm -f "$ref_paths"
 
+# ---- 4b. the card's outputs follow the templates (pipeOS#281) -------------
+# etc/pipeos/* and root/.pipe/policy.json are never deployed (NEVER, above):
+# they are derived, on this box, from card.conf through the templates this
+# deploy just installed. When the templates or the generator changed, the
+# derived files are now wrong by construction and `pipebox-card verify`
+# FAILs — and selfcheck runs it, so the box reads CRITICAL until someone
+# regenerates. Do it here, from the box's own card, which this tool does not
+# write. verify-then-generate is self-healing: it also repairs a divergence a
+# prior template deploy left behind, not only one from this run. verify's
+# exit 2 (no card, no stamp) is "cannot tell", not "divergent": an
+# unprovisioned box, or one whose card was just installed and never
+# generated, is left for the operator — regenerating there would be this
+# tool deciding a box's identity, which is exactly what it must not do.
+# pipebox-card verify's rc, from ONE place (the dry run, the no-change
+# reasons and the step all ask the same question): 0 match, 1 divergent,
+# 2 cannot tell (no card, no generation stamp — or no pipebox-card at all).
+card_verify_rc() {
+    pbc="$ROOT/usr/local/bin/pipebox-card"
+    [ -f "$pbc" ] || return 2
+    sh "$pbc" verify --card "$CARD" --root "${ROOT:-/}" \
+        --templates "$ROOT/usr/local/share/pipeos/card" >/dev/null 2>&1
+}
+card_regenerated=no
+card_outputs_step() {
+    pbc="$ROOT/usr/local/bin/pipebox-card"
+    [ -f "$pbc" ] || { say "card outputs: no pipebox-card on this box — left alone (run 'pipebox-card generate' once one is installed)"; return 0; }
+    # No pre-gate on NICK: a GENERIC box claimed through the wizard has an
+    # empty NICK, was taken for unprovisioned here, and sat CRITICAL after
+    # every template deploy until a hand generate (zero, twice on 2026-09-19
+    # UTC; pipeOS#313). verify's own exit 2 — no card, no stamp — is the one
+    # notion of "generate never ran here", and the `*)` arm below honours it.
+    card_verify_rc
+    case $? in
+        0)  say "card outputs: match the deployed templates" ;;
+        1)  say "card outputs: diverge from the deployed templates — regenerating with pipebox-card generate"
+            if sh "$pbc" generate --card "$CARD" --root "${ROOT:-/}" \
+                   --templates "$ROOT/usr/local/share/pipeos/card" >/dev/null 2>&1; then
+                card_regenerated=yes
+                say "regenerated the card outputs from $CARD"
+                log "regenerated card outputs after deploy (the templates or the generator changed, or a divergence was left behind)"
+            else
+                die "pipebox-card generate FAILED — the box's generated files do not match the deployed templates; run 'pipebox-card generate' by hand and read its error"
+            fi ;;
+        *)  say "card outputs: no generation stamp on this box — left alone (run 'pipebox-card generate' once the box is provisioned)" ;;
+    esac
+}
+
 echo
 say "$REF = ${commit} ($cdate)"
 say "  $subject"
@@ -391,16 +438,25 @@ sort "$changes" | sed 's/^/  /'
 say "$n_new new, $n_mod changed, $n_same unchanged, $n_skip never-deployed"
 
 n_stale=$(wc -l < "$stale_rels" 2>/dev/null | tr -d ' '); n_stale=${n_stale:-0}
-if [ "$n_new" = 0 ] && [ "$n_mod" = 0 ] && [ "$n_stale" = 0 ] && [ "$card_action" = none ]; then
-    # Nothing to install. Two reasons the stamp may still need writing: the
-    # box predates stamps (pipeOS#97), or history was rewritten under it — the
-    # files are byte-identical but the commit it names is on no remote branch
-    # any more (a merge message fixed on main, 2026-09-19), and status read
-    # "deployed commit … is NOT on origin/main" forever. Not a reason: an
-    # older or sibling ref with identical bytes (`--from feat`), or a stamp
-    # naming a commit this checkout cannot resolve — status and selfcheck
-    # already say "cannot tell" for that, honestly.
-    reason=""
+installs=yes
+[ "$n_new" = 0 ] && [ "$n_mod" = 0 ] && [ "$n_stale" = 0 ] && [ "$card_action" = none ] && installs=no
+# Nothing to install is not always nothing to do. Two reasons the stamp may
+# still need writing: the box predates stamps (pipeOS#97), or history was
+# rewritten under it — the files are byte-identical but the commit it names
+# is on no remote branch any more (a merge message fixed on main, 2026-09-19),
+# and status read "deployed commit … is NOT on origin/main" forever. Not a
+# reason: an older or sibling ref with identical bytes (`--from feat`), or a
+# stamp naming a commit this checkout cannot resolve — status and selfcheck
+# already say "cannot tell" for that, honestly. A third reason to act: the
+# card outputs already diverge from the templates on this box (an older
+# deployer skipped the card step — three, 2026-09-19, pipeOS#321); the card
+# step below heals exactly that, and used to be reached only by a run that
+# also installed a file. Whatever the reason, it goes through the ONE
+# pipeline below — the dry run, the prompt, the step, the save, the verify —
+# not a second copy of it.
+reason=""
+card_fix=no
+if [ "$installs" = no ]; then
     stamped=$(sed -n 's/^commit //p' "$STAMP" 2>/dev/null | head -1)
     if [ ! -f "$STAMP" ]; then
         reason="no stamp on this box yet"
@@ -410,29 +466,13 @@ if [ "$n_new" = 0 ] && [ "$n_mod" = 0 ] && [ "$n_stale" = 0 ] && [ "$card_action
          && [ -z "$(git -C "$REPO" branch -r --contains "$stamped" 2>/dev/null)" ]; then
         reason="the stamp names $(echo "$stamped" | cut -c1-12), a commit on no remote branch any more (history rewritten; the files are identical)"
     fi
-    if [ -z "$reason" ]; then
+    card_verify_rc; [ $? = 1 ] && card_fix=yes
+    if [ -z "$reason" ] && [ "$card_fix" = no ]; then
         say "already at $REF — nothing to do."
         exit 0
     fi
-    if [ "$DRY" = yes ]; then
-        say "already at $REF — would re-stamp as $(echo "$commit" | cut -c1-12): $reason (then save and verify)"
-        say "dry run — nothing written."
-        exit 0
-    fi
-    say "already at $REF — re-stamping as $(echo "$commit" | cut -c1-12): $reason"
-    log "re-stamp ${stamped:-none} -> $commit on $REF ($reason)"
-    write_stamp_file
-    if [ "$NO_PERSIST" = 1 ]; then
-        log "OK re-stamped $REF=$commit into ${ROOT:-/} (no-persist)"
-        exit 0
-    fi
-    say "saving…"
-    /usr/local/bin/pipeos-save || die "pipeos-save FAILED — the stamp is written but NOT persisted; fix and re-save"
-    say "verifying…"
-    pipeos verify || die "pipeos verify FAILED after the re-stamp (nothing else changed) — read its rows"
-    log "OK re-stamped $REF=$commit"
-    say "re-stamped $REF = $(echo "$commit" | cut -c1-12), saved and verified."
-    exit 0
+    [ -n "$reason" ] && say "already at $REF — re-stamping as $(echo "$commit" | cut -c1-12): $reason"
+    [ "$card_fix" = yes ] && say "already at $REF — the card outputs diverge from the deployed templates"
 fi
 
 if [ "$DRY" = yes ]; then
@@ -442,13 +482,12 @@ if [ "$DRY" = yes ]; then
     # whether they already diverge on the box (then the same). Only where
     # generate has run (the stamp): a box it never ran on is left alone
     # either way — the same signal the real run's verify uses (#313).
+    [ -n "$reason" ] && say "would re-stamp as $(echo "$commit" | cut -c1-12): $reason (then save and verify)"
     if [ -r "${ROOT%/}/etc/pipeos/.card-stamp" ]; then
         if grep -Eq '^(new|mod)   ?(usr/local/share/pipeos/card/|usr/local/bin/pipebox-card( |$))' "$changes"; then
             say "card outputs: would regenerate (this ref changes a card template or the generator)"
-        elif [ -f "$ROOT/usr/local/bin/pipebox-card" ] \
-             && { sh "$ROOT/usr/local/bin/pipebox-card" verify --card "$CARD" --root "${ROOT:-/}" \
-                  --templates "$ROOT/usr/local/share/pipeos/card" >/dev/null 2>&1; [ $? = 1 ]; }; then
-            say "card outputs: would regenerate (they already diverge from the templates on this box)"
+        elif card_verify_rc; [ $? = 1 ]; then
+            say "card outputs: would regenerate (they already diverge from the templates on this box; then save and verify)"
         fi
     fi
     say "dry run — nothing written."
@@ -515,45 +554,15 @@ if [ "$card_action" = install ]; then
     say "installed docs/cards/$NICK.card -> $CARD"
 fi
 
-# ---- 4b. the card's outputs follow the templates (pipeOS#281) -------------
-# etc/pipeos/* and root/.pipe/policy.json are never deployed (NEVER, above):
-# they are derived, on this box, from card.conf through the templates this
-# deploy just installed. When the templates or the generator changed, the
-# derived files are now wrong by construction and `pipebox-card verify`
-# FAILs — and selfcheck runs it, so the box reads CRITICAL until someone
-# regenerates. Do it here, from the box's own card, which this tool does not
-# write. verify-then-generate is self-healing: it also repairs a divergence a
-# prior template deploy left behind, not only one from this run. verify's
-# exit 2 (no card, no stamp) is "cannot tell", not "divergent": an
-# unprovisioned box, or one whose card was just installed and never
-# generated, is left for the operator — regenerating there would be this
-# tool deciding a box's identity, which is exactly what it must not do.
-card_outputs_step() {
-    pbc="$ROOT/usr/local/bin/pipebox-card"
-    [ -f "$pbc" ] || { say "card outputs: no pipebox-card on this box — left alone (run 'pipebox-card generate' once one is installed)"; return 0; }
-    # No pre-gate on NICK: a GENERIC box claimed through the wizard has an
-    # empty NICK, was taken for unprovisioned here, and sat CRITICAL after
-    # every template deploy until a hand generate (zero, twice on 2026-09-19
-    # UTC; pipeOS#313). verify's own exit 2 — no card, no stamp — is the one
-    # notion of "generate never ran here", and the `*)` arm below honours it.
-    sh "$pbc" verify --card "$CARD" --root "${ROOT:-/}" \
-        --templates "$ROOT/usr/local/share/pipeos/card" >/dev/null 2>&1
-    case $? in
-        0)  say "card outputs: match the deployed templates" ;;
-        1)  say "card outputs: diverge from the deployed templates — regenerating with pipebox-card generate"
-            if sh "$pbc" generate --card "$CARD" --root "${ROOT:-/}" \
-                   --templates "$ROOT/usr/local/share/pipeos/card" >/dev/null 2>&1; then
-                say "regenerated the card outputs from $CARD"
-                log "regenerated card outputs after deploy (templates or generator changed)"
-            else
-                die "pipebox-card generate FAILED after the deploy — the templates are installed but the box's generated files do not match them; run 'pipebox-card generate' by hand and read its error"
-            fi ;;
-        *)  say "card outputs: no generation stamp on this box — left alone (run 'pipebox-card generate' once the box is provisioned)" ;;
-    esac
-}
 card_outputs_step
 
-write_stamp_file
+# The stamp names what this tool installed. A run that installed nothing
+# and only healed the card outputs leaves it alone (row 17d); a re-stamp
+# (#320) writes it with the reason in the log.
+if [ "$installs" = yes ] || [ -n "$reason" ]; then
+    [ -n "$reason" ] && log "re-stamp ${stamped:-none} -> $commit on $REF ($reason)"
+    write_stamp_file
+fi
 
 # ---- 5. re-seed the watcher if its code changed ---------------------------
 # A changed cohort-watch has a changed idea of what it has already seen; its
@@ -665,5 +674,12 @@ if ! pipeos verify; then
   'pipeos rollback known-good'."
 fi
 
-log "OK deployed $REF=$commit ($n_new new, $n_mod changed)"
-say "deployed $REF = $(echo "$commit" | cut -c1-12), saved and verified."
+if [ "$installs" = yes ]; then
+    log "OK deployed $REF=$commit ($n_new new, $n_mod changed)"
+    say "deployed $REF = $(echo "$commit" | cut -c1-12), saved and verified."
+else
+    did="${reason:+re-stamped}${reason:+${card_regenerated:+ and }}"
+    [ "$card_regenerated" = yes ] && did="${did}regenerated the card outputs"
+    log "OK $did at $REF=$commit (nothing installed)"
+    say "$did at $REF = $(echo "$commit" | cut -c1-12), saved and verified."
+fi

@@ -59,7 +59,10 @@ pipeos deploy-overlay --yes        # install, restart changed services, enrol ne
   "N changed" — if the changed file is the deployer, run again.
 - It carries `etc/crontabs/root` and enrols new `etc/init.d/*` where
   `scripts/40-build-apkovl.sh` puts them (since #254/#255). It never
-  touches `etc/pipeos/*` or `root/.pipe/policy.json`.
+  *installs* `etc/pipeos/*` or `root/.pipe/policy.json` — but it does
+  **regenerate** them from the box's own card whenever they diverge from
+  the deployed templates, on any run, even one that installs nothing
+  (#321); a hand edit under `/etc/pipeos` does not survive a deploy.
 - After a **template** change (`usr/local/share/pipeos/card/*.tmpl`) it
   regenerates the card outputs itself, before the save (#281; `--dry-run`
   says "would regenerate"). A box generate has never run on is left alone

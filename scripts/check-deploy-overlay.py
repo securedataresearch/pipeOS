@@ -444,6 +444,26 @@ check("17c a claimed box with an empty NICK (GENERIC, claimed through the wizard
       dry_said_c and c17c.rc == 0 and "regenerated the card outputs" in c17c.log and "Another line a release adds" in (c17c.live("etc/pipeos/mandate.md") or "") and real_verify(c17c) == 0,
       "dry=%s rc=%d verify=%d log=%r" % (dry_said_c, c17c.rc, real_verify(c17c), c17c.log[-400:]))
 
+# ── 17d. the no-change path heals the card outputs too (pipeOS#321: three stayed
+# CRITICAL after a second deploy found "0 new, 0 changed" and exited before the card
+# step; the divergence the first run left behind was never repaired)
+c17d = case(fixture=REAL_FIXTURE, card=REAL_CARD)
+write(os.path.join(c17d.root, "etc/pipeos/provisioned"), "")
+c17d.run()                                                   # a normal deploy, stamped
+g = subprocess.run(["sh", PBC, "generate", "--card", os.path.join(c17d.root, "etc/pipeos/card.conf"),
+                    "--root", c17d.root, "--templates", TMPL_DIR], capture_output=True, text=True)
+assert g.returncode == 0, "row 17d setup: generate failed: " + g.stderr
+mp = os.path.join(c17d.root, "etc/pipeos/mandate.md")
+write(mp, open(mp).read() + "\nleft behind by an older deployer that skipped the card step\n")   # the divergence
+stamp_before = c17d.stamp()
+c17d.run("--dry-run")
+dry_d = "would regenerate (they already diverge" in c17d.log and "left behind by an older deployer" in open(mp).read()
+c17d.run()
+check("17d a deploy with nothing to install (same ref) still heals card outputs that already diverge: the dry run says so and leaves them; the real run regenerates them, verify is clean, the overlay stamp is untouched (pipeOS#321)",
+      dry_d and c17d.rc == 0 and "regenerated the card outputs" in c17d.log and "re-stamp" not in c17d.log and "left behind by an older deployer" not in open(mp).read()
+      and real_verify(c17d) == 0 and c17d.stamp() == stamp_before,
+      "dry=%s rc=%d verify=%d stamp_same=%s log=%r" % (dry_d, c17d.rc, real_verify(c17d), c17d.stamp() == stamp_before, c17d.log[-400:]))
+
 # ── 17b. a box generate has never run on is left alone ──────────────────
 # verify's exit 2 is "cannot tell", not "divergent". Regenerating there would
 # be this tool deciding a box's identity from a card nobody has acted on yet.
