@@ -67,7 +67,7 @@ pipe:
 netgaze:
 	./scripts/20-build-netgaze.sh
 
-apks: chroot
+apks: chroot netgaze
 	./scripts/30-build-apks.sh
 
 apkovl:

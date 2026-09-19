@@ -2220,24 +2220,27 @@ async function dashboard() {
     };
   });
   // ---- the network map (#217): netgaze's pass, every row marked ----
-  const KIND = { self: "this Machine", member: "member of this cluster", machine: "a Machine", other: "" };
+  let lanAt = 0;
   const renderLan = (d) => {
     const rows = v.querySelector("#lanrows"), note = v.querySelector("#lannote");
     if (!rows) return;
     const ds = d.devices || [];
     if (d.error && !ds.length) { rows.className = "note"; rows.textContent = d.error; note.textContent = ""; return; }
     rows.className = "";
-    rows.innerHTML = `<table class="tbl"><thead><tr><th>address</th><th>name</th><th>mac</th><th>rtt</th><th>what</th></tr></thead><tbody>${ds.map(r => `<tr class="${r.awake === false ? "dim" : ""}">
+    rows.innerHTML = `<div class="tblwrap"><table class="tbl"><thead><tr><th>address</th><th>name</th><th>mac</th><th>rtt</th><th>what</th></tr></thead><tbody>${ds.map(r => `<tr class="${r.awake === false ? "dim" : ""}">
       <td class="mono">${esc(r.ip)}</td>
-      <td>${esc(r.name || r.host || "")}${r.model ? ` <span class="note">${esc(r.model)}</span>` : ""}</td>
+      <td>${esc(r.name || r.host || "")}</td>
       <td class="mono">${esc(r.mac || "")}</td>
       <td>${r.rtt_ms != null ? r.rtt_ms.toFixed(1) + " ms" : (r.awake === false ? "off" : "—")}</td>
-      <td>${r.kind === "self" ? '<span class="pill status-ok">this Machine</span>' : r.kind === "member" ? '<span class="pill status-ok">member</span>' : r.kind === "machine" ? '<span class="pill">a Machine</span>' : ""}</td>
-    </tr>`).join("")}</tbody></table>`;
+      <td>${r.label ? `<span class="pill${r.kind === "self" || r.kind === "member" ? " status-ok" : ""}">${esc(r.label)}</span>` : ""}${r.note ? ` <span class="note">${esc(r.note)}</span>` : ""}</td>
+    </tr>`).join("")}</tbody></table></div>`;
     const when = d.at ? new Date(d.at * 1000) : null;
     note.textContent = `${ds.length} device${ds.length === 1 ? "" : "s"}${when ? " · " + when.toLocaleTimeString() : ""}${d.error ? " · " + d.error : ""}`;
   };
   const pollLan = async (refresh) => {
+    // the map is a minute's cache on the box; the 5 s tile heartbeat must not turn into a sweep per tick
+    if (!refresh && Date.now() - lanAt < 55000) return;
+    lanAt = Date.now();
     try { renderLan(await api("/api/lan" + (refresh ? "?refresh=1" : ""))); }
     catch (e) { const rows = v.querySelector("#lanrows"); if (rows) { rows.className = "note"; rows.textContent = e.message; } }
   };

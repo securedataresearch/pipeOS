@@ -14,17 +14,21 @@ fi
 git -C "$NETGAZE_SRC" fetch -q origin "$NETGAZE_REF"
 git -C "$NETGAZE_SRC" checkout -q FETCH_HEAD
 TARGET=x86_64-unknown-linux-musl
-if rustup target list --installed 2>/dev/null | grep -qx "$TARGET"; then
+if command -v cargo >/dev/null && rustup target list --installed 2>/dev/null | grep -qx "$TARGET"; then
+    # a host with the musl target (pure Rust, no C deps: no musl-gcc needed)
     (cd "$NETGAZE_SRC" && cargo build --release -p netgaze --target "$TARGET")
     src="$NETGAZE_SRC/target/$TARGET/release/netgaze"
-elif mountpoint -q "$CHROOT/netgaze" 2>/dev/null; then
+elif mountpoint -q "$CHROOT/pipeOS" 2>/dev/null; then
+    # no host toolchain: build natively inside the Alpine chroot, where the
+    # source is already visible under the /pipeOS bind (vendor/netgaze)
     TARGET=x86_64-alpine-linux-musl
     CR="$PIPEOS_ROOT/scripts/chroot-run.sh"
+    rel=${NETGAZE_SRC#"$PIPEOS_ROOT"/}
     "$CR" 'apk add --quiet rust cargo build-base'
-    "$CR" "cd /netgaze && RUSTFLAGS='-C target-feature=+crt-static' cargo build --release -p netgaze --target $TARGET"
+    "$CR" "cd /pipeOS/$rel && RUSTFLAGS='-C target-feature=+crt-static' cargo build --release -p netgaze --target $TARGET"
     src="$NETGAZE_SRC/target/$TARGET/release/netgaze"
 else
-    echo "no musl toolchain: rustup target add $TARGET, or mount the source into the chroot" >&2
+    echo "no musl toolchain: rustup target add $TARGET, or run 10-mk-chroot.sh (the chroot builds it)" >&2
     exit 1
 fi
 [ -f "$src" ] || { echo "ERROR: netgaze binary not produced" >&2; exit 1; }
