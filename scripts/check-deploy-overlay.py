@@ -295,6 +295,18 @@ check("8b --install-card carries on-box owner fills over an empty repo card",
           == "NICK=box9\nROLE=BUILD\nOWNER_NICK=sam\nCOHORT_ID=7\n",
       "rc=%d card=%r" % (c6b.rc, c6b.live("etc/pipeos/card.conf")))
 
+# ── 8c. a rewritten history: same files, a stamp naming a commit no longer on main ──
+c8c = case().run()
+old_stamp = (c8c.stamp() or "").split("\n")[0]
+c8c.run()
+quiet = "nothing to do" in c8c.log and "re-stamping" not in c8c.log
+git(c8c.repo, "commit", "--amend", "--allow-empty", "-qm", "the same tree under a corrected message")
+new_head = git(c8c.repo, "rev-parse", "main").stdout.strip()
+c8c.run()
+check("8c when the stamped commit is no longer on main (history rewritten, files identical) a deploy re-stamps with the new hash — and a plain re-run with nothing changed still says nothing to do and leaves the stamp alone",
+      quiet and c8c.rc == 0 and "re-stamping" in c8c.log and (c8c.stamp() or "").split("\n")[0] == "commit " + new_head and old_stamp != "commit " + new_head,
+      "quiet=%s rc=%d stamp=%r new=%s log=%r" % (quiet, c8c.rc, (c8c.stamp() or "")[:60], new_head[:12], c8c.log[-300:]))
+
 # ── 9. an unprovisioned box skips the gate rather than blocking ─────────
 c7 = case(card="NICK=\n").run()
 check("9 an unprovisioned box deploys with the card gate skipped",

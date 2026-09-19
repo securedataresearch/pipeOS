@@ -382,9 +382,18 @@ if [ "$n_new" = 0 ] && [ "$n_mod" = 0 ] && [ "$n_stale" = 0 ] && [ "$card_action
     say "already at $REF — nothing to do."
     # The stamp is still worth writing on a box that predates it: it is what
     # lets `pipeos status` and selfcheck say how old this overlay is instead
-    # of guessing from a local checkout's branch.
+    # of guessing from a local checkout's branch. And re-writing when the
+    # commit it names is no longer on $REF — history was rewritten (a merge
+    # message fixed on main, 2026-09-19) and the files are byte-identical,
+    # but status read "deployed commit … is NOT on origin/main" forever.
+    stamped=$(sed -n 's/^commit //p' "$STAMP" 2>/dev/null | head -1)
     if [ "$DRY" = no ] && [ ! -f "$STAMP" ]; then
         say "writing the missing stamp so status and selfcheck can age this overlay."
+        write_stamp=yes
+        ASSUME_YES=yes
+    elif [ "$DRY" = no ] && [ -n "$stamped" ] && [ "$stamped" != "$commit" ] \
+         && ! git -C "$REPO" merge-base --is-ancestor "$stamped" "$commit" 2>/dev/null; then
+        say "the stamp names $stamped, which is no longer on $REF (history rewritten; the files are identical) — re-stamping as $commit."
         write_stamp=yes
         ASSUME_YES=yes
     else
