@@ -396,9 +396,10 @@ if [ "$DRY" = yes ]; then
     # The templates are not installed yet, so verify cannot be run against
     # them; what CAN be said is whether this ref changes a template or the
     # generator (then the outputs will diverge and be regenerated), and
-    # whether they already diverge on the box (then the same). Only for a
-    # provisioned box: an unprovisioned one is left alone either way.
-    if [ -n "$NICK" ]; then
+    # whether they already diverge on the box (then the same). Only where
+    # generate has run (the stamp): a box it never ran on is left alone
+    # either way — the same signal the real run's verify uses (#313).
+    if [ -r "${ROOT%/}/etc/pipeos/.card-stamp" ]; then
         if grep -Eq '^(new|mod)   ?(usr/local/share/pipeos/card/|usr/local/bin/pipebox-card( |$))' "$changes"; then
             say "card outputs: would regenerate (this ref changes a card template or the generator)"
         elif [ -f "$ROOT/usr/local/bin/pipebox-card" ] \
@@ -487,11 +488,11 @@ fi
 card_outputs_step() {
     pbc="$ROOT/usr/local/bin/pipebox-card"
     [ -f "$pbc" ] || { say "card outputs: no pipebox-card on this box — left alone (run 'pipebox-card generate' once one is installed)"; return 0; }
-    # provisioned = claimed through the wizard (the marker) or a fleet card
-    # with a NICK. A GENERIC box claimed on the LAN has an empty NICK and was
-    # left alone here — and sat CRITICAL after every template deploy until a
-    # hand generate (zero, twice on 2026-09-19; pipeOS#313).
-    [ -n "$NICK" ] || [ -f "${ROOT%/}/etc/pipeos/provisioned" ] || { say "card outputs: unprovisioned box — left alone"; return 0; }
+    # No pre-gate on NICK: a GENERIC box claimed through the wizard has an
+    # empty NICK, was taken for unprovisioned here, and sat CRITICAL after
+    # every template deploy until a hand generate (zero, twice on 2026-09-19
+    # UTC; pipeOS#313). verify's own exit 2 — no card, no stamp — is the one
+    # notion of "generate never ran here", and the `*)` arm below honours it.
     sh "$pbc" verify --card "$CARD" --root "${ROOT:-/}" \
         --templates "$ROOT/usr/local/share/pipeos/card" >/dev/null 2>&1
     case $? in
