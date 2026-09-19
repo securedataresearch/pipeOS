@@ -2240,7 +2240,7 @@ class Handler(BaseHTTPRequestHandler):
         ?refresh=1 runs the pass now. A signed-in reader only (the fence
         lists what a member's certificate may read; this is not on it)."""
         q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        self.send(200, lan.page(refresh=bool(q.get("refresh"))))
+        self.send(200, lan.page(refresh=(q.get("refresh", ["0"])[0] not in ("", "0", "no", "false"))))
 
     def api_lobby(self):
         """Public like /api/state: what mDNS already tells the LAN, plus one

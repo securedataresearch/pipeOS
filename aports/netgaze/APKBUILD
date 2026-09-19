@@ -10,7 +10,8 @@ pkgdesc="netgaze — LAN monitor and collector (netgaze probe lan --json feeds t
 url="https://github.com/SamReeves/netgaze"
 arch="x86_64"
 license="MIT"
-depends="iproute2-minimal"
+# no depends: its `ip` calls (neigh, addr, route) run on busybox's applet,
+# and iproute2 is on no repo the vm/metal media carries (#326 review)
 options="!check !strip !tracedeps"
 source=""
 

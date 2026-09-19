@@ -31,7 +31,8 @@ and running a fleet on your own keys — in
 make host-deps   # pacman: qemu-base edk2-ovmf; rustup musl target (once)
 make chroot      # Alpine build chroot via apk.static (sudo, once)
 make pipe        # cross-compile pipe statically for musl
-make apks        # build claude-code/hermes-agent/pipe apks + signed repo
+make netgaze     # cross-compile netgaze (the LAN collector) statically for musl — `make apks` runs it
+make apks        # build claude-code/hermes-agent/pipe/netgaze apks + signed repo
 make image       # apkovl + GPT/FAT32 pipeos.img (no root needed)
 make vm          # boot the image in qemu (serial console; ctrl-a x to quit)
 ```

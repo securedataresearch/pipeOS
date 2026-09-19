@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the three pipeOS packages inside the Alpine chroot and assemble the
+# Build the pipeOS packages (pipe, claude-code, hermes-agent, netgaze) inside the Alpine chroot and assemble the
 # signed local repo (out/repo/pipeos/x86_64) plus a pre-seeded apk cache
 # (out/cache) so first boot needs no network.
 set -euo pipefail
