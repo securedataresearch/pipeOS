@@ -20,8 +20,11 @@
 # DELETED the canonical and the known-good — verify failed on every unclaimed
 # box and a later claim's save sat beside a stale twin at the next boot.
 UNCLAIM=${PIPEOS_SAVE_UNCLAIM:-}
-[ -f /etc/pipeos/provisioned ] || [ -n "$UNCLAIM" ] || exit 0
-[ -n "$(lbu status 2>/dev/null)" ] || [ -n "$UNCLAIM" ] || exit 0
+# the probe's seams (check-save-gate.py); a box never sets them
+MEDIA=${PIPEOS_MEDIA:-/media/usb}
+LBU=${PIPEOS_LBU:-lbu}      # read by lbu-canonical.sh and the package call below
+LOCK=${PIPEOS_SAVE_LOCK:-/run/pipeos-save.lock}
+[ -f "${PIPEOS_PROVISIONED:-/etc/pipeos/provisioned}" ] || [ -n "$UNCLAIM" ] || exit 0
 
 # Fences. Exit 3 = REFUSED (nothing wrong with the box; do not fall back to
 # lbu commit — pipebox-setup and the provisioner read this code). Checked
@@ -45,7 +48,7 @@ fenced && exit 3
 
 # one save at a time (15min cron, shutdown hook, selfcheck promotion and
 # humans all collide here); busybox flock has no -w, so poll
-exec 9> /run/pipeos-save.lock
+exec 9> "$LOCK"
 _i=0
 until flock -n 9; do
     _i=$((_i+1))
@@ -54,11 +57,24 @@ until flock -n 9; do
 done
 fenced && exit 3   # the apply that held the lock may have fenced while we waited
 
-. /etc/lbu/lbu.conf 2>/dev/null
-MEDIA=/media/usb
+# shellcheck disable=SC1091  # the box's own; absent on the probe host (a missing `.` target kills a POSIX shell)
+[ -f /etc/lbu/lbu.conf ] && . /etc/lbu/lbu.conf
 OVL=$MEDIA/pipeos.apkovl.tar.gz
 KNOWN_GOOD=$MEDIA/pipeos.known-good.tar.gz
 LIMIT=${BACKUP_LIMIT:-3}
+
+# Nothing changed -> nothing to do (pipeOS#318). lbu's own `status` compares
+# against <hostname>.apkovl.tar.gz, which pipeOS never writes, so the old gate
+# here listed every file as Added and never fired: every 15-minute tick ran the
+# flush, the sweep and a full `lbu package` before the sha256 skip below. The
+# shared helper runs lbu against OUR canonical. A gate that cannot answer (no
+# readable canonical, lbu on stderr) falls through to the full save — the
+# sha256 comparison is still the last word, so this is only ever a shortcut.
+# shellcheck source=overlay/usr/local/share/pipeos/lbu-canonical.sh
+. "$(dirname "$0")/../share/pipeos/lbu-canonical.sh"
+if [ -z "$UNCLAIM" ]; then
+    _st=$(lbu_canonical status 2>/dev/null) && [ -z "$_st" ] && exit 0
+fi
 
 free_kb=$(df -k "$MEDIA" | awk 'NR==2{print $4}')
 if [ "${free_kb:-0}" -lt 204800 ]; then
@@ -84,7 +100,7 @@ fi
 tmp=/tmp/.pipeos-save.$$
 trap 'rm -f "$tmp"' EXIT
 
-lbu package "$tmp" >/dev/null 2>&1 || { logger -s -t pipeos-save "lbu package failed"; exit 1; }
+"$LBU" package "$tmp" >/dev/null 2>&1 || { logger -s -t pipeos-save "lbu package failed"; exit 1; }
 
 # never let a corrupt candidate near the media
 if ! gzip -t "$tmp" 2>/dev/null || ! tar -tzf "$tmp" >/dev/null 2>&1; then
