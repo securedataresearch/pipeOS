@@ -460,7 +460,7 @@ c17d.run("--dry-run")
 dry_d = "would regenerate (they already diverge" in c17d.log and "left behind by an older deployer" in open(mp).read()
 c17d.run()
 check("17d a deploy with nothing to install (same ref) still heals card outputs that already diverge: the dry run says so and leaves them; the real run regenerates them, verify is clean, the overlay stamp is untouched (pipeOS#321)",
-      dry_d and c17d.rc == 0 and "regenerated the card outputs" in c17d.log and "left behind by an older deployer" not in open(mp).read()
+      dry_d and c17d.rc == 0 and "regenerated the card outputs" in c17d.log and "re-stamp" not in c17d.log and "left behind by an older deployer" not in open(mp).read()
       and real_verify(c17d) == 0 and c17d.stamp() == stamp_before,
       "dry=%s rc=%d verify=%d stamp_same=%s log=%r" % (dry_d, c17d.rc, real_verify(c17d), c17d.stamp() == stamp_before, c17d.log[-400:]))
 

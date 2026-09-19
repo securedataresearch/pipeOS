@@ -32,7 +32,7 @@ when host keys have changed (every reflash). Clocks are UTC.
 |------|-----------------------------|--------|-------|
 | `pipeos status` / `verify` / `diff` | Overview, System | — | — |
 | `pipeos-selfcheck --live` | the hourly live verdict (#290) behind every verdict pill | `/run/pipeos/health.last` only | no (tmpfs) |
-| `pipeos deploy-overlay [--dry-run] [--yes]` | — (operator only) | overlay files, crontab, runlevels, `.overlay-stamp` | yes, then verifies |
+| `pipeos deploy-overlay [--dry-run] [--yes]` | — (operator only) | overlay files, crontab, runlevels, `.overlay-stamp`; and the card outputs (`etc/pipeos/*`, `policy.json`) regenerated from the box's card whenever they diverge from the deployed templates — on any run, even one that installs nothing (#321) | yes, then verifies |
 | `pipeos schedule ls\|add\|set\|rm\|enable\|disable\|run\|log` | Schedule view | `/etc/pipeos/schedule.json` — `--cap N` the job's own cap (#302), `--needs jobs.a,jobs.b` the secrets a run must have: a missing one is asked for (a share request, #316) and the run waits (#319) | every mutating verb |
 | `pipeos usage [totals]` | Usage view | — | — |
 | `pipeos usage cap [--box] N\|none` | Usage → monthly cap | card `MONTHLY_CAP_USD`, regenerated; enforced at once | yes |
