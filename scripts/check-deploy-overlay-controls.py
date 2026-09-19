@@ -113,9 +113,9 @@ controls = [
     # not follow, the box is CRITICAL until a hand generate. Row 17 must fail.
     ("M: a divergent card output is reported but never regenerated",
      lambda s: s.replace(
-         '''            if sh "$pbc" generate --card "$CARD" --root "${ROOT:-/}" \\
-                   --templates "$ROOT/usr/local/share/pipeos/card" >/dev/null 2>&1; then''',
-         '''            if true; then''')),
+         '''            _gen_out=$(sh "$pbc" generate --card "$CARD" --root "${ROOT:-/}" \\
+                   --templates "$ROOT/usr/local/share/pipeos/card" 2>&1)''',
+         '''            _gen_out=""''')),
 
     # N regenerates on exit 2 as well: a box generate has never run on gets
     # its identity decided by the deploy tool. Row 17b must fail.
