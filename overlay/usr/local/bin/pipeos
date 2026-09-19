@@ -68,9 +68,11 @@ sha() { sha256sum "$1" | cut -d' ' -f1; }
 # no file to compare against, lbu listed every persisted file as "A",
 # forever: "260 uncommitted change(s)" beside a passing verify on zero.
 # LBU_BACKUPDIR is lbu's own door: a tmpfs dir holding a hostname-named
-# symlink to the canonical. lbu still tries to `mount` that dir (lbu.conf's
-# LBU_MEDIA=usb wins over the environment), so a shim mount in front of it
-# answers yes for the tmp dir and hands anything else to the real mount.
+# symlink to the canonical. lbu still tries to `mount` that dir and to
+# `umount` it on exit (lbu.conf's LBU_MEDIA=usb wins over the environment),
+# so shim mount and umount in front of it answer yes for the tmp dir and
+# hand anything else to the real ones (zero, 2026-09-19: the umount's
+# "Invalid argument" on stderr read as "cannot tell").
 # Root only (lbu package reads root's files); the apkovl's integrity is
 # checked first, the way pipeos-save and pipeos-flash check before trusting
 # a tarball; anything lbu says on stderr (apk's ERROR when the db is
@@ -86,9 +88,11 @@ lbu_canonical() {
     _d=$(mktemp -d) || return 2
     ln -s "$OVL" "$_d/$(hostname).apkovl.tar.gz"
     mkdir -p "$_d/bin"
-    # shellcheck disable=SC2016  # the shim's own $_a/$@ must reach its file unexpanded
-    printf '#!/bin/sh\nfor _a; do [ "$_a" = "%s" ] && exit 0; done\nexec /bin/mount "$@"\n' "$_d" > "$_d/bin/mount"
-    chmod 755 "$_d/bin/mount"
+    for _m in mount umount; do
+        # shellcheck disable=SC2016  # the shim's own $_a/$@ must reach its file unexpanded
+        printf '#!/bin/sh\nfor _a; do [ "$_a" = "%s" ] && exit 0; done\nexec /bin/%s "$@"\n' "$_d" "$_m" > "$_d/bin/$_m"
+        chmod 755 "$_d/bin/$_m"
+    done
     _out=$(PATH="$_d/bin:$PATH" LBU_BACKUPDIR=$_d "$LBU" "$@" 2>"$_d/err")
     _rc=$?
     _err=$(cat "$_d/err" 2>/dev/null)
