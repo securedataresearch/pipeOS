@@ -258,7 +258,9 @@ owner-facing fact for Cluster buyers.
   grey member's row shows the agents it had at its last answer, marked
   last-known, from a per-member note under `/work/pipeos/cluster/last` —
   nothing is ever restarted from it. Job placement writes no state on the
-  box that asked.
+  box that asked. A placement without a schedule is a `manual` job: it
+  runs now and then only when started (Run now, `pipeos schedule run`,
+  another placement) — "run once, now" needs no invented cron.
 
 → #300 (placement + the agent list), #301 (vault copy on demand),
 #302 (caps at every level, the pause names its cap)

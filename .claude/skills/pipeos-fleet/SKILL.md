@@ -71,7 +71,7 @@ pipeos deploy-overlay --yes        # install, restart changed services, enrol ne
 
 ```sh
 pipeos schedule ls
-pipeos schedule add NAME --cron "0 2 * * *" --prompt "..." [--cwd /work/...] [--backend claude|hermes] [--notify on|off] [--session fresh|continue]
+pipeos schedule add NAME --prompt "..." [--cron "0 2 * * *"|manual] [--cwd /work/...] [--backend claude|hermes] [--notify on|off] [--session fresh|continue] [--cap N]   # no --cron = manual: runs only when started
 pipeos schedule set NAME --notify off           # only the given flags change
 pipeos schedule rm|enable|disable|run|log NAME  # run = Run now (detached); log NAME [N]
 pipeos usage                                    # totals today/7d/30d/month, by actor, the cap

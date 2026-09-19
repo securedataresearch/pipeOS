@@ -190,6 +190,15 @@ check("12 usage cap N writes MONTHLY_CAP_USD, regenerates, saves, then enforces 
       and rc_t == 0 and "stub" in out_t and led.strip().split("\n")[-1] == "enforce" and saves() == n1 + 2,
       "c=%s %s n=%s card=%r led=%r bad=%r t=%s" % (rc_c, out_c, rc_n, card3, led, bad, out_t))
 
+# ── 1b. a job without a schedule is manual (run once, now) ───────────────
+rc_m, out_m = sched("add", "once", "--prompt", "when asked")
+jm0 = {j["name"]: j for j in jobs()}
+rc_ml, out_ml = sched("ls")
+sched("rm", "once")
+check("1b schedule add with no --cron makes a manual job (cron 'manual'); ls says it runs only when started",
+      rc_m == 0 and jm0.get("once", {}).get("cron") == "manual" and rc_ml == 0 and "runs only when started" in out_ml,
+      "rc=%s %s job=%r ls=%s" % (rc_m, out_m[-120:], jm0.get("once"), out_ml[-200:]))
+
 # ── 12b. the agent scope (#302): the cap lives on the job ─────────────────
 sched("add", "capped", "--cron", "0 3 * * *", "--prompt", "count the beans")
 n2 = saves()

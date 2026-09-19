@@ -39,8 +39,9 @@ honest signal.
 
 ## Schedule
 
-Jobs the Machine runs on its own: a time (cron, box clock = UTC), a
-prompt, a working dir under `/work`, which assistant. One job at a time;
+Jobs the Machine runs on its own: a time (cron, box clock = UTC — or
+**manual**: leave the time blank and the job runs only when you press Run
+now), a prompt, a working dir under `/work`, which assistant. One job at a time;
 each run DMs you over pipe when it starts and ends and writes its own log
 (`Log` on the row, or Logs under System as `schedule-<job>`). Pause,
 resume, run now, edit, delete. When the monthly usage cap is reached

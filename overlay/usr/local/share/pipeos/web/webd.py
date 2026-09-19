@@ -3773,7 +3773,8 @@ def schedule_upsert(body):
                                  "enabled": True, "session": "fresh", "prompt": "", "cron": ""}
     if "cron" in body or not cur:
         try:
-            spec = cronspec.parse(body.get("cron") or "")
+            # a new job with no schedule is manual: it runs when started, never from the tick
+            spec = cronspec.parse(body.get("cron") or (cronspec.MANUAL if not cur and "cron" not in body else ""))
         except cronspec.CronError as e:
             return None, "schedule: %s" % e
         job["cron"] = spec.text
@@ -3876,7 +3877,7 @@ def agent_start_here(body):
         if "cap_usd" in body:
             enforce_caps_now()          # the cap must gate THIS run, not the next minute's
     elif not any(j["name"] == name for j in read_schedule()):
-        return 404, {"error": "no agent named %s on this Machine — give it a prompt and a schedule to place it here" % name, "changed": False}
+        return 404, {"error": "no agent named %s on this Machine — give it a prompt to place it here (a schedule is optional: without one it runs only when started)" % name, "changed": False}
     st, err = schedule_start(name)
     if err:
         # the job is on the box now even though it did not run: the caller

@@ -51,6 +51,8 @@ BREAKS = [
      '        why = ledger.why_paused(name, PAUSED, PAUSED_JSON)', '        why = ledger.why_paused("", PAUSED, os.devnull)'),
     ("P  the runner ignores paused.json (an agent over its own cap runs anyway, #302)", RUNNER,
      '    why=$(jq -r --arg j "$job" \'.agents[$j].text // ""\' "$PAUSED_JSON" 2>/dev/null)\n', '    why=\n'),
+    ("Q  a manual job matches every minute (the tick fires what should only run when started)", CRONSPEC,
+     "    if spec.manual:\n        return False\n", "    if spec.manual:\n        return True\n"),
     ("N  same-minute jobs race instead of running in order", TICK,
      '    script = "; ".join("%s %s" % (RUN_BIN, name) for name in fire)',
      '    script = " & ".join("%s %s" % (RUN_BIN, name) for name in fire) + " & wait"'),

@@ -2,8 +2,9 @@
 """schedctl — the scheduled-jobs table from the command line (#242, #259).
 
     pipeos schedule ls
-    pipeos schedule add NAME --cron "M H D M W" --prompt TEXT [--cwd DIR]
+    pipeos schedule add NAME --prompt TEXT [--cron "M H D M W"|manual] [--cwd DIR]
                         [--backend claude|hermes] [--notify on|off] [--cap N|none]
+                        (no --cron = manual: runs only when started)
                         [--session fresh|continue]
     pipeos schedule set NAME [the same flags — only the given ones change]
     pipeos schedule rm NAME
@@ -107,7 +108,7 @@ def parse_flags(argv, allowed):
 def apply(job, flags, new):
     if "cron" in flags or new:
         try:
-            job["cron"] = cronspec.parse(flags.get("cron", "")).text
+            job["cron"] = cronspec.parse(flags.get("cron", cronspec.MANUAL if new else "")).text
         except cronspec.CronError as e:
             raise Refused("schedule: %s" % e)
     if "prompt" in flags or new:

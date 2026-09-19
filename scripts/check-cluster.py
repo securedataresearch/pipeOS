@@ -507,6 +507,15 @@ check("20 '--on idlest' lands on the awake member with nothing busy: seven while
       and rc_i3 == 1 and "no member is idle" in out_i3 and ran_on(G) == ["pick"] and ran_on(H) == ["nightly", "nightly", "pick"],
       repr((rc_i1, out_i1[-160:], g_jobs1, h_jobs1, rc_i2, out_i2[-160:], rc_i3, out_i3[-160:], jobs_of(G), jobs_of(H), ran_on(G), ran_on(H))))
 
+# ── 20b. run once, now: a placement without a schedule is a manual job ────
+ran_before = list(ran_on(H))
+rc_once, out_once = G.cli("start", "once", "--on", "2222", "--prompt", "just this once")
+once_cron = next((j.get("cron") for j in json.load(open(os.path.join(H.dir, "schedule.json")))["jobs"] if j["name"] == "once"), None)
+G.cli("call", "2222", "POST", "/api/schedule/del", json.dumps({"name": "once"}))
+check("20b 'cluster start' with a prompt and no --cron places a MANUAL job: it ran once on the member and will never fire from its tick; the schedule needs no invented cron",
+      rc_once == 0 and "started once on 2222" in out_once and once_cron == "manual" and ran_on(H) == ran_before + ["once"] and "once" not in jobs_of(H),
+      repr((rc_once, out_once[-120:], once_cron, ran_on(H), jobs_of(H))))
+
 H.stop()
 st_p21, pg21, r21 = page_rows(G)
 rc_ag2, out_ag2 = G.cli("agents")

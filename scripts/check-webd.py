@@ -545,6 +545,13 @@ ok("schedule: pause is an edit that saves; a partial edit keeps the rest; an ali
 for bad in ("* * * * * ; rm -rf /", "60 * * * *", "*/0 * * * *", "1 2 3 4 5 6", "x" * 3000, "$(id)"):
     req("/api/schedule/set", {"name": "evil", "cron": bad, "prompt": "x"}, expect=400)
 req("/api/schedule/set", {"name": "Bad Name", "cron": "* * * * *", "prompt": "x"}, expect=400)
+r = req("/api/schedule/set", {"name": "once", "prompt": "run me when asked"})                       # no schedule at all
+row = {j["name"]: j for j in req("/api/schedule")["jobs"]}["once"]
+assert r["job"]["cron"] == "manual" and row["next_run"] == "" and "manual" in row["human"] and "when started" in row["human"]
+req("/api/schedule/set", {"name": "once", "cron": ""}, expect=400)                                  # an existing job's schedule cannot be blanked by accident
+req("/api/schedule/set", {"name": "once", "cron": "manual"})
+req("/api/schedule/del", {"name": "once"})
+ok("schedule: a job made without a schedule is manual — no next run, described as runs-only-when-started; `manual` is also an explicit value")
 req("/api/schedule/set", {"name": "noprompt", "cron": "* * * * *", "prompt": ""}, expect=400)
 req("/api/schedule/set", {"name": "long", "cron": "* * * * *", "prompt": "x" * 9000}, expect=400)
 req("/api/schedule/set", {"name": "etc", "cron": "* * * * *", "prompt": "x", "cwd": "/etc"}, expect=400)

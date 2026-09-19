@@ -1010,7 +1010,8 @@ def main(argv):
                 print("cluster: the page did not answer (%s)" % st, file=sys.stderr); return 1
             for r in out.get("members", []):
                 for a in r.get("agents") or []:
-                    state = "grey (box off)" if not r.get("awake") else ("running" if a.get("running") else (a.get("last_status") or "never ran"))
+                    state = ("grey (box off)" if not r.get("awake") else "running" if a.get("running")
+                             else "PAUSED — " + a["paused"] if a.get("paused") else (a.get("last_status") or "never ran"))
                     print("%-12s %s  %-32s %-10s %s" % (r.get("name") or "", r["id"], a.get("name"), a.get("backend") or "claude", state))
             return 0
         if verb == "start":
@@ -1026,7 +1027,7 @@ def main(argv):
                 else:
                     name = ""; break
             if not name or "on" not in flags or set(flags) - {"on", "prompt", "cron", "cwd", "backend", "session", "notify", "cap"}:
-                print("usage: pipeos cluster start NAME --on ID|NAME|idlest [--prompt TEXT --cron \"M H D M W\" [--cwd DIR] [--backend claude|hermes] [--session fresh|continue] [--notify on|off] [--cap N|none]]", file=sys.stderr); return 2
+                print("usage: pipeos cluster start NAME --on ID|NAME|idlest [--prompt TEXT [--cron \"M H D M W\"|manual] [--cwd DIR] [--backend claude|hermes] [--session fresh|continue] [--notify on|off] [--cap N|none]]   (no --cron: runs now, then only when started)", file=sys.stderr); return 2
             body = dict(flags, name=name)
             if "notify" in body:
                 body["notify"] = body["notify"] == "on"
@@ -1077,7 +1078,7 @@ def main(argv):
     except ClusterError as e:
         print("cluster: %s" % e, file=sys.stderr)
         return 1
-    print("usage: pipeos cluster init [NAME] [--force] | status | ca | add ID|NAME|IP [NAME] | remove ID | sync | join MEMBER | adopt ID|IP [NAME] | page | agents | start NAME --on ID|NAME|idlest [--prompt TEXT --cron SPEC ...] | reboot-all [--yes] | services KEY on|off [ID...] | call ID|NAME|IP METHOD PATH [JSON]", file=sys.stderr)
+    print("usage: pipeos cluster init [NAME] [--force] | status | ca | add ID|NAME|IP [NAME] | remove ID | sync | join MEMBER | adopt ID|IP [NAME] | page | agents | start NAME --on ID|NAME|idlest [--prompt TEXT [--cron SPEC|manual] ...] | reboot-all [--yes] | services KEY on|off [ID...] | call ID|NAME|IP METHOD PATH [JSON]", file=sys.stderr)
     return 2
 
 
