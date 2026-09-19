@@ -53,7 +53,7 @@ controls = [
      lambda s: s.replace(OLD_H, NEW_H), ["16"]),
 
     ("I: the service switch answers ok for an id that is not a member", C,
-     lambda s: s.replace('            res[i] = "not a member"\n', '            res[i] = "ok"\n'), ["15"]),
+     lambda s: s.replace('        res[i] = "not a member"\n', '        res[i] = "ok"\n'), ["15"]),
 
     ("J: add-request does not check the member's password (anyone on the LAN joins a box to the cluster)", W,
      lambda s: s.replace(OLD_J, ""), ["17"]),

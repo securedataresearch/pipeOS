@@ -2348,7 +2348,7 @@ async function dashboard() {
     if (!list) return;
     let r;
     try { r = await api("/api/schedule"); } catch (e) { err.textContent = e.message; err.hidden = false; return; }
-    banner.innerHTML = (r.paused ? `<div class="card"><div class="cardhead"><h2>Paused</h2><span class="pill status-warn">monthly cap</span></div><p class="note">${esc(r.paused)} — nothing starts until the cap is raised under Usage or the month turns.</p></div>` : "")
+    banner.innerHTML = (r.paused ? `<div class="card"><div class="cardhead"><h2>Paused</h2><span class="pill status-warn">monthly cap</span></div><p class="note">${esc(r.paused)}</p></div>` : "")
       + (r.crond_up ? "" : `<div class="card"><div class="cardhead"><h2>The clock is not running</h2><span class="pill status-bad">crond down</span></div><p class="note">Jobs will not fire until crond is up — the boot report says why.</p></div>`);
     note.textContent = (r.running ? "a job is running now · " : "") + "now " + r.now + " UTC";
     const sel = v.querySelector("#schbackend");

@@ -110,7 +110,7 @@ def main():
     for name in fire:
         why = ledger.why_paused(name, PAUSED, PAUSED_JSON)     # the box's or cluster's marker, else this agent's own entry (#302)
         if why:
-            log("skipped %s: scheduled runs are paused — %s (raise it under Usage)" % (name, why), job=name)
+            log("skipped %s: scheduled runs are paused — %s" % (name, why), job=name)
         else:
             run.append(name)
     fire = run

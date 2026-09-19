@@ -66,6 +66,7 @@ PIPEOS_SAVE_BIN, PIPEOS_MDNS_CACHE, PIPEOS_MDNS_ROSTER, PIPEOS_CLUSTER_LAST.
 import hashlib
 import http.client
 import json
+import re
 import os
 import secrets
 import ssl
@@ -287,12 +288,17 @@ def add_member(box_id, ca_pem, name=""):
     return d
 
 
+_HOST_ID = re.compile(r"pipeos-([0-9a-f]{4})$")
+
+
 def _norm(target):
     """What the owner typed, as the short id or name it stands for: `a4e0`,
     `pipeos-a4e0`, `pipeos-a4e0.local`, `A4E0` and `two` all reduce to what
-    the list is keyed or named by. The one normaliser for every matcher."""
+    the list is keyed or named by. Only the id's host form loses its
+    prefix — a member NAMED pipeos-lab keeps its name."""
     t = (target or "").strip().lower().removesuffix(".local")
-    return t[len("pipeos-"):] if t.startswith("pipeos-") else t
+    m = _HOST_ID.match(t)
+    return m.group(1) if m else t
 
 
 def member_id(d, target):
@@ -311,6 +317,8 @@ def member_id(d, target):
 
 def drop_member(box_id):
     d = read()
+    if d is None:
+        raise ClusterError("not in a cluster")
     box_id = member_id(d, box_id)
     if box_id == self_id():
         raise ClusterError("a Machine does not remove itself — remove it from another member, or 'pipeos cluster init --force' to be a cluster of one")
@@ -480,7 +488,7 @@ def resolve(target):
     t = _norm(target)
     for rows in (_peers(), _roster()):
         for pid, r in rows.items():
-            if t in (pid, (r.get("name") or "").lower(), _norm(r.get("host"))) and r.get("ip"):
+            if t and t in (pid, (r.get("name") or "").lower(), _norm(r.get("host"))) and r.get("ip"):
                 return r["ip"], int(r.get("tls_port") or port)
     raise ClusterError("%s: not a Machine this box knows — pipeos wake --list" % target)
 
@@ -602,14 +610,11 @@ def remove(box_id):
     handshake with us anyway; it learns the other way round: its next
     call to any member fails the handshake, its reader shows the members
     hash differing, and the owner sees it grey and out of sync (#212).
-    Returns the push report."""
+    Returns (the removed id, the push report)."""
     d = read()
-    if d is None:
-        raise ClusterError("not in a cluster")
-    was = set(d["members"])
-    box_id = member_id(d, box_id)          # the id, whatever form was typed — it must leave the push set too
+    box_id = member_id(d, box_id)          # the id, whatever form was typed
     d = drop_member(box_id)
-    return push(d, only=was - {self_id(), box_id})
+    return box_id, push(d)                 # push() skips self and the list no longer names the removed one
 
 
 def sync():
@@ -873,7 +878,7 @@ def start_agent(on, spec, local_start, local_summary):
             return 409, {"error": "no member is idle right now — every one is busy or off; name one to start there anyway"}
     else:
         want = _norm(on)
-        hit = [r for r in v["members"] if want in (r["id"], (r["name"] or "").lower(), _norm(r.get("host")))]
+        hit = [r for r in v["members"] if want and want in (r["id"], (r["name"] or "").lower(), _norm(r.get("host")))]
         if not hit:
             return 404, {"error": "%s is not a member" % on}
         mid = hit[0]["id"]
@@ -904,8 +909,13 @@ def services_all(ids, key, on, local_set):
     each other member, this box through `local_set`. {id: result}."""
     v = view()
     me = v["self"]
-    members = {r["id"] for r in v["members"]}
-    wanted = [i for i in ids if i in members]
+    doc = {"members": {r["id"]: r for r in v["members"]}}
+    wanted, unknown = [], []
+    for i in ids:                          # any printed form — id, pipeos-ID, name (#317 polish)
+        try:
+            wanted.append(member_id(doc, i))
+        except ClusterError:
+            unknown.append(i)
     res = {}
     if me in wanted:
         res[me] = local_set({key: bool(on)})
@@ -914,9 +924,8 @@ def services_all(ids, key, on, local_set):
             res[mid] = "ok" if b.get("services", {}).get(key) == bool(on) else "refused: " + "; ".join(b.get("problems") or ["not applied"])
         else:
             res[mid] = (b.get("error") if isinstance(b, dict) else "") or "%s" % st
-    for i in ids:
-        if i not in members:
-            res[i] = "not a member"
+    for i in unknown:
+        res[i] = "not a member"
     return res
 
 
@@ -1024,8 +1033,8 @@ def main(argv):
         if verb == "remove":
             if len(argv) < 2:
                 print("usage: pipeos cluster remove ID|NAME", file=sys.stderr); return 2
-            report = remove(argv[1])
-            print("removed %s; list pushed: %s" % (argv[1], _report(report)))
+            gone, report = remove(argv[1])
+            print("removed %s; list pushed: %s" % (gone, _report(report)))
             return _save()
         if verb == "sync":
             report = sync()
