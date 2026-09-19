@@ -90,8 +90,8 @@ jobs:
       # Added forever. pipeos now hands lbu the canonical through LBU_BACKUPDIR.
       - name: pipeos status/diff run lbu against the canonical apkovl (a hostname-named link in a tmpfs dir), gated on its integrity
         run: python3 scripts/check-status-diff.py
-      - name: "pipeos-save's nothing-changed gate compares against the canonical (#318)"
-        run: python3 scripts/check-save-gate.py
+      - name: "pipeos-save packages once and the sha256 is the only nothing-changed decision; flush every tick, GC only on a persist (#318)"
+        run: python3 scripts/check-save.py
 
       # the single-box pass on zero (2026-09-16): unclaim is a factory reset —
       # every owner record and sign-in gone, a new CA, the canonical AND the

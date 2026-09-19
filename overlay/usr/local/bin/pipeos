@@ -79,9 +79,15 @@ sha() { sha256sum "$1" | cut -d' ' -f1; }
 # a tarball; anything lbu says on stderr (apk's ERROR when the db is
 # broken, which lbu itself swallows into an all-D listing) is "could not".
 # rc 0 = compared; 2 = could not (the reason on stderr).
-# lbu against OUR canonical: shared with pipeos-save (#318)
-# shellcheck source=overlay/usr/local/share/pipeos/lbu-canonical.sh
-. "$(dirname "$0")/../share/pipeos/lbu-canonical.sh"
+# lbu against OUR canonical (status, diff) lives in one shared file. Guarded:
+# a missing `.` target kills a POSIX shell, and every verb would die with it.
+_lbu_lib="$(dirname "$0")/../share/pipeos/lbu-canonical.sh"
+if [ -r "$_lbu_lib" ]; then
+    # shellcheck source=overlay/usr/local/share/pipeos/lbu-canonical.sh
+    . "$_lbu_lib"
+else
+    lbu_canonical() { echo "cannot compare: $_lbu_lib is missing (redeploy usr/local/share/pipeos)" >&2; return 2; }
+fi
 
 take_save_lock() {
     # shared with pipeos-save: one media mutator at a time

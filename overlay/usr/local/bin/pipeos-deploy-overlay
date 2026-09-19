@@ -75,8 +75,8 @@ NO_PERSIST=${PIPEOS_DEPLOY_NO_PERSIST:-0}
 # lbu.list is a single file rather than the whole of etc/apk — repositories and
 # world are box state, and a wrong /etc/apk/repositories is a brick (CLAUDE.md
 # §4), so this list names the one file in there that is repo-owned.
-DEPLOY_PATHS="usr/local/bin
-usr/local/share/pipeos
+DEPLOY_PATHS="usr/local/share/pipeos
+usr/local/bin
 etc/periodic
 etc/local.d
 etc/init.d
