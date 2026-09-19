@@ -149,6 +149,8 @@ jobs:
 
       # #264. The stick is /work: the churn is staged in RAM and flushed on a
       # cadence; park remounts /work read-only between operations.
+      - name: "/data is the bulk volume's name — the link is laid at boot and by a deploy, both paths reach the same bytes (#219 step 1)"
+        run: python3 scripts/check-data-name.py
       - name: /work's hot set — staged in RAM, flushed, parked; the listener idles on a policy denial
         run: python3 scripts/check-work-hot.py
 

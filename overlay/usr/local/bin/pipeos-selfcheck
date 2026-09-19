@@ -125,6 +125,26 @@ if mountpoint -q /work; then
     fi
 fi
 
+# ---- 1ba. /data is the bulk volume's NAME (#219). This release makes the name
+# work without moving anything: the volume mounts at /work and /data is a
+# symlink to it, laid at every boot by /etc/local.d/workspace.sh. A box whose
+# agents write under /data when that link is absent or points elsewhere is
+# writing to RAM, and loses it at the next boot — so say which of the three
+# this box is. Silent success: the report has no per-check "ok" line, and a
+# name that resolves is not news.
+if mountpoint -q /work 2>/dev/null; then
+    _data_to=$(readlink /data 2>/dev/null)
+    if [ -L /data ] && [ "$_data_to" = /work ]; then
+        :
+    elif [ -L /data ]; then
+        crit "/data is a symlink to ${_data_to:-nowhere}, not to /work — anything written under /data misses the volume; rm /data and run 'sh /etc/local.d/workspace.sh' to lay it again"
+    elif [ ! -e /data ]; then
+        warnn "/data does not exist — the name the docs and a job's working dir use reaches nothing; 'sh /etc/local.d/workspace.sh' lays it, and so does every boot"
+    else
+        crit "/data is a real directory, not a link to /work — anything written under it is in RAM and gone at the next boot; move what is in it into /work, remove it, then 'sh /etc/local.d/workspace.sh'"
+    fi
+fi
+
 # ---- 1c. chassis anchor (appliance plan, decision 2). Identity rides the
 # stick: move a stick to another machine and the box's whole identity moves
 # with it, and before this check nothing on any box said so — a swap was a

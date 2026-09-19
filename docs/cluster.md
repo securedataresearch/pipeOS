@@ -119,10 +119,18 @@ ROLE) are named where the design reuses them.
 
 ## 8. Data — `/data`, with a cluster-wide index
 
-- The bulk volume is renamed **`/data`**; `/work` is reserved for
-  something else. (Today `/work` is `LABEL=PIPEWORK`, `restore-work`,
-  `/work/repos`, 79 files mention it — the rename is its own PR and
-  needs a compatibility symlink for a release or two.)
+- The bulk volume's name is **`/data`**; `/work` is reserved for something
+  else. It lands in two releases, because a live box cannot change where a
+  mounted volume is without a window where half its paths are wrong
+  (pipeOS#219). **This release: the name works.** The volume still mounts at
+  `/work`, `/data` is a symlink to it laid at every boot, and both paths
+  reach the same bytes — a job's working dir may be `/data/repos/x`, and
+  selfcheck says so when the link is missing or is something else. **The
+  next: the flip** — the volume mounts at `/data` and `/work` becomes the
+  symlink, with the tree's own text renamed. By then every box already
+  answers to both names, so the flip is a reboot and nothing else. The
+  filesystem label stays `PIPEWORK` throughout: the owner never sees a
+  label, and relabelling sticks in the field could only lose a volume.
 - The **file index** of every member is visible to the cluster (the Files
   view grows a box selector); bytes stay where they are.
 - An agent on one box reaching another box's files may use **any of
