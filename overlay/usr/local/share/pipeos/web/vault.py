@@ -286,6 +286,34 @@ def set_(name, value, consumer="", by=""):
 PER_BOX = {"assistant_pass", "support_key", "nas_passdb"}
 
 
+NEEDS_HELP = "needs is a list of jobs.NAME secrets (the vault's export for jobs, which the runner sources; a member could hand them over), comma-separated or a list, or none"
+
+
+def parse_needs(value):
+    """The secrets a job needs before it runs (#319), from a form's "a, b",
+    a flag's "a,b", or a list: normalised (strip, lower, sorted, unique).
+    Only jobs.* names — the one export the runner sources (jobs.env) — that
+    a member could hand over. None / "" / [] / "none" clear. ValueError
+    with NEEDS_HELP otherwise. The one parser for every writer."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = value.replace(";", ",").split(",")
+    if not isinstance(value, list):
+        raise ValueError(NEEDS_HELP)
+    out = set()
+    for x in value:
+        if not isinstance(x, str):
+            raise ValueError(NEEDS_HELP)
+        x = x.strip().lower()
+        if not x or x == "none":
+            continue
+        if not x.startswith("jobs.") or len(x) <= len("jobs.") or not NAME_RE.match(x) or not shareable(x):
+            raise ValueError(NEEDS_HELP)
+        out.add(x)
+    return sorted(out)
+
+
 def shareable(name, kind="text"):
     """Only a text secret that is not one Machine's own (its terminal
     password, its support key, its SMB password db, its stream keys) may be

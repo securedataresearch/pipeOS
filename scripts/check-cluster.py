@@ -507,6 +507,11 @@ check("19 'cluster start NAME --on ID' places an agent on that member: the job i
       and rc_ag == 0 and "nightly" in out_ag and "2222" in out_ag,
       repr((rc_st1, out_st1[-160:], jobs_of(H), jobs_of(G), ran1, ran_on(H), saves1 - h_saves0, H.nsaves() - h_saves0, rc_st2, out_st2[-120:], rc_st3, out_st3[-120:], rc_st4, out_st4[-160:], rc_st5, out_st5[-160:], h_agents, rc_ag, out_ag[-200:])))
 
+rc_st6, out_st6 = G.cli("start", "nightly", "--on", "2222", "--needs", "jobs.more")     # --needs alone, on an agent already there: the job takes it (#319 review)
+check("19c '--needs' alone on an agent already placed rewrites ITS needs list (the placement key list carries needs like cap) and runs it",
+      rc_st6 == 0 and json.load(open(os.path.join(H.dir, "schedule.json")))["jobs"][0].get("needs") == ["jobs.more"] and ran_on(H) == ["nightly", "nightly", "nightly"],
+      repr((rc_st6, out_st6[-200:], json.load(open(os.path.join(H.dir, "schedule.json")))["jobs"][0].get("needs"), ran_on(H))))
+
 import fcntl as _f
 # 19b. a placement refused at run time (the member is mid-job) still wrote the job — so it is saved, and said so
 lh = open(os.path.join(H.dir, "sched.lock"), "w"); _f.flock(lh, _f.LOCK_EX)
@@ -530,7 +535,7 @@ _f.flock(lg, _f.LOCK_UN); lg.close(); _f.flock(lh, _f.LOCK_UN); lh.close()
 check("20 '--on idlest' lands on the awake member with nothing busy: seven while six runs a job, six while seven does, and a refusal (nothing started anywhere) when both are busy — explicit placement is the default, idlest the option",
       rc_i1 == 0 and "on 2222 (the idlest member)" in out_i1 and "pick" in h_jobs1 and "pick" not in g_jobs1
       and rc_i2 == 0 and "on 1111 (the idlest member)" in out_i2 and jobs_of(G) == ["pick"] and ran_on(G) == ["pick"]
-      and rc_i3 == 1 and "no member is idle" in out_i3 and ran_on(G) == ["pick"] and ran_on(H) == ["nightly", "nightly", "pick"],
+      and rc_i3 == 1 and "no member is idle" in out_i3 and ran_on(G) == ["pick"] and ran_on(H) == ["nightly", "nightly", "nightly", "pick"],
       repr((rc_i1, out_i1[-160:], g_jobs1, h_jobs1, rc_i2, out_i2[-160:], rc_i3, out_i3[-160:], jobs_of(G), jobs_of(H), ran_on(G), ran_on(H))))
 
 # ── 20b. run once, now: a placement without a schedule is a manual job ────
@@ -593,13 +598,18 @@ rc_rq3, out_rq3 = H.cli("call", "local", "POST", "/api/secrets/request", json.du
 req_id = json.loads(out_rq3.split("\n", 1)[1]).get("request", {}).get("id") if rc_rq3 == 0 else None
 st_stg, out_stg = sess(G, cg, "GET", "/api/status")
 st_sth, out_sth = sess(H, ch, "GET", "/api/status")
+G.cli("start", "needy", "--on", "2222", "--prompt", "needs y", "--needs", "jobs.y")     # a manual job on H waiting for the copy (#319): the stub runner ran it once
+needy_before = ran_on(H).count("needy")
 st_ma, _ = https(G, "POST", "/api/secrets/requests/approve", json.dumps({"id": req_id}).encode(), cert_of=H)   # a member cert cannot approve
 st_ap, out_ap = sess(G, cg, "POST", "/api/secrets/requests/approve", {"id": req_id})                           # the owner, on the HOLDER's dashboard (local send)
 st_rvy, out_rvy = sess(H, ch, "POST", "/api/secrets/reveal", {"name": "jobs.y", "password": "sevenpassword"})
 h_rec = next((r for r in json.load(open(os.path.join(H.dir, "vault-requests.json")))["requests"] if r["id"] == req_id), {})
 st_stg2, out_stg2 = sess(G, cg, "GET", "/api/status")
 st_sth2, out_sth2 = sess(H, ch, "GET", "/api/status")
-check("23 request → approve → copy: the requester asks its own listener (the verb's path); a name nobody holds is 404; with a holder the record is written and saved on the requester and offered to every member's status; a member's certificate cannot approve; the owner's tap on the holder's dashboard copies it to the requester (reveal matches, by cluster:holder), the record is done with who decided, and nobody shows it pending",
+time.sleep(0.5)                      # the runner the copy started is detached
+needy_after = ran_on(H).count("needy")
+check("23 request → approve → copy: the requester asks its own listener (the verb's path); a name nobody holds is 404; with a holder the record is written and saved on the requester and offered to every member's status; a member's certificate cannot approve; the owner's tap on the holder's dashboard copies it to the requester (reveal matches, by cluster:holder), the record is done with who decided, and nobody shows it pending; the MANUAL job on the requester that needed it is run the moment the copy lands (#319)",
+      needy_before == 1 and needy_after == 2 and
       st_have == 200 and out_have.get("have") is True and rc_rq == 1 and "no member holds" in out_rq and rc_rq2 == 1 and "already holds" in out_rq2
       and rc_rq3 == 0 and req_id and H.nsaves() >= h_saves4 + 1
       and any(q["id"] == req_id and q.get("can_approve") is True for q in out_stg.get("share_requests", [])) and any(q["id"] == req_id and q.get("mine") and not q.get("can_approve") for q in out_sth.get("share_requests", []))

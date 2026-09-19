@@ -326,7 +326,7 @@ jobs({"name": "blank", "cron": "0 2 * * *", "prompt": "p", "cwd": ""},
      {"name": "root", "cron": "0 2 * * *", "prompt": "p", "cwd": WORK},
      {"name": "flaky", "cron": "0 3 * * *", "prompt": "p", "notify": False, "session": "continue"},
      {"name": "needy", "cron": "0 2 * * *", "prompt": "p", "needs": ["jobs.token", "jobs.gh_token"]},
-     {"name": "custom", "cron": "0 2 * * *", "prompt": "p", "needs": ["deploy.key"]})
+     {"name": "custom", "cron": "0 2 * * *", "prompt": "p", "needs": ["jobs.deploy_key"]})
 rc_n1, _ = runner("needy", {"PIPEOS_SCHED_REQUEST": REQ_STUB})
 asked1 = open(REQ_LOG).read().splitlines() if os.path.exists(REQ_LOG) else []
 none_started_n = not argv("claude")
@@ -335,15 +335,18 @@ open(os.path.join(SECRETS, "jobs.env"), "a").write("TOKEN='t0k'\n")            #
 rc_n2, _ = runner("needy", {"PIPEOS_SCHED_REQUEST": REQ_STUB})
 asked2 = open(REQ_LOG).read().splitlines() if os.path.exists(REQ_LOG) else []
 started_n2 = len(argv("claude"))
+st_needy = json.load(open(os.path.join(RSTATE, "state.json")))["jobs"].get("needy", {})   # after the SECOND run (ok); the first left "waiting"
 rc_c1, _ = runner("custom", {"PIPEOS_SCHED_REQUEST": REQ_STUB})
 asked3 = open(REQ_LOG).read().splitlines() if os.path.exists(REQ_LOG) else []
-open(os.path.join(SECRETS, "custom.env"), "w").write("DEPLOY_KEY='k'\n")
+st_custom = json.load(open(os.path.join(RSTATE, "state.json")))["jobs"].get("custom", {})
+open(os.path.join(SECRETS, "jobs.env"), "a").write("DEPLOY_KEY='k'\n")
 rc_c2, _ = runner("custom", {"PIPEOS_SCHED_REQUEST": REQ_STUB})
-check("18c a job's `needs`: the first missing name is asked for (pipeos secrets request NAME 'job X needs it') and the run waits — rc 75, claude not started, the log says waiting and repeats the verb's answer; once the export carries it (jobs.env TOKEN=) the run starts; a non-jobs name is looked up in custom.env",
+check("18c a job's `needs`: the first missing name is asked for (pipeos secrets request NAME 'job X needs it') and the run waits — rc 75, claude not started, the log says waiting and repeats the verb's answer, state.json reads last_status waiting with the reason (the Schedule row shows it); once the export carries it (jobs.env TOKEN=) the run starts and the state is ok",
       rc_n1 == 75 and asked1 == ["jobs.token job needy needs it"] and none_started_n and "waiting for jobs.token" in log_n and "request deadbeef" in log_n
-      and rc_n2 == 0 and asked2 == asked1 and started_n2 == 1
-      and rc_c1 == 75 and asked3 == asked1 + ["deploy.key job custom needs it"] and rc_c2 == 0 and len(argv("claude")) == 2,
-      "n1=%s asked=%r started=%r n2=%s asked2=%r started_n2=%d c1=%s asked3=%r c2=%s claude=%d log=%r" % (rc_n1, asked1, not none_started_n, rc_n2, asked2, started_n2, rc_c1, asked3, rc_c2, len(argv("claude")), log_n[-300:]))
+      and rc_n2 == 0 and asked2 == asked1 and started_n2 == 1 and st_needy.get("last_status") == "ok"
+      and rc_c1 == 75 and asked3 == asked1 + ["jobs.deploy_key job custom needs it"] and st_custom.get("last_status") == "waiting" and "waiting for jobs.deploy_key" in st_custom.get("last_error", "")
+      and rc_c2 == 0 and len(argv("claude")) == 2,
+      "n1=%s asked=%r started=%r n2=%s asked2=%r started_n2=%d st_needy=%r c1=%s asked3=%r st_custom=%r c2=%s claude=%d log=%r" % (rc_n1, asked1, not none_started_n, rc_n2, asked2, started_n2, st_needy, rc_c1, asked3, st_custom, rc_c2, len(argv("claude")), log_n[-300:]))
 clear("claude")
 runner("flaky", {"STUB_RC": "1"}); f1 = argv("claude"); clear("claude")
 runner("flaky"); f2 = argv("claude"); clear("claude")

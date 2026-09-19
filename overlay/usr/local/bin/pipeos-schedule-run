@@ -167,16 +167,23 @@ fi
 # tick keeps skipping until the copy lands and the export carries it.
 REQUEST=${PIPEOS_SCHED_REQUEST:-"pipeos secrets request"}
 for _n in $needs; do
-    case "$_n" in
-        jobs.*) _f=$SECRETS/jobs.env;   _k=$(printf '%s' "${_n#jobs.}" | tr 'a-z' 'A-Z' | sed 's/[^A-Z0-9_]/_/g') ;;
-        *)      _f=$SECRETS/custom.env; _k=$(printf '%s' "$_n" | tr 'a-z' 'A-Z' | sed 's/[^A-Z0-9_]/_/g') ;;
-    esac
-    if [ -r "$_f" ] && grep -q "^$_k=" "$_f" 2>/dev/null; then
+    # jobs.NAME -> NAME in jobs.env (vault.export's rule; the validators
+    # accept nothing but jobs.* — jobs.env is the one export this run sources)
+    _k=$(printf '%s' "${_n#jobs.}" | tr 'a-z' 'A-Z' | sed 's/[^A-Z0-9_]/_/g')
+    if [ -r "$SECRETS/jobs.env" ] && grep -q "^$_k=" "$SECRETS/jobs.env" 2>/dev/null; then
         continue
     fi
     # shellcheck disable=SC2086  # REQUEST is a command with its arguments
-    _ans=$($REQUEST "$_n" "job $job needs it" 2>&1 | tail -1)
-    log "job $job: waiting for $_n — ${_ans:-asked the cluster}"
+    _ans=$($REQUEST "$_n" "job $job needs it" 2>&1 | tail -1); _rc=$?
+    _why="waiting for $_n — ${_ans:-asked the cluster}"
+    log "job $job: $_why"
+    # the wait is a state the Schedule row and `schedule ls` show (not only
+    # this log): last_status waiting, the reason in last_error; a run that
+    # was refused outright (not in a cluster, nobody holds it, denied) reads
+    # the same way, with the refusal as the reason
+    state_set "{\"last_end\": $(date -u +%s), \"last_status\": \"waiting\", \"last_error\": $(printf '%s' "$_why" | jq -Rs .), \"running_pid\": 0}"
+    # one DM per NEW ask (rc 0 = a request was raised); a repeat while it is open says nothing new
+    [ "$_rc" = 0 ] && dm "job $job: waiting for $_n — approve it under Secrets on a Machine that holds it"
     exit 75
 done
 

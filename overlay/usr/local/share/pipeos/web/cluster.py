@@ -901,6 +901,8 @@ def start_agent(on, spec, local_start, local_summary):
         # a member on an older release drops a key it does not know — say so
         # rather than let an agent run uncapped in silence (the #308 review)
         out["warning"] = "%s did not take the cap (it answered without one — an older release?); the agent runs UNCAPPED there" % mid
+    if spec.get("needs") and out.get("needs") != spec["needs"]:
+        out["warning"] = ((out.get("warning") + "; ") if out.get("warning") else "") + "%s did not take the needs list (an older release?); the agent runs UNGATED there and will fail on the missing secret instead of asking" % mid
     return 200, out
 
 
@@ -1112,7 +1114,11 @@ def main(argv):
             if "notify" in body:
                 body["notify"] = body["notify"] == "on"
             if "needs" in body:
-                body["needs"] = [x.strip().lower() for x in body.pop("needs").replace(";", ",").split(",") if x.strip()]
+                import vault
+                try:
+                    body["needs"] = vault.parse_needs(body.pop("needs"))
+                except ValueError as e:
+                    print("cluster: --%s" % e, file=sys.stderr); return 2
             if "cap" in body:
                 c = body.pop("cap")
                 if c in ("none", "0"):

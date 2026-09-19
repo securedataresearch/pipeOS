@@ -2362,11 +2362,11 @@ async function dashboard() {
       list.innerHTML = jobs.map(j => {
         const l = j.last || {};
         const st = l.last_status || "never run";
-        const cls = st === "ok" ? "status-ok" : st === "running" ? "" : st === "never run" ? "" : st === "cut off" ? "status-warn" : "status-bad";
+        const cls = st === "ok" ? "status-ok" : st === "running" ? "" : st === "never run" ? "" : st === "cut off" || st === "waiting" ? "status-warn" : "status-bad";
         const when = l.last_end ? new Date(l.last_end * 1000).toLocaleString() : "";
         return `<div class="row${j.enabled ? "" : " off"}">
           <div><div class="name">${esc(j.name)} ${j.enabled ? "" : '<span class="pill">paused</span>'} <span class="pill ${cls}">${esc(st)}</span>${(l.consecutive_failures || 0) >= 3 ? ` <span class="pill status-bad">${l.consecutive_failures} failures in a row</span>` : ""}</div>
-          <div class="desc">${esc(j.human || j.cron)} · ${esc(j.backend || "claude")}${j.cap_usd ? " · cap $" + j.cap_usd : ""}${(j.needs || []).length ? " · needs " + esc(j.needs.join(", ")) : ""}${j.next_run ? " · next " + esc(j.next_run) : ""}${when ? " · last " + esc(when) : ""}${j.paused ? `<br><span class="status-bad">paused — ${esc(j.paused)}</span>` : ""}</div></div>
+          <div class="desc">${esc(j.human || j.cron)} · ${esc(j.backend || "claude")}${j.cap_usd ? " · cap $" + j.cap_usd : ""}${(j.needs || []).length ? " · needs " + esc(j.needs.join(", ")) : ""}${j.next_run ? " · next " + esc(j.next_run) : ""}${when ? " · last " + esc(when) : ""}${j.paused ? `<br><span class="status-bad">paused — ${esc(j.paused)}</span>` : ""}${st === "waiting" && l.last_error ? `<br><span class="status-warn">${esc(l.last_error)}</span>` : ""}</div></div>
           <div>
             <button class="btn ghost" type="button" data-schrun="${esc(j.name)}">Run now</button>
             <button class="btn ghost" type="button" data-schtoggle="${esc(j.name)}" data-on="${j.enabled ? 0 : 1}">${j.enabled ? "Pause" : "Resume"}</button>

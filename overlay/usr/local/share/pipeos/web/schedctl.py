@@ -145,13 +145,14 @@ def apply(job, flags, new):
         else:
             job["cap_usd"] = int(c)
     if "needs" in flags:
-        n = [x.strip().lower() for x in flags["needs"].replace(";", ",").split(",") if x.strip()]
-        if not n or n == ["none"]:
-            job.pop("needs", None)
-        elif any(not vault.NAME_RE.match(x) or not vault.shareable(x) for x in n):
-            raise Refused("--needs is a comma-separated list of secret names a member could hand over (jobs.NAME), or none")
+        try:
+            n = vault.parse_needs(flags["needs"])
+        except ValueError as e:
+            raise Refused("--" + str(e))
+        if n:
+            job["needs"] = n
         else:
-            job["needs"] = sorted(set(n))
+            job.pop("needs", None)
     for k in ("notify", "enabled"):
         if k in flags:
             v = flags[k].strip().lower()
@@ -182,6 +183,8 @@ def cmd_ls():
             human = "invalid: %s" % e
         s = st.get(j["name"], {})
         last = s.get("last_status", "never run")
+        if last == "waiting" and s.get("last_error"):
+            last = "waiting — %s" % s["last_error"]
         fails = s.get("consecutive_failures", 0)
         pw = ledger.why_paused(j["name"], PAUSED, PAUSED_JSON) if not gpaused else ""
         print("%-32s %-18s %-9s %-8s %-8s %s%s%s%s%s" % (

@@ -664,13 +664,19 @@ r = req("/api/schedule/set", {"name": "nightly", "cap_usd": 1})                 
 assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["paused"].startswith("agent nightly")
 req("/api/schedule/set", {"name": "nightly", "cap_usd": 0})
 # needs (#319): a list or a comma string of shareable names; refused otherwise; rides the row; cleared by []/""
-req("/api/schedule/set", {"name": "nightly", "needs": "jobs.token, jobs.gh"})
-assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["needs"] == ["jobs.gh", "jobs.token"]
+req("/api/schedule/set", {"name": "nightly", "needs": "jobs.token, JOBS.GH ;jobs.token"})
+assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["needs"] == ["jobs.gh", "jobs.token"]          # split on , and ;, stripped, lowered, unique, sorted
+req("/api/schedule/set", {"name": "nightly", "needs": [" Jobs.Gh "]})
+assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["needs"] == ["jobs.gh"]                        # the list form is normalised the same way
 req("/api/schedule/set", {"name": "nightly", "needs": ["assistant_pass"]}, expect=400)     # a per-box secret: never handed over
+req("/api/schedule/set", {"name": "nightly", "needs": ["claude_token"]}, expect=400)       # shareable, but not in jobs.env — the runner sources only that
+req("/api/schedule/set", {"name": "nightly", "needs": ["jobs."]}, expect=400)
 req("/api/schedule/set", {"name": "nightly", "needs": ["not a name!"]}, expect=400)
 req("/api/schedule/set", {"name": "nightly", "needs": 7}, expect=400)
-assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["needs"] == ["jobs.gh", "jobs.token"]   # a refused set changed nothing
-req("/api/schedule/set", {"name": "nightly", "needs": ""})
+assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["needs"] == ["jobs.gh"]                        # a refused set changed nothing
+req("/api/schedule/set", {"name": "nightly", "needs": "none"})
+assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["needs"] == []                                 # "none" clears, like the flag
+req("/api/schedule/set", {"name": "nightly", "needs": "jobs.a"}); req("/api/schedule/set", {"name": "nightly", "needs": ""})
 assert {j["name"]: j for j in req("/api/schedule")["jobs"]}["nightly"]["needs"] == []
 req("/api/schedule/set", {"name": "nightly", "cap_usd": 100001}, expect=400)
 req("/api/schedule/del", {"name": "nightly"}); req("/api/schedule/del", {"name": "other"})
