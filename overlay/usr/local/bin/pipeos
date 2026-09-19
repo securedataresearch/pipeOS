@@ -67,22 +67,35 @@ sha() { sha256sum "$1" | cut -d' ' -f1; }
 # no file to compare against, lbu listed every persisted file as "A",
 # forever: "260 uncommitted change(s)" beside a passing verify on zero.
 # LBU_BACKUPDIR is lbu's own door: a tmpfs dir holding a hostname-named
-# symlink to the canonical, and nothing is mounted. Root only (lbu package
-# reads root's files); the apkovl's integrity is checked first, the way
-# pipeos-save and pipeos-flash check before trusting a tarball.
+# symlink to the canonical. lbu still tries to `mount` that dir (lbu.conf's
+# LBU_MEDIA=usb wins over the environment), so a shim mount in front of it
+# answers yes for the tmp dir and hands anything else to the real mount.
+# Root only (lbu package reads root's files); the apkovl's integrity is
+# checked first, the way pipeos-save and pipeos-flash check before trusting
+# a tarball; anything lbu says on stderr (apk's ERROR when the db is
+# broken, which lbu itself swallows into an all-D listing) is "could not".
 # rc 0 = compared; 2 = could not (the reason on stderr).
 lbu_canonical() {
     if [ "$(id -u)" != 0 ] && [ -z "${PIPEOS_LBU:-}" ]; then
         echo "compare needs root (lbu package reads root's files)" >&2; return 2
     fi
-    if [ ! -f "$OVL" ] || ! gzip -t "$OVL" 2>/dev/null || ! tar -tzf "$OVL" >/dev/null 2>&1; then
+    if [ ! -f "$OVL" ] || ! tar -tzf "$OVL" >/dev/null 2>&1; then
         echo "no readable canonical apkovl on the media (pipeos verify)" >&2; return 2
     fi
     _d=$(mktemp -d) || return 2
     ln -s "$OVL" "$_d/$(hostname).apkovl.tar.gz"
-    LBU_BACKUPDIR=$_d "$LBU" "$@"
+    mkdir -p "$_d/bin"
+    # shellcheck disable=SC2016  # the shim's own $_a/$@ must reach its file unexpanded
+    printf '#!/bin/sh\nfor _a; do [ "$_a" = "%s" ] && exit 0; done\nexec /bin/mount "$@"\n' "$_d" > "$_d/bin/mount"
+    chmod 755 "$_d/bin/mount"
+    _out=$(PATH="$_d/bin:$PATH" LBU_BACKUPDIR=$_d "$LBU" "$@" 2>"$_d/err")
     _rc=$?
+    _err=$(cat "$_d/err" 2>/dev/null)
     rm -rf "$_d"
+    if [ -n "$_err" ]; then
+        echo "lbu: $_err" >&2; return 2
+    fi
+    printf '%s\n' "$_out"
     return $_rc
 }
 
@@ -382,9 +395,10 @@ cmd_diff() {
         # lbu's own status (A added, D deleted, U updated — vs the canonical
         # apkovl), or with --content its full diff
         if [ "$1" = --content ]; then
-            lbu_canonical diff; return $?
+            lbu_canonical diff
+            case $? in 0|1) return 0 ;; *) return 2 ;; esac     # diff's 1 = trees differ, the normal case
         fi
-        _ul=$(lbu_canonical status -v) || return 2
+        _ul=$(lbu_canonical status) || return 2
         if [ -n "$_ul" ]; then
             printf '%s\n' "$_ul"
         else

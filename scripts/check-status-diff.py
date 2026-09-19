@@ -33,7 +33,7 @@ MEDIA = os.path.join(D, "media"); BIN = os.path.join(D, "bin"); os.makedirs(MEDI
 OVL = os.path.join(MEDIA, "pipeos.apkovl.tar.gz")
 with tarfile.open(OVL, "w:gz") as t:
     p = os.path.join(D, "hostname"); open(p, "w").write("pipeos-a4e0\n"); t.add(p, arcname="etc/hostname")
-CALLS = os.path.join(D, "lbu.calls"); ANSWER = os.path.join(D, "lbu.answer")
+CALLS = os.path.join(D, "lbu.calls"); ANSWER = os.path.join(D, "lbu.answer"); STDERR = os.path.join(D, "lbu.stderr")
 # the stub: records how it was called, checks the door pipeos must open, answers from the fixture
 with open(os.path.join(BIN, "lbu"), "w") as f:
     f.write("#!/bin/sh\n"
@@ -42,8 +42,9 @@ with open(os.path.join(BIN, "lbu"), "w") as f:
             "f=\"$LBU_BACKUPDIR/$(hostname).apkovl.tar.gz\"\n"
             "[ -L \"$f\" ] || { echo \"stub: no hostname-named link in $LBU_BACKUPDIR\" >&2; exit 9; }\n"
             "[ \"$(readlink -f \"$f\")\" = \"$(readlink -f %s)\" ] || { echo 'stub: the link does not point at the canonical apkovl' >&2; exit 9; }\n"
-            "case \"$1\" in status) cat %s 2>/dev/null; exit 0 ;; diff) echo \"--- content diff ---\"; cat %s 2>/dev/null; exit 0 ;; *) exit 9 ;; esac\n"
-            % (CALLS, OVL, ANSWER, ANSWER))
+            "[ -f %s ] && { cat %s >&2; }\n"
+            "case \"$1\" in status) cat %s 2>/dev/null; exit 0 ;; diff) echo \"--- content diff ---\"; [ -s %s ] && { cat %s; exit 1; }; exit 0 ;; *) exit 9 ;; esac\n"
+            % (CALLS, OVL, STDERR, STDERR, ANSWER, ANSWER, ANSWER))
 os.chmod(os.path.join(BIN, "lbu"), 0o755)
 ENV = dict(os.environ, PIPEOS_MEDIA=MEDIA, PIPEOS_LBU=os.path.join(BIN, "lbu"))
 
@@ -62,15 +63,22 @@ def calls():
 
 rc0, out0 = run("diff")
 check("1 `pipeos diff` runs lbu status with LBU_BACKUPDIR set to a directory holding <hostname>.apkovl.tar.gz -> the canonical apkovl (so lbu compares against OUR file and mounts nothing); an empty answer is 'no uncommitted changes'",
-      rc0 == 0 and "no uncommitted changes" in out0 and len(calls()) == 1 and calls()[0].startswith("status -v BACKUPDIR=/") and "MEDIA=" in calls()[0],
+      rc0 == 0 and "no uncommitted changes" in out0 and len(calls()) == 1 and calls()[0].startswith("status BACKUPDIR=/") and "-v" not in calls()[0],
       repr((rc0, out0, calls())))
 open(ANSWER, "w").write("A etc/pipeos/schedule.json\nU etc/pipeos/card.conf\nD etc/motd\n")
 rc1, out1 = run("diff")
 check("2 lbu's own A/U/D rows come through untouched (one dialect, lbu's)",
       rc1 == 0 and "A etc/pipeos/schedule.json" in out1 and "U etc/pipeos/card.conf" in out1 and "D etc/motd" in out1, repr((rc1, out1)))
 rc2, out2 = run("diff", "--content")
-check("3 `pipeos diff --content` is lbu's full diff against the same canonical",
+check("3 `pipeos diff --content` is lbu's full diff against the same canonical, and lbu's rc 1 (the trees differ — the normal case) is this verb's 0",
       rc2 == 0 and "content diff" in out2 and calls()[-1].startswith("diff BACKUPDIR="), repr((rc2, out2, calls()[-1:])))
+# lbu is invoked with a mount shim first on PATH that says yes to the link dir (lbu.conf's LBU_MEDIA makes it try)
+mount_probe = subprocess.run(["sh", "-c", 'd=$(ls -d /tmp/tmp.* 2>/dev/null | head -1); exit 0'], capture_output=True)
+open(STDERR, "w").write("ERROR: unable to open the apk database\n")
+rc_e, out_e = run("diff")
+os.unlink(STDERR)
+check("3b anything lbu says on stderr (apk's ERROR — lbu itself would then list every file as D with rc 0) is 'cannot tell' with that reason, never a count",
+      rc_e == 2 and "unable to open the apk database" in out_e and "A etc" not in out_e, repr((rc_e, out_e)))
 d = os.path.join(D, "tmpdirs-after"); left = [x for x in os.listdir(tempfile.gettempdir()) if x.startswith("tmp.") and os.path.isdir(os.path.join(tempfile.gettempdir(), x)) and os.path.islink(os.path.join(tempfile.gettempdir(), x, socket.gethostname() + ".apkovl.tar.gz"))]
 check("4 the tmpfs link dir is removed after every call (no hostname-named apkovl link lingers anywhere)", not left, repr(left))
 src = open(PIPEOS).read()
@@ -79,16 +87,17 @@ check("5 the status line counts the same call (lbu_canonical status), never a ba
       "lbu_canonical status" in src[i:j] and "lbu status" not in src[i:j] and "cannot tell what a save would change" in src[i:j], "")
 with open(OVL, "r+b") as f:
     f.truncate(40)
-rc3, out3 = run("diff")
 n_before = len(calls())
+rc3, out3 = run("diff")
 check("6 a truncated canonical apkovl (the power-loss case) is refused before lbu runs: rc 2, 'no readable canonical apkovl', not a listing of the whole tree",
       rc3 == 2 and "no readable canonical apkovl" in out3 and len(calls()) == n_before and "A etc" not in out3, repr((rc3, out3)))
 os.unlink(OVL)
 rc4, out4 = run("diff")
 check("7 no canonical apkovl at all: the same refusal", rc4 == 2 and "no readable canonical apkovl" in out4, repr((rc4, out4)))
 docs = {f: open(os.path.join(REPO, f)).read() for f in ("overlay/root/.claude/CLAUDE.md", "overlay/usr/local/bin/extra-add", "docs/fleet-update-runbook.md")}
-bare = [f for f, t in docs.items() if "lbu status" in t and "pipeos diff" not in t]
-check("8 nothing sends the resident agent or an operator to bare `lbu status` any more (the on-box rulebook, extra-add, the update runbook say pipeos diff)", not bare, repr(bare))
+bare = [(f, l.strip()) for f, t in docs.items() for l in t.splitlines()
+        if ("lbu status" in l or "lbu commit" in l) and "bare `lbu" not in l and "plain `lbu commit`" not in l]
+check("8 no line in the on-box rulebook, extra-add or the update runbook tells anyone to run `lbu status` or `lbu commit` (only the explanatory phrases remain)", not bare, repr(bare))
 
 shutil.rmtree(D, ignore_errors=True)
 print("%d/%d" % (sum(RESULTS), len(RESULTS)))

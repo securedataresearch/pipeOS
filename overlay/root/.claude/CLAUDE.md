@@ -19,9 +19,9 @@ Every boot rebuilds `/` from RAM:
 - **(a)** its name is in the committed `/etc/apk/world`, **and**
 - **(b)** its `.apk` *and every dependency's* is in a repo with a **valid signed
   index**, **and**
-- **(c)** `lbu commit` has been run
+- **(c)** `pipeos save` has been run
 
-Missing **(b)** is the silent failure mode: `apk add` works, `lbu commit` succeeds,
+Missing **(b)** is the silent failure mode: `apk add` works, `pipeos save` succeeds,
 and after reboot the package is simply gone with a quiet unsatisfiable-constraint
 line in the boot log. Always verify **across a reboot**, never just in the live
 session.
@@ -54,7 +54,7 @@ LABEL=PIPEOS  /media/usb  vfat  ro  0 0
   changes, fail on any symlink, and can corrupt case-colliding paths.
 - **Never persist a git tree or build artifacts into the apkovl.** With
   `BACKUP_LIMIT=3` that is 4 copies on this partition. Filling it during an
-  `lbu commit` can truncate the apkovl — the main brick risk on this box.
+  save can truncate the apkovl (a plain `lbu commit` especially: no atomic swap) — the main brick risk on this box.
 - Remount rw only for repo/apkovl work, and remount ro immediately after:
   `mount -o remount,rw /media/usb` ... `sync` ... `mount -o remount,ro /media/usb`
 - `df -h /media/usb` before every write.
@@ -82,7 +82,7 @@ apk fetch --recursive --arch x86_64 -o /media/usb/apks/extra/x86_64 \
   <pkg> <its-deps-named-explicitly>
 # re-index + sign (see §5), then:
 apk add <pkg>
-lbu commit
+pipeos save                   # never plain `lbu commit`: it leaves a hostname-named twin and has a power-loss window
 mount -o remount,ro /media/usb
 ```
 
@@ -112,8 +112,8 @@ a workaround, because you do not control the flags the initramfs passes at boot.
 ```sh
 pipeos diff                    # what a save would change (lbu against the canonical apkovl; bare `lbu status` compares against a file pipeOS never writes)
 lbu package /tmp/probe        # write a CANDIDATE apkovl to tmpfs — free, non-destructive
-tar -tzf /tmp/probe/pipeos.apkovl.tar.gz | grep <thing-you-expect>
-lbu commit                    # only after the probe looks right
+tar -tzf /tmp/probe/$(hostname).apkovl.tar.gz | grep <thing-you-expect>   # lbu names it after the host
+pipeos save                   # only after the probe looks right (atomic; plain `lbu commit` is not)
 ```
 
 - `BACKUP_LIMIT=3`: three commits rotate the known-good apkovl out of existence.
