@@ -88,6 +88,19 @@ controls = [
     ("V4: a member's copy overwrites a secret this box set itself (#301)", W,
      lambda s: s.replace('        if mine and not (mine.get("by") or "").startswith("cluster:"):\n', '        if False:\n'), ["25"]),
 
+    ("V1: the requester's receive takes a copy under any request id (a member plants a secret as an 'answer' to a request never raised, #301)", W,
+     lambda s: s.replace('            if rec is None or _req_live(rec) != "pending" or rec.get("name") != name:\n                return self.err(404, "no open request %s for %s on this Machine" % (rid, name))\n            if peer["peer"] not in (rec.get("holders") or []):\n',
+                         '            if rec is None:\n                rec = {"holders": [peer["peer"]]}\n            if False:\n'), ["24"]),
+
+    ("V2: approve ignores that a request is already decided (a denied or done request is approved again, #301)", W,
+     lambda s: s.replace('        live = _req_live(rec)\n        if live != "pending":\n', '        live = _req_live(rec)\n        if False:\n'), ["24"]),
+
+    ("V6: the requester takes a request's copy from a member the request did not name (a non-holder plants its own value, #301)", W,
+     lambda s: s.replace('            if peer["peer"] not in (rec.get("holders") or []):\n                return self.err(403, "%s is not a holder this request named" % peer["peer"])\n', ''), ["27"]),
+
+    ("V5: approve ignores a request's expiry (#301)", W,
+     lambda s: s.replace('    if r.get("state") == "pending" and int(r.get("expires_at") or 0) < now:\n        return "expired"\n', '    if False:\n        return "expired"\n'), ["24"]),
+
     ("F: the reader does not drop a member seen in another cluster", C,
      lambda s: s.replace("        if pid in d[\"members\"] and pid != self_id() and p.get(\"cl\") and p[\"cl\"] != d[\"id\"]:\n",
                          "        if False:\n"), ["9"]),

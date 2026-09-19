@@ -41,6 +41,7 @@ open(HOME + "/.pipe/inbox/msg", "w").write("x")
 open(HOME + "/.claude/.credentials.json", "w").write("x"); open(HOME + "/.claude.json", "w").write("x")
 open(HOME + "/.hermes/auth.json", "w").write("x")
 open(RUN + "/cluster-ca.pem", "w").write("x"); open(RUN + "/cluster.status", "w").write("x")
+open(ETC + "/vault-requests.json", "w").write('{"v":1,"requests":[{"id":"x","name":"jobs.old","why":"the old owner"}]}')
 for name, body in (("pipebox-card", 'echo "$*" >> %s/card.log\n' % MARK),
                    ("pipeos-tls-init", 'echo tls >> %s/tls.log\nmkdir -p %s/tls && echo new > %s/tls/ca.key\n' % (MARK, ETC, ETC)),
                    ("pipeos-save", 'echo "UNCLAIM=${PIPEOS_SAVE_UNCLAIM:-} provisioned=$([ -f %s/provisioned ] && echo yes || echo no)" >> %s/save.log\n' % (ETC, MARK)),
@@ -69,7 +70,7 @@ def mark(n):
 
 
 gone = ["web-admin.conf", "users.json", "terminals.conf", "services.conf", "schedule.json", "nas.conf", "mounts.conf",
-        "assistant.conf", "stream.conf", "vault.sealed", "support_key.pub", "cluster.json", "provisioned"]
+        "assistant.conf", "stream.conf", "vault.sealed", "vault-requests.json", "support_key.pub", "cluster.json", "provisioned"]
 left = [k for k in gone if os.path.exists(os.path.join(ETC, k))]
 check("1 the owner's records go: claim, users, terminals, services, jobs, shares, mounts, assistant, stream, vault, support key, cluster membership, the provisioned marker",
       p.returncode == 0 and not left, "rc=%s left=%r out=%s" % (p.returncode, left, (p.stdout + p.stderr)[-300:]))

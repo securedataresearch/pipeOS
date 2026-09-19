@@ -271,7 +271,24 @@ owner-facing fact for Cluster buyers.
   saves. A copy never overwrites a secret the member set itself. Unshare
   only forgets. Every other secrets handler now takes an admin *session*
   only — a member's certificate may ask `have` and hand over `receive`,
-  nothing else. The request half (#301 part 2) follows.
+  nothing else.
+- Built (#301, the request half): `pipeos secrets request NAME [WHY]` is
+  the resident agent's one door (allowed in the fence; every `vault` verb
+  stays denied). It asks every member `have` (existence only), writes the
+  record in `/etc/pipeos/vault-requests.json` on the requester (saved; it
+  rides the apkovl and is re-offered at boot) and offers a tmpfs notice
+  to every member, so the request shows on whichever dashboard the owner
+  has open (Secrets → *Share requests*, and an alert). **Approve on a
+  Machine that holds the secret** (Sam, 2026-09-19: the review of the
+  first cut showed that approving elsewhere means the holder acts on
+  another member's word, which a compromised member can forge): the
+  holder's own admin session flips the request to approved under a lock
+  (a second tap finds it decided), sends its copy to the requester's
+  `receive` with the request id — the requester takes it only from a
+  holder the request named — stores the note, and every member closes
+  it. A dashboard on any other Machine shows the request with a link to
+  each holder's page. Deny closes it everywhere. Requests expire after a
+  day, unseen.
 
 → #300 (placement + the agent list), #301 (vault copy on demand),
 #302 (caps at every level, the pause names its cap)

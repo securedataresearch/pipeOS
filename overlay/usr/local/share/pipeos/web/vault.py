@@ -572,6 +572,20 @@ def main(argv):
                                                      time.strftime("%Y-%m-%d %H:%M", time.gmtime(r["set_at"])) if r["set_at"] else "-",
                                                      r["by"], ("  shared with " + ", ".join(sorted(r["shared"]))) if r.get("shared") else ""))
             return 0
+        if verb == "request":
+            # the resident agent's one door (#301): ask the members for a secret
+            # this Machine lacks; the owner approves once, on a Machine that holds it
+            if len(argv) < 2:
+                print("usage: pipeos secrets request NAME [WHY]", file=sys.stderr)
+                return 2
+            import cluster  # noqa: PLC0415
+            st, out, who = cluster.call("local", "POST", "/api/secrets/request", {"name": argv[1], "why": " ".join(argv[2:])}, timeout=40)
+            if st != 200 or not who:
+                print("secrets: %s" % ((out.get("error") if isinstance(out, dict) else "") or st), file=sys.stderr)
+                return 1
+            r = out.get("request", {})
+            print("asked for %s (request %s) — the owner approves it on a Machine that holds it (%s), under Secrets" % (r.get("name"), r.get("id"), ", ".join(r.get("holders") or [])))
+            return 0
         if verb in ("share", "unshare"):
             # through this box's own listener over its own certificate, so the
             # verb makes the same refusals the dashboard makes (#301)

@@ -28,6 +28,7 @@
 #   pipeos usage [totals|cap [--box|--cluster|--agent NAME] N|none]   the ledger's totals; the caps (box + cluster: card; agent: the job), saved, enforced now; every pause names its cap
 #   pipeos card set KEY=VALUE...   a card field, regenerated and saved (what the dashboard's forms write)
 #   pipeos secrets phrase [--ack]  the vault's pending recovery phrase; --ack forgets the tmpfs copy
+#   pipeos secrets request NAME [WHY]   ask the cluster for a secret this Machine lacks (the agent's one door; the owner approves once, on a Machine that holds it, #301)
 #   pipeos assistant password      the assistant terminal's password from stdin -> vault, restarted, saved
 #   pipeos nas account NAME      share-only account + its SMB password (stdin) — Files → Network storage's form
 #   pipeos watchdog kernel|off|status   the hardware watchdog (card WATCHDOG, default kernel): regenerated, saved, restarted now
@@ -539,7 +540,7 @@ cmd_unclaim() {
     rm -f "$_etc/web-admin.conf" "$_etc/users.json" "$_etc/terminals.conf" "$_etc/services.conf" \
           "$_etc/schedule.json" "$_etc/nas.conf" "$_etc/mounts.conf" "$_etc/assistant.conf" "$_etc/stream.conf"
     # nobody's box has nobody's secrets: the vault, its export, the support key and port (#244)
-    rm -f "$_etc/vault.sealed" "$_etc/support_key.pub"
+    rm -f "$_etc/vault.sealed" "$_etc/support_key.pub" "$_etc/vault-requests.json"
     [ -f "$_etc/support.conf" ] && sed -i 's/^SUPPORT_PORT=.*/SUPPORT_PORT=/' "$_etc/support.conf"
     rm -rf "$_run/web-sessions" "$_run/secrets"
     # the sign-ins: pipe (identity, credentials, contacts, inbox), Claude, hermes
@@ -671,7 +672,8 @@ cmd_secrets() {
             else
                 echo "no recovery phrase pending (already acked, or the vault was never migrated here)"; exit 1
             fi ;;
-        *) echo "usage: pipeos secrets phrase [--ack]" >&2; exit 2 ;;
+        request) shift; exec python3 /usr/local/share/pipeos/web/vault.py request "$@" ;;
+        *) echo "usage: pipeos secrets phrase [--ack] | request NAME [WHY]" >&2; exit 2 ;;
     esac
 }
 

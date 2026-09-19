@@ -6,6 +6,7 @@
     "additionalDirectories": ["/work"],
     "allow": [
       "Read(/work/**)",
+      "Bash(pipeos secrets request *)",
       "Bash(sh -n *)",
       "Bash(git *)",
       "Bash(gh *)",
