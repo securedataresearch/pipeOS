@@ -46,7 +46,8 @@ gets a verb and a row in `scripts/check-operator-verbs.py`.
 
 ## Build order
 
-`make chroot` → `make apks` → (`make apkovl` →) `make image|usb|metal`.
+`make chroot` → `make apks` (which runs `make netgaze` for the LAN collector's
+payload; `make pipe` is separate) → (`make apkovl` →) `make image|usb|metal`.
 `image` intentionally does NOT depend on the slow `apks` target;
 `50-build-image.sh` refuses to build if `out/repo` is staler than
 `aports/`/payloads (override: `FORCE=1`). After any package change run

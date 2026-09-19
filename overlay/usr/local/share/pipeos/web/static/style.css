@@ -129,6 +129,14 @@ details summary { cursor: pointer; }
 .row .name { font-weight: 600; }
 .row.off .name, .row.off .desc { opacity: .55; }  /* a Machine on the roster but not answering (#241) */
 .row .desc { color: var(--muted); font-size: .85rem; }
+/* the network map (#217): the one table in the app */
+.tblwrap { overflow-x: auto; }
+.tbl { width: 100%; border-collapse: collapse; font-size: .9rem; }
+.tbl th, .tbl td { text-align: left; padding: .45rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+.tbl th { color: var(--muted); font-weight: 600; font-size: .8rem; }
+.tbl tr:last-child td { border-bottom: 0; }
+.tbl .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; }
+.tbl tr.dim td { opacity: .55; }  /* a Machine on the roster but not answering, like .row.off */
 .switch { position: relative; width: 42px; height: 24px; flex: none; }
 .switch input { opacity: 0; width: 0; height: 0; }
 .switch span { position: absolute; inset: 0; background: var(--line); border-radius: 99px; transition: background .15s; }

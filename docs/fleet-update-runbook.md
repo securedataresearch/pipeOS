@@ -172,7 +172,8 @@ off-`PATH`, box2 has none).
 
     # 2. chroot, then the musl payload + the three apks
     make chroot
-    ./scripts/20-build-pipe.sh               # -> out/payloads/pipe, pipe.version
+    ./scripts/20-build-pipe.sh                 # -> out/payloads/pipe, pipe.version
+    ./scripts/20-build-netgaze.sh              # -> out/payloads/netgaze (the LAN collector, #217); `make apks` runs it
     ./scripts/30-build-apks.sh               # stamps pkgver, abuild -r, signs the repo
 
     # 3. gate before anything touches media

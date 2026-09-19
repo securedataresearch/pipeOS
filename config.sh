@@ -146,7 +146,7 @@ unset _cand
 # would be re-sourced by 30-build-apks.sh and silently put hermes back on a
 # stick that is meant not to have it — a fleet-ism reappearing in the factory
 # path, which is the exact drift the card work exists to end.
-PIPEOS_PKGS="${PIPEOS_PKGS:-pipe claude-code hermes-agent}"
+PIPEOS_PKGS="${PIPEOS_PKGS:-pipe claude-code hermes-agent netgaze}"
 # appended to the staged /etc/apk/world in 40-build-apkovl.sh (empty today)
 EXTRA_WORLD=""
 

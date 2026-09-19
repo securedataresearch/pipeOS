@@ -56,6 +56,7 @@ import vault  # noqa: E402  — the sealed secret store (#244)
 import cronspec  # noqa: E402  — the cron expression a scheduled job carries (#242)
 import ledger  # noqa: E402  — every model call, costed (#246)
 import cluster  # noqa: E402  — membership over mutual TLS: a member's client certificate is a session (#222, #211)
+import lan  # noqa: E402  — the network map (#217)
 
 ETC = "/etc/pipeos"
 ADMIN_CONF = ETC + "/web-admin.conf"
@@ -2016,6 +2017,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/cluster": self.api_cluster_get,
             "/api/cluster/summary": self.api_cluster_summary,
             "/api/cluster/page": self.api_cluster_page,
+            "/api/lan": self.api_lan,
         }
         fn = readers.get(path)
         if fn is not None:
@@ -2231,6 +2233,14 @@ class Handler(BaseHTTPRequestHandler):
             "lan_name": lanid.lan_name(),
             "siblings": len(ps),
         })
+
+    def api_lan(self):
+        """The network map (#217): netgaze's pass, cached a minute, with
+        every row marked — this Machine, a member, a Machine, other.
+        ?refresh=1 runs the pass now. A signed-in reader only (the fence
+        lists what a member's certificate may read; this is not on it)."""
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        self.send(200, lan.page(refresh=(q.get("refresh", ["0"])[0] not in ("", "0", "no", "false"))))
 
     def api_lobby(self):
         """Public like /api/state: what mDNS already tells the LAN, plus one
