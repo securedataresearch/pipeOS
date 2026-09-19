@@ -51,7 +51,7 @@ esac
 # it means a typo'd override builds from a DIFFERENT ISO than the one asked
 # for. Worth fixing for all three together; out of scope for a path fallback.
 ALPINE_ISO="${ALPINE_ISO:-$HOME/Downloads/alpine-$ALPINE_FLAVOR-$ALPINE_PATCH-$ALPINE_ARCH.iso}"
-ALPINE_ISO_ONBOX="/work/isos/alpine-$ALPINE_FLAVOR-$ALPINE_PATCH-$ALPINE_ARCH.iso"
+ALPINE_ISO_ONBOX="/data/isos/alpine-$ALPINE_FLAVOR-$ALPINE_PATCH-$ALPINE_ARCH.iso"
 [ -f "$ALPINE_ISO" ] || { [ -f "$ALPINE_ISO_ONBOX" ] && ALPINE_ISO="$ALPINE_ISO_ONBOX"; }
 
 CHROOT="$OUT/chroot"
@@ -67,16 +67,16 @@ CHROOT="$OUT/chroot"
 #
 # Same three tiers as ALPINE_ISO above — override, then the cross-host default,
 # then the on-box fallback — and it points that way round for the reason box2
-# gave on #92: this file's only unconditional /work path was this one, and the
+# gave on #92: this file's only unconditional /data path was this one, and the
 # machine that actually runs 10-mk-chroot.sh is a workstation, not a box (the
-# script needs sudo chroot and apk, both hard-banned on a box). /work does not
+# script needs sudo chroot and apk, both hard-banned on a box). /data does not
 # exist there and an unprivileged user cannot create it, so under `set -e` the
 # old default was a hard build stop at the key step on the only machine that
 # builds the fleet.
 #
-# The on-box tier is still worth having, and it is not the -d /work test alone:
+# The on-box tier is still worth having, and it is not the -d /data test alone:
 # on a box $HOME is /root on tmpfs, which is the one place a key must NOT live.
-# So the fallback wants a durable /work — and an existing store there wins
+# So the fallback wants a durable /data — and an existing store there wins
 # outright, because a builder that already has the fleet key on the ext4
 # workspace must not silently start looking somewhere else.
 #
@@ -86,10 +86,10 @@ CHROOT="$OUT/chroot"
 # "silently used a different one" is the entire defect class.
 if [ -z "${SIGNING_KEY_DIR:-}" ]; then
     SIGNING_KEY_DIR="$HOME/.pipeos/keys"
-    if [ -d /work/keys/pipeos ]; then
-        SIGNING_KEY_DIR=/work/keys/pipeos
-    elif [ ! -d "$SIGNING_KEY_DIR" ] && [ -d /work ] && [ -w /work ]; then
-        SIGNING_KEY_DIR=/work/keys/pipeos
+    if [ -d /data/keys/pipeos ]; then
+        SIGNING_KEY_DIR=/data/keys/pipeos
+    elif [ ! -d "$SIGNING_KEY_DIR" ] && [ -d /data ] && [ -w /data ]; then
+        SIGNING_KEY_DIR=/data/keys/pipeos
     fi
 fi
 
@@ -99,9 +99,9 @@ fi
 # existing is not a key being in it, so the loser of that test can be the store
 # that actually holds the fleet key — and it was then invisible: 10-mk-chroot.sh
 # censused `$SIGNING_KEY_DIR` and nothing knew the other candidate's name. An
-# EMPTY /work/keys/pipeos beside a populated $HOME/.pipeos/keys is not exotic;
+# EMPTY /data/keys/pipeos beside a populated $HOME/.pipeos/keys is not exotic;
 # the backup does `mkdir -p` then copies, so any failure between the two leaves
-# exactly that, and an operator told "the durable home is /work/keys/pipeos"
+# exactly that, and an operator told "the durable home is /data/keys/pipeos"
 # makes the directory first, because that is what people do. The build then
 # reported "no signing key — generating a new one", which is #90's headline
 # defect reached through the code #92 added to fix it.
@@ -122,7 +122,7 @@ fi
 # disabled exactly where it was needed. Consumers iterate
 # "${SIGNING_KEY_DIR_ALT[@]}"; this file is bash (see shebang note above).
 SIGNING_KEY_DIR_ALT=()
-for _cand in "$HOME/.pipeos/keys" /work/keys/pipeos; do
+for _cand in "$HOME/.pipeos/keys" /data/keys/pipeos; do
     if [ "$_cand" != "$SIGNING_KEY_DIR" ]; then
         SIGNING_KEY_DIR_ALT+=("$_cand")
     fi
@@ -153,8 +153,8 @@ EXTRA_WORLD=""
 PIPE_SRC="${PIPE_SRC:-$HOME/Projects/pipe}"
 HERMES_SRC="${HERMES_SRC:-$HOME/.hermes/hermes-agent}"
 # on pipeOS itself the checkouts live on the ext4 workspace
-[ -d "$PIPE_SRC" ] || { [ -d /work/repos/pipe ] && PIPE_SRC=/work/repos/pipe; }
-[ -d "$HERMES_SRC" ] || { [ -d /work/repos/hermes-agent ] && HERMES_SRC=/work/repos/hermes-agent; }
+[ -d "$PIPE_SRC" ] || { [ -d /data/repos/pipe ] && PIPE_SRC=/data/repos/pipe; }
+[ -d "$HERMES_SRC" ] || { [ -d /data/repos/hermes-agent ] && HERMES_SRC=/data/repos/hermes-agent; }
 
 # pipeOS runs these scripts as root with no sudo installed — shim it
 if [ "$(id -u)" = 0 ] && ! command -v sudo >/dev/null 2>&1; then

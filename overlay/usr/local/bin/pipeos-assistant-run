@@ -14,7 +14,7 @@ set -u
 
 CONF=/etc/pipeos/assistant.conf
 SETTINGS=/etc/pipeos/pipebox-settings.json
-WORKDIR=/work/pipebox/webchat
+WORKDIR=/data/pipebox/webchat
 # the password and the Claude credential come from the vault's export (#244)
 SECRETS=/run/pipeos/secrets
 AUTH=$SECRETS/claude.env

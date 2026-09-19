@@ -14,7 +14,7 @@ export PIPE_NO_SPAWN=1
 
 # Agent auth token (secret; provisioned into the box's env file, never in git)
 # and the build toolchain on PATH, so a BUILD/TEST box's agent can run
-# cargo/rustc/cc from /work/buildroot when present.
+# cargo/rustc/cc from /data/buildroot when present.
 # The Claude credential comes from the vault's export under /run (#244);
 # the /etc file is the pre-vault location, read only until the first boot
 # that migrates it, so a deploy-overlay without a reboot keeps working.
@@ -27,7 +27,7 @@ if [ -r "$AUTH" ]; then
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && export CLAUDE_CODE_OAUTH_TOKEN
     [ -n "${ANTHROPIC_API_KEY:-}" ] && export ANTHROPIC_API_KEY
 fi
-[ -d /work/buildroot/usr/bin ] && export PATH="/work/buildroot/usr/bin:$PATH"
+[ -d /data/buildroot/usr/bin ] && export PATH="/data/buildroot/usr/bin:$PATH"
 # The generated shell environment. Its header says /etc/profile sources it,
 # and for an ssh session that is true — but nothing on this path is a login
 # shell: init -> pipebox-listener -> claude -p -> sh -c. The agent would
@@ -35,8 +35,8 @@ fi
 # (box0 on pipeOS#93)
 [ -r /etc/profile.d/10-pipebox-env.sh ] && . /etc/profile.d/10-pipebox-env.sh
 
-LOG=/work/logs/pipebox-listener.log
-STATE=/work/pipebox
+LOG=/data/logs/pipebox-listener.log
+STATE=/data/pipebox
 MANDATE=/etc/pipeos/mandate.md
 SETTINGS=/etc/pipeos/pipebox-settings.json
 # How long one agent run may take before `timeout` kills it (pipeOS#101).
@@ -79,7 +79,7 @@ CLAUDE_TIMEOUT="${CLAUDE_TIMEOUT:-$_agent_timeout_s}"
 
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG"; }
 
-mkdir -p "$STATE/sessions" "$STATE/state" /work/logs || exit 1
+mkdir -p "$STATE/sessions" "$STATE/state" /data/logs || exit 1
 
 # one listener, ever — wait briefly for a predecessor to release the lock
 # (on service restart the old process can outlive us by a few seconds; a
@@ -155,7 +155,7 @@ your text output here goes only to a log file nobody reads in real time."
     rc=0
     (cd "$STATE" && printf '%s' "$prompt" | timeout "$CLAUDE_TIMEOUT" claude -p \
             --settings "$SETTINGS" $resume_args \
-            >> /work/logs/pipebox-claude.log 2>&1 9>&-) || rc=$?
+            >> /data/logs/pipebox-claude.log 2>&1 9>&-) || rc=$?
     touch "$STATE/sessions/.started-$sid"
 
     if [ "$rc" = 126 ] || [ "$rc" = 127 ]; then

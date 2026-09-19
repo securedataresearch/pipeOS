@@ -38,20 +38,20 @@ BREAKS = [
      '        case "$(basename "$e")" in\n            keys) continue ;;\n        esac',
      '        :'),
     # D is the one box1 asked for on review. Every survivor row except
-    # out/keys was VACUOUS: no tier ever nominates /work/claude or
-    # /work/backup, so those rows passed for any implementation of
+    # out/keys was VACUOUS: no tier ever nominates /data/claude or
+    # /data/backup, so those rows passed for any implementation of
     # protected() — delete its body and they still pass. This widens the
-    # allowlist (the last tier iterates /work/* instead of naming one path)
+    # allowlist (the last tier iterates /data/* instead of naming one path)
     # so the protected list is the ONLY thing standing between the sweep and
     # agent memory, the credential backups and the signing key. It must
     # refuse each of them by name, which trips `refused nothing` — and the
     # survivor rows must still pass, because that is the defence in depth
-    # this script's header claims. /work/repos is skipped so the seam under
+    # this script's header claims. /data/repos is skipped so the seam under
     # test is the protected list alone and not the tier order.
-    ("D  widen the allowlist: last tier iterates /work/* by name",
-     'done_enough || reclaim /work/cargo-target "shared artifact cache"',
-     'for e in /work/*; do\n'
-     '    case "$e" in /work/repos) continue ;; esac\n'
+    ("D  widen the allowlist: last tier iterates /data/* by name",
+     'done_enough || reclaim /data/cargo-target "shared artifact cache"',
+     'for e in /data/*; do\n'
+     '    case "$e" in /data/repos) continue ;; esac\n'
      '    done_enough && break\n'
      '    [ -e "$e" ] || continue\n'
      '    reclaim "$e" "shared artifact cache"\n'

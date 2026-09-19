@@ -10,7 +10,7 @@
 # bounded, silent when offline or when there is no checkout to refresh.
 
 # same default + override as selfcheck reads
-REPO=${PIPEOS_REPO:-/work/repos/pipeOS}
+REPO=${PIPEOS_REPO:-/data/repos/pipeOS}
 [ -d "$REPO/.git" ] || exit 0
 timeout 60 git -C "$REPO" fetch -q origin main >/dev/null 2>&1 || true
 exit 0

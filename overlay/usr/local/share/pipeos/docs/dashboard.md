@@ -21,7 +21,7 @@ chat with the box, and manage the browser terminal.
 
 ## Files
 
-A file explorer over `/work` and any mounted external drives: upload
+A file explorer over `/data` and any mounted external drives: upload
 (drag & drop works), download files or whole folders as `.tar.gz`, move,
 rename, mkdir, delete. A chat pane rides along when Claude is enabled.
 
@@ -41,7 +41,7 @@ honest signal.
 
 Jobs the Machine runs on its own: a time (cron, box clock = UTC — or
 **manual**: leave the time blank and the job runs only when you press Run
-now), a prompt, a working dir under `/work`, which assistant. One job at a time;
+now), a prompt, a working dir under `/data`, which assistant. One job at a time;
 each run DMs you over pipe when it starts and ends and writes its own log
 (`Log` on the row, or Logs under System as `schedule-<job>`). Pause,
 resume, run now, edit, delete. When the monthly usage cap is reached

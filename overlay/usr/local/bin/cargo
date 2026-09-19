@@ -13,15 +13,15 @@
 # checkout's toplevel at invocation time — the only moment it is knowable.
 # Bypassing this shim falls back to per-repo target/: wasteful, never wrong.
 root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-if mountpoint -q /work 2>/dev/null; then
+if mountpoint -q /data 2>/dev/null; then
     h=$(printf '%s' "$root" | sha256sum | cut -c1-12)
-    CARGO_TARGET_DIR="/work/cargo-target/$h"
+    CARGO_TARGET_DIR="/data/cargo-target/$h"
     export CARGO_TARGET_DIR
 fi
-if [ -x /work/buildroot/usr/bin/cargo ]; then
-    export PATH=/work/buildroot/usr/bin:$PATH
-    export LD_LIBRARY_PATH=/work/buildroot/usr/lib:/work/buildroot/lib
-    exec /work/buildroot/usr/bin/cargo "$@"
+if [ -x /data/buildroot/usr/bin/cargo ]; then
+    export PATH=/data/buildroot/usr/bin:$PATH
+    export LD_LIBRARY_PATH=/data/buildroot/usr/lib:/data/buildroot/lib
+    exec /data/buildroot/usr/bin/cargo "$@"
 fi
 # No buildroot (SHIP box, or a dev machine running the overlay): first real
 # cargo on PATH that is not this file.
@@ -35,5 +35,5 @@ for d in $PATH; do
     exec "$c" "$@"
 done
 IFS=$oldifs
-echo "cargo shim: no cargo in /work/buildroot or on PATH" >&2
+echo "cargo shim: no cargo in /data/buildroot or on PATH" >&2
 exit 127

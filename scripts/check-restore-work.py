@@ -2,11 +2,11 @@
 """Probe for pipeos-restore-work (#182): the shipped script against a fake
 root, a fake /proc/mounts, a recording rsync stub and a recording mount stub
 — the seams the script exposes for exactly this. Nothing here touches the
-real /work or any device.
+real /data or any device.
 
 Rows cover source resolution (backup root -> work/, a plain dir, a device
 mounted read-only), the emptiness rule and --force, the additive rsync (no
---delete, the four excludes), the own-disk and running-/work refusals, the
+--delete, the four excludes), the own-disk and running-/data refusals, the
 users.manifest exception, and the fence (deny entries in both settings
 files, the dispatch line in `pipeos`).
 
@@ -45,21 +45,21 @@ def write(path, text, mode=None):
 
 
 def box(work_files=None):
-    """A fake root with a mounted /work (empty by the rule unless work_files),
+    """A fake root with a mounted /data (empty by the rule unless work_files),
     a backup tree on an external, stubs for rsync, mount and blkid."""
     d = tempfile.mkdtemp(prefix="ckrw-")
     TMPS.append(d)
     for sub in ("repos", "logs", "cache", "claude/projects", "pipebox", "backup", "home", "lost+found",
                 ".pipeos/flash"):
-        os.makedirs(d + "/work/" + sub, exist_ok=True)
-    write(d + "/work/.pipeos/flash/x", "staging")
-    write(d + "/work/logs/y", "log")
-    write(d + "/work/cache/z", "cache")
+        os.makedirs(d + "/data/" + sub, exist_ok=True)
+    write(d + "/data/.pipeos/flash/x", "staging")
+    write(d + "/data/logs/y", "log")
+    write(d + "/data/cache/z", "cache")
     for path, content in (work_files or {}).items():
-        write(d + "/work/" + path, content)
+        write(d + "/data/" + path, content)
     write(d + "/ext/pipeos-backup/probe/identity/MANIFEST", "pipeos identity backup\n")
-    write(d + "/ext/pipeos-backup/probe/work/data.txt", "precious")
-    write(d + "/ext/pipeos-backup/probe/work/.pipeos/users.manifest", "sam:1000\n")
+    write(d + "/ext/pipeos-backup/probe/data/data.txt", "precious")
+    write(d + "/ext/pipeos-backup/probe/data/.pipeos/users.manifest", "sam:1000\n")
     write(d + "/plain/other.txt", "plain")
     os.makedirs(d + "/run", exist_ok=True)
     # rsync stub: records argv, then runs the real rsync (the excludes and
@@ -85,7 +85,7 @@ def box(work_files=None):
 def mounts_file(d, extra=()):
     p = d + "/mounts"
     with open(p, "w") as f:
-        f.write("tmpfs / tmpfs rw 0 0\n/dev/sda2 %s/work ext4 rw 0 0\n/dev/sdx1 %s/ext ext4 rw 0 0\n" % (d, d))
+        f.write("tmpfs / tmpfs rw 0 0\n/dev/sda2 %s/data ext4 rw 0 0\n/dev/sdx1 %s/ext ext4 rw 0 0\n" % (d, d))
         for line in extra:
             f.write(line + "\n")
     return p
@@ -100,7 +100,7 @@ def run(d, args, env=None, extra_mounts=()):
         "PIPEOS_RESTORE_MOUNT": d + "/bin/mount-stub",
         "PIPEOS_RESTORE_BLKID": d + "/bin/blkid-stub",
         "PIPEOS_RESTORE_BLOCK": d + "/fakeblock",
-        "MOUNT_FIXTURE": d + "/ext/pipeos-backup/probe/work",
+        "MOUNT_FIXTURE": d + "/ext/pipeos-backup/probe/data",
     })
     if env:
         e.update(env)
@@ -125,11 +125,11 @@ d = box()
 rc, out = run(d, [d + "/ext/pipeos-backup/probe"])
 av = argv_of(d)
 check("2 a backup root resolves to its work/ and says so",
-      rc == 0 and "using" in out and (d + "/ext/pipeos-backup/probe/work/") in av.split("\n"), repr(out) + av)
+      rc == 0 and "using" in out and (d + "/ext/pipeos-backup/probe/data/") in av.split("\n"), repr(out) + av)
 d = box()
-rc, out = run(d, [d + "/ext/pipeos-backup/probe/work"])
+rc, out = run(d, [d + "/ext/pipeos-backup/probe/data"])
 check("3 the work/ directory itself is used as-is",
-      rc == 0 and (d + "/ext/pipeos-backup/probe/work/") in argv_of(d).split("\n"), repr(out))
+      rc == 0 and (d + "/ext/pipeos-backup/probe/data/") in argv_of(d).split("\n"), repr(out))
 d = box()
 rc, out = run(d, [d + "/plain"])
 check("4 a plain directory (no identity/, no work/) is used as-is",
@@ -142,13 +142,13 @@ check("5 a missing source is refused by name, nothing run",
 # ── 6-7. the emptiness rule and --force ──────────────────────────────────
 d = box()
 rc, out = run(d, [d + "/plain"])
-check("6 a /work that is empty by the rule (workspace dirs, claude/projects, .pipeos, logs, cache) proceeds without --force",
+check("6 a /data that is empty by the rule (workspace dirs, claude/projects, .pipeos, logs, cache) proceeds without --force",
       rc == 0 and "restored" in out, repr(out))
 d = box(work_files={"repos/foo/README": "x"})
 rc, out = run(d, [d + "/plain"])
 ok7a = rc != 0 and "not empty" in out and "repos/foo" in out and argv_of(d) == ""
 rc, out = run(d, [d + "/plain", "--force"])
-check("7 a /work with content is refused naming the first entry; --force merges over it",
+check("7 a /data with content is refused naming the first entry; --force merges over it",
       ok7a and rc == 0 and argv_of(d) != "", repr(out))
 d = box(work_files={"stray.txt": "x"})
 rc, out = run(d, [d + "/plain"])
@@ -181,14 +181,14 @@ check("10 a device source is mounted read-only as ext4 on a temp mountpoint, res
 d = box()
 rc, out = run(d, [d + "/fakeblock"], extra_mounts=[], env={"PIPEOS_RESTORE_BLOCK": "/dev/sda2"})
 rc2, out2 = run(d, ["/dev/sda2"], env={"PIPEOS_RESTORE_BLOCK": "/dev/sda2"})
-check("11 the device behind the running /work is refused as a source",
+check("11 the device behind the running /data is refused as a source",
       rc2 != 0 and "own work disk" in out2 and argv_of(d) == "", repr(out2))
 d = box()
 rc, out = run(d, [d + "/fakeblock"], extra_mounts=[d + "/fakeblock " + d + "/media/ext/old ext4 ro 0 0"])
 check("11b a device that is already mounted is refused toward the directory",
       rc != 0 and "is mounted at" in out and argv_of(d) == "", repr(out))
 
-# ── 12. --onto: a spare ext4 partition, mounted rw; the running /work refused
+# ── 12. --onto: a spare ext4 partition, mounted rw; the running /data refused
 d = box()
 rc, out = run(d, [d + "/plain", "--onto", d + "/fakeblock"])
 mav = argv_of(d, "mount")
@@ -197,7 +197,7 @@ check("12 --onto mounts the spare partition rw and restores into it",
       and (d + "/run/pipeos/restore-dst/") in argv_of(d).split("\n"), repr(out) + mav)
 d = box()
 rc, out = run(d, [d + "/plain", "--onto", "/dev/sda2"], env={"PIPEOS_RESTORE_BLOCK": "/dev/sda2"})
-check("12b --onto the running /work's device is refused", rc != 0 and "running /work" in out and argv_of(d) == "", repr(out))
+check("12b --onto the running /data's device is refused", rc != 0 and "running /data" in out and argv_of(d) == "", repr(out))
 d = box()
 rc, out = run(d, [d + "/plain", "--onto", d + "/fakeblock"], env={"BLKID_TYPE": "vfat"})
 check("12c --onto a non-ext4 partition is refused", rc != 0 and "not ext4" in out and argv_of(d) == "", repr(out))
@@ -205,11 +205,11 @@ check("12c --onto a non-ext4 partition is refused", rc != 0 and "not ext4" in ou
 # ── 13. users.manifest: carried over only when the destination has none ──
 d = box()
 rc, out = run(d, [d + "/ext/pipeos-backup/probe"])
-got = open(d + "/work/.pipeos/users.manifest").read() if os.path.exists(d + "/work/.pipeos/users.manifest") else ""
+got = open(d + "/data/.pipeos/users.manifest").read() if os.path.exists(d + "/data/.pipeos/users.manifest") else ""
 d2 = box()
-write(d2 + "/work/.pipeos/users.manifest", "keep:1001\n")
+write(d2 + "/data/.pipeos/users.manifest", "keep:1001\n")
 rc2, out2 = run(d2, [d2 + "/ext/pipeos-backup/probe"])
-kept = open(d2 + "/work/.pipeos/users.manifest").read()
+kept = open(d2 + "/data/.pipeos/users.manifest").read()
 check("13 users.manifest is carried over when absent and left alone when present",
       rc == 0 and got == "sam:1000\n" and "carried over" in out and rc2 == 0 and kept == "keep:1001\n",
       repr((out, got, kept)))

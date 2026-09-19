@@ -142,10 +142,10 @@ fi
 # matches the generator, and the launchers still source it.
 #
 # Scope is the part worth asserting rather than eyeballing. CARGO_TARGET_DIR
-# must stay INSIDE the mountpoint guard: with /work unmounted it would point
+# must stay INSIDE the mountpoint guard: with /data unmounted it would point
 # cargo at a tmpfs path on a diskless box and put gigabytes in RAM.
 # CARGO_INCREMENTAL must stay OUTSIDE it, because it is a size policy rather
-# than a location, and the run where /work did NOT mount is the one where
+# than a location, and the run where /data did NOT mount is the one where
 # space is scarcest — silently reverting to incremental there is backwards.
 envf="overlay/$ENVFILE"
 # The env file owns CARGO_INCREMENTAL (size policy, unconditional). The
@@ -164,10 +164,10 @@ fi
 SHIM=overlay/usr/local/bin/cargo
 if [ ! -f "$SHIM" ]; then
     bad "cargo shim missing at $SHIM"
-elif ! grep -q 'git rev-parse --show-toplevel' "$SHIM"     || ! grep -q 'mountpoint -q /work' "$SHIM"     || ! grep -q '/work/cargo-target/\$h' "$SHIM"; then
-    bad "cargo shim does not key the target dir on the checkout under the /work guard"
+elif ! grep -q 'git rev-parse --show-toplevel' "$SHIM"     || ! grep -q 'mountpoint -q /data' "$SHIM"     || ! grep -q '/data/cargo-target/\$h' "$SHIM"; then
+    bad "cargo shim does not key the target dir on the checkout under the /data guard"
 else
-    ok "cargo shim keys CARGO_TARGET_DIR per checkout, guarded on /work"
+    ok "cargo shim keys CARGO_TARGET_DIR per checkout, guarded on /data"
 fi
 
 if [ "$fails" = 0 ]; then

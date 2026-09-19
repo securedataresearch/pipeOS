@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """check-worksweep.py — gate for /etc/periodic/weekly/pipeos-worksweep (pipeOS#90).
 
-Runs the SHIPPED script against a fake /work built in a temp dir. The script
-hardcodes /work by design — it is an appliance script, not a library — so the
+Runs the SHIPPED script against a fake /data built in a temp dir. The script
+hardcodes /data by design — it is an appliance script, not a library — so the
 harness rewrites exactly three things in the copy under test:
 
-    /work        -> the temp workspace
+    /data        -> the temp workspace
     mountpoint   -> a stub that succeeds
     the conf path -> a path under the temp dir
 
 and FAILS LOUDLY if any substitution does not apply, because a missed one
-would point the test at the real /work or the real conf. Nothing else about
+would point the test at the real /data or the real conf. Nothing else about
 the script is changed: the tier order, the allowlist, the protected list and
 the arithmetic are the shipped ones.
 
-The conf rewrite is the one box1 found on review: the `/work` rewrite does not
+The conf rewrite is the one box1 found on review: the `/data` rewrite does not
 touch `/etc/pipeos/pipebox.conf`, so on a box that has one, the probe sourced
 the LIVE conf and a locally-set WORKSWEEP_PCT silently changed the thresholds
 of the test run. Now the conf under test is one this file writes, which also
@@ -56,9 +56,9 @@ def build(workdir, pct):
     """Rewrite the shipped script to point at workdir and report pct% used."""
     src = open(SCRIPT).read()
 
-    body, n_work = re.subn(r"/work\b", workdir, src)
+    body, n_work = re.subn(r"/data\b", workdir, src)
     if n_work == 0:
-        sys.exit("probe: no /work references rewritten — refusing to run "
+        sys.exit("probe: no /data references rewritten — refusing to run "
                  "against the real workspace")
 
     body, n_mp = re.subn(r"^mountpoint -q .* \|\| exit 0$", ":",
@@ -98,7 +98,7 @@ def mkfile(path, kb=4):
 
 
 def fixture(root):
-    """A workspace shaped like a real box's /work."""
+    """A workspace shaped like a real box's /data."""
     for p in [
         # must survive
         "claude/projects/box3/transcript.jsonl",
@@ -193,7 +193,7 @@ ck("refused nothing (allowlist agrees with protected list)",
 # out/keys seam (a candidate inside a swept tree) and the top-level seam (a
 # whole protected directory nominated) are different failures and must be
 # distinguishable. Without this, breaking the out/keys guard and widening the
-# allowlist to /work/* produce an identical gate result.
+# allowlist to /data/* produce an identical gate result.
 _refused = [l for l in p.stdout.splitlines() if "REFUSED" in l]
 ck("and no top-level protected directory was nominated at all",
    not any(re.search(r"REFUSED %s/%s\b" % (re.escape(w), d), l)
@@ -251,11 +251,11 @@ ck("a symlinked cargo-target is skipped by name, and said so",
 ck("and the link itself still exists (not silently unlinked)",
    os.path.islink(os.path.join(w, "cargo-target")))
 
-# The symlinked CHECKOUT. `for d in /work/repos/*/` yields the path WITH the
+# The symlinked CHECKOUT. `for d in /data/repos/*/` yields the path WITH the
 # glob's trailing slash, and a trailing slash is resolved by the kernel during
 # path lookup — so an unstripped `find "$d"` descends through the link into a
 # tree that is not the workspace. The row that matters is the first one: a real
-# directory outside `/work` surviving the sweep. The last row is what keeps this
+# directory outside `/data` surviving the sweep. The last row is what keeps this
 # honest — the fix must not work by making tier 1 stop sweeping altogether.
 t = tempfile.mkdtemp(); TMPS.append(t)
 w = fixture(os.path.join(t, "work"))

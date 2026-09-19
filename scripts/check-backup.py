@@ -2,7 +2,7 @@
 """Probe for pipeos-backup (#180): the shipped script, run against a fake
 root, a stub `lbu package`, a fake /proc/mounts and a recording rsync stub —
 the seams the script exposes for exactly this. Nothing here touches the real
-/media/usb, /root or /work.
+/media/usb, /root or /data.
 
 Rows cover the refusals (unmounted destination, unclaimed box, staged
 rollback, corrupt candidate), the bundle (sha in the manifest, key copies,
@@ -52,8 +52,8 @@ def box(provisioned=True, rollback=False):
     write(d + "/etc/pipeos/.overlay-stamp", "commit abc123def456\nref main\n")
     write(d + "/root/.pipe/identity.dat", "ID")
     write(d + "/root/.pipe/credentials.dat", "CRED")
-    write(d + "/work/data.txt", "precious")
-    write(d + "/work/cache/junk", "x")
+    write(d + "/data/data.txt", "precious")
+    write(d + "/data/cache/junk", "x")
     write(d + "/media/usb/pipeos-image.txt", "built=2026-09-01T00:00:00Z\n")
     write(d + "/media/usb/boot/vmlinuz-lts", "K")
     os.makedirs(d + "/run", exist_ok=True)
@@ -143,7 +143,7 @@ check("5 a full run lands the bundle, a manifest naming its sha256 and the box, 
       and "holds this box's keys" in manifest
       and open(idd + "/pipe/credentials.dat").read() == "CRED"
       and os.path.exists(d + "/ext/pipeos-backup/probe/.last")
-      and os.path.exists(d + "/ext/pipeos-backup/probe/work/data.txt"),
+      and os.path.exists(d + "/ext/pipeos-backup/probe/data/data.txt"),
       repr(out) + manifest)
 check("5b the pipe key copies are owner-only",
       ok5 and stat.S_IMODE(os.stat(idd + "/pipe/credentials.dat").st_mode) & 0o077 == 0,
@@ -164,7 +164,7 @@ d = box()
 rc, out = run(d, [d + "/ext", "--identity-only"])
 check("7 --identity-only lands the bundle and touches no work or media mirror",
       rc == 0 and os.path.exists(d + "/ext/pipeos-backup/probe/identity/MANIFEST")
-      and not os.path.exists(d + "/ext/pipeos-backup/probe/work")
+      and not os.path.exists(d + "/ext/pipeos-backup/probe/data")
       and argv_of(d) == "", repr(out) + argv_of(d))
 
 # ── 8. rsync flags follow the destination filesystem ─────────────────────

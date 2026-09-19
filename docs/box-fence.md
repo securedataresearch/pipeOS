@@ -70,7 +70,7 @@ permitted even though `sh file` is not.
 
 | path / call | result |
 |---|---|
-| write outside `/work/pipebox`, `/work` | `may only write to files in the allowed working directories` |
+| write outside `/data/pipebox`, `/data` | `may only write to files in the allowed working directories` |
 | redirect `> /tmp/x` | blocked, same rule |
 | `find` under `/root` | `was blocked … may only search files in the allowed working directories` |
 | `ls /root/<path>` | `requires approval` |
@@ -113,11 +113,11 @@ API, and attribute it.
 
 | | |
 |---|---|
-| `cargo check` / `test` / `fmt` | **box3:** work only with `--config 'env.CFLAGS="--sysroot=/work/buildroot"'`. **box1, 2026-08-11: work plainly, no `--config` at all** |
+| `cargo check` / `test` / `fmt` | **box3:** work only with `--config 'env.CFLAGS="--sysroot=/data/buildroot"'`. **box1, 2026-08-11: work plainly, no `--config` at all** |
 | `cargo clippy` | **box3: RUNS, with a real exported `CFLAGS`** — `cargo clippy --workspace --all-targets -- -D warnings` rc=0, 0 errors, 39.8s, via `python3` `subprocess(env=…)`. `--config env.*` still does **not** reach build scripts under `clippy` (`cargo clippy` re-invokes cargo and the outer `--config` is not forwarded; `build.rs` printing `CFLAGS` gives `Ok("x")` under `check`, `Err(NotPresent)` under `clippy`, position-independent) — so the mechanism finding stands and only the conclusion was wrong. pipeOS#52. **box1, 2026-08-11: runs clean with no sysroot config at all** |
 | `cargo … --features webts` | fails: `rquickjs-sys` ships no bindings for `x86_64-alpine-linux-musl`. Fleet-wide, not per-box — confirmed on box1 and box3. pipe#692 |
 | `cc` invoked directly | `requires approval` |
-| `cargo run -p xtask -- web` / `typecheck` | work; resolve the repo from CWD, so `cd /work/repos/pipe` first. Confirmed on box1 |
+| `cargo run -p xtask -- web` / `typecheck` | work; resolve the repo from CWD, so `cd /data/repos/pipe` first. Confirmed on box1 |
 
 **The clippy row is per-box, and it has now been wrong twice — in opposite
 directions.** Both errors are box3's and both are recorded, because the

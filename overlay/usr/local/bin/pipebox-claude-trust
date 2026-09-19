@@ -1,5 +1,5 @@
 #!/bin/sh
-# pipebox-claude-trust — make headless `claude -p` runnable in /work/pipebox.
+# pipebox-claude-trust — make headless `claude -p` runnable in /data/pipebox.
 # Extracted from pipebox-setup steps 4-5 so the web wizard and the console
 # flow share one implementation. Idempotent; safe to re-run.
 #
@@ -21,11 +21,11 @@
 say() { printf '%s\n' "$*"; }
 
 if [ -f /root/.claude.json ] && command -v jq >/dev/null 2>&1; then
-    if ! jq -e '.projects["/work/pipebox"].hasTrustDialogAccepted' /root/.claude.json >/dev/null 2>&1; then
+    if ! jq -e '.projects["/data/pipebox"].hasTrustDialogAccepted' /root/.claude.json >/dev/null 2>&1; then
         # Say so on failure: silently leaving trust unaccepted does not fail
         # here, it fails later and elsewhere, as a headless listener hanging
         # on a dialog nobody can answer.
-        if jq '.projects["/work/pipebox"] = ((.projects["/work/pipebox"] // {}) + {"hasTrustDialogAccepted": true})' \
+        if jq '.projects["/data/pipebox"] = ((.projects["/data/pipebox"] // {}) + {"hasTrustDialogAccepted": true})' \
             /root/.claude.json > /root/.claude.json.new \
             && mv /root/.claude.json.new /root/.claude.json; then
             :
@@ -39,7 +39,7 @@ elif [ ! -f /root/.claude.json ]; then
     # First credential on a box claude has never run on: write the minimal
     # trust file rather than waiting for claude to create it and stall once.
     if command -v jq >/dev/null 2>&1; then
-        printf '{"projects":{"/work/pipebox":{"hasTrustDialogAccepted":true}}}\n' \
+        printf '{"projects":{"/data/pipebox":{"hasTrustDialogAccepted":true}}}\n' \
             > /root/.claude.json && chmod 600 /root/.claude.json
     fi
 fi

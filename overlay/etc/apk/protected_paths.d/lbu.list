@@ -19,7 +19,7 @@
 # the hardware watchdog's init script is OURS over busybox-openrc's (#247): a
 # modified package file, which apk audit does see — the line is belt and braces
 +etc/init.d/watchdog
-# /work's hot set in RAM (pipeos-work); a new init script vanishes at reboot without this line
+# /data's hot set in RAM (pipeos-work); a new init script vanishes at reboot without this line
 +etc/init.d/pipeos-hot
 +etc/init.d/pipeos-workspace
 +etc/init.d/pipe-daemon
@@ -77,7 +77,7 @@
 # (pipeOS#97 item 4a). The token itself is NOT here: it lives in
 # root/.config/gh above, which this list already carries.
 +root/.gitconfig
-# self-update: the applied-digest stamp lives on /work (ext4), but the config
+# self-update: the applied-digest stamp lives on /data (ext4), but the config
 # and the cron wrapper are custom files under /etc that apk audit would drop
 +etc/pipeos/selfupdate.conf
 +etc/periodic/hourly/pipeos-selfupdate
@@ -88,16 +88,16 @@
 # apk audit does not see it and a reboot would take it with everything else
 # that was never in a package (pipeOS#90 item 3)
 +etc/periodic/weekly/pipeos-worksweep
-# repo checkouts live on ext4 (/work/repos); these are just symlinks now
+# repo checkouts live on ext4 (/data/repos); these are just symlinks now
 +root/pipeOS
 +root/pipe
 +root/pipe-claude
 -root/.hermes/cache
 -root/.hermes/audio_cache
-# root/.claude/projects SHOULD be a symlink to /work/claude/projects (ext4), so
+# root/.claude/projects SHOULD be a symlink to /data/claude/projects (ext4), so
 # the link itself rides along inside +root/.claude and transcripts never reach
 # the apkovl. Do NOT rely on that being true. A box provisioned before the
-# migration, or one where /work was created late, still has a real directory
+# migration, or one where /data was created late, still has a real directory
 # here — and then the blanket +root/.claude above sweeps every transcript into
 # the overlay, on vfat, stored BACKUP_LIMIT+1 times. Observed on .63: the first
 # save after this overlay landed put a session transcript in the apkovl.

@@ -958,7 +958,7 @@ async function dashboard() {
           </label>
           <button id="uadd" type="button">Create user</button>
           <p class="note" id="umsg" hidden></p>
-          <p class="note">Accounts live in the box's saved state; their files live on the work disk at /work/home/&lt;name&gt; and survive even a media reflash.</p>
+          <p class="note">Accounts live in the box's saved state; their files live on the work disk at /data/home/&lt;name&gt; and survive even a media reflash.</p>
         </div>
       </section>` : ""}
 
@@ -983,8 +983,8 @@ async function dashboard() {
           <p class="note" id="schnext"></p>
           <label for="schprompt">Prompt</label>
           <textarea id="schprompt" rows="4" style="width:100%;font-family:inherit" placeholder="What should the assistant do?"></textarea>
-          <label for="schcwd">Working dir (under /work; blank = /work/pipebox/jobs/&lt;name&gt;)</label>
-          <input id="schcwd" type="text" autocomplete="off" placeholder="/work/repos/myproject">
+          <label for="schcwd">Working dir (under /data; blank = /data/pipebox/jobs/&lt;name&gt;)</label>
+          <input id="schcwd" type="text" autocomplete="off" placeholder="/data/repos/myproject">
           <label for="schbackend">Assistant</label>
           <select id="schbackend"></select>
           <label for="schcap">This job's own monthly cap (USD; 0 = none — the Machine's cap still applies)</label>
@@ -1656,7 +1656,7 @@ async function dashboard() {
           });
           on("del", async () => {
             if (!confirm("Remove " + u.name + "'s account?")) return;
-            const purge = u.unix ? confirm("Also delete their files in /work/home/" + u.name + "? Cancel keeps the files.") : false;
+            const purge = u.unix ? confirm("Also delete their files in /data/home/" + u.name + "? Cancel keeps the files.") : false;
             try { await api("/api/users/del", { name: u.name, purge_home: purge }); loadUsers(); }
             catch (e) { uErr(e.message); }
           });
@@ -1691,7 +1691,7 @@ async function dashboard() {
   // "viewer" inerts everything; "user" keeps the file explorer live.
   if (!isAdmin) v.classList.add(role);
 
-  // ---- files: /work explorer + mover ----
+  // ---- files: /data explorer + mover ----
   let loadFiles = null;
   {
     const flist = v.querySelector("#flist"), crumbs = v.querySelector("#crumbs"),
@@ -2195,7 +2195,7 @@ async function dashboard() {
     chart(v.querySelector("#ch-temp"), [{ data: h.temp, color: "var(--warn)" }],
       Object.assign({ unit: "°" }, o));
     chart(v.querySelector("#ch-disk"), [
-      { data: h.work_pct, color: "var(--accent)", label: "/work" },
+      { data: h.work_pct, color: "var(--accent)", label: "/data" },
       { data: h.root_pct, color: "var(--warn)", label: "root (RAM)" },
     ], Object.assign({ unit: "%", ymax: 100 }, o));
   };

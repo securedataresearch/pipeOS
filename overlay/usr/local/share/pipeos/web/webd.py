@@ -108,7 +108,7 @@ BOOT_REPORT = "/run/pipeos/boot-report"
 HEALTH_LAST = "/run/pipeos/health.last"     # the hourly live verdict (#290)
 # The LAN lobby (#lobby): mdnsd's peer cache, and how stale a row may be
 # before the lobby stops showing it (3× the responder's 10 s interval).
-MACHINES_ROSTER = "/work/pipeos/mdns/machines.json"
+MACHINES_ROSTER = "/data/pipeos/mdns/machines.json"
 WAKE_BIN = "/usr/local/bin/pipeos-wake"
 MDNS_CACHE = "/run/pipeos/mdns/peers.json"
 MDNS_EXPIRE_S = 30
@@ -647,9 +647,9 @@ def peers():
 
 def roster():
     """Every Machine the responder has ever seen on this LAN (#241), keyed
-    by id, with the MAC it advertised. Kept on /work by mdnsd and never
+    by id, with the MAC it advertised. Kept on /data by mdnsd and never
     pruned there — a Machine that is off is one that is here and not in
-    peers(). Empty when /work has no roster yet."""
+    peers(). Empty when /data has no roster yet."""
     try:
         with open(MACHINES_ROSTER) as f:
             d = json.load(f)
@@ -1163,7 +1163,7 @@ def uptime_disk():
             up = int(float(f.read().split()[0]))
     except (OSError, ValueError):
         pass
-    rc, out = run(["df", "-k", "/work"], timeout=10)
+    rc, out = run(["df", "-k", "/data"], timeout=10)
     pct, free_mb = None, None
     if rc == 0 and len(out.splitlines()) >= 2:
         parts = out.splitlines()[1].split()
@@ -1299,10 +1299,10 @@ SELFCHECK_BIN = "/usr/local/bin/pipeos-selfcheck"
 # a system path. Externals mount under /media/ext/<dev> and appear as extra
 # roots in the file explorer.
 
-FILES_WORK = "/work"
+FILES_WORK = "/data"
 FILES_EXT_BASE = "/media/ext"
 PROTECTED_LABELS = ("PIPEOS", "PIPEWORK")
-PROTECTED_MOUNTS = ("/", "/work", "/media/usb")
+PROTECTED_MOUNTS = ("/", "/data", "/media/usb")
 DEV_RE = re.compile(r"^[a-z][a-z0-9]{1,31}$")
 
 
@@ -1447,7 +1447,7 @@ def backup_step():
 FLASH_BIN = "/usr/local/bin/pipeos-flash"
 FLASH_STATE = "/run/pipeos/flash.state"
 FLASH_PROGRESS = "/run/pipeos/flash.progress"
-FLASH_APPLIED = "/work/.pipeos/flash.applied"
+FLASH_APPLIED = "/data/.pipeos/flash.applied"
 FLASH_IMAGE_TXT = "/media/usb/pipeos-image.txt"
 FLASH = {"running": False, "mode": "", "started": 0, "ok": None, "detail": ""}
 FLASH_LOCK = threading.Lock()
@@ -2336,7 +2336,7 @@ class Handler(BaseHTTPRequestHandler):
         write_schedule(keep)
         if any(j.get("cap_usd") for j in jobs if j["name"] == name):
             enforce_caps_now()
-        # its runtime leftovers on /work: the session, the state row
+        # its runtime leftovers on /data: the session, the state row
         for p in (os.path.join(SCHEDULE_STATE_DIR, "sessions", name),):
             try:
                 os.unlink(p)
@@ -3158,7 +3158,7 @@ class Handler(BaseHTTPRequestHandler):
                            else ""),
         })
 
-    # -- files: an explorer over /work plus any mounted external drive.
+    # -- files: an explorer over /data plus any mounted external drive.
     # Everything else on the box is either regenerated tmpfs or the agent's
     # identity — not the owner's to shuffle. Paths are root-prefixed:
     # "work/…" or "ext/<dev>/…"; "" is the virtual root listing the drives.
@@ -4117,13 +4117,13 @@ class Handler(BaseHTTPRequestHandler):
                     if os.path.exists("/root/.ssh/authorized_keys") else True):
                 raise OSError
         except OSError:
-            if os.path.exists("/work/.authorized_keys.backup"):
+            if os.path.exists("/data/.authorized_keys.backup"):
                 os.makedirs("/root/.ssh", mode=0o700, exist_ok=True)
-                rc, _ = run(["cp", "/work/.authorized_keys.backup",
+                rc, _ = run(["cp", "/data/.authorized_keys.backup",
                              "/root/.ssh/authorized_keys"])
                 if rc == 0:
                     os.chmod("/root/.ssh/authorized_keys", 0o600)
-                    actions.append("restored authorized_keys from the /work backup")
+                    actions.append("restored authorized_keys from the /data backup")
                 else:
                     actions.append("authorized_keys is missing and the backup would not restore")
             else:
@@ -4141,45 +4141,45 @@ class Handler(BaseHTTPRequestHandler):
 # ---- Phase B surfaces: logs, streaming, pipe, updates ----------------------
 
 LOG_ALLOW = {
-    "selfcheck": "/work/logs/selfcheck.log",
-    "schedule": "/work/logs/schedule.log",
-    "pipe-daemon": "/work/logs/pipe-daemon.log",
-    "pipebox-listener": "/work/logs/pipebox-listener.log",
-    "pipeos-web": "/work/logs/pipeos-web.log",
-    "pipeos-mdns": "/work/logs/pipeos-mdns.log",
-    "pipeos-stream": "/work/logs/pipeos-stream.log",
-    "pipeos-assistant": "/work/logs/pipeos-assistant.log",
-    "selfupdate": "/work/logs/selfupdate.log",
-    "worksweep": "/work/logs/worksweep.log",
+    "selfcheck": "/data/logs/selfcheck.log",
+    "schedule": "/data/logs/schedule.log",
+    "pipe-daemon": "/data/logs/pipe-daemon.log",
+    "pipebox-listener": "/data/logs/pipebox-listener.log",
+    "pipeos-web": "/data/logs/pipeos-web.log",
+    "pipeos-mdns": "/data/logs/pipeos-mdns.log",
+    "pipeos-stream": "/data/logs/pipeos-stream.log",
+    "pipeos-assistant": "/data/logs/pipeos-assistant.log",
+    "selfupdate": "/data/logs/selfupdate.log",
+    "worksweep": "/data/logs/worksweep.log",
 }
 STREAM_CONF = ETC + "/stream.conf"
 ASSISTANT_CONF = ETC + "/assistant.conf"
 # Scheduled runs (#242): the job list is owner intent and rides the apkovl;
-# the runtime state (last rc, failures, sessions, runs.log) is on /work.
+# the runtime state (last rc, failures, sessions, runs.log) is on /data.
 SCHEDULE_CONF = ETC + "/schedule.json"
-SCHEDULE_STATE_DIR = "/work/.pipeos/schedule"
+SCHEDULE_STATE_DIR = "/data/.pipeos/schedule"
 SCHEDULE_RUN_BIN = "/usr/local/bin/pipeos-schedule-run"
 SCHEDULE_LOCK = "/run/pipeos/schedule.lock"
-SCHEDULE_LOGDIR = "/work/logs"
+SCHEDULE_LOGDIR = "/data/logs"
 SCHEDULE_MAX_JOBS = 32
 JOB_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
-# The usage ledger (#246): rows on /work, the shipped rate table, the card's
+# The usage ledger (#246): rows on /data, the shipped rate table, the card's
 # conf for the cap and the owner, the schedule's runs.log and the listener's
 # sessions for attribution, the dashboard chat's own session id.
-LEDGER_DIR = "/work/.pipeos/ledger"
+LEDGER_DIR = "/data/.pipeos/ledger"
 LEDGER_PAUSED = LEDGER_DIR + "/paused"
 LEDGER_PAUSED_JSON = LEDGER_DIR + "/paused.json"    # the per-scope entries (#302); the plain marker is the box/cluster half
-LEDGER_TRANSCRIPTS = "/work/claude/projects"
+LEDGER_TRANSCRIPTS = "/data/claude/projects"
 LEDGER_RATES = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rates.json"))
 LEDGER_CONF = ETC + "/pipebox.conf"
-LEDGER_SESSIONS = "/work/pipebox/sessions"
-WEBCHAT_DIR = "/work/pipebox/webchat"
+LEDGER_SESSIONS = "/data/pipebox/sessions"
+WEBCHAT_DIR = "/data/pipebox/webchat"
 WEBCHAT_SID = WEBCHAT_DIR + "/.dashboard-sid"
 LEDGER_INGEST_S = 60
 LEDGER_LOCK = threading.Lock()
 LEDGER_STATE = {"obj": None, "last": 0}
 SELFUPDATE_CONF = ETC + "/selfupdate.conf"
-UPDATE_STAMP = "/work/.pipeos/selfupdate.applied"
+UPDATE_STAMP = "/data/.pipeos/selfupdate.applied"
 
 
 def tail_file(path, lines):
@@ -4302,8 +4302,8 @@ def schedule_upsert(body):
         cwd = (body.get("cwd") or "").strip()
         if cwd:
             real = os.path.realpath(cwd)
-            if not (real == "/work" or real.startswith("/work/")) or any(c in cwd for c in "\n\r\0'\""):
-                return None, "the working dir must be under /work"
+            if not (real == "/data" or real.startswith("/data/")) or any(c in cwd for c in "\n\r\0'\""):
+                return None, "the working dir must be under /data"
             job["cwd"] = real
         else:
             job["cwd"] = ""
@@ -4832,7 +4832,7 @@ class PhaseB:
         image_update = "off" if conf["IMAGE_UPDATE"] == "off" else "auto"   # absent = auto (#275)
         image_last = ""
         try:
-            with open("/work/.pipeos/image-updated") as f:
+            with open("/data/.pipeos/image-updated") as f:
                 image_last = f.read().strip()
         except OSError:
             pass

@@ -113,8 +113,8 @@ dests_for() {
 export DISPLAY=":$DPY"
 # De-rooted (svc-stream) runs get a writable HOME the init prepared; root
 # keeps /root. Chromium refuses to start without a writable ~/.config.
-if [ -w /work/cache/stream ]; then
-	export HOME=/work/cache/stream
+if [ -w /data/cache/stream ]; then
+	export HOME=/data/cache/stream
 else
 	export HOME=/root
 fi

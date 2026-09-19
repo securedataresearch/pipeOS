@@ -30,7 +30,7 @@ g5 = section("5g")
 check("2 --live never compiles: the toolchain section is wrapped in the LIVE guard, first code line to last",
       g5.split("\n")[[i for i, l in enumerate(g5.split("\n")) if l.strip() and not l.startswith("#")][0]].startswith('if [ "$LIVE" != yes ]')
       and g5.rstrip().endswith("fi"), g5[-80:])
-check("3 --live skips apk update, du over /work, and pipeos verify",
+check("3 --live skips apk update, du over /data, and pipeos verify",
       'elif [ "$LIVE" != yes ]; then   # --live: no index fetch' in section("5e")
       and 'if [ "$LIVE" != yes ]; then   # --live names no culprit' in section("5")
       and 'if [ "$LIVE" = yes ]; then\n    :\nelif vout=$(pipeos verify 2>&1); then' in section("4"))

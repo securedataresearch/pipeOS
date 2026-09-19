@@ -22,7 +22,7 @@ partition are protected and refuse every operation.
 
 ## Backup
 
-The Backup card mirrors the box's persistent data — `/work` and the boot
+The Backup card mirrors the box's persistent data — `/data` and the boot
 media state — onto a mounted external drive under `pipeos-backup/`, with a
 timestamp of the last run per drive. Plug in a drive, mount it, back up,
 unmount, and the copy is cold storage. Backups are rsync mirrors: a second
@@ -36,7 +36,7 @@ box's configuration — the same thing a boot restores. On the drive it lands
 under `pipeos-backup/<name>/identity/` as `pipeos.apkovl.tar.gz` (the
 previous run kept as `pipeos.apkovl.prev.tar.gz`), plain copies of the pipe
 keys under `pipe/`, and a `MANIFEST` naming the box, the date, the checksum
-and the image it was taken on. **Identity only** skips the `/work` and boot
+and the image it was taken on. **Identity only** skips the `/data` and boot
 media mirrors and takes seconds.
 
 Whoever holds the drive holds the keys. The bundle is plaintext by default,
@@ -55,7 +55,7 @@ lost power halfway.
 The **Live disk** row under Maintenance shows the image the box is running
 and whether the latest release is newer. **Flash a new live disk** rewrites
 the boot partition in place with the released image: the box's identity
-and `/work` are kept, the image is downloaded and checked first, the merge
+and `/data` are kept, the image is downloaded and checked first, the merge
 of the box's state with the new image is proved before a byte is written,
 and you type the box's name to confirm. It never reboots — you do, when
 ready. Back up first (Files → Backup). A power loss mid-write leaves the
@@ -68,4 +68,4 @@ shell verb today: `pipeos flash apply --to /dev/sdX` writes the released
 image and this box's identity onto a spare disk and prints the swap. One
 rule matters: remove the old stick before booting the new one. Both carry
 the same labels, and the box mounts by label. `pipeos restore-work` copies
-`/work` onto the new stick, before the swap or after.
+`/data` onto the new stick, before the swap or after.

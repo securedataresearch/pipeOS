@@ -130,7 +130,7 @@ Former gaps, all fixed and boot-verified (2026-08-04):
 - `bash` is installed (real GNU bash 5.3, in `world`) — Claude Code's Bash tool
   works, and root's login shell is bash.
 - Agent memory persists: `/root/.claude/projects` is a **symlink** to
-  `/work/claude/projects` on the ext4 partition (`/dev/sda2` → `/work`), so
+  `/data/claude/projects` on the ext4 partition (`/dev/sda2` → `/data`), so
   transcripts and file-based memory survive reboot without touching the apkovl.
 - `+root/.abuild` and `+root/.config/gh` are in `lbu.list`.
 - Userland is GNU-ish now: `coreutils`, `findutils`, `diffutils`, `sed`, `gawk`,
@@ -143,7 +143,7 @@ Remaining caveats:
   compatible, but don't assume exact GNU semantics for exotic flags.
 - `tar` is still busybox — deliberately, see §8.
 - Still absent: `nodejs`, `alpine-sdk`/`abuild`. Builds happen in a chroot on the
-  ext4 workspace (`/work`), not on the tmpfs root.
+  ext4 workspace (`/data`), not on the tmpfs root.
 
 The full remediation plan is at `/root/.claude/plans/robust-riding-mountain.md`.
 

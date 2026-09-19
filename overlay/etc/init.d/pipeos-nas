@@ -19,7 +19,7 @@
 #   NAS_S{n}_USERS=  space-separated dashboard accounts allowed in
 #
 # Files are served as root (force user) AFTER samba authentication: the
-# tree under /work is root-owned by design, and the people the admin
+# tree under /data is root-owned by design, and the people the admin
 # lists here are the same people the dashboard's file explorer would
 # hand the whole tree to. No guest access, ever.
 description="SMB network storage for the owner's chosen folders"
@@ -28,8 +28,8 @@ supervisor=supervise-daemon
 respawn_delay=10
 respawn_max=0
 
-output_log=/work/logs/pipeos-nas.log
-error_log=/work/logs/pipeos-nas.log
+output_log=/data/logs/pipeos-nas.log
+error_log=/data/logs/pipeos-nas.log
 
 CONF=/etc/pipeos/nas.conf
 RENDERED=/run/pipeos/smb.conf
@@ -42,10 +42,10 @@ depend() {
 }
 
 resolve_root() {
-	# 'work' → /work; anything else is a filesystem UUID that
+	# 'work' → /data; anything else is a filesystem UUID that
 	# pipeos-mounts.start (or the dashboard) mounted under /media/ext.
 	if [ "$1" = work ]; then
-		echo /work
+		echo /data
 		return 0
 	fi
 	dev=$(findfs "UUID=$1" 2>/dev/null || blkid -U "$1" 2>/dev/null) || return 1
@@ -63,7 +63,7 @@ start_pre() {
 	. "$CONF"
 	checkpath -d -m 0700 "$PRIVATE" || return 1
 	checkpath -d -m 0755 /run/pipeos /run/samba || return 1
-	mountpoint -q /work && { checkpath -d -m 0755 /work/logs || return 1; }
+	mountpoint -q /data && { checkpath -d -m 0755 /data/logs || return 1; }
 
 	{
 		printf '[global]\n'
@@ -78,7 +78,7 @@ start_pre() {
 		printf 'passdb backend = tdbsam:%s/passdb.tdb\n' "$PRIVATE"
 		printf 'lock directory = /run/samba\nstate directory = /run/samba\n'
 		printf 'cache directory = /run/samba\npid directory = /run/samba\n'
-		printf 'log file = /work/logs/smbd.log\nmax log size = 1024\n'
+		printf 'log file = /data/logs/smbd.log\nmax log size = 1024\n'
 	} > "$RENDERED"
 
 	shares=0

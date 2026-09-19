@@ -20,8 +20,8 @@ export HOME=/root
 # OpenRC owns restarts; disable pipe's self-re-exec watcher
 export PIPE_NO_SELF_RESTART=1
 
-output_log=/work/logs/pipe-daemon.log
-error_log=/work/logs/pipe-daemon.log
+output_log=/data/logs/pipe-daemon.log
+error_log=/data/logs/pipe-daemon.log
 
 depend() {
 	need net pipeos-workspace
@@ -30,20 +30,20 @@ depend() {
 }
 
 start_pre() {
-	# /work is mounted by local.d (01-workspace.start), which can lose a race
+	# /data is mounted by local.d (01-workspace.start), which can lose a race
 	# with slow device enumeration at boot — wait for it, but still refuse to
 	# run without it rather than silently logging into tmpfs
 	_i=0
-	while ! mountpoint -q /work; do
+	while ! mountpoint -q /data; do
 		_i=$((_i+1))
 		# 120s, not 30: a FIRST boot is still mkfs-ing PIPEWORK across the
 		# whole stick (54G took ~1min on the pilot box) when this service starts;
 		# 30s lost that race and the daemon stayed down for the whole boot.
 		if [ "$_i" -ge 120 ]; then
-			eerror "/work not mounted after 120s (LABEL=PIPEWORK missing, or first-boot mkfs still running?)"
+			eerror "/data not mounted after 120s (LABEL=PIPEWORK missing, or first-boot mkfs still running?)"
 			return 1
 		fi
 		sleep 1
 	done
-	checkpath -d -m 0755 /work/logs || return 1
+	checkpath -d -m 0755 /data/logs || return 1
 }

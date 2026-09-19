@@ -96,7 +96,7 @@ check("6 pipeos-save's unclaim mode skips the provisioned guard, never short-cir
       and not re.search(r"^\s*lbu commit", open(PIPEOS).read(), re.M))
 gone_w = [f for f in ("/.pipeos/ledger/2026-09.jsonl", "/.pipeos/schedule/runs.log", "/pipebox/sessions", "/pipebox/webchat", "/pipebox/state", "/pipebox/jobs",
                       "/claude/projects/p1", "/claude/projects/-root", "/backup", "/logs/selfcheck.log", "/.authorized_keys.backup") if os.path.exists(WORK + f)]
-check("8 the owner's private state on /work goes (ledger, schedule runs, sessions, chat, agent state, job dirs, transcripts AND memory, logs, the key backup, /work/backup's apkovl + pipe copies); the root ssh key goes; the hot-set dirs are emptied not removed; /work/home, /work/repos, users.manifest and an empty claude/projects stay",
+check("8 the owner's private state on /data goes (ledger, schedule runs, sessions, chat, agent state, job dirs, transcripts AND memory, logs, the key backup, /data/backup's apkovl + pipe copies); the root ssh key goes; the hot-set dirs are emptied not removed; /data/home, /data/repos, users.manifest and an empty claude/projects stay",
       not gone_w and not os.path.exists(HOME + "/.ssh/authorized_keys") and os.path.isdir(WORK + "/.pipeos/ledger") and os.path.isdir(WORK + "/logs")
       and os.path.exists(WORK + "/home/office/doc.txt") and os.path.exists(WORK + "/repos/proj/README")
       and os.path.exists(WORK + "/.pipeos/users.manifest") and os.path.isdir(WORK + "/claude/projects"), repr((gone_w, os.path.exists(HOME + "/.ssh/authorized_keys"))))

@@ -99,7 +99,7 @@ cat > /etc/pipeos/.overlay-stamp
 # keep the box checkout able to age the stamp (status/selfcheck compare the
 # stamped commit against origin/main — a stale checkout reports "commit not
 # in the local checkout" instead of an age)
-[ -d /work/repos/pipeOS/.git ] && git -C /work/repos/pipeOS fetch -q origin 2>/dev/null || true
+[ -d /data/repos/pipeOS/.git ] && git -C /data/repos/pipeOS fetch -q origin 2>/dev/null || true
 pipeos save >/dev/null 2>&1 || echo "WARNING: pipeos save failed — deploy is live in RAM only"
 pipeos verify 2>&1 | tail -1
 ' < "$stage/overlay-stamp"
