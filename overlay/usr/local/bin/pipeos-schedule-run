@@ -135,6 +135,7 @@ cwd=$(jf '.cwd' "$WORKROOT/pipebox/jobs/$job")
 backend=$(jf '.backend' 'claude')
 notify=$(jf '.notify' 'true')
 session=$(jf '.session' 'fresh')
+needs=$(jq -r '(.needs // []) | join(" ")' "$J" 2>/dev/null)   # the secrets this run must have (#319)
 rm -f "$J"
 [ -n "$prompt" ] || refuse "no prompt — nothing to run"
 case "$cwd" in "$WORKROOT"|"$WORKROOT"/*) ;; *) refuse "cwd $cwd is not under $WORKROOT" ;; esac
@@ -156,6 +157,28 @@ if [ -f "$PAUSED_JSON" ]; then
         exit 75
     fi
 fi
+
+# ---- the secrets this job needs (#319). Each name in `needs` must be in the
+# vault's export for jobs (jobs.env: jobs.NAME -> NAME; anything else lands in
+# custom.env under its whole name). A missing one is asked for through the
+# same door the agent has — `pipeos secrets request` raises a share request
+# every member's dashboard shows (#316); a repeat ask while one is open is
+# refused there, which is fine: either way this run waits. Exit 75, so the
+# tick keeps skipping until the copy lands and the export carries it.
+REQUEST=${PIPEOS_SCHED_REQUEST:-"pipeos secrets request"}
+for _n in $needs; do
+    case "$_n" in
+        jobs.*) _f=$SECRETS/jobs.env;   _k=$(printf '%s' "${_n#jobs.}" | tr 'a-z' 'A-Z' | sed 's/[^A-Z0-9_]/_/g') ;;
+        *)      _f=$SECRETS/custom.env; _k=$(printf '%s' "$_n" | tr 'a-z' 'A-Z' | sed 's/[^A-Z0-9_]/_/g') ;;
+    esac
+    if [ -r "$_f" ] && grep -q "^$_k=" "$_f" 2>/dev/null; then
+        continue
+    fi
+    # shellcheck disable=SC2086  # REQUEST is a command with its arguments
+    _ans=$($REQUEST "$_n" "job $job needs it" 2>&1 | tail -1)
+    log "job $job: waiting for $_n — ${_ans:-asked the cluster}"
+    exit 75
+done
 
 # ---- a parked /work (pipeos work park: read-only so the stick idles) is
 # unparked for the run — claude writes its transcript there — and re-parked

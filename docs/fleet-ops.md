@@ -33,7 +33,7 @@ when host keys have changed (every reflash). Clocks are UTC.
 | `pipeos status` / `verify` / `diff` | Overview, System | — | — |
 | `pipeos-selfcheck --live` | the hourly live verdict (#290) behind every verdict pill | `/run/pipeos/health.last` only | no (tmpfs) |
 | `pipeos deploy-overlay [--dry-run] [--yes]` | — (operator only) | overlay files, crontab, runlevels, `.overlay-stamp` | yes, then verifies |
-| `pipeos schedule ls\|add\|set\|rm\|enable\|disable\|run\|log` | Schedule view | `/etc/pipeos/schedule.json` | every mutating verb |
+| `pipeos schedule ls\|add\|set\|rm\|enable\|disable\|run\|log` | Schedule view | `/etc/pipeos/schedule.json` — `--cap N` the job's own cap (#302), `--needs jobs.a,jobs.b` the secrets a run must have: a missing one is asked for (a share request, #316) and the run waits (#319) | every mutating verb |
 | `pipeos usage [totals]` | Usage view | — | — |
 | `pipeos usage cap [--box] N\|none` | Usage → monthly cap | card `MONTHLY_CAP_USD`, regenerated; enforced at once | yes |
 | `pipeos usage cap --cluster N\|none` | Usage → cluster cap | card `CLUSTER_CAP_USD` on THIS member (set it on each); each member sums every member's month-to-date (an unreachable one at its last figure) and pauses itself; the pause names the cluster cap (#302) | yes |
