@@ -86,6 +86,7 @@ pipeos watchdog kernel|off|status               # the hardware watchdog (card WA
 pipeos selfupdate image on|off|status           # automatic image updates (default on): hourly check, apply in place, reboot — held while a job/terminal is live
 printf '%s' PW | pipeos nas account NAME        # share-only account (no sign-in, no shell) + its SMB password; tick it on a share in Files → Network storage
 pipeos vault status|list|get|set|export         # the sealed store; set reads stdin: printf '%s' V | pipeos vault set NAME [CONSUMER]
+pipeos vault share NAME two | unshare NAME two   # copy a text secret to a member (it saves it as a copy from this box); unshare only forgets — the single exception to no-propagation, on the owner's tap (#301)
 pipeos wake NAME|ID|--all|--list                # magic packet to a Machine this box has seen
 pipeos work status|flush|park|unpark            # the RAM-staged hot set; park = flush + /work read-only so the stick idles
 ```

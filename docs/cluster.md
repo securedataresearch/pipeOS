@@ -262,6 +262,17 @@ owner-facing fact for Cluster buyers.
   runs now and then only when started (Run now, `pipeos schedule run`,
   another placement) — "run once, now" needs no invented cron.
 
+- Built (#301, pre-share half): a secret's vault entry carries `shared`
+  — the members it was copied to. `pipeos vault share NAME ID…` / the
+  *shared with* ticks on the Secrets page copy a text secret (never a
+  Machine's own: terminal password, support key, SMB db, stream keys) to
+  each member through that member's `POST /api/secrets/receive` over
+  mutual TLS; the member stores it as `cluster:<holder>`, exports it, and
+  saves. A copy never overwrites a secret the member set itself. Unshare
+  only forgets. Every other secrets handler now takes an admin *session*
+  only — a member's certificate may ask `have` and hand over `receive`,
+  nothing else. The request half (#301 part 2) follows.
+
 → #300 (placement + the agent list), #301 (vault copy on demand),
 #302 (caps at every level, the pause names its cap)
 

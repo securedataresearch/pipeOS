@@ -57,6 +57,7 @@ when host keys have changed (every reflash). Clocks are UTC.
 | `pipeos selfupdate image on\|off\|status` | System → update automatically | `/etc/pipeos/selfupdate.conf` `IMAGE_UPDATE` | yes |
 | `pipeos nas account NAME` (SMB password on stdin) | Files → Network storage → new account for a share | `users.json` (share-only: no sign-in, no shell), `pipeos-user add --nologin`, vault `nas_passdb`; restarts `pipeos-nas` | yes |
 | `pipeos vault status\|list\|get\|set\|del\|export\|unlock\|rephrase` | Secrets view | the sealed store | set/del: the store is in `/etc`, save after |
+| `pipeos vault share NAME ID\|NAME...` / `unshare` | Secrets → *shared with* ticks | a copy of NAME to each member through ITS `/api/secrets/receive` over mutual TLS (that member saves it as `cluster:<this id>`); this box notes who has it; unshare only forgets — the copy stays that member's own. The one exception to no-propagation, on the owner's tap (#301) | yes |
 | `pipeos wake NAME\|ID\|--all\|--list` | Network → Wake | — | — |
 | `pipeos work status\|flush\|park\|unpark` | — (operator) | flush: the RAM-staged hot set → the stick; park: remount `/work` read-only | flush is the save |
 | `pipeos backup`, `flash`, `restore-work`, `pkg`, `rollback` | Files, System | see each verb's header | yes |

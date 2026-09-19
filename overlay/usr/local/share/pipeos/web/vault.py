@@ -252,7 +252,7 @@ def status():
 def list_():
     _env, _K, doc = _load()
     return [{"name": n, "consumer": s.get("consumer", ""), "kind": s.get("kind", "text"),
-             "set_at": s.get("set_at", 0), "by": s.get("by", "")}
+             "set_at": s.get("set_at", 0), "by": s.get("by", ""), "shared": dict(s.get("shared") or {})}
             for n, s in sorted(doc["secrets"].items())]
 
 
@@ -274,9 +274,45 @@ def set_(name, value, consumer="", by=""):
         if "\0" in value:
             raise VaultError("a text secret cannot contain NUL")
         rec = {"v": value, "kind": "text"}
-    rec.update({"consumer": consumer or CONSUMER_OF.get(name, ""), "set_at": int(time.time()), "by": by})
+    rec.update({"consumer": consumer or CONSUMER_OF.get(name, ""), "set_at": int(time.time()), "by": by,
+                # the members this secret was copied to (#301): kept across a re-set, gone with a delete
+                "shared": dict((doc["secrets"].get(name) or {}).get("shared") or {})})
     doc["secrets"][name] = rec
     _store(env, K, doc)
+
+
+PER_BOX = {"assistant_pass", "support_key", "nas_passdb"}
+
+
+def shareable(name, kind="text"):
+    """Only a text secret that is not one Machine's own (its terminal
+    password, its support key, its SMB password db, its stream keys) may be
+    copied to a member. The Claude token and jobs.*/custom values are
+    exactly what an agent elsewhere needs."""
+    return kind == "text" and name not in PER_BOX and not name.startswith("stream_key_")
+
+
+def set_shared(name, member, when=None):
+    """Note that `name` was copied to `member` (#301: pre-share). Forgetting
+    is the only reverse — the copy is that member's own secret."""
+    env, K, doc = _load()
+    s = doc["secrets"].get(name)
+    if s is None:
+        raise VaultError("no secret named %s" % name)
+    s.setdefault("shared", {})[member] = int(when or time.time())
+    _store(env, K, doc)
+
+
+def unset_shared(name, member):
+    env, K, doc = _load()
+    s = doc["secrets"].get(name)
+    if s is None:
+        raise VaultError("no secret named %s" % name)
+    if member in (s.get("shared") or {}):
+        del s["shared"][member]
+        _store(env, K, doc)
+        return True
+    return False
 
 
 def delete(name):
@@ -530,10 +566,24 @@ def main(argv):
             return 0
         if verb == "list":
             for r in list_():
-                print("%-24s %-10s %-6s %s %s" % (r["name"], r["consumer"] or "-", r["kind"],
-                                                   time.strftime("%Y-%m-%d %H:%M", time.gmtime(r["set_at"])) if r["set_at"] else "-",
-                                                   r["by"]))
+                print("%-24s %-10s %-6s %s %s%s" % (r["name"], r["consumer"] or "-", r["kind"],
+                                                     time.strftime("%Y-%m-%d %H:%M", time.gmtime(r["set_at"])) if r["set_at"] else "-",
+                                                     r["by"], ("  shared with " + ", ".join(sorted(r["shared"]))) if r.get("shared") else ""))
             return 0
+        if verb in ("share", "unshare"):
+            # through this box's own listener over its own certificate, so the
+            # verb makes the same refusals the dashboard makes (#301)
+            if len(argv) < 3:
+                print("usage: pipeos vault %s NAME ID|NAME..." % verb, file=sys.stderr)
+                return 2
+            import cluster  # noqa: PLC0415 — same dir
+            st, out, who = cluster.call("local", "POST", "/api/secrets/" + verb, {"name": argv[1], "to": argv[2:]}, timeout=30)
+            if st != 200 or not who:
+                print("vault: %s" % ((out.get("error") if isinstance(out, dict) else "") or st), file=sys.stderr)
+                return 1
+            res = out.get("results", {})
+            print("%s %s: %s" % (verb + "d", argv[1], ", ".join("%s=%s" % kv for kv in sorted(res.items())) or "(nobody)"))
+            return 0 if all(v == "ok" for v in res.values()) else 1
         if verb == "set":
             if len(argv) < 2:
                 print("usage: pipeos vault set NAME [CONSUMER] < value", file=sys.stderr)

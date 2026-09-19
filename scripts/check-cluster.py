@@ -179,6 +179,28 @@ def http(box, method, path, body=None):
         return e.code, json.loads(e.read() or b"{}")
 
 
+def login(box, password):
+    """An admin session cookie on plain :80 — the owner's browser."""
+    r = urllib.request.Request("http://127.0.0.1:%d/api/login" % box.port, data=json.dumps({"password": password}).encode(), method="POST")
+    r.add_header("Content-Type", "application/json")
+    resp = urllib.request.urlopen(r, timeout=10)
+    sc = resp.headers.get("Set-Cookie", "")
+    return sc.split("session=")[1].split(";")[0]
+
+
+def sess(box, cookie, method, path, body=None):
+    """A request as the signed-in owner (plain :80 + the session cookie)."""
+    r = urllib.request.Request("http://127.0.0.1:%d%s" % (box.port, path), data=json.dumps(body).encode() if body is not None else None, method=method)
+    if body is not None:
+        r.add_header("Content-Type", "application/json")
+    r.add_header("Cookie", "session=" + cookie)
+    try:
+        resp = urllib.request.urlopen(r, timeout=20)
+        return resp.status, json.loads(resp.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read() or b"{}")
+
+
 def https(box, method, path, body=None, cert_of=None):
     """:443 straight from here, optionally presenting another box's cert."""
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
@@ -517,6 +539,49 @@ G.cli("call", "2222", "POST", "/api/schedule/del", json.dumps({"name": "once"}))
 check("20b 'cluster start' with a prompt and no --cron places a MANUAL job: it ran once on the member and will never fire from its tick; the schedule needs no invented cron",
       rc_once == 0 and "started once on 2222" in out_once and once_cron == "manual" and ran_on(H) == ran_before + ["once"] and "once" not in jobs_of(H),
       repr((rc_once, out_once[-120:], once_cron, ran_on(H), jobs_of(H))))
+
+# ── 22-26. a secret reaches a member only on the owner's tap (#301, pre-share) ──
+cg, ch = login(G, "sixpassword"), login(H, "sevenpassword")
+sess(G, cg, "POST", "/api/secrets/init", {}); sess(H, ch, "POST", "/api/secrets/init", {})
+sess(G, cg, "POST", "/api/secrets/phrase-ack", {}); sess(H, ch, "POST", "/api/secrets/phrase-ack", {})
+st_set, _ = sess(G, cg, "POST", "/api/secrets/set", {"name": "jobs.x", "value": "tok-1"})
+h_saves3 = H.nsaves()
+st_sh, out_sh = sess(G, cg, "POST", "/api/secrets/share", {"name": "jobs.x", "to": ["2222", "9999"]})
+st_hl, out_hl = sess(H, ch, "GET", "/api/secrets")
+h_rows = {r["name"]: r for r in out_hl.get("secrets", [])}
+st_rv, out_rv = sess(H, ch, "POST", "/api/secrets/reveal", {"name": "jobs.x", "password": "sevenpassword"})
+st_gl, out_gl = sess(G, cg, "GET", "/api/secrets")
+g_rows = {r["name"]: r for r in out_gl.get("secrets", [])}
+st_un, out_un = sess(G, cg, "POST", "/api/secrets/unshare", {"name": "jobs.x", "to": ["2222"]})
+st_gl2, out_gl2 = sess(G, cg, "GET", "/api/secrets")
+st_hl2, out_hl2 = sess(H, ch, "GET", "/api/secrets")
+check("22 pre-share: the owner ticks a member on jobs.x → that member's vault holds it, marked as a copy from this box (by cluster:1111), the member saved once, the owner's list says who has it; 9999 is not a member; un-tick forgets here and the copy stays there",
+      st_set == 200 and st_sh == 200 and out_sh["results"].get("2222") == "ok" and out_sh["results"].get("9999") == "not a member"
+      and st_hl == 200 and h_rows.get("jobs.x", {}).get("by") == "cluster:1111" and st_rv == 200 and out_rv.get("value") == "tok-1" and H.nsaves() == h_saves3 + 1
+      and g_rows.get("jobs.x", {}).get("shared", {}).get("2222") and st_un == 200 and out_un["results"].get("2222") == "forgotten"
+      and not {r["name"]: r for r in out_gl2["secrets"]}["jobs.x"]["shared"] and "jobs.x" in {r["name"] for r in out_hl2["secrets"]},
+      repr((st_set, st_sh, out_sh, st_hl, h_rows.get("jobs.x"), st_rv, out_rv, H.nsaves() - h_saves3, g_rows.get("jobs.x"), st_un, out_un)))
+
+st_ml, _ = https(H, "GET", "/api/secrets", cert_of=G)
+st_ms, _ = https(H, "POST", "/api/secrets/set", json.dumps({"name": "jobs.q", "value": "v"}).encode(), cert_of=G)
+st_mr, _ = https(H, "POST", "/api/secrets/reveal", json.dumps({"name": "jobs.x", "password": "sevenpassword"}).encode(), cert_of=G)
+st_md, _ = https(H, "POST", "/api/secrets/del", json.dumps({"name": "jobs.x"}).encode(), cert_of=G)
+sess(H, ch, "POST", "/api/secrets/set", {"name": "jobs.z", "value": "mine"})
+st_ov, out_ov = https(H, "POST", "/api/secrets/receive", json.dumps({"name": "jobs.z", "value": "theirs"}).encode(), cert_of=G)
+st_rz, out_rz = sess(H, ch, "POST", "/api/secrets/reveal", {"name": "jobs.z", "password": "sevenpassword"})
+st_pb, _ = https(H, "POST", "/api/secrets/receive", json.dumps({"name": "assistant_pass", "value": "x"}).encode(), cert_of=G)
+st_str, out_str = https(H, "POST", "/api/secrets/receive", json.dumps({"name": "jobs.x", "value": "evil"}).encode(), cert_of=C)
+st_sh2, out_sh2 = https(H, "POST", "/api/secrets/share", json.dumps({"name": "jobs.z", "to": ["1111"]}).encode(), cert_of=G)
+check("25 the guards: a member's certificate may not list, set, reveal or delete this Machine's secrets (403); a copy never overwrites a secret this Machine set itself (409, value intact); a per-box secret is never taken; a stranger's certificate fails the handshake; a member cannot make this box share (share is the owner's tap or this box's own verb)",
+      st_ml == 403 and st_ms == 403 and st_mr == 403 and st_md == 403
+      and st_ov == 409 and "set on this Machine itself" in out_ov.get("error", "") and st_rz == 200 and out_rz.get("value") == "mine"
+      and st_pb == 400 and st_str == 0 and st_sh2 == 403,
+      repr((st_ml, st_ms, st_mr, st_md, st_ov, out_ov, out_rz, st_pb, st_str, out_str, st_sh2, out_sh2)))
+
+tmpl = open(os.path.join(REPO, "overlay/usr/local/share/pipeos/card/pipebox-settings.json.tmpl")).read()
+vsrc = open(os.path.join(WEB, "vault.py")).read()
+check("26 the fence still denies the resident agent every vault verb (share included); the vault verbs share/unshare go through this Machine's own listener",
+      '"Bash(pipeos vault*)"' in tmpl and 'cluster.call("local", "POST", "/api/secrets/" + verb' in vsrc, "")
 
 H.stop()
 st_p21, pg21, r21 = page_rows(G)

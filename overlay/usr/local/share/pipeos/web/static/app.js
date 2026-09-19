@@ -1084,7 +1084,7 @@ async function dashboard() {
       ${isAdmin ? `
       <section data-view="cluster" hidden>
         <div class="viewhead"><h1>Cluster</h1></div>
-        <p class="sub">A cluster is a decision, not a fact: the Machines you mark out of the network list. Each holds every member's key; nothing else is shared or copied between them.</p>
+        <p class="sub">A cluster is a decision, not a fact: the Machines you mark out of the network list. Each holds every member's key; nothing else moves between them except a secret you share or approve (Secrets).</p>
         <div class="card">
           <div class="cardhead"><h2>Members</h2><span id="clverdict" class="pill">looking…</span></div>
           <p class="note" id="clnote"></p>
@@ -2447,14 +2447,28 @@ async function dashboard() {
       banner.querySelector("#secack").onclick = async () => { await api("/api/secrets/phrase-ack", {}); loadSecrets(); };
     }
     const rows = r.secrets || [];
+    // the other members, for the "shared with" ticks (#301): a copy travels only on your tap
+    let members = [];
+    try { const pg = await api("/api/cluster"); members = (pg.members || []).filter(m => !m.self); } catch (e) { members = []; }
+    const perBox = n => ["assistant_pass", "support_key", "nas_passdb"].includes(n) || n.startsWith("stream_key_");
     if (!rows.length) { list.className = "note"; list.textContent = r.status === "open" ? "Nothing yet." : ""; }
     else {
       list.className = "";
       list.innerHTML = rows.map(x => `<div class="row">
-        <div><div class="name">${esc(x.name)}</div>
-        <div class="desc">${esc(x.consumer || "custom")} · ${esc(x.kind)} · ${x.set_at ? new Date(x.set_at * 1000).toLocaleString() : ""}${x.by ? " · by " + esc(x.by) : ""}</div></div>
+        <div style="min-width:0"><div class="name">${esc(x.name)}</div>
+        <div class="desc">${esc(x.consumer || "custom")} · ${esc(x.kind)} · ${x.set_at ? new Date(x.set_at * 1000).toLocaleString() : ""}${x.by ? " · by " + esc(x.by) : ""}</div>
+        ${members.length && x.kind === "text" && !perBox(x.name) && !(x.by || "").startsWith("cluster:") ? `<div class="desc">shared with: ${members.map(m => `<label class="note" style="margin-right:.6rem"><input type="checkbox" data-share="${esc(x.name)}" data-member="${esc(m.id)}" ${x.shared && x.shared[m.id] ? "checked" : ""}> ${esc(m.name || m.id)}</label>`).join("")} <span class="note">(tick copies it there over the cluster's own TLS and that Machine saves; un-tick only forgets — the copy stays its own until deleted there)</span></div>` : ""}</div>
         <div>${x.kind === "text" ? `<button class="btn ghost" type="button" data-reveal="${esc(x.name)}">Reveal</button>` : ""}
              <button class="btn ghost" type="button" data-del="${esc(x.name)}">Delete</button></div></div>`).join("");
+      list.querySelectorAll("[data-share]").forEach(c => c.onchange = async () => {
+        c.disabled = true;
+        try {
+          const w = await api(c.checked ? "/api/secrets/share" : "/api/secrets/unshare", { name: c.dataset.share, to: [c.dataset.member] });
+          const res = (w.results || {})[c.dataset.member] || "";
+          if (c.checked && res !== "ok") { err.textContent = c.dataset.member + ": " + res; err.hidden = false; }
+        } catch (e) { err.textContent = e.message; err.hidden = false; }
+        loadSecrets();
+      });
       list.querySelectorAll("[data-reveal]").forEach(b => b.onclick = async () => {
         const pw = prompt("Your password, to show " + b.dataset.reveal + ":");
         if (!pw) return;
