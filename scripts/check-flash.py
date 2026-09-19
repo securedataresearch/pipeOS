@@ -310,7 +310,7 @@ def same(a, b):
         return open(a, "rb").read() == open(b, "rb").read()
     except OSError:
         return False
-mpath = os.path.join(froot, "work/.pipeos/flash", merged[0]) if merged else ""
+mpath = os.path.join(froot, "data/.pipeos/flash", merged[0]) if merged else ""
 # the carve rewrites the protective MBR and the GPT headers (primary CRC, the
 # backup relocated to the disk's end), so byte-equality is asserted over the
 # p1 payload and the gap — not over the 33-sector GPT structures at either end.
