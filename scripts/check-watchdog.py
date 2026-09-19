@@ -84,7 +84,7 @@ check("4 conf.d ships 60 s / 20 s on /dev/watchdog0; watchdog is in the boot run
       and boot_line.split()[-1] == "watchdog" and "+etc/init.d/watchdog" in lbu, "boot=%r" % boot_line)
 check("5 the card field exists end to end: declared, allowed, kernel|off enum, rendered, shown, defaulted in card.conf and the template; the verb is in the help and dispatched",
       "WATCHDOG=" in gen.split("\n", 70)[-1][:0] + gen and "WATCHDOG) ;;" in gen and "WATCHDOG must be kernel or off" in gen
-      and "s|@@WATCHDOG@@|$WATCHDOG|g" in gen and "WOL WATCHDOG MONTHLY_CAP_USD CLUSTER_CAP_USD" in gen
+      and "s|@@WATCHDOG@@|$WATCHDOG|g" in gen and "WOL WATCHDOG BLINK MONTHLY_CAP_USD CLUSTER_CAP_USD" in gen
       and "\nWATCHDOG=\n" in card and 'WATCHDOG="@@WATCHDOG@@"' in tmpl
       and "pipeos watchdog kernel|off|status" in front and "watchdog)    shift; cmd_watchdog" in front)
 check("6 the boot report can name the watchdog: a pstore record reads as a panic the dog rebooted, an unclean stop with the armed flag names the dog or the plug, and the flag is boot-written",

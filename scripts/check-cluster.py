@@ -318,7 +318,7 @@ check("6 the view: a member advertising a different members hash is 'list differ
       and m(v2, "bbbb")["in_sync"] and m(v2, "bbbb")["awake"]
       and not m(v3, "bbbb")["awake"]
       and [c["id"] for c in v2["candidates"]] == ["cccc"] and v2["candidates"][0]["tls_port"] == C.tls_port
-      and rc_st == 0 and "member    bbbb" in out_st and "lobby     cccc" in out_st,
+      and rc_st == 0 and "member 2  bbbb" in out_st and "lobby     cccc" in out_st,
       repr((v1["members"], v2["candidates"], out_st)))
 
 # ── 7. sync, and a member that is off ────────────────────────────────────

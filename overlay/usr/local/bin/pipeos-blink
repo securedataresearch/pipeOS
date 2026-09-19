@@ -1,0 +1,152 @@
+#!/bin/sh
+# pipeos-blink — a Machine that is playing its part in the cluster says so on
+# its network port LED, in a code that names which Machine it is.
+#
+# WHY THE PORT LED AND NOT THE POWER LIGHT. The power light on these chassis
+# (ThinkCentre M920q) has no software interface at all: /sys/class/leds is
+# empty, no LED driver claims the front panel, and the firmware exposes
+# nothing. What IS drivable is the network port's own LED, through the
+# standard `ethtool -p` identify ioctl — measured working on both ports here,
+# mlx4_en (the SFP+) and e1000e (the onboard 1GbE), with the link staying up
+# and the cluster reachable throughout. So the light is at the BACK of the
+# Machine, on the cabled port, not on the front.
+#
+# WHAT IT MEANS. Blinking = this Machine is a member of a cluster, its own
+# health is not CRITICAL, and it can still see at least one other member
+# (mDNS, within PEER_FRESH). Anything else and the port goes back to its
+# ordinary link light. So the Machine that is NOT playing ball is the one not
+# blinking — off, out of the cluster, unhealthy, or cut off from the others.
+#
+# THE CODE. One cycle is CYCLE seconds. It opens with N bursts of a second of
+# fast blinking, a second apart, and is steady for the rest — a lighthouse
+# characteristic. N is this Machine's place in the cluster's member list,
+# sorted by id: every member computes the same list, so the numbers are
+# distinct by construction and need no configuring. `pipeos blink status` and
+# `pipeos cluster status` both print it, so a number on the shelf can always
+# be looked up.
+#
+# Seams (the probe, never production): PIPEOS_BLINK_ETHTOOL, _CLUSTER,
+# _ROSTER, _HEALTH, _CARD, _SYS, _IFACE, _SELF, _CYCLE, _PEER_FRESH, _ONCE.
+set -u
+
+ETHTOOL=${PIPEOS_BLINK_ETHTOOL:-ethtool}
+CLUSTER=${PIPEOS_BLINK_CLUSTER:-/etc/pipeos/cluster.json}
+ROSTER=${PIPEOS_BLINK_ROSTER:-/work/pipeos/mdns/machines.json}
+HEALTH=${PIPEOS_BLINK_HEALTH:-/run/pipeos/health.last}
+CARD=${PIPEOS_BLINK_CARD:-/etc/pipeos/card.conf}
+SYS=${PIPEOS_BLINK_SYS:-/sys/class/net}
+CYCLE=${PIPEOS_BLINK_CYCLE:-12}
+PEER_FRESH=${PIPEOS_BLINK_PEER_FRESH:-300}
+MAX_N=9
+
+# The same rule lanid.mac4() uses: pipeos-identity stamps the chassis id into
+# the hostname before any link is up, and that wins over reading a MAC — on a
+# box with two NICs the two must never disagree.
+self_id() {
+    [ -n "${PIPEOS_BLINK_SELF:-}" ] && { echo "$PIPEOS_BLINK_SELF"; return; }
+    hostname 2>/dev/null | sed -n 's/^pipeos-\([0-9a-f][0-9a-f][0-9a-f][0-9a-f]\)$/\1/p'
+}
+
+card_blink() { sed -n 's/^BLINK=["]*\([^"]*\)["]*$/\1/p' "$CARD" 2>/dev/null | head -1; }
+
+# The cabled port is the one whose LED anybody can see. First interface that
+# is up; the card does not choose it because the cable does.
+iface() {
+    [ -n "${PIPEOS_BLINK_IFACE:-}" ] && { echo "$PIPEOS_BLINK_IFACE"; return; }
+    for _d in "$SYS"/*; do
+        _n=${_d##*/}
+        [ "$_n" = lo ] && continue
+        [ "$(cat "$_d/operstate" 2>/dev/null)" = up ] && { echo "$_n"; return; }
+    done
+}
+
+# This Machine's place in the member list, sorted by id: 1-based, every member
+# computes the same answer. 0 when this box is in no cluster, or is somehow
+# not in its own list, or the list is longer than the code can count out.
+blink_id() {
+    [ -r "$CLUSTER" ] || { echo 0; return; }
+    _me=$(self_id); [ -n "$_me" ] || { echo 0; return; }
+    jq -r --arg me "$_me" '(.members // {}) | keys | to_entries
+        | map(select(.value == $me)) | (.[0].key // -1) + 1' "$CLUSTER" 2>/dev/null \
+        | awk -v m="$MAX_N" '{ print ($1 >= 1 && $1 <= m) ? $1 : 0 }'
+}
+
+# Has any OTHER member been heard from lately? mdnsd keeps the roster fresh as
+# peers announce themselves, so this is a live answer, not a cached verdict.
+# A cluster of one has no peers to miss and passes on its own.
+peers_seen() {
+    [ -r "$CLUSTER" ] || return 1
+    _me=$(self_id)
+    _members=$(jq -r '(.members // {}) | length' "$CLUSTER" 2>/dev/null)
+    [ "${_members:-0}" -le 1 ] && return 0
+    [ -r "$ROSTER" ] || return 1
+    _now=$(date -u +%s)
+    _fresh=$(jq -r --arg me "$_me" --argjson now "$_now" --argjson fresh "$PEER_FRESH" \
+        '[ (.machines // {}) | to_entries[] | select(.key != $me)
+           | select(((.value.last_seen // 0) | tonumber) > ($now - $fresh)) ] | length' \
+        "$ROSTER" 2>/dev/null)
+    [ "${_fresh:-0}" -ge 1 ]
+}
+
+healthy() {
+    [ -r "$HEALTH" ] || return 0            # nothing said yet this boot: not a reason to go dark
+    ! grep -qi 'CRITICAL' "$HEALTH"
+}
+
+# Why this Machine is or is not blinking, in one sentence. `pipeos blink
+# status` prints it, and so does the daemon when the answer changes.
+why() {
+    case "$(card_blink)" in off) echo "off (card BLINK=off)"; return 1 ;; esac
+    _id=$(blink_id)
+    [ "$_id" = 0 ] && { echo "steady: this Machine is in no cluster (pipeos cluster status)"; return 1; }
+    healthy   || { echo "steady: this Machine's own health is CRITICAL — it is not playing its part (pipeos-selfcheck)"; return 1; }
+    peers_seen || { echo "steady: no other member has been heard from in ${PEER_FRESH}s — this Machine is cut off, or it is the one that is out"; return 1; }
+    _if=$(iface); [ -n "$_if" ] || { echo "steady: no network port is up, so there is no LED to blink"; return 1; }
+    echo "blinking $_id on $_if (member $_id of the cluster, by the member list)"
+    return 0
+}
+
+one_cycle() {
+    _cn=$1 _ci=$2
+    _burst=0
+    while [ "$_burst" -lt "$_cn" ]; do
+        "$ETHTOOL" -p "$_ci" 1 >/dev/null 2>&1 || return 1
+        _burst=$((_burst+1))
+        [ "$_burst" -lt "$_cn" ] && sleep 1
+    done
+    _rest=$((CYCLE - _cn * 2 + 1))
+    [ "$_rest" -lt 1 ] && _rest=1
+    sleep "$_rest"
+}
+
+case "${1:-run}" in
+    status)
+        msg=$(why); rc=$?
+        echo "blink:   $msg"
+        echo "card:    BLINK=$(card_blink) (default on)"
+        echo "cluster: member $(blink_id) of $(jq -r '(.members // {}) | length' "$CLUSTER" 2>/dev/null || echo 0)"
+        echo "port:    $(iface || echo 'none up')"
+        exit $rc ;;
+    test)
+        _tn=${2:-1} _ti=$(iface)
+        [ -n "$_ti" ] || { echo "no network port is up" >&2; exit 1; }
+        echo "blinking $_tn on $_ti once — watch the port LED at the back"
+        one_cycle "$_tn" "$_ti" ;;
+    run) ;;
+    *) echo "usage: pipeos-blink [run|status|test N]" >&2; exit 2 ;;
+esac
+
+last=""
+while :; do
+    msg=$(why); _ok=$?
+    if [ "$msg" != "$last" ]; then
+        logger -t pipeos-blink "$msg"
+        last=$msg
+    fi
+    if [ "$_ok" = 0 ]; then
+        one_cycle "$(blink_id)" "$(iface)" || sleep "$CYCLE"
+    else
+        sleep "$CYCLE"
+    fi
+    [ -n "${PIPEOS_BLINK_ONCE:-}" ] && break
+done

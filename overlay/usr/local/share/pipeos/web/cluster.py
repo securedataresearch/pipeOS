@@ -1014,8 +1014,12 @@ def main(argv):
             if vw["cluster"] is None:
                 print("cluster   none — a Machine of one, not yet a cluster of one (pipeos cluster init)"); return 0
             print("cluster   %s  members-hash %s" % (vw["cluster"], vw["members_hash"]))
-            for r in vw["members"]:
-                print("member    %s  %s  %-12s %s%s" % (r["id"], r["fingerprint"], r["name"],
+            # The leading number is the member's place in this list, which is
+            # sorted by id — so every member prints the same numbers. It is
+            # what that Machine blinks on its network port LED (#333), which
+            # is how a number seen on the shelf is looked up.
+            for i, r in enumerate(vw["members"], 1):
+                print("member %d  %s  %s  %-12s %s%s" % (i, r["id"], r["fingerprint"], r["name"],
                                                      "self" if r["self"] else ("up" if r["awake"] else "off"),
                                                      "" if r["in_sync"] else "  LIST DIFFERS — pipeos cluster sync"))
             for c in vw["candidates"]:

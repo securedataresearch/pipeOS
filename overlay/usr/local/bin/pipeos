@@ -21,6 +21,7 @@
 #   pipeos deploy-overlay      install a repo commit's overlay onto this box
 #   pipeos unclaim [--yes]     nobody's box again: drop the claim, name, users; reboot
 #   pipeos wake NAME|ID|--all|--list|--forget ID   magic packet to a Machine this box has seen
+#   pipeos blink on|off|status|test [N]   the port-LED heartbeat: a Machine playing its part in the cluster blinks its member number (#333)
 #   pipeos lan [--refresh] [--json]   the network map: every device netgaze sees, Machines marked (#217)
 #   pipeos cluster init [NAME]|status|ca|add|remove|sync|join MEMBER|adopt ID [NAME]|page|reboot-all|services KEY on|off [ID...]|call ID|NAME|IP METHOD PATH [JSON]   the cluster: identity (its CA), member list, the page, the two cluster-wide acts (#222, #211, #212)
 #   pipeos cluster agents | start NAME --on ID|NAME|idlest [--prompt TEXT [--cron SPEC|manual]]   every member's agents; start one ON a member — it lives there; no --cron = runs now, then only when started (#300)
@@ -617,6 +618,20 @@ cmd_watchdog() {
     esac
 }
 
+# The port-LED heartbeat (#333). `on`/`off` is a card field like WATCHDOG, and
+# the service is restarted so the answer is now, not at the next boot.
+cmd_blink() {
+    case "${1:-status}" in
+        on|off)
+            cmd_card_set "BLINK=$1"
+            if rc-service pipeos-blink restart >/dev/null 2>&1 9>&-; then echo "blink: $1 (service restarted)"
+            else echo "blink: $1 on the card, but the service did not restart — rc-service pipeos-blink status" >&2; exit 1; fi ;;
+        status|test)
+            exec /usr/local/bin/pipeos-blink "$@" ;;
+        *) echo "usage: pipeos blink on|off|status|test [N]" >&2; exit 2 ;;
+    esac
+}
+
 cmd_usage() {
     case "${1:-totals}" in
         totals) [ $# -gt 0 ] && shift; exec python3 "$LEDGER_PY" totals "$@" ;;
@@ -694,6 +709,7 @@ case "$1" in
     selfupdate)  shift; exec /usr/local/bin/pipeos-selfupdate "$@" ;;
     unclaim)     shift; cmd_unclaim "$@" ;;
     wake)        shift; exec /usr/local/bin/pipeos-wake "$@" ;;
+    blink)       shift; cmd_blink "$@" ;;
     lan)         shift; exec python3 "${PIPEOS_LAN:-/usr/local/share/pipeos/web/lan.py}" "$@" ;;
     cluster)     shift; exec python3 /usr/local/share/pipeos/web/cluster.py "$@" ;;
     vault)       shift; exec /usr/local/bin/pipeos-vault "$@" ;;

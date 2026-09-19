@@ -1,0 +1,23 @@
+#!/sbin/openrc-run
+# pipeos-blink — a Machine playing its part in the cluster says so on its
+# network port LED, in a code that names which Machine it is (pipeOS#333).
+#
+# The front power light has no software interface on these chassis
+# (/sys/class/leds is empty); the port LED does, through ethtool's identify
+# ioctl. The reader is pipeos-blink's own header.
+#
+# Default runlevel, after the network and mDNS: it needs a port that is up
+# and a roster to tell it whether any other member is still out there. It is
+# a light — nothing depends on it, and it never fails a boot.
+description="blink this Machine's place in the cluster on its network port LED"
+
+command=/usr/local/bin/pipeos-blink
+command_args="run"
+command_background=yes
+pidfile=/run/pipeos-blink.pid
+output_log=/dev/null
+error_log=/dev/null
+
+depend() {
+	after networking pipeos-mdns pipeos-workspace
+}
