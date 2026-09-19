@@ -82,9 +82,8 @@ controls = [
      lambda s: s.replace('        if out.get("changed"):          # the job is written even when the run was refused — so it is saved either way\n',
                          '        if st == 200 and out.get("changed"):\n'), ["19b"]),
 
-    ("V3: the secrets handlers take a member's certificate for an admin (a member lists, reads, sets and deletes this box's secrets, #301)", W,
-     lambda s: s.replace('        sess = valid_session(self.cookie_token())\n        if not sess or sess.get("role") != "admin":\n            self.err(403, "an admin sign-in only — not a member\'s certificate")\n',
-                         '        sess = self.authed()\n        if not sess or sess.get("role") != "admin":\n            self.err(403, "an admin sign-in only — not a member\'s certificate")\n'), ["25"]),
+    ("V3: a member's certificate is held to no allowlist (it adds a user, reads the vault — the front door, #314)", W,
+     lambda s: s.replace('        p = self.peer()\n        if not p or valid_session(self.cookie_token()):\n            return ""\n', '        return ""\n        p = self.peer()\n        if not p or valid_session(self.cookie_token()):\n            return ""\n'), ["25"]),
 
     ("V4: a member's copy overwrites a secret this box set itself (#301)", W,
      lambda s: s.replace('        if mine and not (mine.get("by") or "").startswith("cluster:"):\n', '        if False:\n'), ["25"]),

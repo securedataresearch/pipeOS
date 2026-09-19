@@ -252,7 +252,9 @@ def status():
 def list_():
     _env, _K, doc = _load()
     return [{"name": n, "consumer": s.get("consumer", ""), "kind": s.get("kind", "text"),
-             "set_at": s.get("set_at", 0), "by": s.get("by", ""), "shared": dict(s.get("shared") or {})}
+             "set_at": s.get("set_at", 0), "by": s.get("by", ""), "shared": dict(s.get("shared") or {}),
+             # members holding a copy of an OLDER value: the note predates the last set (re-tick to send the new one)
+             "stale": sorted(m for m, t in (s.get("shared") or {}).items() if int(t or 0) < int(s.get("set_at") or 0))}
             for n, s in sorted(doc["secrets"].items())]
 
 
@@ -577,13 +579,13 @@ def main(argv):
                 print("usage: pipeos vault %s NAME ID|NAME..." % verb, file=sys.stderr)
                 return 2
             import cluster  # noqa: PLC0415 — same dir
-            st, out, who = cluster.call("local", "POST", "/api/secrets/" + verb, {"name": argv[1], "to": argv[2:]}, timeout=30)
+            st, out, who = cluster.call("local", "POST", "/api/secrets/" + verb, {"name": argv[1], "to": argv[2:]}, timeout=15 + 12 * len(argv[2:]))
             if st != 200 or not who:
                 print("vault: %s" % ((out.get("error") if isinstance(out, dict) else "") or st), file=sys.stderr)
                 return 1
             res = out.get("results", {})
             print("%s %s: %s" % (verb + "d", argv[1], ", ".join("%s=%s" % kv for kv in sorted(res.items())) or "(nobody)"))
-            return 0 if all(v == "ok" for v in res.values()) else 1
+            return 0 if all(v in ("ok", "forgotten") for v in res.values()) else 1
         if verb == "set":
             if len(argv) < 2:
                 print("usage: pipeos vault set NAME [CONSUMER] < value", file=sys.stderr)
@@ -628,6 +630,11 @@ def main(argv):
         print("vault locked: %s" % e, file=sys.stderr)
         return 3
     except (VaultError, OSError, ValueError, KeyError, IndexError) as e:
+        print("vault: %s" % e, file=sys.stderr)
+        return 1
+    except Exception as e:      # noqa: BLE001 — cluster.ClusterError (not in a cluster, a listener restarting): a sentence, not a traceback
+        if type(e).__name__ != "ClusterError":
+            raise
         print("vault: %s" % e, file=sys.stderr)
         return 1
 

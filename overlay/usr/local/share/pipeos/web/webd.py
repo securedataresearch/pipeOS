@@ -242,6 +242,18 @@ echo "done — reload https://@HOST@.local/ and look for the padlock (restart th
 
 
 REBOOT_CMD = os.environ.get("PIPEOS_REBOOT_CMD", "reboot")
+# What a MEMBER's certificate may call here (the cluster's own mechanisms,
+# docs/cluster.md §3/§12), and what this Machine's OWN certificate may add
+# (its operator verbs call their own listener). Everything else needs a
+# session — a certificate is not an owner (the #314 review).
+PEER_GETS = ("/api/cluster", "/api/cluster/summary")
+SELF_GETS = ("/api/cluster/page",)
+PEER_POSTS = ("/api/cluster/members", "/api/reboot", "/api/services", "/api/agent/start", "/api/name",
+              "/api/secrets/have", "/api/secrets/receive",
+              "/api/secrets/requests/offer", "/api/secrets/requests/close", "/api/secrets/send")
+SELF_POSTS = ("/api/cluster/reboot-all", "/api/cluster/services", "/api/cluster/start", "/api/cluster/adopt",
+              "/api/cluster/init", "/api/cluster/add", "/api/cluster/remove", "/api/cluster/sync",
+              "/api/secrets/share", "/api/secrets/unshare", "/api/secrets/request", "/api/schedule/del", "/api/schedule/set")
 PTS_GLOB = os.environ.get("PIPEOS_PTS_GLOB", "/dev/pts/[0-9]*")   # an open terminal = a busy box; the probe points it elsewhere
 AUTH_DELAY = float(os.environ.get("PIPEOS_WEB_AUTH_DELAY", "2"))   # the pause a wrong password earns; the probes set 0
 
@@ -825,6 +837,28 @@ def nas_restart_if_running():
     if rc != 0:
         return "network storage did not restart: " + out.strip()[-200:]
     return ""
+
+
+def restart_claude_consumers():
+    """A new Claude token arrived: only the daemons that read claude-auth.env
+    (the listener, the assistant) — never the NAS or a live stream."""
+    problems = []
+    for svc in daemons_for(read_services()):
+        if svc in ("pipebox-listener", "pipeos-assistant"):
+            rc, out = run(["rc-service", svc, "restart"], timeout=120)
+            if rc != 0:
+                problems.append("%s: %s" % (svc, out.strip()[-160:]))
+    return problems
+
+
+def _member_ids(tokens):
+    """{token: member id or None} — a token is an id or a name (one lookup
+    serves share and unshare, so the two cannot disagree)."""
+    members = {r["id"]: r for r in cluster.view()["members"]}
+    out = {}
+    for t in tokens:
+        out[t] = next((i for i, r in members.items() if t in (i, (r.get("name") or "").lower())), None)
+    return out
 
 
 def restart_secret_consumers():
@@ -1738,6 +1772,19 @@ class Handler(BaseHTTPRequestHandler):
     def unauth(self):
         return self.err(401, "sign in first")
 
+    def _cert_fence(self, path, peer_ok, self_ok):
+        """"" when this request may proceed; else the sentence for the 403.
+        A request carrying a session is the owner's whatever certificate the
+        connection also presented; one carrying only a certificate is held
+        to the allowlists."""
+        p = self.peer()
+        if not p or valid_session(self.cookie_token()):
+            return ""
+        allowed = set(peer_ok) | (set(self_ok) if p.get("peer") == cluster.self_id() else set())
+        if path in allowed:
+            return ""
+        return "a member's certificate may not do that on this Machine (%s) — an admin sign-in does" % path
+
     def cookie_token(self):
         for part in self.headers.get("Cookie", "").split(";"):
             k, _, v = part.strip().partition("=")
@@ -1870,6 +1917,9 @@ class Handler(BaseHTTPRequestHandler):
         if fn is not None:
             if not self.authed():
                 return self.unauth()
+            why = self._cert_fence(path, PEER_GETS, SELF_GETS)
+            if why:
+                return self.err(403, why)
             return fn()
         self.err(404, "no such page")
 
@@ -1911,6 +1961,15 @@ class Handler(BaseHTTPRequestHandler):
         sess = self.authed()
         if not sess:
             return self.unauth()
+        # A member's certificate is not an owner (the #314 review): it may do
+        # exactly what the cluster's own mechanisms need — take the list, a
+        # reboot, a service switch, a placement, a name, a secret's existence
+        # or a copy — and this Machine's OWN certificate additionally what its
+        # operator verbs call on their own listener. Nothing else: not users,
+        # not the vault, not the card. A session decides the rest.
+        why = self._cert_fence(path, PEER_POSTS, SELF_POSTS)
+        if why:
+            return self.err(403, why)
         # Three roles: viewers read; users read AND move files (the explorer's
         # mutations plus their own session/password); admins do everything.
         role = sess.get("role")
@@ -2413,7 +2472,7 @@ class Handler(BaseHTTPRequestHandler):
             vault_put(name, value, by=by)
         except RuntimeError as e:
             return self.err(409, str(e))
-        problems = restart_secret_consumers() if name == "claude_token" else []
+        problems = restart_claude_consumers() if name == "claude_token" else []
         saved, detail = save_state()
         self.send(200, {"ok": True, "name": name, "from": peer["peer"], "problems": problems, "saved": saved, "save_detail": "" if saved else detail})
 
@@ -2436,13 +2495,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(404, "no secret named %s" % name)
         if not vault.shareable(name, mine.get("kind", "text")):
             return self.err(400, "%s is this Machine's own (or not text) and is never copied" % name)
+        if (mine.get("by") or "").startswith("cluster:"):
+            return self.err(400, "%s is a copy from %s — share it from there, so one Machine knows who holds it" % (name, mine["by"][8:]))
         value = vault_get(name)
-        members = {r["id"]: r for r in cluster.view()["members"]}
-        me = cluster.self_id()
         results = {}
-        for t in to:
-            mid = next((i for i, r in members.items() if t in (i, (r.get("name") or "").lower())), None)
-            if mid is None or mid == me:
+        for t, mid in _member_ids(to).items():
+            if mid is None or mid == cluster.self_id():
                 results[t] = "not a member" if mid is None else "this Machine"
                 continue
             try:
@@ -2458,6 +2516,11 @@ class Handler(BaseHTTPRequestHandler):
                 results[mid] = "ok" if out.get("saved", True) else "ok, NOT saved there: " + (out.get("save_detail") or "")
             else:
                 results[mid] = "refused: " + ((out.get("error") if isinstance(out, dict) else "") or str(st))
+                if mid in (mine.get("shared") or {}):
+                    try:
+                        vault.unset_shared(name, mid)      # the note said it held our value; it does not
+                    except (vault.VaultError, OSError, ValueError):
+                        pass
         saved, detail = save_state()
         self.send(200, {"ok": True, "name": name, "results": results, "saved": saved, "save_detail": "" if saved else detail})
 
@@ -2471,12 +2534,14 @@ class Handler(BaseHTTPRequestHandler):
         if not vault.NAME_RE.match(name) or not to:
             return self.err(400, "a secret name and at least one member")
         results = {}
-        for t in to:
+        for t, mid in _member_ids(to).items():
             try:
-                results[t] = "forgotten" if vault.unset_shared(name, t) else "was not shared"
+                results[t] = "forgotten" if vault.unset_shared(name, mid or t) else "was not shared"
+            except vault.Locked as e:
+                return self.err(409, "the vault is not open (%s)" % e)
             except vault.VaultError as e:
                 return self.err(404, str(e))
-            except (vault.Locked, OSError, ValueError) as e:
+            except (OSError, ValueError) as e:
                 return self.err(409, "vault: %s" % e)
         saved, detail = save_state()
         self.send(200, {"ok": True, "name": name, "results": results, "saved": saved, "save_detail": "" if saved else detail})

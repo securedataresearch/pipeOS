@@ -299,8 +299,8 @@ except (OSError, ssl.SSLError, _hc.HTTPException):
     pass
 conn.close()
 st_p, body_p = http(A, "POST", "/api/cluster/members", json.dumps({"cluster": B.doc()}).encode())
-check("5 on one member connection every request is the member's (GET, an admin POST, a GET with a query); the same requests on plain :80 carry no certificate and are 'sign in first'",
-      r1.status == 200 and r2.status == 200 and r3.status == 200 and st_p == 401 and body_p["error"] == "sign in first",
+check("5 on one member connection every request is the member's (GET, the member list POST, a GET with a query) — and a member's certificate is NOT an owner: an admin-only POST like /api/save is refused by the allowlist; the same requests on plain :80 carry no certificate and are 'sign in first'",
+      r1.status == 200 and r2.status == 403 and r3.status == 200 and st_p == 401 and body_p["error"] == "sign in first",
       repr((r1.status, r2.status, r3.status, st_p, body_p)))
 
 # ── 6. the view: off, out of sync, candidates; status prints it ──────────
@@ -514,7 +514,7 @@ _f.flock(lh, _f.LOCK_UN); lh.close()
 check("19b a placement the member refuses at run time (another job is running there) still wrote the job into its schedule — and the member saved it, so the next boot keeps what the owner placed; the refusal names the member",
       rc_rf == 1 and "2222: another job is running" in out_rf and "later" in jobs_of(H) and H.nsaves() == h_saves2 + 1 and "later" not in ran_on(H),
       repr((rc_rf, out_rf[-200:], jobs_of(H), H.nsaves() - h_saves2, ran_on(H))))
-G.cli("call", "2222", "POST", "/api/schedule/del", json.dumps({"name": "later"}))
+H.cli("call", "local", "POST", "/api/schedule/del", json.dumps({"name": "later"}))
 
 lg = open(os.path.join(G.dir, "sched.lock"), "w"); _f.flock(lg, _f.LOCK_EX)          # six is busy: a job is running
 rc_i1, out_i1 = G.cli("start", "pick", "--on", "idlest", "--prompt", "pick me", "--cron", "@hourly")
@@ -535,7 +535,7 @@ check("20 '--on idlest' lands on the awake member with nothing busy: seven while
 ran_before = list(ran_on(H))
 rc_once, out_once = G.cli("start", "once", "--on", "2222", "--prompt", "just this once")
 once_cron = next((j.get("cron") for j in json.load(open(os.path.join(H.dir, "schedule.json")))["jobs"] if j["name"] == "once"), None)
-G.cli("call", "2222", "POST", "/api/schedule/del", json.dumps({"name": "once"}))
+H.cli("call", "local", "POST", "/api/schedule/del", json.dumps({"name": "once"}))
 check("20b 'cluster start' with a prompt and no --cron places a MANUAL job: it ran once on the member and will never fire from its tick; the schedule needs no invented cron",
       rc_once == 0 and "started once on 2222" in out_once and once_cron == "manual" and ran_on(H) == ran_before + ["once"] and "once" not in jobs_of(H),
       repr((rc_once, out_once[-120:], once_cron, ran_on(H), jobs_of(H))))
@@ -552,13 +552,13 @@ h_rows = {r["name"]: r for r in out_hl.get("secrets", [])}
 st_rv, out_rv = sess(H, ch, "POST", "/api/secrets/reveal", {"name": "jobs.x", "password": "sevenpassword"})
 st_gl, out_gl = sess(G, cg, "GET", "/api/secrets")
 g_rows = {r["name"]: r for r in out_gl.get("secrets", [])}
-st_un, out_un = sess(G, cg, "POST", "/api/secrets/unshare", {"name": "jobs.x", "to": ["2222"]})
+st_un, out_un = sess(G, cg, "POST", "/api/secrets/unshare", {"name": "jobs.x", "to": ["seven-b"]})     # by name, as the docs say
 st_gl2, out_gl2 = sess(G, cg, "GET", "/api/secrets")
 st_hl2, out_hl2 = sess(H, ch, "GET", "/api/secrets")
 check("22 pre-share: the owner ticks a member on jobs.x → that member's vault holds it, marked as a copy from this box (by cluster:1111), the member saved once, the owner's list says who has it; 9999 is not a member; un-tick forgets here and the copy stays there",
       st_set == 200 and st_sh == 200 and out_sh["results"].get("2222") == "ok" and out_sh["results"].get("9999") == "not a member"
       and st_hl == 200 and h_rows.get("jobs.x", {}).get("by") == "cluster:1111" and st_rv == 200 and out_rv.get("value") == "tok-1" and H.nsaves() == h_saves3 + 1
-      and g_rows.get("jobs.x", {}).get("shared", {}).get("2222") and st_un == 200 and out_un["results"].get("2222") == "forgotten"
+      and g_rows.get("jobs.x", {}).get("shared", {}).get("2222") and st_un == 200 and out_un["results"].get("seven-b") == "forgotten"
       and not {r["name"]: r for r in out_gl2["secrets"]}["jobs.x"]["shared"] and "jobs.x" in {r["name"] for r in out_hl2["secrets"]},
       repr((st_set, st_sh, out_sh, st_hl, h_rows.get("jobs.x"), st_rv, out_rv, H.nsaves() - h_saves3, g_rows.get("jobs.x"), st_un, out_un)))
 
@@ -572,16 +572,20 @@ st_rz, out_rz = sess(H, ch, "POST", "/api/secrets/reveal", {"name": "jobs.z", "p
 st_pb, _ = https(H, "POST", "/api/secrets/receive", json.dumps({"name": "assistant_pass", "value": "x"}).encode(), cert_of=G)
 st_str, out_str = https(H, "POST", "/api/secrets/receive", json.dumps({"name": "jobs.x", "value": "evil"}).encode(), cert_of=C)
 st_sh2, out_sh2 = https(H, "POST", "/api/secrets/share", json.dumps({"name": "jobs.z", "to": ["1111"]}).encode(), cert_of=G)
-check("25 the guards: a member's certificate may not list, set, reveal or delete this Machine's secrets (403); a copy never overwrites a secret this Machine set itself (409, value intact); a per-box secret is never taken; a stranger's certificate fails the handshake; a member cannot make this box share (share is the owner's tap or this box's own verb)",
+st_ua, out_ua = https(H, "POST", "/api/users/add", json.dumps({"name": "x", "role": "admin", "password": "12345678abc"}).encode(), cert_of=G)   # the front door (the #314 review)
+st_cs, _ = https(H, "POST", "/api/card", json.dumps({"NAME": "pwned"}).encode(), cert_of=G)
+st_fw, out_fw = sess(H, ch, "POST", "/api/secrets/share", {"name": "jobs.x", "to": ["1111"]})                                                   # forwarding a copy from H (it is G's)
+check("25 the guards: a member's certificate may not list, set, reveal or delete this Machine's secrets (403); a copy never overwrites a secret this Machine set itself (409, value intact); a per-box secret is never taken; a stranger's certificate fails the handshake; a member cannot make this box share; a member's certificate cannot add a user or touch the card either (the front door is shut); a copy is never forwarded onward",
       st_ml == 403 and st_ms == 403 and st_mr == 403 and st_md == 403
       and st_ov == 409 and "set on this Machine itself" in out_ov.get("error", "") and st_rz == 200 and out_rz.get("value") == "mine"
-      and st_pb == 400 and st_str == 0 and st_sh2 == 403,
-      repr((st_ml, st_ms, st_mr, st_md, st_ov, out_ov, out_rz, st_pb, st_str, out_str, st_sh2, out_sh2)))
+      and st_pb == 400 and st_str == 0 and st_sh2 == 403 and st_ua == 403 and st_cs in (403, 404) and st_fw == 400 and "is a copy from 1111" in out_fw.get("error", ""),
+      repr((st_ml, st_ms, st_mr, st_md, st_ov, out_ov, out_rz, st_pb, st_str, out_str, st_sh2, out_sh2, st_ua, out_ua, st_cs, st_fw, out_fw)))
 
 tmpl = open(os.path.join(REPO, "overlay/usr/local/share/pipeos/card/pipebox-settings.json.tmpl")).read()
 vsrc = open(os.path.join(WEB, "vault.py")).read()
-check("26 the fence still denies the resident agent every vault verb (share included); the vault verbs share/unshare go through this Machine's own listener",
-      '"Bash(pipeos vault*)"' in tmpl and 'cluster.call("local", "POST", "/api/secrets/" + verb' in vsrc, "")
+check("26 the fence denies the resident agent every vault verb (share included) AND the side doors to the same listener — pipeos cluster*, python3 on the web dir; the vault verbs share/unshare go through this Machine's own listener",
+      '"Bash(pipeos vault*)"' in tmpl and '"Bash(pipeos cluster*)"' in tmpl and '"Bash(python3 /usr/local/share/pipeos/web/*)"' in tmpl
+      and 'cluster.call("local", "POST", "/api/secrets/" + verb' in vsrc, "")
 
 H.stop()
 st_p21, pg21, r21 = page_rows(G)
