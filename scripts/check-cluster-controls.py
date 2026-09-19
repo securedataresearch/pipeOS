@@ -82,6 +82,12 @@ controls = [
      lambda s: s.replace('        if out.get("changed"):          # the job is written even when the run was refused — so it is saved either way\n',
                          '        if st == 200 and out.get("changed"):\n'), ["19b"]),
 
+    ("V3: a member's certificate is held to no allowlist (it adds a user, reads the vault — the front door, #314)", W,
+     lambda s: s.replace('        p = self.peer()\n        if not p or valid_session(self.cookie_token()):\n            return ""\n', '        return ""\n        p = self.peer()\n        if not p or valid_session(self.cookie_token()):\n            return ""\n'), ["25"]),
+
+    ("V4: a member's copy overwrites a secret this box set itself (#301)", W,
+     lambda s: s.replace('        if mine and not (mine.get("by") or "").startswith("cluster:"):\n', '        if False:\n'), ["25"]),
+
     ("F: the reader does not drop a member seen in another cluster", C,
      lambda s: s.replace("        if pid in d[\"members\"] and pid != self_id() and p.get(\"cl\") and p[\"cl\"] != d[\"id\"]:\n",
                          "        if False:\n"), ["9"]),

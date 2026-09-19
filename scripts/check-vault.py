@@ -216,6 +216,20 @@ check("13 the boot service migrates a claimed box (init, migrate, export, then S
       and "web-admin.conf" in init,
       "")
 
+# ── 14. the shared list (#301): rides the entry, survives a re-set, dies with the secret, never printed with a value
+vault("set", "jobs.a", stdin=b"one\n")
+envp = dict(os.environ, PIPEOS_VAULT_FILE=os.path.join(ETC, "vault.sealed"), PIPEOS_VAULT_RUN=RUN, PIPEOS_VAULT_ETC=ETC, PIPEOS_VAULT_IDENT=IDENT_A, PIPEOS_VAULT_ITER="1500")
+p14 = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, %r); import vault; vault.set_shared('jobs.a', '2222', 1700000000); print([x for x in vault.list_() if x['name']=='jobs.a'][0].get('shared'))" % D],
+                     capture_output=True, text=True, env=envp)
+vault("set", "jobs.a", stdin=b"two\n")
+p14b = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, %r); import vault; r=[x for x in vault.list_() if x['name']=='jobs.a'][0]; print(r.get('shared'), vault.get('jobs.a'), r.get('stale')); print(vault.unset_shared('jobs.a','2222'), vault.unset_shared('jobs.a','2222')); print(vault.shareable('jobs.a'), vault.shareable('assistant_pass'), vault.shareable('stream_key_1'), vault.shareable('claude_token'), vault.shareable('x','bytes'))" % D],
+                      capture_output=True, text=True, env=envp)
+rc_l, out_l = vault("list")
+check("14 set_shared notes a member on the entry; a re-set of the value keeps the note and marks it stale (the member holds the older value); the listing shows it and never the value; unset_shared forgets once; shareable = text and not one Machine's own (assistant_pass, stream keys) — the Claude token and jobs.* are",
+      "'2222': 1700000000" in p14.stdout and p14b.stdout.startswith("{'2222': 1700000000} two ['2222']") and "True False" in p14b.stdout
+      and p14b.stdout.strip().endswith("True False False True False") and rc_l == 0 and "two" not in out_l,
+      repr((p14.stdout, p14.stderr[-200:], p14b.stdout, p14b.stderr[-200:], out_l)))
+
 shutil.rmtree(D, ignore_errors=True)
 print("%d/%d" % (sum(RESULTS), len(RESULTS)))
 sys.exit(0 if all(RESULTS) else 1)
