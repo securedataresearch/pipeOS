@@ -67,6 +67,11 @@ SERVICES_CONF = ETC + "/services.conf"
 VAULT = ETC + "/vault.sealed"
 SECRETS_DIR = "/run/pipeos/secrets"
 VAULT_PHRASE = "/run/pipeos/vault-phrase"
+# share requests (#301 part 2): the REQUESTER's records ride the apkovl (it
+# re-offers them at boot); every other member holds a tmpfs notice
+VAULT_REQUESTS = ETC + "/vault-requests.json"
+VAULT_NOTICES = "/run/pipeos/vault-notices.json"
+REQUEST_TTL_S = 86400
 VAULT_STATUS = "/run/pipeos/vault.status"
 CLAUDE_AUTH = SECRETS_DIR + "/claude.env"
 CLAUDE_AUTH_LEGACY = ETC + "/claude-auth.env"
@@ -250,7 +255,7 @@ PEER_GETS = ("/api/cluster", "/api/cluster/summary")
 SELF_GETS = ("/api/cluster/page",)
 PEER_POSTS = ("/api/cluster/members", "/api/reboot", "/api/services", "/api/agent/start", "/api/name",
               "/api/secrets/have", "/api/secrets/receive",
-              "/api/secrets/requests/offer", "/api/secrets/requests/close", "/api/secrets/send")
+              "/api/secrets/requests/offer", "/api/secrets/requests/close")
 SELF_POSTS = ("/api/cluster/reboot-all", "/api/cluster/services", "/api/cluster/start", "/api/cluster/adopt",
               "/api/cluster/init", "/api/cluster/add", "/api/cluster/remove", "/api/cluster/sync",
               "/api/secrets/share", "/api/secrets/unshare", "/api/secrets/request", "/api/schedule/del", "/api/schedule/set")
@@ -369,6 +374,102 @@ def vault_put(name, value, by=""):
         raise RuntimeError("the vault is locked (%s) — unlock it under Secrets first" % e)
     except (vault.VaultError, OSError, ValueError) as e:
         raise RuntimeError("vault: %s" % e)
+
+
+REQ_LOCK = threading.Lock()
+
+
+def _req_load(path):
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) and isinstance(d.get("requests"), list) else {"v": 1, "requests": []}
+    except (OSError, ValueError):
+        return {"v": 1, "requests": []}
+
+
+def _req_store(path, doc):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    write_private(path, json.dumps(doc, indent=1) + "\n")
+
+
+def _req_live(r, now=None):
+    """A request's state as of now: a pending one past its expiry reads expired."""
+    now = now or int(time.time())
+    if r.get("state") == "pending" and int(r.get("expires_at") or 0) < now:
+        return "expired"
+    return r.get("state", "")
+
+
+def share_requests():
+    """What this dashboard should show: this box's own open requests and the
+    notices other members offered — pending only, expired ones fall away.
+    `can_approve` says whether THIS Machine holds the secret (approval
+    happens on a holder's own dashboard)."""
+    out = []
+    me = cluster.self_id()
+    names = None
+    for path, mine in ((VAULT_REQUESTS, True), (VAULT_NOTICES, False)):
+        for r in _req_load(path)["requests"]:
+            if _req_live(r) != "pending":
+                continue
+            can = False
+            if not mine and me in (r.get("holders") or []):
+                if names is None:
+                    names = vault_names()          # two PBKDF2 derivations: only when a notice could concern this box
+                can = r.get("name") in names and vault.shareable(r.get("name") or "")
+            out.append(dict(r, mine=mine, can_approve=can))
+    return out
+
+
+def _req_update(path, rid, **changes):
+    """Set fields on one record under the lock; returns the record or None."""
+    with REQ_LOCK:
+        doc = _req_load(path)
+        for r in doc["requests"]:
+            if r.get("id") == rid:
+                r.update(changes)
+                _req_store(path, doc)
+                return r
+    return None
+
+
+def _req_find(rid):
+    """(record, path) for an id this box knows — its own record first."""
+    for path in (VAULT_REQUESTS, VAULT_NOTICES):
+        for r in _req_load(path)["requests"]:
+            if r.get("id") == rid:
+                return r, path
+    return None, None
+
+
+def _others():
+    return [m["id"] for m in cluster.view()["members"] if not m["self"]]
+
+
+def reoffer_requests():
+    """Every open request this box raised is offered to the members again —
+    at webd start (once the trust bundle exists: /run is empty at boot) and
+    every five minutes after, since a HOLDER that rebooted lost its tmpfs
+    notice too. A member answering that it already decided the request
+    (denied while this box was unreachable) closes the record here."""
+    while True:
+        try:
+            for _ in range(60):
+                if os.path.exists(cluster.BUNDLE) or not _req_load(VAULT_REQUESTS)["requests"]:
+                    break
+                time.sleep(2)
+            open_ = [r for r in _req_load(VAULT_REQUESTS)["requests"] if _req_live(r) == "pending"]
+            for r in open_:
+                for mid, (st, b) in cluster.fanout(_others(), "POST", "/api/secrets/requests/offer", {"request": r}, timeout=8).items():
+                    if st == 200 and isinstance(b, dict) and b.get("already") in ("done", "denied"):
+                        with MUTATE_LOCK:
+                            _req_update(VAULT_REQUESTS, r["id"], state=b["already"], decided_by=b.get("decided_by") or ("%s" % mid), decided_at=int(time.time()))
+                            save_state()
+                        break
+        except Exception as e:       # noqa: BLE001 — best effort, forever
+            sys.stderr.write("pipeos-webd: re-offer: %s\n" % e)
+        time.sleep(300)
 
 
 def vault_drop(name):
@@ -2023,6 +2124,11 @@ class Handler(BaseHTTPRequestHandler):
             "/api/secrets/receive": self.api_secrets_receive,
             "/api/secrets/share": self.api_secrets_share,
             "/api/secrets/unshare": self.api_secrets_unshare,
+            "/api/secrets/request": self.api_secrets_request,
+            "/api/secrets/requests/offer": self.api_secrets_requests_offer,
+            "/api/secrets/requests/approve": self.api_secrets_requests_approve,
+            "/api/secrets/requests/deny": self.api_secrets_requests_deny,
+            "/api/secrets/requests/close": self.api_secrets_requests_close,
             "/api/cluster/init": self.api_cluster_init,
             "/api/cluster/add": self.api_cluster_add,
             "/api/cluster/remove": self.api_cluster_remove,
@@ -2462,6 +2568,15 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(value, str) or not value or len(value) > 8192 or "\0" in value:
             return self.err(400, "a value, up to 8 KB, no NUL")
         by = "cluster:" + peer["peer"]
+        rid = body.get("id")
+        rec = None
+        if rid:
+            # an answer to a request this box raised (#301 part 2): the id must be ours and still pending
+            rec = next((r for r in _req_load(VAULT_REQUESTS)["requests"] if r.get("id") == rid), None)
+            if rec is None or _req_live(rec) != "pending" or rec.get("name") != name:
+                return self.err(404, "no open request %s for %s on this Machine" % (rid, name))
+            if peer["peer"] not in (rec.get("holders") or []):
+                return self.err(403, "%s is not a holder this request named" % peer["peer"])
         try:
             mine = next((r for r in vault.list_() if r["name"] == name), None)
         except (vault.VaultError, OSError, ValueError) as e:
@@ -2472,7 +2587,19 @@ class Handler(BaseHTTPRequestHandler):
             vault_put(name, value, by=by)
         except RuntimeError as e:
             return self.err(409, str(e))
+        if rec is not None:
+            _req_update(VAULT_REQUESTS, rid, state="done", decided_by=body.get("decided_by") or "", decided_at=int(time.time()), holder=peer["peer"])
         problems = restart_claude_consumers() if name == "claude_token" else []
+        if rec is not None:
+            # answer the holder before the save: a slow stick must not time out its call
+            # (the save's outcome shows in this box's own status, as every save does)
+            self.send(200, {"ok": True, "name": name, "from": peer["peer"], "problems": problems, "saved": None})
+            try:
+                self.wfile.flush()
+            except OSError:
+                pass
+            save_state()
+            return
         saved, detail = save_state()
         self.send(200, {"ok": True, "name": name, "from": peer["peer"], "problems": problems, "saved": saved, "save_detail": "" if saved else detail})
 
@@ -2545,6 +2672,168 @@ class Handler(BaseHTTPRequestHandler):
                 return self.err(409, "vault: %s" % e)
         saved, detail = save_state()
         self.send(200, {"ok": True, "name": name, "results": results, "saved": saved, "save_detail": "" if saved else detail})
+
+
+    # -- a share request (#301 part 2): the agent's one door; the owner's one tap --
+
+    def api_secrets_request(self, body):
+        """This Machine needs NAME and does not hold it: ask every member who
+        does (existence only), write the record here, save, and offer it to
+        every member's dashboard. An admin session or this Machine's own
+        certificate (`pipeos secrets request`, the agent's allowed verb)."""
+        who = self._peer_guard(allow_self=True)
+        if who is None:
+            return
+        name = (body.get("name") or "").strip().lower()
+        why = (body.get("why") or "").strip()[:200]
+        if not vault.NAME_RE.match(name) or not vault.shareable(name):
+            return self.err(400, "%s is not a secret a member could hand over" % name)
+        if name in vault_names():
+            return self.err(409, "this Machine already holds %s" % name)
+        v = cluster.view()
+        if not v.get("cluster"):
+            return self.err(409, "not in a cluster — nobody to ask")
+        me = v["self"]
+        others = [m["id"] for m in v["members"] if not m["self"]]
+        if any(_req_live(r) == "pending" and r.get("name") == name for r in _req_load(VAULT_REQUESTS)["requests"]):
+            return self.err(409, "a request for %s is already open — the owner has not decided yet" % name)
+        holders = [mid for mid, (st, b) in cluster.fanout(others, "POST", "/api/secrets/have", {"name": name}).items()
+                   if st == 200 and isinstance(b, dict) and b.get("have")]
+        if not holders:
+            return self.err(404, "no member holds %s" % name)
+        now = int(time.time())
+        rec = {"id": __import__("secrets").token_hex(8), "name": name, "why": why, "from": me, "holders": sorted(holders),
+               "asked_at": now, "expires_at": now + REQUEST_TTL_S, "state": "pending", "decided_by": "", "decided_at": 0}
+        with REQ_LOCK:
+            doc = _req_load(VAULT_REQUESTS)
+            doc["requests"] = [r for r in doc["requests"] if _req_live(r) == "pending" or now - int(r.get("decided_at") or r.get("expires_at") or 0) < 7 * 86400] + [rec]
+            _req_store(VAULT_REQUESTS, doc)
+        saved, detail = save_state()
+        offered = {mid: ("ok" if st == 200 else (b.get("error") if isinstance(b, dict) else str(st)))
+                   for mid, (st, b) in cluster.fanout(others, "POST", "/api/secrets/requests/offer", {"request": rec}).items()}
+        self.send(200, {"ok": True, "request": rec, "offered": offered, "saved": saved, "save_detail": "" if saved else detail})
+
+    def api_secrets_requests_offer(self, body):
+        """A member's open request, for this dashboard to show (a tmpfs
+        notice; the requester holds the record and re-offers at boot). What
+        the notice says is the requester's word — it decides nothing: a copy
+        moves only when the owner approves on a holder's own dashboard, and
+        that holder checks its own vault then."""
+        peer = self._peer_guard()
+        if peer is None:
+            return
+        r = body.get("request") or {}
+        if not isinstance(r, dict) or r.get("from") != peer["peer"] or not vault.NAME_RE.match(r.get("name") or "") or not r.get("id"):
+            return self.err(400, "a request names its id, its secret, and comes from the member that raised it")
+        now = int(time.time())
+        prior, ppath = _req_find(str(r["id"])[:32])
+        if prior is not None and prior.get("state") in ("done", "denied"):
+            # decided here already (a deny while the requester was unreachable): tell it, keep ours
+            return self.send(200, {"ok": True, "id": prior["id"], "already": prior["state"], "decided_by": prior.get("decided_by", "")})
+        keep = {"id": str(r["id"])[:32], "name": r["name"], "why": str(r.get("why") or "")[:200], "from": peer["peer"],
+                "holders": [str(h) for h in (r.get("holders") or [])][:16], "asked_at": int(r.get("asked_at") or now),
+                "expires_at": min(int(r.get("expires_at") or 0) or now + REQUEST_TTL_S, now + REQUEST_TTL_S),
+                "state": "pending", "decided_by": "", "decided_at": 0}
+        with REQ_LOCK:
+            doc = _req_load(VAULT_NOTICES)
+            doc["requests"] = [x for x in doc["requests"] if x.get("id") != keep["id"]] + [keep]
+            _req_store(VAULT_NOTICES, doc)
+        self.send(200, {"ok": True, "id": keep["id"]})
+
+    def api_secrets_requests_approve(self, body):
+        """The owner's tap — on a HOLDER's own dashboard (Sam, 2026-09-19):
+        this Machine sends what it holds to the requester over mutual TLS on
+        the strength of its own admin session, never on another member's
+        word. Taps are serialized by MUTATE_LOCK, so there is no state to
+        flip before the send: the request is decided when the copy landed."""
+        sess = self._session_admin_guard()
+        if sess is None:
+            return
+        rid = str(body.get("id") or "")
+        rec, path = _req_find(rid)
+        if rec is None:
+            return self.err(404, "no such request")
+        live = _req_live(rec)
+        if live != "pending":
+            return self.err(409, "that request is already %s%s" % (live, (" by " + rec["decided_by"]) if rec.get("decided_by") else ""))
+        name, to = rec.get("name") or "", rec.get("from") or ""
+        me = cluster.self_id()
+        holders = [h for h in (rec.get("holders") or []) if h != to]
+        if to == me:
+            return self.err(409, "this is the Machine that asked — approve on one that holds %s: %s" % (name, ", ".join(holders) or "none known"))
+        if me not in holders:
+            return self.err(409, "this Machine was not a holder when %s asked — approve on one that was: %s" % (to, ", ".join(holders) or "none known"))
+        try:
+            mine = next((r for r in vault.list_() if r["name"] == name), None)
+        except (vault.VaultError, OSError, ValueError) as e:
+            return self.err(409, "the vault is not open (%s)" % e)
+        if mine is None or not vault.shareable(name, mine.get("kind", "text")):
+            return self.err(409, "this Machine does not hold %s as a text secret — approve on one that does: %s" % (name, ", ".join(h for h in holders if h != me) or "none known"))
+        by = "%s@%s" % (sess.get("user", "admin"), me)
+        value = vault_get(name)
+        try:
+            st, out, who = cluster.call(to, "POST", "/api/secrets/receive", {"id": rid, "name": name, "value": value, "kind": "text", "decided_by": by}, timeout=60)
+            ok = st == 200 and who
+        except Exception as e:      # noqa: BLE001 — ClusterError, a TypeError, anything: the tap must answer
+            ok, st, out = False, 502, {"error": str(e)}
+        settled = st in (404, 409) and isinstance(out, dict)      # the requester already has it, or set it itself, or closed the request
+        if not ok and not settled:
+            return self.err(st if st >= 400 else 502, "%s did not take the copy: %s — the request stays open for another tap" % (to, (out.get("error") if isinstance(out, dict) else "") or st))
+        state = "done" if ok else "denied"
+        if ok:
+            try:
+                vault.set_shared(name, to)
+            except (vault.VaultError, OSError, ValueError):
+                pass
+        _req_update(path, rid, state=state, decided_by=by, decided_at=int(time.time()))
+        closed = {mid: ("ok" if st2 == 200 else "%s" % st2) for mid, (st2, _b) in
+                  cluster.fanout(_others(), "POST", "/api/secrets/requests/close", {"id": rid, "state": state, "decided_by": by}).items()}
+        saved, detail = save_state()          # this holder's "shared with" note
+        self.send(200, {"ok": True, "id": rid, "name": name, "to": to, "holder": me, "state": state, "closed": closed,
+                        "note": "" if ok else "%s answered %s (%s) — the request is closed here as settled there" % (to, st, out.get("error", "")),
+                        "saved": saved, "save_detail": "" if saved else detail})
+
+    def api_secrets_requests_close(self, body):
+        """The word that a request is done (from a holder it named) or denied
+        (from any member's owner). This box's own record saves; a notice is
+        tmpfs."""
+        peer = self._peer_guard()
+        if peer is None:
+            return
+        rid, state = str(body.get("id") or ""), body.get("state")
+        if state not in ("done", "denied"):
+            return self.err(400, "done or denied")
+        rec, path = _req_find(rid)
+        if rec is None:
+            return self.send(200, {"ok": True, "known": False})
+        if state == "done" and peer["peer"] not in (rec.get("holders") or []):
+            return self.err(403, "%s is not a holder this request named" % peer["peer"])
+        if rec.get("state") in ("done", "denied"):
+            return self.send(200, {"ok": True, "known": True, "already": rec["state"]})
+        _req_update(path, rid, state=state, decided_by=body.get("decided_by") or "", decided_at=int(time.time()))
+        saved, detail = (save_state() if path == VAULT_REQUESTS else (True, ""))
+        self.send(200, {"ok": True, "known": True, "saved": saved, "save_detail": "" if saved else detail})
+
+    def api_secrets_requests_deny(self, body):
+        """The owner says no, on whichever dashboard is open: every member
+        closes it as denied; the requester's record saves."""
+        sess = self._session_admin_guard()
+        if sess is None:
+            return
+        rid = str(body.get("id") or "")
+        rec, path = _req_find(rid)
+        if rec is None:
+            return self.err(404, "no such request")
+        if _req_live(rec) != "pending":
+            return self.err(409, "that request is already %s" % _req_live(rec))
+        by = "%s@%s" % (sess.get("user", "admin"), cluster.self_id())
+        _req_update(path, rid, state="denied", decided_by=by, decided_at=int(time.time()))
+        closed = {mid: ("ok" if st == 200 else "%s" % st) for mid, (st, _b) in
+                  cluster.fanout(_others(), "POST", "/api/secrets/requests/close", {"id": rid, "state": "denied", "decided_by": by}).items()}
+        unreached = [m for m, v in closed.items() if v != "ok"]
+        saved, detail = (save_state() if path == VAULT_REQUESTS else (True, ""))
+        self.send(200, {"ok": True, "id": rid, "closed": closed, "saved": saved, "save_detail": "" if saved else detail,
+                        "note": ("%s did not hear it (off?) — this box keeps the denial and answers its re-offer with it" % ", ".join(unreached)) if unreached else ""})
 
     def api_cluster_identity(self):
         """Public: who this Machine is to a cluster — its box id, the
@@ -2858,6 +3147,7 @@ class Handler(BaseHTTPRequestHandler):
             "usage_paused": bool(spend.get("cap", {}).get("paused")),
             "usage_paused_by": spend.get("cap", {}).get("paused_by"),
             "usage_agents_paused": sorted(n for n, a in spend.get("cap", {}).get("agents", {}).items() if a.get("paused")),
+            "share_requests": share_requests() if (sess or {}).get("role") == "admin" else [],   # names and reasons: admin only, as /api/secrets is
             # saves are fenced: a new image applied (tmpfs marker) or a rollback
             # staged — every change until the reboot answers saved:false
             "save_fence": ("new image applied — reboot to boot it" if os.path.exists("/run/pipeos/flash-pending")
@@ -4743,6 +5033,7 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     threading.Thread(target=metrics_sampler, daemon=True).start()
     threading.Thread(target=ledger_worker, daemon=True).start()
+    threading.Thread(target=reoffer_requests, daemon=True).start()   # a member that rebooted lost its tmpfs notices (#301)
     start_https()
     cluster.bundle(); cluster.publish()      # /run is empty at boot: the trust store and the TXT cl/k/h (#211)
     if HTTPS.get("server") is not None and os.path.isfile(cluster.BUNDLE):

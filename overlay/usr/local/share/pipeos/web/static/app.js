@@ -1004,6 +1004,11 @@ async function dashboard() {
           <div id="seclist" class="note">loading…</div>
           <p class="err" id="secerr" hidden></p>
         </div>
+        <div class="card" id="secreqcard" hidden>
+          <div class="cardhead"><h2>Share requests</h2><span class="note">a Machine asked for a secret another one holds</span></div>
+          <p class="note">Approve on a Machine that <b>holds</b> the secret: it sends its copy to the one that asked, over the cluster's own TLS, on your sign-in there — never on another Machine's word. The asking Machine saves it. Deny closes it everywhere.</p>
+          <div id="secreqs"></div>
+        </div>
         <div class="card">
           <h2>Add a secret</h2>
           <label for="secname">Name</label>
@@ -1288,6 +1293,7 @@ async function dashboard() {
     });
     if (st.usage_paused) alertItems.push(["bad", (st.usage_paused_by && st.usage_paused_by.text) || "monthly usage cap reached — scheduled jobs are paused (Usage)"]);
     (st.usage_agents_paused || []).forEach(n => alertItems.push(["warn", "agent " + n + " is paused by its own monthly cap (Usage)"]));
+    (st.share_requests || []).forEach(q => alertItems.push(["warn", q.from + " asks for the secret " + q.name + " — approve or deny under Secrets"]));
     if (st.save_fence) alertItems.push(["bad", "saves are fenced: " + st.save_fence + " — changes made now are NOT kept"]);
     else if (st.usage_cap && st.usage_cap.usd && st.usage_cap.pct >= 80) alertItems.push(["warn", st.usage_cap.pct + "% of the monthly usage cap (Usage)"]);
     renderAlerts();
@@ -2446,6 +2452,34 @@ async function dashboard() {
         <button id="secack" type="button">I wrote it down</button></div>`));
       banner.querySelector("#secack").onclick = async () => { await api("/api/secrets/phrase-ack", {}); loadSecrets(); };
     }
+    // open share requests (#301 part 2), from this box or offered by a member
+    try {
+      const st0 = await api("/api/status");
+      const reqs = st0.share_requests || [];
+      const card = v.querySelector("#secreqcard"), box = v.querySelector("#secreqs");
+      if (card && box) {
+        card.hidden = !reqs.length;
+        let hosts = {};
+        try { (await api("/api/cluster")).members.forEach(m => { hosts[m.id] = m.host || m.ip || ""; }); } catch (e) { hosts = {}; }
+        const holderLinks = q => (q.holders || []).map(h => hosts[h] ? `<a href="http://${esc(hosts[h])}/#/secrets">approve on ${esc(h)}</a>` : `approve on ${esc(h)}`).join(" · ");
+        box.innerHTML = reqs.map(q => `<div class="row"><div style="min-width:0"><div class="name">${esc(q.from)} asks for <b>${esc(q.name)}</b></div>
+          <div class="desc">${q.why ? esc(q.why) + " · " : ""}held by ${esc((q.holders || []).join(", ") || "?")} · asked ${new Date((q.asked_at || 0) * 1000).toLocaleString()} · expires ${new Date((q.expires_at || 0) * 1000).toLocaleString()}</div></div>
+          <div style="display:flex;gap:.4rem;align-items:center">${q.can_approve ? `<button class="btn small" type="button" data-approve="${esc(q.id)}">Approve</button>` : `<span class="note">${q.mine ? "this Machine asked — " : "this Machine does not hold it — "}${holderLinks(q) || "no holder known"}</span>`}<button class="btn ghost small" type="button" data-deny="${esc(q.id)}">Deny</button></div></div>`).join("");
+        box.querySelectorAll("[data-approve]").forEach(b => b.onclick = async () => {
+          b.disabled = true; let msg = "";
+          try { const w = await api("/api/secrets/requests/approve", { id: b.dataset.approve }); msg = w.state === "done" ? `${w.name} copied from ${w.holder} to ${w.to}` : (w.note || "closed"); }
+          catch (e) { msg = e.message; }
+          await loadSecrets();                      // loadSecrets clears the message line first — set it after
+          err.textContent = msg; err.hidden = !msg;
+        });
+        box.querySelectorAll("[data-deny]").forEach(b => b.onclick = async () => {
+          b.disabled = true; let msg = "";
+          try { const w = await api("/api/secrets/requests/deny", { id: b.dataset.deny }); msg = w.note || ""; } catch (e) { msg = e.message; }
+          await loadSecrets();
+          err.textContent = msg; err.hidden = !msg;
+        });
+      }
+    } catch (e) { /* the requests card is optional */ }
     const rows = r.secrets || [];
     // the other members, for the "shared with" ticks (#301): a copy travels only on your tap
     let members = [];

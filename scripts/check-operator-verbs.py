@@ -343,7 +343,7 @@ check("17 watchdog off|kernel writes WATCHDOG, regenerates, saves, restarts the 
 helptext = "\n".join(l for l in src.split("\n")[:40])
 skill = open(os.path.join(REPO, ".claude/skills/pipeos-fleet/SKILL.md")).read()
 doc = open(os.path.join(REPO, "docs/fleet-ops.md")).read()
-verbs = ("pipeos schedule", "pipeos usage", "pipeos card set", "pipeos secrets phrase", "pipeos assistant password", "pipeos nas account", "pipeos selfupdate image", "pipeos watchdog", "pipeos deploy-overlay", "pipeos vault", "pipeos wake", "pipeos work", "pipeos cluster")
+verbs = ("pipeos schedule", "pipeos usage", "pipeos card set", "pipeos secrets phrase", "pipeos assistant password", "pipeos nas account", "pipeos selfupdate image", "pipeos watchdog", "pipeos deploy-overlay", "pipeos vault", "pipeos wake", "pipeos work", "pipeos cluster", "pipeos secrets request")
 check("15 every operator verb is in pipeos's help, in the fleet skill and in docs/fleet-ops.md",
       all(v in helptext for v in verbs[:8]) and all(v in skill for v in verbs) and all(v in doc for v in verbs),
       "help=%r skill=%r doc=%r" % ([v for v in verbs[:8] if v not in helptext], [v for v in verbs if v not in skill], [v for v in verbs if v not in doc]))

@@ -40,6 +40,7 @@ when host keys have changed (every reflash). Clocks are UTC.
 | `pipeos usage cap --agent NAME N\|none` | Usage → an agent's cap; Schedule → cap field | `cap_usd` on the job in `schedule.json`; enforced at once against that agent's month-to-date; a pause names the agent (#302) | yes |
 | `pipeos watchdog kernel\|off\|status` | — (card `WATCHDOG`, no form yet) | card `WATCHDOG`, regenerated; `rc-service watchdog restart` at once | yes |
 | `pipeos card set KEY=VALUE…` | every card-backed form | `/etc/pipeos/card.conf` + `pipebox-card generate` | yes |
+| `pipeos secrets request NAME [WHY]` | Secrets → Share requests (Approve on a HOLDER's dashboard; Deny anywhere) | the agent's one door (#301): the record on this box (`vault-requests.json`, saved), a notice on every member; the owner's approve, on a Machine that holds it, sends the copy over mutual TLS and this box saves it | yes |
 | `pipeos secrets phrase [--ack]` | Secrets → recovery phrase | `--ack` removes the tmpfs copy | no (tmpfs) |
 | `pipeos assistant password` (stdin) | Assistant → password | vault `assistant_pass`; restarts `pipeos-assistant` | yes |
 | `pipeos cluster init [NAME]\|status\|ca` | Cluster → this Machine's identity (its CA) and member list | `/etc/pipeos/cluster.json` | `init`: yes |

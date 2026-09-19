@@ -69,6 +69,7 @@ webd.TLS_INIT = os.path.join(os.environ["PIPEOS_BIN"], "pipeos-tls-init")
 webd.VAULT = webd.vault.VAULT_FILE = os.path.join(d, "vault.sealed"); webd.SECRETS_DIR = webd.vault.RUN_DIR = os.path.join(d, "secrets")
 webd.vault.ETC = d; webd.vault.ITER = 1500; webd.vault.ident = lambda: {"mac": "aa:bb:cc:dd:" + os.environ["PIPEOS_CLUSTER_SELF"][:2] + ":" + os.environ["PIPEOS_CLUSTER_SELF"][2:], "serial": "PC", "product": "Test Box"}
 webd.VAULT_PHRASE = os.path.join(d, "vault-phrase"); webd.VAULT_STATUS = os.path.join(d, "vault.status")
+webd.VAULT_REQUESTS = os.path.join(d, "vault-requests.json"); webd.VAULT_NOTICES = os.path.join(d, "vault-notices.json")
 open(webd.FLASH_IMAGE_TXT, "w").write("variant=usb\nbuilt=2026-09-12T00:00:00Z\ncommit=abc123def456789\n")
 webd.TLS_DIR = os.path.join(d, "tls"); webd.CA_CRT = webd.TLS_DIR + "/ca.crt"; webd.SRV_CRT = webd.TLS_DIR + "/server.crt"; webd.SRV_KEY = webd.TLS_DIR + "/server.key"
 webd.lanid.mac4 = lambda iface=None: os.environ["PIPEOS_CLUSTER_SELF"]
@@ -581,11 +582,67 @@ check("25 the guards: a member's certificate may not list, set, reveal or delete
       and st_pb == 400 and st_str == 0 and st_sh2 == 403 and st_ua == 403 and st_cs in (403, 404) and st_fw == 400 and "is a copy from 1111" in out_fw.get("error", ""),
       repr((st_ml, st_ms, st_mr, st_md, st_ov, out_ov, out_rz, st_pb, st_str, out_str, st_sh2, out_sh2, st_ua, out_ua, st_cs, st_fw, out_fw)))
 
+# ── 23-24. a share request (#301 part 2): the agent asks, the owner taps once, the copy travels ──
+st_have, out_have = https(G, "POST", "/api/secrets/have", json.dumps({"name": "jobs.x"}).encode(), cert_of=H)
+h_saves4 = H.nsaves()
+rc_rq, out_rq = H.cli("call", "local", "POST", "/api/secrets/request", json.dumps({"name": "jobs.y", "why": "the nightly job needs it"}))   # H's own cert: the verb's path
+rc_rq2, out_rq2 = H.cli("call", "local", "POST", "/api/secrets/request", json.dumps({"name": "jobs.x", "why": "already held"}))          # a name nobody holds → 404, nothing written
+sess(G, cg, "POST", "/api/secrets/set", {"name": "jobs.y", "value": "tok-y"})
+rc_rq3, out_rq3 = H.cli("call", "local", "POST", "/api/secrets/request", json.dumps({"name": "jobs.y", "why": "the nightly job needs it"}))
+req_id = json.loads(out_rq3.split("\n", 1)[1]).get("request", {}).get("id") if rc_rq3 == 0 else None
+st_stg, out_stg = sess(G, cg, "GET", "/api/status")
+st_sth, out_sth = sess(H, ch, "GET", "/api/status")
+st_ma, _ = https(G, "POST", "/api/secrets/requests/approve", json.dumps({"id": req_id}).encode(), cert_of=H)   # a member cert cannot approve
+st_ap, out_ap = sess(G, cg, "POST", "/api/secrets/requests/approve", {"id": req_id})                           # the owner, on the HOLDER's dashboard (local send)
+st_rvy, out_rvy = sess(H, ch, "POST", "/api/secrets/reveal", {"name": "jobs.y", "password": "sevenpassword"})
+h_rec = next((r for r in json.load(open(os.path.join(H.dir, "vault-requests.json")))["requests"] if r["id"] == req_id), {})
+st_stg2, out_stg2 = sess(G, cg, "GET", "/api/status")
+st_sth2, out_sth2 = sess(H, ch, "GET", "/api/status")
+check("23 request → approve → copy: the requester asks its own listener (the verb's path); a name nobody holds is 404; with a holder the record is written and saved on the requester and offered to every member's status; a member's certificate cannot approve; the owner's tap on the holder's dashboard copies it to the requester (reveal matches, by cluster:holder), the record is done with who decided, and nobody shows it pending",
+      st_have == 200 and out_have.get("have") is True and rc_rq == 1 and "no member holds" in out_rq and rc_rq2 == 1 and "already holds" in out_rq2
+      and rc_rq3 == 0 and req_id and H.nsaves() >= h_saves4 + 1
+      and any(q["id"] == req_id and q.get("can_approve") is True for q in out_stg.get("share_requests", [])) and any(q["id"] == req_id and q.get("mine") and not q.get("can_approve") for q in out_sth.get("share_requests", []))
+      and st_ma == 403 and st_ap == 200 and out_ap.get("holder") == "1111" and out_ap.get("to") == "2222"
+      and st_rvy == 200 and out_rvy.get("value") == "tok-y" and h_rec.get("state") == "done" and h_rec.get("decided_by", "").endswith("@1111")
+      and not out_stg2.get("share_requests") and not out_sth2.get("share_requests"),
+      repr((st_have, out_have, rc_rq, out_rq[-160:], rc_rq2, out_rq2[-160:], rc_rq3, out_rq3[-300:], H.nsaves() - h_saves4, out_stg.get("share_requests"), out_sth.get("share_requests"), st_ma, st_ap, out_ap, st_rvy, out_rvy, h_rec, out_stg2.get("share_requests"), out_sth2.get("share_requests"))))
+
+st_ap2, out_ap2 = sess(G, cg, "POST", "/api/secrets/requests/approve", {"id": req_id})
+# a second request, approved from the REQUESTER's dashboard (the holder is remote: send over mTLS), and one that expires unseen
+sess(G, cg, "POST", "/api/secrets/set", {"name": "jobs.w", "value": "tok-w"})
+rc_rq4, out_rq4 = H.cli("call", "local", "POST", "/api/secrets/request", json.dumps({"name": "jobs.w"}))
+req2 = json.loads(out_rq4.split("\n", 1)[1]).get("request", {}).get("id") if rc_rq4 == 0 else None
+st_apx, out_apx = sess(H, ch, "POST", "/api/secrets/requests/approve", {"id": req2})      # the requester's own dashboard: it does not hold it — pointed at a holder
+st_ap3, out_ap3 = sess(G, cg, "POST", "/api/secrets/requests/approve", {"id": req2})      # the holder's dashboard, on its own session
+st_rvw, out_rvw = sess(H, ch, "POST", "/api/secrets/reveal", {"name": "jobs.w", "password": "sevenpassword"})
+st_dn0, out_dn0 = sess(G, cg, "POST", "/api/secrets/requests/deny", {"id": req2})
+rp = os.path.join(H.dir, "vault-requests.json"); doc = json.load(open(rp))
+doc["requests"].append({"id": "deadbeefdeadbeef", "name": "jobs.old", "why": "", "from": "2222", "holders": ["1111"], "asked_at": 1, "expires_at": 2, "state": "pending", "decided_by": "", "decided_at": 0})
+open(rp, "w").write(json.dumps(doc))
+st_ex, out_ex = sess(H, ch, "POST", "/api/secrets/requests/approve", {"id": "deadbeefdeadbeef"})
+st_sth3, out_sth3 = sess(H, ch, "GET", "/api/status")
+st_rcv, out_rcv = https(H, "POST", "/api/secrets/receive", json.dumps({"id": "nope", "name": "jobs.v", "value": "x"}).encode(), cert_of=G)
+sess(G, cg, "POST", "/api/secrets/set", {"name": "jobs.d", "value": "tok-d"})
+rc_rq5, out_rq5 = H.cli("call", "local", "POST", "/api/secrets/request", json.dumps({"name": "jobs.d"}))
+req3 = json.loads(out_rq5.split("\n", 1)[1]).get("request", {}).get("id") if rc_rq5 == 0 else None
+st_dn, out_dn = sess(G, cg, "POST", "/api/secrets/requests/deny", {"id": req3})
+h_rec3 = next((r for r in json.load(open(rp))["requests"] if r["id"] == req3), {})
+st_ap4, out_ap4 = sess(H, ch, "POST", "/api/secrets/requests/approve", {"id": req3})
+check("24 once and only once: a second approve is refused as already done; the requester's own dashboard cannot approve (it points at a holder) and the holder's can, on its own session; an expired request is refused and gone from status; a copy with an unknown request id is refused and writes nothing; deny on any dashboard closes it on the requester (saved) and a later approve is refused",
+      st_ap2 == 409 and "already done" in out_ap2.get("error", "")
+      and rc_rq4 == 0 and st_apx == 409 and "approve on one that holds" in out_apx.get("error", "") and st_ap3 == 200 and out_ap3.get("holder") == "1111" and out_ap3.get("state") == "done" and out_ap3.get("saved") is True
+      and st_rvw == 200 and out_rvw.get("value") == "tok-w" and st_dn0 == 409
+      and st_ex == 409 and "expired" in out_ex.get("error", "") and not any(q["id"] == "deadbeefdeadbeef" for q in out_sth3.get("share_requests", []))
+      and st_rcv == 404 and "jobs.v" not in {r["name"] for r in sess(H, ch, "GET", "/api/secrets")[1].get("secrets", [])}
+      and rc_rq5 == 0 and st_dn == 200 and h_rec3.get("state") == "denied" and st_ap4 == 409 and "denied" in out_ap4.get("error", ""),
+      repr((st_ap2, out_ap2, rc_rq4, out_rq4[-160:], st_apx, out_apx, st_ap3, out_ap3, st_rvw, out_rvw, st_dn0, st_ex, out_ex, st_rcv, out_rcv, rc_rq5, st_dn, out_dn, h_rec3, st_ap4, out_ap4)))
+
 tmpl = open(os.path.join(REPO, "overlay/usr/local/share/pipeos/card/pipebox-settings.json.tmpl")).read()
 vsrc = open(os.path.join(WEB, "vault.py")).read()
-check("26 the fence denies the resident agent every vault verb (share included) AND the side doors to the same listener — pipeos cluster*, python3 on the web dir; the vault verbs share/unshare go through this Machine's own listener",
-      '"Bash(pipeos vault*)"' in tmpl and '"Bash(pipeos cluster*)"' in tmpl and '"Bash(python3 /usr/local/share/pipeos/web/*)"' in tmpl
-      and 'cluster.call("local", "POST", "/api/secrets/" + verb' in vsrc, "")
+lbul = open(os.path.join(REPO, "overlay/etc/apk/protected_paths.d/lbu.list")).read()
+check("26 the fence denies the resident agent every vault verb (share included) and the side doors to the same listener (pipeos cluster*, python3 on the web dir), and allows exactly `pipeos secrets request`; the share/unshare/request verbs go through this Machine's own listener; the requester's records ride the apkovl",
+      '"Bash(pipeos vault*)"' in tmpl and '"Bash(pipeos cluster*)"' in tmpl and '"Bash(python3 /usr/local/share/pipeos/web/*)"' in tmpl and '"Bash(pipeos secrets request *)"' in tmpl
+      and 'cluster.call("local", "POST", "/api/secrets/" + verb' in vsrc and 'cluster.call("local", "POST", "/api/secrets/request"' in vsrc and "+etc/pipeos/vault-requests.json" in lbul, "")
 
 H.stop()
 st_p21, pg21, r21 = page_rows(G)
@@ -615,6 +672,24 @@ check("17 the wizard's join: the wrong member password is refused (rc 1, nothing
       and rc_j == 0 and "joined via" in out_j and sorted(G.doc()["members"]) == ["1111", "2222", "3333"] == sorted(J.doc()["members"]) == sorted(H.doc()["members"])
       and len(set(hashes.values())) == 1 and tok_gone,
       repr((rc_jw, out_jw[-160:], j_before, rc_j, out_j[-200:], hashes, tok_gone)))
+
+# ── 27. a member the request did not name cannot answer it or close it as done (#301) ──
+cj = login(J, "ninepassword"); ch = login(H, "sevenpassword")           # H was re-made after row 21: a new box, a new vault, a new session
+sess(J, cj, "POST", "/api/secrets/init", {}); sess(J, cj, "POST", "/api/secrets/phrase-ack", {})
+sess(H, ch, "POST", "/api/secrets/init", {}); sess(H, ch, "POST", "/api/secrets/phrase-ack", {})
+sess(G, cg, "POST", "/api/secrets/set", {"name": "jobs.j2", "value": "tok-j2"})
+rc_rq6, out_rq6 = H.cli("call", "local", "POST", "/api/secrets/request", json.dumps({"name": "jobs.j2"}))
+req6 = json.loads(out_rq6.split("\n", 1)[1]).get("request", {}).get("id") if rc_rq6 == 0 else None
+st_jr, out_jr = https(H, "POST", "/api/secrets/receive", json.dumps({"id": req6, "name": "jobs.j2", "value": "forged"}).encode(), cert_of=J)   # J saw the offer; it is not a holder
+st_jc, out_jc = https(H, "POST", "/api/secrets/requests/close", json.dumps({"id": req6, "state": "done"}).encode(), cert_of=J)
+st_ja, out_ja = sess(J, cj, "POST", "/api/secrets/requests/approve", {"id": req6})                                                              # J's owner: does not hold it
+still_open = any(q["id"] == req6 for q in sess(H, ch, "GET", "/api/status")[1].get("share_requests", []))
+st_ga, out_ga = sess(G, cg, "POST", "/api/secrets/requests/approve", {"id": req6})
+st_rv6, out_rv6 = sess(H, ch, "POST", "/api/secrets/reveal", {"name": "jobs.j2", "password": "sevenpassword"})
+check("27 a member the request did not name can neither answer it with its own value nor close it as done (403 both; the request stays open); its owner's dashboard cannot approve what it does not hold; the holder's owner can, and the copy is the holder's",
+      rc_rq6 == 0 and req6 and st_jr == 403 and "not a holder" in out_jr.get("error", "") and st_jc == 403 and st_ja == 409 and still_open
+      and st_ga == 200 and st_rv6 == 200 and out_rv6.get("value") == "tok-j2",
+      repr((rc_rq6, out_rq6[-120:], st_jr, out_jr, st_jc, out_jc, st_ja, out_ja, still_open, st_ga, out_ga, st_rv6, out_rv6)))
 
 K = Box("4444", "ten-box")            # unclaimed: no admin conf, no users
 G.see(H, J, K)

@@ -13,6 +13,7 @@
 # the sealed secret store and the service that opens it at boot (#244)
 +etc/init.d/pipeos-vault
 +etc/pipeos/vault.sealed
++etc/pipeos/vault-requests.json
 # wake-on-lan is armed at every boot (#241): tmpfs forgets an ethtool setting
 +etc/init.d/pipeos-wol
 # the hardware watchdog's init script is OURS over busybox-openrc's (#247): a

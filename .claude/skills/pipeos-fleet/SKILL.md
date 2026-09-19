@@ -81,6 +81,7 @@ pipeos usage cap --agent NAME 5 | none          # that agent's own monthly cap (
 pipeos schedule set NAME --cap 5                # the same cap, from the schedule side
 pipeos card set KEY=VALUE ...                   # any card field; regenerate + save
 pipeos secrets phrase [--ack]                   # the vault's pending recovery phrase (tmpfs); --ack forgets it
+pipeos secrets request NAME [WHY]               # ask the cluster for a secret this box lacks (the agent may run this); approve once, on a Machine that HOLDS it → Secrets (#301)
 printf '%s' PW | pipeos assistant password      # -> vault assistant_pass, pipeos-assistant restarted, saved
 pipeos watchdog kernel|off|status               # the hardware watchdog (card WATCHDOG, default kernel, 60 s): regenerated, saved, restarted now
 pipeos selfupdate image on|off|status           # automatic image updates (default on): hourly check, apply in place, reboot — held while a job/terminal is live
