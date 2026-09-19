@@ -310,8 +310,8 @@ print_swap() {   # DEV P2
 # DEPLOY_PATHS is pipeos-deploy-overlay's list, verbatim (the probe cmp's
 # them); NEVER likewise. The one exception inside NEVER territory is the
 # image's own .overlay-stamp — it describes the overlay this merge installs.
-DEPLOY_PATHS="usr/local/bin
-usr/local/share/pipeos
+DEPLOY_PATHS="usr/local/share/pipeos
+usr/local/bin
 etc/periodic
 etc/local.d
 etc/init.d

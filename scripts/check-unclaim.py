@@ -90,7 +90,7 @@ check("5 sessions and materialised secrets go; then ONE save in unclaim mode wit
       and mark("save.log").strip() == "UNCLAIM=1 provisioned=no" and mark("reboot.log").strip() == "reboot", repr((mark("save.log"), mark("reboot.log"))))
 save = open(SAVE).read()
 check("6 pipeos-save's unclaim mode skips the provisioned guard, never short-circuits on identical content, writes the known-good too, and removes the rotations and the hostname-named apkovl",
-      '[ -f /etc/pipeos/provisioned ] || [ -n "$UNCLAIM" ] || exit 0' in save and 'if [ -z "$UNCLAIM" ] && [ -f "$OVL" ]' in save
+      '[ -f "${PIPEOS_PROVISIONED:-/etc/pipeos/provisioned}" ] || [ -n "$UNCLAIM" ] || exit 0' in save and 'if [ -z "$UNCLAIM" ] && [ -f "$OVL" ]' in save
       and 'mv "$KNOWN_GOOD.new" "$KNOWN_GOOD"' in save and 'rm -f "$MEDIA"/pipeos.[0-9]*.tar.gz' in save
       and save.index('rm -f "$MEDIA/$(hostname).apkovl.tar.gz"') < save.index('if [ -n "$UNCLAIM" ]; then\n    # nobody')
       and not re.search(r"^\s*lbu commit", open(PIPEOS).read(), re.M))
