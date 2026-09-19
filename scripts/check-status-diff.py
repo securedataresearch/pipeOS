@@ -42,6 +42,8 @@ with open(os.path.join(BIN, "lbu"), "w") as f:
             "f=\"$LBU_BACKUPDIR/$(hostname).apkovl.tar.gz\"\n"
             "[ -L \"$f\" ] || { echo \"stub: no hostname-named link in $LBU_BACKUPDIR\" >&2; exit 9; }\n"
             "[ \"$(readlink -f \"$f\")\" = \"$(readlink -f %s)\" ] || { echo 'stub: the link does not point at the canonical apkovl' >&2; exit 9; }\n"
+            "mount \"$LBU_BACKUPDIR\" || { echo 'stub: mount of the link dir failed (the real lbu mounts it: lbu.conf sets LBU_MEDIA)' >&2; exit 9; }\n"
+            "umount \"$LBU_BACKUPDIR\" || { echo 'stub: umount of the link dir failed (the real lbu unmounts it on exit)' >&2; exit 9; }\n"
             "[ -f %s ] && { cat %s >&2; }\n"
             "case \"$1\" in status) cat %s 2>/dev/null; exit 0 ;; diff) echo \"--- content diff ---\"; [ -s %s ] && { cat %s; exit 1; }; exit 0 ;; *) exit 9 ;; esac\n"
             % (CALLS, OVL, STDERR, STDERR, ANSWER, ANSWER, ANSWER))
@@ -62,7 +64,7 @@ def calls():
 
 
 rc0, out0 = run("diff")
-check("1 `pipeos diff` runs lbu status with LBU_BACKUPDIR set to a directory holding <hostname>.apkovl.tar.gz -> the canonical apkovl (so lbu compares against OUR file and mounts nothing); an empty answer is 'no uncommitted changes'",
+check("1 `pipeos diff` runs lbu status with LBU_BACKUPDIR set to a directory holding <hostname>.apkovl.tar.gz -> the canonical apkovl, with mount AND umount shimmed for that dir (the real lbu does both; the umount's failure was zero's 'cannot tell'); an empty answer is 'no uncommitted changes'",
       rc0 == 0 and "no uncommitted changes" in out0 and len(calls()) == 1 and calls()[0].startswith("status BACKUPDIR=/") and "-v" not in calls()[0],
       repr((rc0, out0, calls())))
 open(ANSWER, "w").write("A etc/pipeos/schedule.json\nU etc/pipeos/card.conf\nD etc/motd\n")
