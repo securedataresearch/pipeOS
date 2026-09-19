@@ -487,7 +487,11 @@ fi
 card_outputs_step() {
     pbc="$ROOT/usr/local/bin/pipebox-card"
     [ -f "$pbc" ] || { say "card outputs: no pipebox-card on this box — left alone (run 'pipebox-card generate' once one is installed)"; return 0; }
-    [ -n "$NICK" ] || { say "card outputs: unprovisioned box — left alone"; return 0; }
+    # provisioned = claimed through the wizard (the marker) or a fleet card
+    # with a NICK. A GENERIC box claimed on the LAN has an empty NICK and was
+    # left alone here — and sat CRITICAL after every template deploy until a
+    # hand generate (zero, twice on 2026-09-19; pipeOS#313).
+    [ -n "$NICK" ] || [ -f "${ROOT%/}/etc/pipeos/provisioned" ] || { say "card outputs: unprovisioned box — left alone"; return 0; }
     sh "$pbc" verify --card "$CARD" --root "${ROOT:-/}" \
         --templates "$ROOT/usr/local/share/pipeos/card" >/dev/null 2>&1
     case $? in
