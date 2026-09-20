@@ -26,10 +26,25 @@ BREAKS = [
     ("D  the world union keeps only the box's world",
      '''        cat "$_t/a/etc/apk/world" "$_t/b/etc/apk/world" 2>/dev/null | grep -v '^$' | sort -u \\''',
      '''        cat "$_t/a/etc/apk/world" 2>/dev/null | grep -v '^$' | sort -u \\'''),
-    ("E  the merge overwrites the box's NEVER paths with the image's",
-     '''    # NEVER paths stay the box's — except the stamp, which is the image's.''',
-     '''    cp -a "$_t/b/etc/pipeos/." "$_t/a/etc/pipeos/" 2>/dev/null || true
-    cp "$_t/b/etc/pipeos/card.conf" "$_t/a/etc/pipeos/card.conf" 2>/dev/null || true'''),
+    # E used to replace a COMMENT line with a copy of the image's etc/pipeos
+    # over the box's. That broke something real (card.conf), so it passed —
+    # but etc/pipeos survives the sweep incidentally, no DEPLOY_PATHS entry
+    # covers it, and the control therefore never touched the restore that the
+    # one NEVER path inside a swept directory depends on. There was no such
+    # restore to touch: #341 shipped as a comment promising it. Now E deletes
+    # the restore itself.
+    ("E  the merge does not carry the box's NEVER paths across the sweep",
+     '''    for _n in $NEVER; do
+        [ -e "$_t/keep/$_n" ] || continue''',
+     '''    for _n in $NEVER; do
+        continue'''),
+    # NB the obvious mutation — replacing the `verify` call with `false` —
+    # is not a control: a non-zero exit is the DIVERGED arm, so it forces the
+    # regeneration rather than removing it, and every row still passes. The
+    # step has to be skipped whole.
+    ("E2 the merged tree's card outputs are never regenerated (old outputs, new templates)",
+     '''    if [ -f "$_pbc" ] && [ -r "$_pbcard" ] && [ -d "$_pbtmpl" ]; then''',
+     '''    if false; then'''),
     ("F  the dd writes the whole file, bounds gone",
      'skip=$((IMG_START * 512)) count=$((IMG_SIZE * 512)) \\', '\\'),
     ("G  the NO_MOUNT fence is gone",

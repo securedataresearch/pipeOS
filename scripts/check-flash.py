@@ -132,12 +132,19 @@ ident = apkovl(d, "ident", {
     "root/.pipe/identity.dat": "MYKEY",
     "usr/local/bin/pipeos-thing": "OLD",
     "etc/pipeos/.overlay-stamp": "commit old\n",
+    # a NEVER path INSIDE a DEPLOY_PATHS directory (#341), and a sibling in
+    # the same directory that is not NEVER — the pair is what tells "NEVER is
+    # honoured" apart from "etc/profile.d fell out of DEPLOY_PATHS"
+    "etc/profile.d/10-pipebox-env.sh": "GENERATED-FROM-THIS-BOX-CARD",
+    "etc/profile.d/zz-other.sh": "OLD-SIBLING",
 }, ["a", "b"])
 generic = apkovl(d, "generic", {
     "etc/pipeos/card.conf": "NICK=\n",
     "usr/local/bin/pipeos-thing": "NEW",
     "usr/local/bin/pipeos-newtool": "NEWTOOL",
     "etc/pipeos/.overlay-stamp": "commit image\n",
+    "etc/profile.d/10-pipebox-env.sh": "GENERATED-ON-THE-BUILD-WORKSTATION",
+    "etc/profile.d/zz-other.sh": "NEW-SIBLING",
 }, ["a", "c", "optional-extra"])
 merged = os.path.join(d, "merged.tar.gz")
 rc, out = run_fns('merge_apkovl "%s" "%s" "%s"' % (ident, generic, merged))
@@ -156,8 +163,119 @@ check("5 the merge takes the image's overlay, keeps the box's identity, unions t
       and g("root/.pipe/identity.dat") == "MYKEY"
       and g("etc/pipeos/card.conf") == "NICK=probe\n"
       and g("etc/pipeos/.overlay-stamp") == "commit image\n"
+      and g("etc/profile.d/zz-other.sh") == "NEW-SIBLING"
       and sorted(g("etc/apk/world").split()) == ["a", "b", "c", "optional-extra"],
       repr((rc, out, sorted(got)))[:400])
+
+# ── 5b. a NEVER path inside a swept directory (#341) ─────────────────────
+# etc/profile.d is a DEPLOY_PATHS *directory*, so the sweep removes it whole
+# and the box's generated 10-pipebox-env.sh went with it — replaced by the
+# build workstation's copy of a file generated from the box's own card. The
+# box then reports "hand-edited since generation" and selfcheck goes CRITICAL
+# on every box, on the release it takes. NEVER was declared and read by
+# nothing. Row 5 could not see this: both paths it checks (etc/pipeos,
+# root/.pipe) survive incidentally, because no DEPLOY_PATHS entry covers them.
+check("5b a NEVER path inside a swept DEPLOY_PATHS directory keeps the box's copy, while its non-NEVER sibling still comes from the image",
+      g("etc/profile.d/10-pipebox-env.sh") == "GENERATED-FROM-THIS-BOX-CARD"
+      and g("etc/profile.d/zz-other.sh") == "NEW-SIBLING",
+      "env=%r sibling=%r" % (g("etc/profile.d/10-pipebox-env.sh"), g("etc/profile.d/zz-other.sh")))
+
+# ── 5c-5e. the card outputs, regenerated in the tree the box will boot ───
+# The other half of #341. `deploy-overlay` regenerates an output whose
+# template changed (#281), but it is the operator's tool — a box that only
+# ever takes releases, which is every customer box, had nothing that did.
+# The merge is the one place the box's own card meets the image's templates
+# and generator, so it is where this belongs.
+PBC = os.path.join(REPO, "overlay/usr/local/bin/pipebox-card")
+TMPL_DIR = os.path.join(REPO, "overlay/usr/local/share/pipeos/card")
+BOXCARD = os.path.join(REPO, "docs/cards/box0.card")
+
+
+def generated_tree(d, card):
+    """What a box looks like after `pipebox-card generate`: the outputs and
+    the stamp, from the REAL generator and the REAL templates."""
+    root = os.path.join(d, "gen")
+    os.makedirs(root, exist_ok=True)
+    r = subprocess.run(["sh", PBC, "generate", "--card", card, "--root", root,
+                        "--templates", TMPL_DIR], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    files = {}
+    for base, _, names in os.walk(root):
+        for n in names:
+            full = os.path.join(base, n)
+            files[os.path.relpath(full, root)] = open(full).read()
+    files["etc/pipeos/card.conf"] = open(card).read()   # the box's card, verbatim
+    return files
+
+
+def image_files(templates_edit=None, generator=None):
+    """The image side: the release's generator and templates."""
+    files = {"usr/local/bin/pipebox-card": generator or open(PBC).read(),
+             "etc/profile.d/10-pipebox-env.sh": "GENERATED-ON-THE-BUILD-WORKSTATION"}
+    for n in os.listdir(TMPL_DIR):
+        body = open(os.path.join(TMPL_DIR, n)).read()
+        if templates_edit and n == templates_edit[0]:
+            body += templates_edit[1]
+        files["usr/local/share/pipeos/card/" + n] = body
+    return files
+
+
+def merge_into_tree(d, idfiles, imgfiles, name="cardmerge"):
+    i = apkovl(d, name + "-id", idfiles, ["a"])
+    gimg = apkovl(d, name + "-img", imgfiles, ["a"])
+    outp = os.path.join(d, name + ".tar.gz")
+    rc, out = run_fns('merge_apkovl "%s" "%s" "%s"' % (i, gimg, outp))
+    tree = os.path.join(d, name + ".tree")
+    os.makedirs(tree, exist_ok=True)
+    if rc == 0:
+        with tarfile.open(outp) as t:
+            t.extractall(tree)
+    return rc, out, tree
+
+
+def card_verify(tree):
+    return subprocess.run(["sh", PBC, "verify",
+                           "--card", os.path.join(tree, "etc/pipeos/card.conf"),
+                           "--root", tree,
+                           "--templates", os.path.join(tree, "usr/local/share/pipeos/card")],
+                          capture_output=True, text=True).returncode
+
+
+d = newdir()
+box = generated_tree(d, BOXCARD)
+# the release changes a template: old outputs beside new templates is the same
+# CRITICAL as the clobber, reached from the other direction
+rc, out, tree = merge_into_tree(d, box, image_files(("motd.tmpl", "\n# a line this release adds\n")))
+motd = ""
+try:
+    motd = open(os.path.join(tree, "etc/motd")).read()
+except OSError:
+    pass
+check("5c a release that changes a card template regenerates the outputs in the merged tree from THIS box's card — the tree the box boots verifies clean",
+      rc == 0 and card_verify(tree) == 0 and "a line this release adds" in motd,
+      "rc=%s verify=%s motd=%r out=%r" % (rc, card_verify(tree) if rc == 0 else "-", motd[-80:], out[-200:]))
+
+# a box that is not card-provisioned, and one that has never generated: the
+# generator's exit 2 means "cannot tell", which #313 says to leave alone
+d = newdir()
+rc_nc, out_nc, tree_nc = merge_into_tree(d, {"root/.pipe/identity.dat": "K"}, image_files(), "nocard")
+nostamp = dict(box)
+del nostamp["etc/pipeos/.card-stamp"]
+rc_ns, out_ns, tree_ns = merge_into_tree(d, nostamp, image_files(), "nostamp")
+check("5d a box with no card, and one that has never generated, are left alone — the image's copies stand and the merge still succeeds",
+      rc_nc == 0 and rc_ns == 0
+      and open(os.path.join(tree_nc, "etc/profile.d/10-pipebox-env.sh")).read() == "GENERATED-ON-THE-BUILD-WORKSTATION",
+      "nocard=%s nostamp=%s %r" % (rc_nc, rc_ns, (out_nc + out_ns)[-200:]))
+
+# and if the generator itself fails, the apply must not die with it: the p1 is
+# already written by then, and a bricked update is worse than a divergence
+d = newdir()
+rc_f, out_f, tree_f = merge_into_tree(d, box, image_files(generator="#!/bin/sh\nexit 1\n"), "genfail")
+check("5e a generator that fails does not fail the merge: it says so, the box's own outputs stand, and the update completes",
+      rc_f == 0 and os.path.exists(os.path.join(tree_f, "etc/motd"))
+      and open(os.path.join(tree_f, "etc/profile.d/10-pipebox-env.sh")).read() == box["etc/profile.d/10-pipebox-env.sh"]
+      and "generate failed" in out_f,
+      "rc=%s out=%r" % (rc_f, out_f[-200:]))
 
 # ── 6. a full apply against a fake device: exact bounds, nothing past ────
 d = newdir()
