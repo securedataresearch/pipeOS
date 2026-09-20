@@ -26,17 +26,21 @@
 # be looked up.
 #
 # Seams (the probe, never production): PIPEOS_BLINK_ETHTOOL, _CLUSTER,
-# _ROSTER, _HEALTH, _CARD, _SYS, _IFACE, _SELF, _CYCLE, _PEER_FRESH, _ONCE.
+# _PEERS, _PEERS_MAX_AGE, _HEALTH, _CARD, _SYS, _IFACE, _SELF, _CYCLE, _ONCE.
 set -u
 
 ETHTOOL=${PIPEOS_BLINK_ETHTOOL:-ethtool}
 CLUSTER=${PIPEOS_BLINK_CLUSTER:-/etc/pipeos/cluster.json}
-ROSTER=${PIPEOS_BLINK_ROSTER:-/work/pipeos/mdns/machines.json}
+# The LIVE peer cache, on tmpfs. Not /work's roster: that one holds every
+# Machine ever seen on the LAN and is never pruned, and `pipeos work park`
+# remounts /work read-only, after which mdnsd's writes fail silently and the
+# roster freezes — a parked-but-healthy cluster would all go steady (#334 review).
+PEERS=${PIPEOS_BLINK_PEERS:-/run/pipeos/mdns/peers.json}
+PEERS_MAX_AGE=${PIPEOS_BLINK_PEERS_MAX_AGE:-120}
 HEALTH=${PIPEOS_BLINK_HEALTH:-/run/pipeos/health.last}
 CARD=${PIPEOS_BLINK_CARD:-/etc/pipeos/card.conf}
 SYS=${PIPEOS_BLINK_SYS:-/sys/class/net}
 CYCLE=${PIPEOS_BLINK_CYCLE:-12}
-PEER_FRESH=${PIPEOS_BLINK_PEER_FRESH:-300}
 MAX_N=9
 
 # The same rule lanid.mac4() uses: pipeos-identity stamps the chassis id into
@@ -63,29 +67,43 @@ iface() {
 # This Machine's place in the member list, sorted by id: 1-based, every member
 # computes the same answer. 0 when this box is in no cluster, or is somehow
 # not in its own list, or the list is longer than the code can count out.
+# 0 = this box is in no cluster, or is not in its own list, or jq could not
+# answer (a half-written cluster.json, no jq): every one of those means "do
+# not blink a number", and an empty string here would have the caller compare
+# an empty string to 0 and print "member  of the cluster" forever.
 blink_id() {
     [ -r "$CLUSTER" ] || { echo 0; return; }
     _me=$(self_id); [ -n "$_me" ] || { echo 0; return; }
-    jq -r --arg me "$_me" '(.members // {}) | keys | to_entries
-        | map(select(.value == $me)) | (.[0].key // -1) + 1' "$CLUSTER" 2>/dev/null \
-        | awk -v m="$MAX_N" '{ print ($1 >= 1 && $1 <= m) ? $1 : 0 }'
+    _n=$(jq -r --arg me "$_me" '(.members // {}) | keys | to_entries
+        | map(select(.value == $me)) | (.[0].key // -1) + 1' "$CLUSTER" 2>/dev/null | head -1)
+    case "${_n:-}" in ''|*[!0-9]*) echo 0 ;; *) echo "$_n" ;; esac
 }
 
 # Has any OTHER member been heard from lately? mdnsd keeps the roster fresh as
 # peers announce themselves, so this is a live answer, not a cached verdict.
 # A cluster of one has no peers to miss and passes on its own.
+# Has another MEMBER of this cluster been heard from lately? Members only:
+# an unclaimed box or one from somebody else's cluster sitting on the same
+# wire says nothing about whether this Machine's own cluster still has it —
+# and counting those was the bug that let a cut-off Machine keep blinking
+# (#334 review). mdnsd rewrites the cache as peers announce, so a cache older
+# than PEERS_MAX_AGE means mdnsd itself is not running and nothing is known.
 peers_seen() {
     [ -r "$CLUSTER" ] || return 1
     _me=$(self_id)
     _members=$(jq -r '(.members // {}) | length' "$CLUSTER" 2>/dev/null)
-    [ "${_members:-0}" -le 1 ] && return 0
-    [ -r "$ROSTER" ] || return 1
+    case "${_members:-}" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$_members" -le 1 ] && return 0          # a cluster of one has no peer to miss
+    [ -r "$PEERS" ] || return 1
     _now=$(date -u +%s)
-    _fresh=$(jq -r --arg me "$_me" --argjson now "$_now" --argjson fresh "$PEER_FRESH" \
-        '[ (.machines // {}) | to_entries[] | select(.key != $me)
-           | select(((.value.last_seen // 0) | tonumber) > ($now - $fresh)) ] | length' \
-        "$ROSTER" 2>/dev/null)
-    [ "${_fresh:-0}" -ge 1 ]
+    _fresh=$(jq -r --slurpfile cl "$CLUSTER" --arg me "$_me" --argjson now "$_now" --argjson age "$PEERS_MAX_AGE" '
+        if ((.written // 0) | tonumber) < ($now - $age) then 0
+        else (($cl[0].members // {}) as $m
+              | [ (.peers // {}) | keys[] | . as $k
+                  | select($k != $me) | select($m | has($k)) ] | length)
+        end' "$PEERS" 2>/dev/null | head -1)
+    case "${_fresh:-}" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$_fresh" -ge 1 ]
 }
 
 healthy() {
@@ -99,8 +117,9 @@ why() {
     case "$(card_blink)" in off) echo "off (card BLINK=off)"; return 1 ;; esac
     _id=$(blink_id)
     [ "$_id" = 0 ] && { echo "steady: this Machine is in no cluster (pipeos cluster status)"; return 1; }
+    [ "$_id" -gt "$MAX_N" ] && { echo "steady: this Machine is member $_id, and a count past $MAX_N is not readable by eye — the number is in pipeos cluster status"; return 1; }
     healthy   || { echo "steady: this Machine's own health is CRITICAL — it is not playing its part (pipeos-selfcheck)"; return 1; }
-    peers_seen || { echo "steady: no other member has been heard from in ${PEER_FRESH}s — this Machine is cut off, or it is the one that is out"; return 1; }
+    peers_seen || { echo "steady: no other member of this cluster has been heard from — this Machine is cut off, or it is the one that is out (pipeos cluster page)"; return 1; }
     _if=$(iface); [ -n "$_if" ] || { echo "steady: no network port is up, so there is no LED to blink"; return 1; }
     echo "blinking $_id on $_if (member $_id of the cluster, by the member list)"
     return 0
@@ -128,10 +147,17 @@ case "${1:-run}" in
         echo "port:    $(iface || echo 'none up')"
         exit $rc ;;
     test)
-        _tn=${2:-1} _ti=$(iface)
+        _tn=${2:-1}
+        case "$_tn" in ''|*[!0-9]*) echo "usage: pipeos blink test N   (how many flashes, 1-$MAX_N)" >&2; exit 2 ;; esac
+        { [ "$_tn" -ge 1 ] && [ "$_tn" -le "$MAX_N" ]; } || { echo "test N is 1-$MAX_N flashes" >&2; exit 2; }
+        _ti=$(iface)
         [ -n "$_ti" ] || { echo "no network port is up" >&2; exit 1; }
         echo "blinking $_tn on $_ti once — watch the port LED at the back"
-        one_cycle "$_tn" "$_ti" ;;
+        # the bursts only: a hand-run test must not then sleep out the rest of
+        # a cycle it is not in (#334 review)
+        CYCLE=$((_tn * 2)) one_cycle "$_tn" "$_ti"
+        # and stop: only `run` falls through into the loop below
+        exit $? ;;
     run) ;;
     *) echo "usage: pipeos-blink [run|status|test N]" >&2; exit 2 ;;
 esac
@@ -144,7 +170,15 @@ while :; do
         last=$msg
     fi
     if [ "$_ok" = 0 ]; then
-        one_cycle "$(blink_id)" "$(iface)" || sleep "$CYCLE"
+        _rif=$(iface)
+        if ! one_cycle "$(blink_id)" "$_rif"; then
+            # status must never claim a blink the port refused: say it once
+            if [ "$last" != "identify-failed:$_rif" ]; then
+                logger -t pipeos-blink "$_rif took the link but refused ethtool identify — this Machine cannot blink its number; pipeos blink test 1 shows the error"
+                last="identify-failed:$_rif"
+            fi
+            sleep "$CYCLE"
+        fi
     else
         sleep "$CYCLE"
     fi

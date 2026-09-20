@@ -627,7 +627,12 @@ cmd_blink() {
             if rc-service pipeos-blink restart >/dev/null 2>&1 9>&-; then echo "blink: $1 (service restarted)"
             else echo "blink: $1 on the card, but the service did not restart — rc-service pipeos-blink status" >&2; exit 1; fi ;;
         status|test)
-            exec /usr/local/bin/pipeos-blink "$@" ;;
+            # the DEFAULTED word, not "$@": a bare `pipeos blink` has no
+            # arguments at all, and pipeos-blink's own default is `run` — the
+            # operator would get a second daemon in their terminal, blinking
+            # against the service (#334 review)
+            _v=${1:-status}; [ $# -gt 0 ] && shift
+            exec /usr/local/bin/pipeos-blink "$_v" "$@" ;;
         *) echo "usage: pipeos blink on|off|status|test [N]" >&2; exit 2 ;;
     esac
 }
