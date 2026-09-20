@@ -16,6 +16,7 @@ check-cluster-controls.py put the bugs back.
 import json
 import os
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
@@ -119,7 +120,33 @@ class Box:
         p = subprocess.run([sys.executable, CLUSTER] + list(args), capture_output=True, text=True, env=env or self.env, input=stdin)
         if args and args[0] in self.MEMBERSHIP:
             time.sleep(0.45)     # the listeners follow the trust store on disk (bundle_watcher, 0.05 s here)
+            self.wait_https()    # ... and this one restarts to pick it up (#345)
         return p.returncode, p.stdout + p.stderr
+
+    def wait_https(self, timeout=8.0):
+        """Wait out this box's own listener restart.
+
+        cluster.ON_CHANGE restarts the HTTPS listener whenever the member
+        list changes, so a call made right after `add`/`remove`/`sync` can
+        land in the window where nothing is listening and be refused at the
+        SOCKET (`handshake: [Errno 111] Connection refused`) instead of
+        answered at the application level. The sleep above allows for the
+        trust store reaching the other boxes; it is not a promise that this
+        one is back, and on a loaded machine 0.45 s is not enough — row 8
+        failed that way twice in full ci-local runs and never standalone
+        (pipeOS#345).
+
+        This waits for the precondition rather than softening what the rows
+        assert: a refusal must still be the application's, for the reason
+        the row names."""
+        end = time.time() + timeout
+        while time.time() < end:
+            try:
+                with socket.create_connection(("127.0.0.1", self.tls_port), timeout=0.5):
+                    return True
+            except OSError:
+                time.sleep(0.05)
+        return False
 
     def py(self, code, env=None):
         p = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, %r); import cluster, json\n%s" % (WEB, code)],
