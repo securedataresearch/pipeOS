@@ -155,59 +155,24 @@ with open(pA, "w") as f:
 n5 = L().ingest()
 check("9 a transcript rewritten with a new inode (same ids) adds no duplicates", n5 == 0, "n5=%d" % n5)
 
-# ── 9b-9c. the volume's two names (#330) ───────────────────────────────
-# The flip moves the bulk volume from /data to /data. Every cursor key
-# written before it is an absolute /data/... path; every transcript written
-# before it records cwd "/data/...". Neither may re-ingest a single row:
-# a cursor the ingest cannot match means off=0 for every transcript, the
-# whole history appends again, and month-to-date spend roughly doubles on
-# every box at once — enough to trip the caps and pause them.
+# ── 9b. the cursor key is not an absolute path (#330) ──────────────────
+# An absolute key ties the cursor to where the volume is mounted; if the keys
+# ever stop matching, every transcript restarts at offset 0 with an empty id
+# ring and the whole history re-appends — month-to-date spend doubles, which
+# trips the box, agent and cluster caps.
 cur = os.path.join(LDIR, "cursor.json")
 before = json.load(open(cur))
 legacy = {}
 for k, v in before.items():
-    legacy["/data/claude/projects/" + k.lstrip("/")] = v      # the pre-#330 shape
+    legacy["/some/old/mount/" + k.lstrip("/")] = v
 json.dump(legacy, open(cur, "w"))
 rows_before = len(list(L().rows(["2026-09"])))
 n6 = L().ingest()
-check("9b a cursor keyed by absolute /data paths (written before the volume moved) is read as this volume's — no re-ingest, no doubled spend",
-      n6 == 0 and len(list(L().rows(["2026-09"]))) == rows_before,
-      "n6=%d rows=%d/%d" % (n6, len(list(L().rows(["2026-09"]))), rows_before))
-# and both names collapse to one key rather than accumulating a second set
 after = json.load(open(cur))
-check("9c the rewritten cursor keys are relative to the transcripts dir, one per transcript — where the volume is mounted stops mattering",
-      len(after) == len(before) and all(not k.startswith("/") for k in after),
-      "keys=%r" % sorted(after))
-maps = ({}, {}, "")
-check("9d a transcript that records the OLD name attributes the same as one recording the new: /work/pipebox and <vol>/pipebox are both the watcher",
-      L().actor_for(None, "/work/pipebox", maps)["kind"] == "watch"
-      and L().actor_for(None, "/work/pipebox/webchat", maps)["kind"] == "assistant"
-      and L().actor_for(None, TR.rstrip("/").rsplit("/", 2)[0] + "/pipebox", maps)["kind"] == "watch",
-      "old=%r new=%r" % (L().actor_for(None, "/work/pipebox", maps), L().actor_for(None, TR.rstrip("/").rsplit("/", 2)[0] + "/pipebox", maps)))
-
-# ── 9e. the flip's OTHER half, which this key has to survive ────────────
-# pipeos-data-migrate renames every project directory on the boot the volume
-# moves (-work-pipebox -> -data-pipebox), because claude derives that name
-# from the cwd. A cursor keyed on the directory verbatim would miss on
-# exactly the boot it was written to survive, and re-ingest everything — the
-# doubled spend, arrived at by the fix's own two halves cancelling. The #342
-# review caught this and reproduced it; this row is that reproduction.
-#
-# On its OWN fixture: the rename must not be done to the shared transcripts
-# dir, which every row after this one still reads.
-_fd = tempfile.mkdtemp(prefix="ckledger-flip-")
-_ftr = os.path.join(_fd, "projects")
-os.makedirs(os.path.join(_ftr, "-work-pipebox"))
-open(os.path.join(_ftr, "-work-pipebox", "s.jsonl"), "w").write(
-    line(SID_JOB, "/work/pipebox", "msg_flip", "claude-opus-5", "2026-09-10T02:00:00Z"))
-_FL = lambda: lg.Ledger(dir=os.path.join(_fd, "ledger"), transcripts=_ftr, rates=RATES, conf=CONF,
-                        runs_log=RUNS, sessions_dir=SESS, webchat_sid=WSID, pipe_bin=PIPE)
-_n_first = _FL().ingest()
-os.rename(os.path.join(_ftr, "-work-pipebox"), os.path.join(_ftr, "-data-pipebox"))
-_n_after = _FL().ingest()
-check("9e the project directories renamed by the migration on the same boot add nothing: claude names them after the cwd, so the volume's move renames them too — and a key that did not survive THAT would double the month's spend on every box at once",
-      _n_first == 1 and _n_after == 0 and len(list(_FL().rows(["2026-09"]))) == 1,
-      "first=%s after=%s rows=%d" % (_n_first, _n_after, len(list(_FL().rows(["2026-09"])))))
+check("9b a cursor whose keys are absolute paths is read as this volume's — no re-ingest, no doubled spend — and the keys it leaves are relative to the transcripts dir, one per transcript",
+      n6 == 0 and len(list(L().rows(["2026-09"]))) == rows_before
+      and len(after) == len(before) and all(not k.startswith("/") for k in after),
+      "n6=%d rows=%d/%d keys=%r" % (n6, len(list(L().rows(["2026-09"]))), rows_before, sorted(after)))
 
 # ── 10. totals ─────────────────────────────────────────────────────────
 t = L().totals()

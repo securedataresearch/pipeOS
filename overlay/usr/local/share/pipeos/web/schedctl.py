@@ -123,10 +123,8 @@ def apply(job, flags, new):
     if "cwd" in flags:
         cwd = flags["cwd"].strip()
         if cwd:
-            # Compare resolved against RESOLVED: while /data is still the
-            # symlink (the window between a #330 deploy and its reboot),
-            # realpath("/data/x") is "/work/x" and a literal WORK prefix test
-            # refuses the very name the owner is told to use. (#342 review.)
+            # Resolved against resolved, so a symlink anywhere in the path
+            # cannot smuggle a working dir outside the volume.
             real = os.path.realpath(cwd)
             root = os.path.realpath(WORK)
             if not (real == root or real.startswith(root + "/")) or any(c in cwd for c in "\n\r\0'\""):

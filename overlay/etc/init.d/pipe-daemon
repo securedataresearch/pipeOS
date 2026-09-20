@@ -34,11 +34,7 @@ start_pre() {
 	# with slow device enumeration at boot — wait for it, but still refuse to
 	# run without it rather than silently logging into tmpfs
 	_i=0
-	# Either name: the volume is mounted at /data and /work is a symlink to
-	# it (#330), but a deploy installs this file while the volume is still
-	# on /work and the reboot that moves it comes later — so both are asked
-	# and the restart in between does not fail on the name.
-	while ! mountpoint -q /data && ! mountpoint -q /work; do
+	while ! mountpoint -q /data; do
 		_i=$((_i+1))
 		# 120s, not 30: a FIRST boot is still mkfs-ing PIPEWORK across the
 		# whole stick (54G took ~1min on the pilot box) when this service starts;

@@ -115,11 +115,7 @@ if mountpoint -q /data; then
     # and needs nothing installed; last matching line wins, the same rule as
     # 70-flash.sh's root_source(). "Cannot read the source" is now its own
     # answer instead of dressing up as a mismatch.
-    # Resolved: the volume answers to both /data and /data and /proc/mounts
-    # carries only the real one (#330). Asking by the wrong name reads as
-    # "no entry for it" and this row goes CRITICAL on a healthy box.
-    _mp=$(readlink -f /data 2>/dev/null || printf '%s' /data)
-    _have=$(awk -v w="$_mp" '$2 == w { src = $1 } END { print src }' /proc/mounts 2>/dev/null)
+    _have=$(awk '$2 == "/data" { src = $1 } END { print src }' /proc/mounts 2>/dev/null)
     if [ -z "$_want" ]; then
         crit "/data is mounted but LABEL=PIPEWORK does not resolve to any device"
     elif [ -z "$_have" ]; then
@@ -129,32 +125,15 @@ if mountpoint -q /data; then
     fi
 fi
 
-# ---- 1ba. /data is the bulk volume (#219 named it, #330 moved it). The
-# volume mounts at /data and /work is a symlink to it, laid at every boot by
-# /etc/local.d/workspace.sh, so everything written down under the old name
-# still resolves. Two states are healthy: after the flip (/data the mount,
-# /work the link) and before its reboot (/work still the mount, /data the
-# link) — a deploy installs the new workspace.sh while the volume is still
-# on /work and only the next boot moves it. Anything else means something
-# is writing to RAM and losing it at the next boot, so say which.
+# ---- 1ba. /data is the bulk volume, and nothing answers to the old name
+# (#219, #330). /work is gone: not a mount, not a symlink, not a directory.
+# One left behind is a place writes land in RAM and disappear at the next
+# boot, which is the whole reason the old name was not kept.
 # Silent success: the report has no per-check "ok" line.
-_vol=""
-if ! [ -L /data ] && mountpoint -q /data 2>/dev/null; then
-    _vol=/data; _link=/work
-elif ! [ -L /work ] && mountpoint -q /work 2>/dev/null; then
-    _vol=/work; _link=/data
-fi
-if [ -n "$_vol" ]; then
-    _link_to=$(readlink "$_link" 2>/dev/null)
-    if [ -L "$_link" ] && [ "$_link_to" = "$_vol" ]; then
-        [ "$_vol" = /work ] && noten "the volume is still mounted at /work — the next reboot moves it to /data, and /work becomes the link (#330); nothing to do"
-    elif [ -L "$_link" ]; then
-        crit "$_link is a symlink to ${_link_to:-nowhere}, not to the volume at $_vol — anything written under $_link misses the volume; rm $_link and run 'sh /etc/local.d/workspace.sh' to lay it again"
-    elif [ ! -e "$_link" ]; then
-        warnn "$_link does not exist — every path written down under that name (a job's working dir, a transcript, the docs) reaches nothing; 'sh /etc/local.d/workspace.sh' lays it, and so does every boot"
-    else
-        crit "$_link is a real directory, not a link to $_vol — anything written under it is in RAM and gone at the next boot; move what is in it into $_vol, remove it, then 'sh /etc/local.d/workspace.sh'"
-    fi
+if [ -L /work ]; then
+    warnn "/work is a leftover symlink to $(readlink /work 2>/dev/null) — the volume is /data; 'sh /etc/local.d/workspace.sh' removes it, and so does every boot"
+elif [ -d /work ]; then
+    crit "/work still exists as a real directory — anything written under it is in RAM and gone at the next boot; move what is in it into /data and remove it"
 fi
 
 # ---- 1c. chassis anchor (appliance plan, decision 2). Identity rides the
@@ -586,7 +565,7 @@ if mountpoint -q /data 2>/dev/null && [ -r /usr/local/share/pipeos/hot.list ]; t
             warnn "hot set not staged in RAM:$_hot_missing — the stick is taking every write (rc-service pipeos-hot restart)"
         fi
     fi
-    if awk -v w="$(readlink -f /data 2>/dev/null || printf '%s' /data)" '$2 == w { print $4 }' /proc/mounts | grep -qE '(^|,)ro(,|$)'; then
+    if awk '$2 == "/data" { print $4 }' /proc/mounts | grep -qE '(^|,)ro(,|$)'; then
         noten "/data is parked (read-only, pipeos work park) — the stick idles; a scheduled run unparks itself"
     fi
 fi

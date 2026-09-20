@@ -131,22 +131,17 @@ ROLE) are named where the design reuses them.
 
 ## 8. Data — `/data`, with a cluster-wide index
 
-- The bulk volume's name is **`/data`**; `/work` is reserved for something
-  else. It landed in two releases, because a live box cannot change where a
-  mounted volume is without a window where half its paths are wrong
-  (pipeOS#219, pipeOS#330). **First the name worked**: the volume still
-  mounted at `/work` with `/data` a symlink to it, so both paths reached the
-  same bytes and every box learned to answer to both. **Then the flip**: the
-  volume mounts at `/data`, `/work` is the symlink, and the tree's own text
-  says `/data`. On a live box the two arrive apart — a deploy installs the
-  new workspace script while the volume is still on `/work`, and the next
-  reboot moves it — so both directions stay legal and whichever name the
-  volume is already mounted on is the mount. What a symlink cannot fix is a
-  path someone wrote down: stored job working dirs, the ledger's ingest
-  cursor, claude's workdir trust and its session directories all key on the
-  physical path, and each is migrated once, after the flip. The filesystem
-  label stays `PIPEWORK` throughout: the owner never sees a label, and
-  relabelling sticks in the field could only lose a volume.
+- The bulk volume is **`/data`**, and nothing answers to the old name. It
+  was `/work` (pipeOS#219, pipeOS#330); there is no symlink, no second root,
+  nothing a path still resolves through. A compatibility name kept "for a
+  release or two" is a name kept for ever, and every reader then carries two
+  truths — which is exactly how the ledger's ingest cursor, a job's stored
+  working dir and claude's session directories each acquired one. A `/work`
+  left behind from before the move is removed at boot when it is a link or an
+  empty directory, and reported when it is not: writes under it land in RAM
+  and are gone at the next boot. The filesystem label stays `PIPEWORK`: a
+  label is not a path, the owner never sees it, and relabelling sticks in the
+  field could only lose a volume.
 - The **file index** of every member is visible to the cluster (the Files
   view grows a box selector); bytes stay where they are.
 - An agent on one box reaching another box's files may use **any of

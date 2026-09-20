@@ -20,8 +20,7 @@
 # which transcript was which job.
 #
 # Seams (the probe, never production): PIPEOS_SCHED_CONF, _STATE_DIR, _LOCK,
-# _LOGDIR, _PIPEBOX_CONF, _SETTINGS, _SECRETS, _WORK (the /data root),
-# _WORK_ALT (the volume's other name — /work on a box, a tmpdir in the probe).
+# _LOGDIR, _PIPEBOX_CONF, _SETTINGS, _SECRETS, _WORK (the /data root).
 set -u
 
 CONF=${PIPEOS_SCHED_CONF:-/etc/pipeos/schedule.json}
@@ -139,26 +138,6 @@ session=$(jf '.session' 'fresh')
 needs=$(jq -r '(.needs // []) | join(" ")' "$J" 2>/dev/null)   # the secrets this run must have (#319)
 rm -f "$J"
 [ -n "$prompt" ] || refuse "no prompt — nothing to run"
-# A job saved before the flip holds /work/...; WORKROOT is /data. The
-# migration rewrites those at the NEXT BOOT, and a deploy may precede its
-# reboot by days (#330) — so for that whole window every tick would refuse
-# "cwd ... is not under /data" and DM the owner about it. When the two names
-# are the same volume, take the stored one as the new one. (#342 review.)
-# _ALT is a seam (the probe, never production): on a box the pair is fixed.
-case "${PIPEOS_SCHED_WORK_ALT-unset}" in
-    unset) case "$WORKROOT" in
-               /data) _alt=/work ;;
-               /work) _alt=/data ;;
-               *)     _alt= ;;
-           esac ;;
-    *) _alt=$PIPEOS_SCHED_WORK_ALT ;;
-esac
-if [ -n "$_alt" ] && [ "$(readlink -f "$_alt" 2>/dev/null)" = "$(readlink -f "$WORKROOT" 2>/dev/null)" ]; then
-    case "$cwd" in
-        "$_alt") cwd=$WORKROOT ;;
-        "$_alt"/*) cwd=$WORKROOT${cwd#"$_alt"} ;;
-    esac
-fi
 case "$cwd" in "$WORKROOT"|"$WORKROOT"/*) ;; *) refuse "cwd $cwd is not under $WORKROOT" ;; esac
 mkdir -p "$cwd" 2>/dev/null || refuse "cannot create $cwd"
 case "$backend" in claude|hermes) ;; *) refuse "unknown assistant '$backend'" ;; esac

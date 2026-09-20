@@ -75,11 +75,8 @@ WEBCHAT_SID = os.environ.get("PIPEOS_LEDGER_WEBCHAT_SID", "/data/pipebox/webchat
 SCHEDULE = os.environ.get("PIPEOS_LEDGER_SCHEDULE", "/etc/pipeos/schedule.json")
 CLUSTER_LAST = os.environ.get("PIPEOS_LEDGER_CLUSTER_LAST", "/data/pipeos/cluster/last")   # what each other member last said (cluster.py)
 PIPE_BIN = os.environ.get("PIPEOS_LEDGER_PIPE", "pipe")
-# The bulk volume's names: where it is mounted now, and what it was called
-# before pipeOS#330. Transcripts written under the old name are still on disk
-# and still say /work — a cwd is a string in a file nobody rewrites — so both
-# name the same directory here. The second goes when the symlink does.
-VOLUME_ROOTS = ("/data", "/work")
+# The bulk volume. One name (pipeOS#330).
+VOLUME_ROOTS = ("/data",)
 SEEN_RING = 256
 KEEP_MONTHS = 13
 WARN_PCT = 80
@@ -235,28 +232,15 @@ class Ledger:
         """A cursor key: the transcript's place inside the transcripts dir,
         never its absolute path.
 
-        Keys were absolute until pipeOS#330. The bulk volume's move from
-        /data to /data changes every one of them, and a cursor whose keys no
-        longer match means off=0 with an empty id ring for every transcript:
-        the next ingest re-appends the whole history, month-to-date spend
-        roughly doubles on every box at once, and that is enough to trip the
-        box, agent and cluster caps and pause them. The glob yields
-        <project>/<file>.jsonl, so the last two components identify a
-        transcript wherever the volume happens to be mounted."""
+        Keys were absolute until pipeOS#330. An absolute key ties the cursor
+        to where the volume is mounted, and a cursor whose keys stop matching
+        means off=0 with an empty id ring for every transcript: the next
+        ingest re-appends the whole history and month-to-date spend roughly
+        doubles, which is enough to trip the box, agent and cluster caps and
+        pause them. The glob yields <project>/<file>.jsonl, so the last two
+        components identify a transcript on their own."""
         parts = path.rstrip("/").split("/")
-        if len(parts) < 2:
-            return path
-        proj, name = parts[-2], parts[-1]
-        # The project directory carries the volume's name too: claude derives
-        # it from the cwd, so /work/pipebox is -work-pipebox and /data/pipebox
-        # is -data-pipebox — and pipeos-data-migrate renames those directories
-        # on the very boot the volume moves. A key that kept the directory
-        # verbatim would therefore miss on exactly the boot it exists to
-        # survive, and the whole history would re-ingest: the doubled
-        # month-to-date spend this key was introduced to prevent. (The #342
-        # review reproduced it: one row in, two rows out.)
-        proj = re.sub(r"^-(work|data)(?=-|$)", "-vol", proj)
-        return proj + "/" + name
+        return "/".join(parts[-2:]) if len(parts) >= 2 else path
 
     def _load_cursor(self):
         try:

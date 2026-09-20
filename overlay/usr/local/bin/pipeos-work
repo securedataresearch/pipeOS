@@ -62,11 +62,7 @@ check_list() {
     done
 }
 
-# /proc/mounts names whichever of /data and /data is the REAL mount, and
-# the other is a symlink to it (#330). Resolve before comparing or a parked
-# volume reads as read-write through the link and park/unpark answer wrong.
-work_is_ro() { _w=$(readlink -f "$WORK" 2>/dev/null || printf '%s' "$WORK")
-	awk -v w="$_w" '$2 == w { print $4 }' /proc/mounts | grep -qE '(^|,)ro(,|$)'; }
+work_is_ro() { awk -v w="$WORK" '$2 == w { print $4 }' /proc/mounts | grep -qE '(^|,)ro(,|$)'; }
 work_mounted() { [ "$NOMOUNT" = 1 ] || mountpoint -q "$WORK"; }
 
 # ---- hot-up: tmpfs, the raw-disk view, seed, bind ----------------------

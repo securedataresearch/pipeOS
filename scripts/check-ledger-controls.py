@@ -24,14 +24,8 @@ BREAKS = [
     # longer match is a cursor that re-ingests everything — the same failure
     # as C, arrived at by moving the volume instead of by breaking the write.
     ("C2 the cursor keeps absolute keys, so moving the volume re-ingests every transcript", LEDGER,
-     "        proj, name = parts[-2], parts[-1]",
+     '        return "/".join(parts[-2:]) if len(parts) >= 2 else path',
      "        return path"),
-    # The flip renames the project directories as well as the mount, so
-    # normalising the key's directory component is half the guarantee — and
-    # the half the two fixes cancelled each other on, until the #342 review.
-    ("C3 the key keeps the project directory verbatim, so the migration's own rename re-ingests everything", LEDGER,
-     '        proj = re.sub(r"^-(work|data)(?=-|$)", "-vol", proj)',
-     "        proj = proj"),
     ("D  the 80% DM is sent every time", LEDGER,
      "        if pct >= WARN_PCT and not os.path.exists(warned):\n", "        if pct >= WARN_PCT:\n"),
     ("E  the pause is never lifted", LEDGER,

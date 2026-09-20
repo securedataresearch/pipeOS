@@ -19,11 +19,7 @@ depend() {
 start_pre() {
 	# wait out the boot-time /data mount race (see pipe-daemon start_pre)
 	_i=0
-	# Either name: the volume is mounted at /data and /work is a symlink to
-	# it (#330), but a deploy installs this file while the volume is still
-	# on /work and the reboot that moves it comes later — so both are asked
-	# and the restart in between does not fail on the name.
-	while ! mountpoint -q /data && ! mountpoint -q /work; do
+	while ! mountpoint -q /data; do
 		_i=$((_i+1))
 		if [ "$_i" -ge 30 ]; then
 			eerror "/data not mounted after 30s"

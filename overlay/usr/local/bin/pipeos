@@ -545,9 +545,7 @@ cmd_unclaim() {
     # (a full wipe is a format). /data must be writable: a parked box is
     # unparked first, and the hot-set dirs (bind mounts) are emptied, not removed.
     _wb=${PIPEOS_WORK_BIN:-/usr/local/bin/pipeos-work}
-    # resolved: /proc/mounts carries the real mount, not the symlink (#330)
-    _workreal=$(readlink -f "$_work" 2>/dev/null || printf '%s' "$_work")
-    if awk -v w="$_workreal" '$2 == w { print $4 }' /proc/mounts 2>/dev/null | grep -qE '(^|,)ro(,|$)'; then
+    if awk -v w="$_work" '$2 == w { print $4 }' /proc/mounts 2>/dev/null | grep -qE '(^|,)ro(,|$)'; then
         "$_wb" unpark >/dev/null || { echo "unclaim: $_work is parked (read-only) and would not unpark — nothing changed on it" >&2; return 1; }
     fi
     _bad=0

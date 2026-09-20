@@ -149,10 +149,8 @@ jobs:
 
       # #264. The stick is /data: the churn is staged in RAM and flushed on a
       # cadence; park remounts /data read-only between operations.
-      - name: "/data is the bulk volume — it mounts there and /work is the symlink, laid at boot and by a deploy; both names reach the same bytes (#219, #330)"
+      - name: "/data is the bulk volume — it mounts there, and nothing answers to the old name (#219, #330)"
         run: python3 scripts/check-data-name.py
-      - name: "the flip's stored paths — job working dirs, claude's trust and its session dirs move with the volume (#330)"
-        run: python3 scripts/check-data-migrate.py
       - name: "the cluster heartbeat on the port LED — who blinks, how many times, and who stays steady (#333)"
         run: python3 scripts/check-blink.py
       - name: "the Machine's own update log — every change it took, with its title and what it was for (#335)"
