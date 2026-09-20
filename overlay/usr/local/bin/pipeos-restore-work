@@ -75,7 +75,10 @@ take_save_lock() {
 
 is_block()     { [ -b "$1" ] || { [ -n "$FAKEBLOCK" ] && [ "$1" = "$FAKEBLOCK" ]; }; }
 do_mount()     { if [ -n "$MNT" ]; then "$MNT" "$@"; else "$@"; fi; }
-src_of_mount() { awk -v m="$1" '$2==m{s=$1} END{print s}' "$MOUNTS"; }
+# The volume answers to two names and /proc/mounts carries only the real
+# one (#330), so the path is resolved before it is looked up.
+real_path() { readlink -f "$1" 2>/dev/null || printf '%s' "$1"; }
+src_of_mount() { awk -v m="$(real_path "$1")" '$2==m{s=$1} END{print s}' "$MOUNTS"; }
 mounted_at()   { awk -v d="$1" '$1==d{print $2; exit}' "$MOUNTS"; }
 fs_of_dir()    { awk -v p="$1" 'index(p,$2)==1 && length($2)>=b {b=length($2); f=$3} END{print f}' "$MOUNTS"; }
 

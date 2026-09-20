@@ -194,7 +194,12 @@ done
 # unparked for the run — claude writes its transcript there — and re-parked
 # after. Only the real /work: the probe's WORKROOT is a tempdir.
 _reparked=no
-if [ "$WORKROOT" = /work ] && awk '$2 == "/work" { print $4 }' /proc/mounts | grep -qE '(^|,)ro(,|$)'; then
+_wreal=$(readlink -f "$WORKROOT" 2>/dev/null || printf '%s' "$WORKROOT")
+case "$_wreal" in
+    /data|/work) _real_volume=yes ;;   # either name of the real volume (#330)
+    *) _real_volume=no ;;
+esac
+if [ "$_real_volume" = yes ] && awk -v w="$_wreal" '$2 == w { print $4 }' /proc/mounts | grep -qE '(^|,)ro(,|$)'; then
     /usr/local/bin/pipeos-work unpark >/dev/null 2>&1 && _reparked=yes
 fi
 repark() { [ "$_reparked" = yes ] && /usr/local/bin/pipeos-work park >/dev/null 2>&1; }

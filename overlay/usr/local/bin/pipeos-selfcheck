@@ -115,7 +115,11 @@ if mountpoint -q /work; then
     # and needs nothing installed; last matching line wins, the same rule as
     # 70-flash.sh's root_source(). "Cannot read the source" is now its own
     # answer instead of dressing up as a mismatch.
-    _have=$(awk '$2 == "/work" { src = $1 } END { print src }' /proc/mounts 2>/dev/null)
+    # Resolved: the volume answers to both /data and /work and /proc/mounts
+    # carries only the real one (#330). Asking by the wrong name reads as
+    # "no entry for it" and this row goes CRITICAL on a healthy box.
+    _mp=$(readlink -f /work 2>/dev/null || printf '%s' /work)
+    _have=$(awk -v w="$_mp" '$2 == w { src = $1 } END { print src }' /proc/mounts 2>/dev/null)
     if [ -z "$_want" ]; then
         crit "/work is mounted but LABEL=PIPEWORK does not resolve to any device"
     elif [ -z "$_have" ]; then
@@ -574,7 +578,7 @@ if mountpoint -q /work 2>/dev/null && [ -r /usr/local/share/pipeos/hot.list ]; t
             warnn "hot set not staged in RAM:$_hot_missing — the stick is taking every write (rc-service pipeos-hot restart)"
         fi
     fi
-    if awk '$2 == "/work" { print $4 }' /proc/mounts | grep -qE '(^|,)ro(,|$)'; then
+    if awk -v w="$(readlink -f /work 2>/dev/null || printf '%s' /work)" '$2 == w { print $4 }' /proc/mounts | grep -qE '(^|,)ro(,|$)'; then
         noten "/work is parked (read-only, pipeos work park) — the stick idles; a scheduled run unparks itself"
     fi
 fi
