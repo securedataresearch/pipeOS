@@ -108,6 +108,17 @@ ROLE) are named where the design reuses them.
   propagation wherever it can.
 - Sign-in is per box for now; with keys everywhere the question goes away.
 
+- Built (#215): `pipeos cluster users` and the Cluster page's *Who can sign
+  in, across the cluster* card gather every member's list live over mutual
+  TLS — who exists, at what level, with a unix login or a browser terminal,
+  and whether the account is disabled. Never a hash, a key or a terminal
+  port: reading who exists is what makes the list possible, not a way to
+  become them. A member's certificate may read ONE Machine's list; only the
+  owner's session (or a Machine asking its own listener) gathers the
+  cluster's. Nothing is cached — unlike the agent list, a sign-in list that
+  is quietly out of date is the kind of thing an owner acts on. Editing
+  stays per Machine, on that Machine's own dashboard.
+
 → #215
 
 ## 6. Roles

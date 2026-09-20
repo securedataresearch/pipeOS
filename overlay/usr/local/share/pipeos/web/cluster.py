@@ -847,6 +847,33 @@ def reboot_all(local_reboot):
     return res
 
 
+def users(local_users):
+    """§5: the owner sees who can sign in across the cluster, side by side;
+    editing stays per box. One row per member, in member order.
+
+    A member that does not answer is shown as unreachable and NOT from a
+    cached copy — unlike the agent list (#300), which is worth showing stale
+    because it says what a Machine was doing. Who may sign in is a security
+    surface: a list that is quietly out of date is worse than an honest gap,
+    because it is the kind of thing an owner acts on."""
+    v = view()
+    me = v["self"]
+    others = [r["id"] for r in v["members"] if not r["self"]]
+    answers = fanout(others, "GET", "/api/cluster/users-here")
+    rows = []
+    for r in v["members"]:
+        if r["self"]:
+            rows.append({"id": r["id"], "name": r["name"], "self": True, "users": local_users()})
+            continue
+        st, b = answers.get(r["id"], (0, {"error": "not asked"}))
+        if st == 200 and isinstance(b, dict):
+            rows.append({"id": r["id"], "name": r["name"], "self": False, "users": b.get("users") or []})
+        else:
+            rows.append({"id": r["id"], "name": r["name"], "self": False, "users": None,
+                         "error": (b.get("error") if isinstance(b, dict) else "") or "did not answer"})
+    return {"cluster": v.get("cluster", ""), "members": rows}
+
+
 def rolling_ok(pg, me, target=""):
     """§9: rolling updates, at least one member green at all times. May THIS
     Machine apply a release right now? (True, "") or (False, why).
@@ -1135,6 +1162,21 @@ def main(argv):
             if out.get("recovery_phrase"):
                 print("its recovery phrase (shown once, store it with this Machine's):\n  %s" % out["recovery_phrase"])
             return 0 if out.get("saved") else 1
+        if verb == "users":
+            st, out, who = call("local", "GET", "/api/cluster/users")
+            if st != 200 or not who:
+                print("cluster: the users view did not answer (%s)" % st, file=sys.stderr); return 1
+            for r in out.get("members", []):
+                head = "%-12s %s%s" % (r.get("name") or "", r["id"], "  (this Machine)" if r.get("self") else "")
+                if r.get("users") is None:
+                    print("member    %s\n          %s" % (head, r.get("error") or "did not answer")); continue
+                print("member    %s" % head)
+                for u in r["users"]:
+                    flags = ",".join([k for k in ("unix", "share", "terminal") if u.get(k)]) or "dashboard only"
+                    print("          %-16s %-6s %-14s%s" % (u.get("name"), u.get("role"), flags,
+                                                            "  DISABLED" if u.get("disabled") else ""))
+            print("\nediting is per Machine: open that Machine's own dashboard (nothing propagates)")
+            return 0
         if verb == "rolling-ok":
             # A Machine in no cluster is always clear — and that is most of
             # them. `call()` raises before it can say so when there is no
@@ -1259,7 +1301,7 @@ def main(argv):
     except ClusterError as e:
         print("cluster: %s" % e, file=sys.stderr)
         return 1
-    print("usage: pipeos cluster init [NAME] [--force] | status | ca | add ID|NAME|IP [NAME] | remove ID|NAME | sync | join MEMBER | adopt ID|IP [NAME] | page | rolling-ok [RELEASE_COMMIT] | agents | start NAME --on ID|NAME|idlest [--prompt TEXT [--cron SPEC|manual] ...] | reboot-all [--yes] | services KEY on|off [ID...] | call ID|NAME|IP METHOD PATH [JSON]", file=sys.stderr)
+    print("usage: pipeos cluster init [NAME] [--force] | status | ca | add ID|NAME|IP [NAME] | remove ID|NAME | sync | join MEMBER | adopt ID|IP [NAME] | page | users | rolling-ok [RELEASE_COMMIT] | agents | start NAME --on ID|NAME|idlest [--prompt TEXT [--cron SPEC|manual] ...] | reboot-all [--yes] | services KEY on|off [ID...] | call ID|NAME|IP METHOD PATH [JSON]", file=sys.stderr)
     return 2
 
 

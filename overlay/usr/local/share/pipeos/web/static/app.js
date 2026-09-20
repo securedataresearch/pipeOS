@@ -1126,6 +1126,11 @@ async function dashboard() {
           <div style="margin-top:.4rem"><button id="claggo" class="btn small" type="button">Start</button></div>
         </div>
         <div class="card">
+          <div class="cardhead"><h2>Who can sign in, across the cluster</h2><span><span class="note" id="clunote"></span> <button id="clurefresh" class="ghost small" type="button" data-vok>look again</button></span></div>
+          <p class="note">Every Machine's sign-ins, side by side. <b>Editing is per Machine</b> — open that Machine's own dashboard to add or remove someone; nothing here propagates. Passwords and keys are never read, only who exists and at what level.</p>
+          <div id="clusers" class="note">looking…</div>
+        </div>
+        <div class="card">
           <div class="cardhead"><h2>Add a Machine</h2><span class="note" id="clcnote"></span></div>
           <p class="note">Claimed Machines on this network that are not members. Adding one needs <b>its</b> admin password — the one typed at its setup — because the list, not the password, is what makes a member.</p>
           <div id="clcands" class="note">looking…</div>
@@ -2678,7 +2683,40 @@ async function dashboard() {
   // Views with live data register a poller (runs only while on screen) or a
   // lazy loader (runs on first visit).
   // ---- the cluster (#211): the member list, add from the lobby, remove, push ----
+  // who can sign in across the cluster (#215): read-only, gathered live —
+  // never from a cached copy, because a sign-in list that is quietly out of
+  // date is the kind of thing an owner acts on
+  const renderClusterUsers = (d) => {
+    const box = v.querySelector("#clusers"), note = v.querySelector("#clunote");
+    if (!box) return;
+    const ms = d.members || [];
+    if (!ms.length) { box.className = "note"; box.textContent = "No members."; return; }
+    box.className = "";
+    box.innerHTML = ms.map(m => {
+      const who = esc(m.name || m.id) + (m.self ? ' <span class="note">(this Machine)</span>' : "");
+      if (m.users === null || m.users === undefined) {
+        return `<div class="uprow"><div class="uphead"><span class="uptitle">${who}</span><span class="note status-warn">${esc(m.error || "did not answer")}</span></div></div>`;
+      }
+      const rows = m.users.map(u => `<tr${u.disabled ? ' class="dim"' : ""}>
+        <td>${esc(u.name || "")}</td><td>${esc(u.role || "")}</td>
+        <td>${["unix", "share", "terminal"].filter(k => u[k]).map(esc).join(", ") || '<span class="note">dashboard only</span>'}</td>
+        <td>${u.disabled ? '<span class="pill status-warn">disabled</span>' : ""}</td></tr>`).join("");
+      return `<div class="uprow"><div class="uphead"><span class="uptitle">${who}</span>
+        <span class="note">${m.users.length} sign-in${m.users.length === 1 ? "" : "s"}${m.self ? "" : ` · <a href="http://${esc(m.name || m.id)}.local/">open its dashboard</a>`}</span></div>
+        <div class="tblwrap"><table class="tbl"><tbody>${rows}</tbody></table></div></div>`;
+    }).join("");
+    const gaps = ms.filter(m => !m.users).length;
+    note.textContent = gaps ? `${gaps} Machine${gaps === 1 ? "" : "s"} did not answer` : `${ms.length} Machine${ms.length === 1 ? "" : "s"}`;
+  };
+  const loadClusterUsers = async () => {
+    try { renderClusterUsers(await api("/api/cluster/users")); }
+    catch (e) { const b = v.querySelector("#clusers"); if (b) { b.className = "note"; b.textContent = e.message; } }
+  };
+  const cluBtn = v.querySelector("#clurefresh");
+  if (cluBtn) cluBtn.onclick = async () => { cluBtn.disabled = true; await loadClusterUsers(); cluBtn.disabled = false; };
+  let cluOnce = false;
   const pollCluster = async () => {
+    if (!cluOnce) { cluOnce = true; loadClusterUsers(); }
     const rows = v.querySelector("#clrows"), note = v.querySelector("#clnote");
     const cands = v.querySelector("#clcands"), cnote = v.querySelector("#clcnote"), msg = v.querySelector("#clmsg");
     if (!rows) return;

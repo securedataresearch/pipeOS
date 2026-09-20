@@ -613,6 +613,31 @@ check("19b a placement the member refuses at run time (another job is running th
       repr((rc_rf, out_rf[-200:], jobs_of(H), H.nsaves() - h_saves2, ran_on(H))))
 H.cli("call", "local", "POST", "/api/schedule/del", json.dumps({"name": "later"}))
 
+# ── 19c2. who can sign in, across the cluster (#215, §5): gathered live, never
+# from a cache, and a member's certificate may read ONE box's list but never
+# gather the cluster's
+# ADD a user to seven, never rewrite the file: its real admin hash is what
+# the later rows sign in with (this row broke row 21 by replacing it once)
+_up = os.path.join(H.dir, "users_conf")
+_udoc = json.load(open(_up))
+_udoc["users"].append({"name": "office", "role": "user", "hash": "notahash", "share": True, "disabled": True})
+json.dump(_udoc, open(_up, "w"))
+st_uh, out_uh = https(G, "GET", "/api/cluster/users-here", cert_of=H)          # a member may read ONE box's list
+st_ug, out_ug = https(G, "GET", "/api/cluster/users", cert_of=H)               # but never gather the cluster's
+rc_us, out_us = G.cli("users")
+_cg = login(G, "sixpassword")
+st_us2, body_us2 = sess(G, _cg, "GET", "/api/cluster/users")
+h_row = next((r for r in body_us2.get("members", []) if r["id"] == "2222"), {})
+leak = json.dumps(body_us2)
+check("19c2 the cluster's sign-ins: a member's certificate may read one Machine's list and NOT gather the cluster's; the owner's session gathers every member's, side by side, with the other Machine's disabled share-only account carried — and no hash, key or terminal port anywhere in the answer",
+      st_uh == 200 and isinstance(out_uh, dict) and out_uh.get("users")
+      and st_ug == 403 and "certificate may not" in (out_ug.get("error") or "")
+      and rc_us == 0 and "editing is per Machine" in out_us
+      and st_us2 == 200 and "office" in [u["name"] for u in h_row.get("users") or []]
+      and next(u for u in h_row["users"] if u["name"] == "office")["disabled"] is True
+      and "hash" not in leak and "notahash" not in leak and "term_port" not in leak,
+      repr((st_uh, st_ug, out_ug, rc_us, out_us[-200:], h_row)))
+
 # ── 19d. rolling updates (#216, §9): one Machine at a time, never while another
 # is out, and the lowest id still on this release goes first — asked of the
 # same shared list by every member, so it sequences itself with no coordinator
