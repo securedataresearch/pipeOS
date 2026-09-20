@@ -4,7 +4,7 @@ root, a fake /proc/mounts, a recording rsync stub and a recording mount stub
 — the seams the script exposes for exactly this. Nothing here touches the
 real /data or any device.
 
-Rows cover source resolution (backup root -> work/, a plain dir, a device
+Rows cover source resolution (backup root -> data/, a plain dir, a device
 mounted read-only), the emptiness rule and --force, the additive rsync (no
 --delete, the four excludes), the own-disk and running-/data refusals, the
 users.manifest exception, and the fence (deny entries in both settings
@@ -58,8 +58,8 @@ def box(work_files=None):
     for path, content in (work_files or {}).items():
         write(d + "/data/" + path, content)
     write(d + "/ext/pipeos-backup/probe/identity/MANIFEST", "pipeos identity backup\n")
-    write(d + "/ext/pipeos-backup/probe/work/data.txt", "precious")
-    write(d + "/ext/pipeos-backup/probe/work/.pipeos/users.manifest", "sam:1000\n")
+    write(d + "/ext/pipeos-backup/probe/data/data.txt", "precious")
+    write(d + "/ext/pipeos-backup/probe/data/.pipeos/users.manifest", "sam:1000\n")
     write(d + "/plain/other.txt", "plain")
     os.makedirs(d + "/run", exist_ok=True)
     # rsync stub: records argv, then runs the real rsync (the excludes and
@@ -100,7 +100,7 @@ def run(d, args, env=None, extra_mounts=()):
         "PIPEOS_RESTORE_MOUNT": d + "/bin/mount-stub",
         "PIPEOS_RESTORE_BLKID": d + "/bin/blkid-stub",
         "PIPEOS_RESTORE_BLOCK": d + "/fakeblock",
-        "MOUNT_FIXTURE": d + "/ext/pipeos-backup/probe/work",
+        "MOUNT_FIXTURE": d + "/ext/pipeos-backup/probe/data",
     })
     if env:
         e.update(env)
@@ -124,15 +124,15 @@ check("1 no source is a usage error, nothing run", rc == 2 and "usage" in out an
 d = box()
 rc, out = run(d, [d + "/ext/pipeos-backup/probe"])
 av = argv_of(d)
-check("2 a backup root resolves to its work/ and says so",
-      rc == 0 and "using" in out and (d + "/ext/pipeos-backup/probe/work/") in av.split("\n"), repr(out) + av)
+check("2 a backup root resolves to its data/ and says so",
+      rc == 0 and "using" in out and (d + "/ext/pipeos-backup/probe/data/") in av.split("\n"), repr(out) + av)
 d = box()
-rc, out = run(d, [d + "/ext/pipeos-backup/probe/work"])
-check("3 the work/ directory itself is used as-is",
-      rc == 0 and (d + "/ext/pipeos-backup/probe/work/") in argv_of(d).split("\n"), repr(out))
+rc, out = run(d, [d + "/ext/pipeos-backup/probe/data"])
+check("3 the data/ directory itself is used as-is",
+      rc == 0 and (d + "/ext/pipeos-backup/probe/data/") in argv_of(d).split("\n"), repr(out))
 d = box()
 rc, out = run(d, [d + "/plain"])
-check("4 a plain directory (no identity/, no work/) is used as-is",
+check("4 a plain directory (no identity/, no data/) is used as-is",
       rc == 0 and (d + "/plain/") in argv_of(d).split("\n"), repr(out))
 d = box()
 rc, out = run(d, [d + "/nowhere"])

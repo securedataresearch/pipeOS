@@ -7,10 +7,10 @@
 # start_pre waits too and the boot selfcheck reports the miss.
 # Seams (the probe, never production): PIPEOS_WORKSPACE_DATA, _NO_MOUNT.
 #
-# The volume is /data (pipeOS#219, #330, docs/cluster.md §8). It was /work
-# once; there is no /work now — no symlink, no second name, nothing that
-# answers to the old one. A name kept "for a release or two" is a name kept
-# forever, and every reader then has to handle both.
+# The volume is /data (pipeOS#219, #330, docs/cluster.md §8). One name, and
+# the name it replaced is not referenced anywhere in this tree: a second name
+# kept "for a release or two" is a name kept for ever, and every reader then
+# has to handle both.
 #
 # The filesystem LABEL stays PIPEWORK: a label is not a path, the owner never
 # sees it, and relabelling sticks in the field could only lose a volume.
@@ -37,15 +37,6 @@ if [ -z "${PIPEOS_WORKSPACE_NO_MOUNT:-}" ]; then
 	mountpoint -q "$DATA" || mount -t ext4 -o noatime,lazytime,commit=120 "$dev" "$DATA" || exit 0
 fi
 mkdir -p "$DATA"/repos "$DATA"/logs "$DATA"/cache "$DATA"/claude "$DATA"/pipebox "$DATA"/backup "$DATA"/home
-# A leftover /work from before the move is not ours to keep: an empty
-# directory or a symlink goes, so nothing writes to RAM thinking it is the
-# volume. Anything else is said and left, because moving someone's directory
-# is not this script's call.
-if [ -L /work ]; then
-	rm -f /work
-elif [ -d /work ]; then
-	rmdir /work 2>/dev/null || logger -s -t workspace "/work still exists and is not empty — the volume is $DATA; move what is in /work and remove it"
-fi
 # Agent memory belongs on ext4 from the box's FIRST boot (pipeOS#80): if
 # /root/.claude/projects does not exist yet, lay the symlink before claude's
 # first run can create a real tmpfs directory there — a box born migrated

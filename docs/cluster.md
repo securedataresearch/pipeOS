@@ -131,17 +131,14 @@ ROLE) are named where the design reuses them.
 
 ## 8. Data — `/data`, with a cluster-wide index
 
-- The bulk volume is **`/data`**, and nothing answers to the old name. It
-  was `/work` (pipeOS#219, pipeOS#330); there is no symlink, no second root,
-  nothing a path still resolves through. A compatibility name kept "for a
-  release or two" is a name kept for ever, and every reader then carries two
-  truths — which is exactly how the ledger's ingest cursor, a job's stored
-  working dir and claude's session directories each acquired one. A `/work`
-  left behind from before the move is removed at boot when it is a link or an
-  empty directory, and reported when it is not: writes under it land in RAM
-  and are gone at the next boot. The filesystem label stays `PIPEWORK`: a
-  label is not a path, the owner never sees it, and relabelling sticks in the
-  field could only lose a volume.
+- The bulk volume is **`/data`** (pipeOS#219, pipeOS#330). One name: no
+  symlink, no second root, nothing else a path resolves through, and the name
+  it replaced is not referenced anywhere in the tree — a second name kept "for
+  a release or two" is a name kept for ever, and every reader then carries two
+  truths, which is how the ledger's ingest cursor, a job's stored working dir
+  and claude's session directories each acquired one. The filesystem label
+  stays `PIPEWORK`: a label is not a path, the owner never sees it, and
+  relabelling sticks in the field could only lose a volume.
 - The **file index** of every member is visible to the cluster (the Files
   view grows a box selector); bytes stay where they are.
 - An agent on one box reaching another box's files may use **any of

@@ -2,15 +2,12 @@
 """check-data-name (pipeOS#219 named it, #330 moved it): `/data` is the bulk
 volume, and nothing answers to the old name.
 
-The volume mounts at `/data`. There is no `/work`: no symlink, no second
-name, nothing a path can still resolve through. A compatibility name kept
-"for a release or two" is a name kept for ever, and every reader then has to
-handle both — which is how the ledger's cursor, a job's stored working dir
-and claude's session directories each acquired two truths.
-
-A `/work` left behind from before the move is a place writes land in RAM and
-vanish at the next boot, so the script removes an empty one and selfcheck
-reports anything it cannot remove.
+The volume mounts at `/data`, and that is the only name for it: no symlink,
+no second root, and the name it replaced is not referenced anywhere in this
+tree. A compatibility name kept "for a release or two" is a name kept for
+ever, and every reader then has to handle both — which is how the ledger's
+cursor, a job's stored working dir and claude's session directories each
+acquired two truths.
 
 The script's logic is driven through its seams (PIPEOS_WORKSPACE_DATA,
 _NO_MOUNT — a box never sets them); the rest asserts the wiring that runs it
@@ -63,15 +60,11 @@ names = sorted(os.listdir(d))
 check("3 no other name is created beside it: the volume is /data and only /data — a compatibility name kept 'for a release or two' is a name kept for ever",
       names == ["data"], repr(names))
 
-# 4-5. the source itself carries no second name and no migration shim
+# 4. the source itself carries no second name and no migration shim
 ws = open(WS).read()
 check("4 the script names one volume: no symlink laid, no second root, no 'whichever is mounted' branch",
       "ln -s" not in ws.split("# Agent memory")[0] and "mounted_on" not in ws and "PIPEOS_WORKSPACE_WORK" not in ws,
       "")
-check("5 a leftover /work is removed when it is a link or an empty directory, and said when it is neither — writes under it would land in RAM and be gone at the next boot",
-      re.search(r"if \[ -L /work \]", ws) and "rmdir /work" in ws and "logger" in ws.split("rmdir /work")[1][:400],
-      "")
-
 # 6. the wiring: a deploy that installs the script runs it
 dep = open(os.path.join(REPO, "overlay/usr/local/bin/pipeos-deploy-overlay")).read()
 check("6 a deploy that installs a new workspace.sh runs it (idempotent, so no rc-service restart bounces pipe-daemon, the assistant or the owner's terminals) and prints what the script said",
@@ -88,11 +81,36 @@ defined = set(re.findall(r"^(\w+)\(\)\s*\{", sc, re.M))
 REPORTERS = {"ok", "warn", "warnn", "crit", "critstate", "note", "noten", "fixed", "fix", "would", "info", "pass"}
 called = set(re.findall(r"^\s*(\w+)\s+\"", sc, re.M)) & REPORTERS
 undefined = sorted(called - defined)
-sec = re.search(r"^# ---- 1ba\..*?(?=^# ---- )", sc, re.M | re.S)
-sec = sec.group(0) if sec else ""
-check("7 selfcheck's /data section is its own numbered section and reports through helpers the file actually defines — a real /work directory is CRITICAL (writes to RAM), a leftover symlink a warning",
-      sec and "crit " in sec and "warnn " in sec and "/work" in sec and not undefined,
-      "undefined reporters called: %r; section found: %s" % (undefined, bool(sec)))
+check("7 every reporting call in selfcheck goes to a helper the file defines — a row that greps for message text passes just as happily when the line calls a function that does not exist, and then the report and the owner's DM both get nothing",
+      not undefined, "undefined reporters called: %r" % (undefined,))
+
+# 8. and it stays gone. The volume's old name is another thing's name now, so
+# a path built from it would not merely be stale — it would point somewhere
+# real and wrong. This walks the shipped tree and the probes for the path,
+# allowing only names that merely start the same way (workspace.sh,
+# worksweep, .github/workflows).
+OLD = "/" + "work"          # not written whole, so this row does not trip itself
+hits = []
+for rel in ("overlay", "scripts", "docs", "fleet", ".claude"):
+    base = os.path.join(REPO, rel)
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [x for x in dirnames if x not in (".git", "__pycache__")]
+        for fn in filenames:
+            full = os.path.join(dirpath, fn)
+            try:
+                body = open(full, errors="replace").read()
+            except OSError:
+                continue
+            for m in re.finditer(re.escape(OLD) + r"($|[^a-zA-Z0-9])", body):
+                hits.append("%s:%d" % (os.path.relpath(full, REPO), body.count("\n", 0, m.start()) + 1))
+for fn in ("config.sh", "Makefile", "CLAUDE.md", "README.md"):
+    full = os.path.join(REPO, fn)
+    if os.path.exists(full):
+        body = open(full, errors="replace").read()
+        for m in re.finditer(re.escape(OLD) + r"($|[^a-zA-Z0-9])", body):
+            hits.append("%s:%d" % (fn, body.count("\n", 0, m.start()) + 1))
+check("8 the volume's former name appears nowhere in the shipped tree, the probes or the docs — it names something else now, so a path built from it would point somewhere real and wrong, and a single reference is how a second truth gets back in",
+      not hits, "found at: %s" % ", ".join(hits[:12]))
 
 print("%d/%d" % (sum(RESULTS), len(RESULTS)))
 sys.exit(0 if all(RESULTS) else 1)

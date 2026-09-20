@@ -36,12 +36,12 @@
 set -u
 WORK=${PIPEOS_WORK:-/data}
 HOT=${PIPEOS_HOT:-/run/pipeos/hot}
-DISK=${PIPEOS_WORK_DISK:-/run/pipeos/work-disk}
+DISK=${PIPEOS_WORK_DISK:-/run/pipeos/hotset-disk}
 LIST=${PIPEOS_HOT_LIST:-/usr/local/share/pipeos/hot.list}
 NOMOUNT=${PIPEOS_WORK_NO_MOUNT:-0}
 RUN=${PIPEOS_WORK_RUN:-/run/pipeos}
-STATUS=$RUN/work.status
-LOCK=$RUN/work.lock
+STATUS=$RUN/hotset.status
+LOCK=$RUN/hotset.lock
 HOT_SIZE=${PIPEOS_HOT_SIZE:-256m}
 
 say() { echo "pipeos-work: $*"; }

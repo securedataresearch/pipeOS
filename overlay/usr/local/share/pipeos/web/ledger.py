@@ -201,7 +201,6 @@ class Ledger:
         if sid and dash and sid == dash:
             return {"kind": "dashboard", "name": ""}
         # Under the volume root, whichever name it is mounted at. These were
-        # literal "/work/..." until pipeOS#330; a transcript written before
         # the flip still says /data and one written after says /data, and
         # both are the same directory — so the root comes off and the rest
         # is what identifies the actor.

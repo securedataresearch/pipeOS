@@ -196,7 +196,7 @@ done
 _reparked=no
 _wreal=$(readlink -f "$WORKROOT" 2>/dev/null || printf '%s' "$WORKROOT")
 case "$_wreal" in
-    /data|/work) _real_volume=yes ;;   # either name of the real volume (#330)
+    /data) _real_volume=yes ;;         # the real volume, not the probe's tempdir
     *) _real_volume=no ;;
 esac
 if [ "$_real_volume" = yes ] && awk -v w="$_wreal" '$2 == w { print $4 }' /proc/mounts | grep -qE '(^|,)ro(,|$)'; then

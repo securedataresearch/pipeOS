@@ -125,17 +125,6 @@ if mountpoint -q /data; then
     fi
 fi
 
-# ---- 1ba. /data is the bulk volume, and nothing answers to the old name
-# (#219, #330). /work is gone: not a mount, not a symlink, not a directory.
-# One left behind is a place writes land in RAM and disappear at the next
-# boot, which is the whole reason the old name was not kept.
-# Silent success: the report has no per-check "ok" line.
-if [ -L /work ]; then
-    warnn "/work is a leftover symlink to $(readlink /work 2>/dev/null) — the volume is /data; 'sh /etc/local.d/workspace.sh' removes it, and so does every boot"
-elif [ -d /work ]; then
-    crit "/work still exists as a real directory — anything written under it is in RAM and gone at the next boot; move what is in it into /data and remove it"
-fi
-
 # ---- 1c. chassis anchor (appliance plan, decision 2). Identity rides the
 # stick: move a stick to another machine and the box's whole identity moves
 # with it, and before this check nothing on any box said so — a swap was a

@@ -44,13 +44,13 @@ def w(*args, env=None, script=SCRIPT):
 rc, out = w("hot-up")
 check("1 hot-up creates every hot.list path in RAM, seeded from the disk copy (comments and blanks in the list ignored), and records the status",
       rc == 0 and open(os.path.join(HOT, "logs", "old.log")).read() == "from disk\n" and os.path.isdir(os.path.join(HOT, "pipeos", "mdns"))
-      and os.path.isdir(os.path.join(HOT, ".pipeos", "ledger")) and open(os.path.join(RUN, "work.status")).read().startswith("hot "),
+      and os.path.isdir(os.path.join(HOT, ".pipeos", "ledger")) and open(os.path.join(RUN, "hotset.status")).read().startswith("hot "),
       "rc=%s out=%s" % (rc, out))
 open(os.path.join(HOT, "logs", "new.log"), "w").write("written in RAM\n")
 os.unlink(os.path.join(HOT, "logs", "stale.log"))
 open(os.path.join(HOT, "pipeos", "mdns", "machines.json"), "w").write("{}")
 rc, out = w("flush")
-st = open(os.path.join(RUN, "work.status")).read()
+st = open(os.path.join(RUN, "hotset.status")).read()
 check("2 flush carries RAM to disk with --delete: a new file lands, a file removed in RAM is removed on disk, the seed survives; the status records the flush",
       rc == 0 and open(os.path.join(DISK, "logs", "new.log")).read() == "written in RAM\n" and not os.path.exists(os.path.join(DISK, "logs", "stale.log"))
       and open(os.path.join(DISK, "logs", "old.log")).read() == "from disk\n" and os.path.exists(os.path.join(DISK, "pipeos", "mdns", "machines.json"))
@@ -67,7 +67,7 @@ rc_u, out_u = w("unpark")
 check("5 park flushes first, then (behind the no-mount seam) would remount read-only; unpark the reverse — both rc 0",
       rc_p == 0 and "flushed" in out_p and "read-only" in out_p and rc_u == 0, "%s %s" % (out_p, out_u))
 rc_d, out_d = w("hot-down")
-check("6 hot-down flushes and releases: the status file is gone, the disk holds the RAM copy", rc_d == 0 and not os.path.exists(os.path.join(RUN, "work.status"))
+check("6 hot-down flushes and releases: the status file is gone, the disk holds the RAM copy", rc_d == 0 and not os.path.exists(os.path.join(RUN, "hotset.status"))
       and os.path.exists(os.path.join(DISK, "logs", "new.log")), out_d)
 rc_f, out_f = w("flush")
 check("7 flush with nothing staged is a no-op, not an error", rc_f == 0 and "nothing to flush" in out_f, out_f)

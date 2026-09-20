@@ -132,8 +132,8 @@ webd.BACKUP_STATE = tmp + "/backup.state"
 webd.BACKUP_BIN = tmp + "/backup-stub"
 with open(webd.BACKUP_BIN, "w") as f:
     f.write("#!/bin/sh\nprintf '%s\\n' \"$@\" >> " + tmp + "/backup.argv\n"
-            "for d; do :; done\nn=$(hostname)\nmkdir -p \"$d/pipeos-backup/$n/work\"\n"
-            "echo precious > \"$d/pipeos-backup/$n/work/data.txt\"\n"
+            "for d; do :; done\nn=$(hostname)\nmkdir -p \"$d/pipeos-backup/$n/data\"\n"
+            "echo precious > \"$d/pipeos-backup/$n/data/data.txt\"\n"
             "date +%s > \"$d/pipeos-backup/$n/.last\"\necho step=done > " + tmp + "/backup.state\n")
 os.chmod(webd.BACKUP_BIN, 0o755)
 webd.FLASH_STATE = tmp + "/flash.state"
