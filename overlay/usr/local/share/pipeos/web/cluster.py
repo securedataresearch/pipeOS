@@ -847,6 +847,71 @@ def reboot_all(local_reboot):
     return res
 
 
+def rolling_ok(pg, me, target=""):
+    """§9: rolling updates, at least one member green at all times. May THIS
+    Machine apply a release right now? (True, "") or (False, why).
+
+    Leaderless, and it needs no clock and no coordinator — every member asks
+    the same three questions of the same shared list and only one can answer
+    yes at a time:
+
+      1. Is any member already applying one? Then wait: one at a time is the
+         whole point.
+      2. Is any member not green, or not answering at all? Then wait — going
+         now would risk the second one, and "at least one green" is the rule.
+      3. Among the members that still NEED the release — every member not
+         already running `target` — am I the lowest id? If not, wait: the
+         lowest goes, and when it comes back green it leaves that set, so
+         the next lowest goes. The order is total and every member computes
+         it identically.
+
+         Over the members that need it, not over the ones sharing my commit:
+         two Machines on two different old commits are each the lowest of
+         their own commit and both would go in the same minute (#337 review).
+
+    A Machine in no cluster is always clear — there is nobody to protect.
+
+    Takes the page rather than building one, so the listener (which alone can
+    read this box's own summary) and the CLI (which asks the listener for the
+    same page `pipeos cluster page` prints) apply one rule, not two."""
+    members = pg.get("members") or []
+    if len(members) <= 1:
+        return True, ""
+    mine = next((r for r in members if r["id"] == me), {})
+    for r in members:
+        if r["id"] == me:
+            continue
+        if r.get("updating"):
+            return False, "%s is applying a release — one Machine at a time" % (r.get("name") or r["id"])
+        if not r.get("awake"):
+            return False, "%s is not answering — the cluster keeps at least one Machine green, so nobody updates while one is already out" % (r.get("name") or r["id"])
+        # An empty verdict is not a green one: a member that has just
+        # rebooted answers as soon as webd is up, before selfcheck has
+        # written a report, and reading that as "fine" is how the next
+        # Machine goes while the last one is still unassessed.
+        if not (r.get("verdict") or "").strip():
+            return False, "%s has not said how it is yet (no report since it came up) — waiting until it has" % (r.get("name") or r["id"])
+        if "critical" in (r.get("verdict") or "").lower():
+            return False, "%s is not green (%s) — fix that first; the cluster keeps at least one Machine green" % (r.get("name") or r["id"], r.get("verdict"))
+    # Who else still needs it. One of them goes, comes back on the new
+    # release, and so leaves this set — which is what makes the order
+    # advance without anybody keeping score. An unknown release is not a
+    # licence to go first: it cannot be compared, so this Machine waits and
+    # asks again next hour rather than racing a member it cannot read.
+    if not mine.get("commit"):
+        return False, "this Machine cannot say which release it is running, so it cannot know whether it is first — holding"
+    def needs_it(r):
+        c = r.get("commit") or ""
+        if not c:
+            return True                    # cannot say = cannot be counted out
+        return not c.startswith(target) if target else c == mine["commit"]
+
+    waiting = sorted(r["id"] for r in members if needs_it(r))
+    if waiting and waiting[0] != me:
+        return False, "%s goes first (the lowest id of the %d still to take it) — this Machine follows when it is back and green" % (waiting[0], len(waiting))
+    return True, ""
+
+
 def pick_idlest(rows):
     """The member to start an agent on when the owner says "idlest": awake,
     nothing busy, then the least load per cpu, then the fewest agents
@@ -1070,6 +1135,30 @@ def main(argv):
             if out.get("recovery_phrase"):
                 print("its recovery phrase (shown once, store it with this Machine's):\n  %s" % out["recovery_phrase"])
             return 0 if out.get("saved") else 1
+        if verb == "rolling-ok":
+            # A Machine in no cluster is always clear — and that is most of
+            # them. `call()` raises before it can say so when there is no
+            # trust bundle, so the answer is given here, before asking: a
+            # standalone box would otherwise hold for ever and never take
+            # another release (the #337 review).
+            try:
+                d = read()
+            except ClusterError:
+                d = None
+            if d is None or len(d.get("members") or {}) <= 1:
+                print("clear to update (this Machine is not in a cluster of more than one)")
+                return 0
+            # the same page the `page` verb prints, from this box's own
+            # listener — the only thing that can read its own summary
+            try:
+                st, out, who = call("local", "GET", "/api/cluster/page")
+            except ClusterError as e:
+                print("holding: cannot read this cluster's page (%s)" % e); return 1
+            if st != 200 or not who:
+                print("holding: the page did not answer (%s)" % st); return 1
+            ok, why = rolling_ok(out, self_id(), argv[1] if len(argv) > 1 else "")
+            print("clear to update" if ok else "holding: %s" % why)
+            return 0 if ok else 1
         if verb == "page":
             st, out, who = call("local", "GET", "/api/cluster/page")
             if st != 200 or not who:
@@ -1170,7 +1259,7 @@ def main(argv):
     except ClusterError as e:
         print("cluster: %s" % e, file=sys.stderr)
         return 1
-    print("usage: pipeos cluster init [NAME] [--force] | status | ca | add ID|NAME|IP [NAME] | remove ID|NAME | sync | join MEMBER | adopt ID|IP [NAME] | page | agents | start NAME --on ID|NAME|idlest [--prompt TEXT [--cron SPEC|manual] ...] | reboot-all [--yes] | services KEY on|off [ID...] | call ID|NAME|IP METHOD PATH [JSON]", file=sys.stderr)
+    print("usage: pipeos cluster init [NAME] [--force] | status | ca | add ID|NAME|IP [NAME] | remove ID|NAME | sync | join MEMBER | adopt ID|IP [NAME] | page | rolling-ok [RELEASE_COMMIT] | agents | start NAME --on ID|NAME|idlest [--prompt TEXT [--cron SPEC|manual] ...] | reboot-all [--yes] | services KEY on|off [ID...] | call ID|NAME|IP METHOD PATH [JSON]", file=sys.stderr)
     return 2
 
 

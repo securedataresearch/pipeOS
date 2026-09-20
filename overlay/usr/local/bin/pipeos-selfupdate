@@ -36,6 +36,8 @@ set -u
 
 CONF=${PIPEOS_SELFUPDATE_CONF:-/etc/pipeos/selfupdate.conf}
 STATE=/work/.pipeos
+UPDATING_MARK=${PIPEOS_UPDATING_MARK:-/run/pipeos/updating}
+CLUSTER_PY=${PIPEOS_SELFUPDATE_CLUSTER:-/usr/local/share/pipeos/web/cluster.py}
 # ---- seams for the probe (check-operator-verbs.py); the box never sets them
 SAVE_BIN=${PIPEOS_SAVE_BIN:-/usr/local/bin/pipeos-save}
 FLASH_BIN=${PIPEOS_FLASH_BIN:-/usr/local/bin/pipeos-flash}
@@ -214,13 +216,37 @@ image_update() {
     if sessions_live; then
         say "image: a terminal session is live — holding until next hour"; log "image: held (session live)"; return 1
     fi
+    # §9, rolling updates (#216): one Machine at a time, and never while
+    # another member is already out — the cluster keeps at least one green.
+    # Leaderless: every member asks the same questions of the same shared
+    # list, and the lowest id still on this release goes first.
+    if [ -r "$CLUSTER_PY" ]; then
+        # 2>&1: the reason is the point — "not in a cluster", a listener
+        # restarting and a page that 500s all look the same without it, and
+        # that is the least debuggable form of a hold (the #337 review)
+        _hold=$(python3 "$CLUSTER_PY" rolling-ok "$_sha" 2>&1) || {
+            say "image: ${_hold:-holding for the cluster} — until next hour"
+            log "image: held (cluster: ${_hold:-no reason given})"; return 1; }
+    fi
     say "image: newer release $_tag — fetching"; log "image: change detected running=$_running release=$_tag"
-    PIPEOS_FLASH_CALLER=selfupdate $FLASH_BIN fetch >/dev/null 2>&1 || { log "ERROR image: fetch failed"; return 1; }
+    # the other members read this and wait their turn; tmpfs, so the reboot
+    # that ends the update clears it, and so does a crash mid-apply
+    # advisory, never fatal: it tells the other members to wait their turn,
+    # and an update that cannot write it should still happen
+    mkdir -p "$(dirname "$UPDATING_MARK")" 2>/dev/null || true
+    : > "$UPDATING_MARK" 2>/dev/null || true
+    # a marker left by a killed run — cron timeout, SIGTERM, a hand on
+    # Ctrl-C — would hold every other member for ever on a box that now has
+    # no reason to reboot and clear it (#337 review). The successful path
+    # ends in a reboot, which clears /run anyway.
+    trap 'rm -f "$UPDATING_MARK"' EXIT INT TERM HUP
+    PIPEOS_FLASH_CALLER=selfupdate $FLASH_BIN fetch >/dev/null 2>&1 || { rm -f "$UPDATING_MARK"; log "ERROR image: fetch failed"; return 1; }
     say "image: applying in place"
     # the caller seam lets flash apply run while WE hold the self-update lock;
     # without it flash refuses ("a self-update is running") and nothing ever
     # applies (pipeOS#275 review)
     if ! PIPEOS_FLASH_CALLER=selfupdate $FLASH_BIN apply --yes >/dev/null 2>&1; then
+        rm -f "$UPDATING_MARK"
         log "ERROR image: apply failed — box unchanged (pipeos-flash aborts before the write on any refusal)"; return 1
     fi
     echo "${_tag:-$_rd} $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$IMAGE_UPDATED"

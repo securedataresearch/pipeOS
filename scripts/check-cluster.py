@@ -63,6 +63,7 @@ for k in ("ADMIN_CONF", "SERVICES_CONF", "CARD", "PROVISIONED", "BOOT_REPORT", "
 webd.SESS_DIR = os.path.join(d, "sessions"); webd.MDNS_CACHE = os.path.join(d, "peers.json"); webd.MACHINES_ROSTER = os.path.join(d, "machines.json")
 webd.FLASH_IMAGE_TXT = os.path.join(d, "image.txt")
 webd.SCHEDULE_LOCK = os.path.join(d, "sched.lock")
+webd.UPDATING_MARK = os.path.join(d, "updating")     # mid-release marker (#216)
 webd.SCHEDULE_CONF = os.path.join(d, "schedule.json"); webd.SCHEDULE_STATE_DIR = os.path.join(d, "sched-state"); os.makedirs(webd.SCHEDULE_STATE_DIR, exist_ok=True)
 webd.SCHEDULE_RUN_BIN = os.path.join(os.environ["PIPEOS_BIN"], "pipeos-schedule-run"); webd.SCHEDULE_LOGDIR = d; webd.LEDGER_PAUSED = os.path.join(d, "paused"); webd.LEDGER_PAUSED_JSON = os.path.join(d, "paused.json"); webd.LEDGER_DIR = os.path.join(d, "ledger")
 webd.TLS_INIT = os.path.join(os.environ["PIPEOS_BIN"], "pipeos-tls-init")
@@ -522,6 +523,30 @@ check("19b a placement the member refuses at run time (another job is running th
       rc_rf == 1 and "2222: another job is running" in out_rf and "later" in jobs_of(H) and H.nsaves() == h_saves2 + 1 and "later" not in ran_on(H),
       repr((rc_rf, out_rf[-200:], jobs_of(H), H.nsaves() - h_saves2, ran_on(H))))
 H.cli("call", "local", "POST", "/api/schedule/del", json.dumps({"name": "later"}))
+
+# ── 19d. rolling updates (#216, §9): one Machine at a time, never while another
+# is out, and the lowest id still on this release goes first — asked of the
+# same shared list by every member, so it sequences itself with no coordinator
+def rolling(box, *a):
+    return box.cli("rolling-ok", *a)
+
+# both have said how they are: an unassessed member is a hold of its own
+for _b in (G, H):
+    open(os.path.join(_b.dir, "boot_report"), "w").write("pipeos boot report\nverdict: all green\n")
+G.see(H)
+
+rc_r1, out_r1 = rolling(G)                                   # both green, same release: the lower id (1111) goes
+rc_r2, out_r2 = rolling(H)                                   # the higher waits for it
+open(os.path.join(H.dir, "updating"), "w").close()           # seven starts applying
+G.see(H)
+rc_r3, out_r3 = rolling(G)
+os.unlink(os.path.join(H.dir, "updating"))
+G.see(H)
+check("19d rolling updates: with both green on the same release the lowest id is clear and the other is told who goes first; while a member is applying one, nobody else is clear, and the reason names it",
+      rc_r1 == 0 and "clear to update" in out_r1
+      and rc_r2 == 1 and "1111 goes first" in out_r2
+      and rc_r3 == 1 and ("applying a release" in out_r3 or "not answering" in out_r3),
+      repr((rc_r1, out_r1.strip(), rc_r2, out_r2.strip(), rc_r3, out_r3.strip())))
 
 lg = open(os.path.join(G.dir, "sched.lock"), "w"); _f.flock(lg, _f.LOCK_EX)          # six is busy: a job is running
 rc_i1, out_i1 = G.cli("start", "pick", "--on", "idlest", "--prompt", "pick me", "--cron", "@hourly")

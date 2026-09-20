@@ -35,7 +35,7 @@ def check(desc, ok, detail=""):
 
 
 def run(d, release_commit, running_commit="0000old", *, sched_locked=False,
-        who="", tmux_client=False, flash_apply_rc=0, real_flash=False):
+        who="", tmux_client=False, flash_apply_rc=0, real_flash=False, rolling_hold=""):
     """One pipeos-selfupdate run, image step only. Returns (rc, output, marks)
     where marks is the dict of recorder files the fakes wrote."""
     bindir = os.path.join(d, "bin")
@@ -73,6 +73,14 @@ def run(d, release_commit, running_commit="0000old", *, sched_locked=False,
             pass
     sched_lock = os.path.join(d, "schedule.lock")
     open(sched_lock, "w").close()
+    # the cluster gate (#216): a stub that answers the way cluster.py's
+    # rolling-ok verb does — rc 0 clear, rc 1 with the reason on stdout
+    cluster_stub = os.path.join(d, "cluster-stub.py")
+    with open(cluster_stub, "w") as f:
+        f.write("import os, sys\n"
+                "h = os.environ.get('STUB_ROLLING_HOLD')\n"
+                "print(h if h else 'clear to update')\n"
+                "sys.exit(1 if h else 0)\n")
     env = dict(os.environ,
                PATH=bindir + ":" + os.environ["PATH"],
                PIPEOS_SELFUPDATE_CONF=conf,
@@ -87,6 +95,9 @@ def run(d, release_commit, running_commit="0000old", *, sched_locked=False,
                PIPEOS_RELEASE_COMMIT=release_commit,
                PIPEOS_SELFUPDATE_LOG=os.path.join(d, "selfupdate.log"),
                PIPEOS_SELFUPDATE_LOCK=os.path.join(d, "su.lock"),
+               PIPEOS_UPDATING_MARK=os.path.join(d, "updating"),
+               PIPEOS_SELFUPDATE_CLUSTER=cluster_stub,
+               STUB_ROLLING_HOLD=rolling_hold,
                PIPEOS_SELFUPDATE_IMAGE_ONLY="1")
     os.makedirs(env["PIPEOS_PTS_DIR"], exist_ok=True)
     # point the tmux socket glob at our dir by faking /run/pipeos via the
@@ -135,6 +146,19 @@ with tempfile.TemporaryDirectory() as base:
 
     rc, out, m = run(d(), release_commit="abc123new", running_commit="0000old", sched_locked=True)
     check("a held schedule lock (a job running) -> HOLD, no apply", "apply" not in m["flash"] and not m["reboot"], "flash=%r" % m["flash"])
+
+    # the cluster gate (#216): another member is applying, or is out, or goes
+    # first — this Machine waits, and the log says whose turn it is and why
+    with tempfile.TemporaryDirectory() as d5:
+        rc, out, m = run(d5, "abc1234", rolling_hold="holding: two goes first (the lowest id of the 2 still to take it)")
+        logtxt = open(os.path.join(d5, "selfupdate.log")).read() if os.path.exists(os.path.join(d5, "selfupdate.log")) else ""
+        check("the cluster says another Machine goes first -> HOLD, no apply, and the log carries the reason rather than 'no reason given' (#216)",
+              bool("apply" not in m["flash"] and not m["reboot"] and "two goes first" in logtxt),
+              "flash=%r log=%r" % (m["flash"], logtxt[-200:]))
+    with tempfile.TemporaryDirectory() as d6:
+        rc, out, m = run(d6, "abc1234")          # the stub answers clear
+        check("the cluster says clear -> the apply goes ahead (a standalone Machine, and every member whose turn it is, must not be held for ever)",
+              bool("apply" in m["flash"] and m["reboot"]), "flash=%r" % m["flash"])
 
     # the seam is load-bearing: pipeos-flash refuses the /run/pipeos-selfupdate.lock
     # UNLESS the caller says selfupdate, and pipeos-selfupdate sets it on apply.
