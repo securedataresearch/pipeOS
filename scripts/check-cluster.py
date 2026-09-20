@@ -527,8 +527,13 @@ H.cli("call", "local", "POST", "/api/schedule/del", json.dumps({"name": "later"}
 # ── 19d. rolling updates (#216, §9): one Machine at a time, never while another
 # is out, and the lowest id still on this release goes first — asked of the
 # same shared list by every member, so it sequences itself with no coordinator
-def rolling(box):
-    return box.cli("rolling-ok")
+def rolling(box, *a):
+    return box.cli("rolling-ok", *a)
+
+# both have said how they are: an unassessed member is a hold of its own
+for _b in (G, H):
+    open(os.path.join(_b.dir, "boot_report"), "w").write("pipeos boot report\nverdict: all green\n")
+G.see(H)
 
 rc_r1, out_r1 = rolling(G)                                   # both green, same release: the lower id (1111) goes
 rc_r2, out_r2 = rolling(H)                                   # the higher waits for it

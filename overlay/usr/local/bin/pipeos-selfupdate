@@ -220,8 +220,11 @@ image_update() {
     # another member is already out — the cluster keeps at least one green.
     # Leaderless: every member asks the same questions of the same shared
     # list, and the lowest id still on this release goes first.
-    if [ -x "$CLUSTER_PY" ] || [ -r "$CLUSTER_PY" ]; then
-        _hold=$(python3 "$CLUSTER_PY" rolling-ok 2>/dev/null) || {
+    if [ -r "$CLUSTER_PY" ]; then
+        # 2>&1: the reason is the point — "not in a cluster", a listener
+        # restarting and a page that 500s all look the same without it, and
+        # that is the least debuggable form of a hold (the #337 review)
+        _hold=$(python3 "$CLUSTER_PY" rolling-ok "$_sha" 2>&1) || {
             say "image: ${_hold:-holding for the cluster} — until next hour"
             log "image: held (cluster: ${_hold:-no reason given})"; return 1; }
     fi
@@ -232,6 +235,11 @@ image_update() {
     # and an update that cannot write it should still happen
     mkdir -p "$(dirname "$UPDATING_MARK")" 2>/dev/null || true
     : > "$UPDATING_MARK" 2>/dev/null || true
+    # a marker left by a killed run — cron timeout, SIGTERM, a hand on
+    # Ctrl-C — would hold every other member for ever on a box that now has
+    # no reason to reboot and clear it (#337 review). The successful path
+    # ends in a reboot, which clears /run anyway.
+    trap 'rm -f "$UPDATING_MARK"' EXIT INT TERM HUP
     PIPEOS_FLASH_CALLER=selfupdate $FLASH_BIN fetch >/dev/null 2>&1 || { rm -f "$UPDATING_MARK"; log "ERROR image: fetch failed"; return 1; }
     say "image: applying in place"
     # the caller seam lets flash apply run while WE hold the self-update lock;
