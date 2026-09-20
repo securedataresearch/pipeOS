@@ -622,6 +622,27 @@ render_all() {
 }
 
 # ------------------------------------------------------------- generate
+# Which running service read this output at ITS start, and so is running on
+# the old bytes until it is restarted. The table lives here because this is
+# the file that knows what an output IS; the callers (deploy-overlay's card
+# step, `pipeos card set`) do the restarting, because restarting is theirs.
+#
+# Only two qualify. pipebox-listener sources etc/pipeos/pipebox.conf once,
+# on its line 9, before its loop — a changed NICK or ROLE does not reach the
+# running copy. pipe-daemon loads root/.pipe/policy.json when its state is
+# built, so a regenerated policy is not the one being enforced (pipeOS#329).
+# The rest are read per use and need nobody bounced: the mandate and the
+# settings are read on each agent run, etc/issue and etc/motd at the next
+# login, etc/profile.d at the next shell, and etc/network/interfaces is the
+# operator's call — bouncing a Machine's network from a card write is not
+# something a generator gets to decide.
+consumer_of() {
+    case "$1" in
+        root/.pipe/policy.json)      echo pipe-daemon ;;
+        etc/pipeos/pipebox.conf)     echo pipebox-listener ;;
+    esac
+}
+
 cmd_generate() {
     read_card "$CARD"
     tmpd=$(mktemp -d) || die "mktemp failed"
@@ -634,15 +655,31 @@ cmd_generate() {
         for rel in $OUTPUTS; do echo "$(sha "$tmpd/$rel")  $rel"; done
     } > "$tmpd/$STAMP_REL"
 
+    _restart=""
     for rel in $OUTPUTS $STAMP_REL; do
         dst="${ROOT%/}/$rel"
+        # what actually CHANGED, decided before the write — a regeneration
+        # that reproduces the same bytes has changed nothing and must not
+        # bounce anybody (#329)
+        _was=""
+        [ -f "$dst" ] && _was=$(sha "$dst")
         mkdir -p "${dst%/*}" || die "mkdir failed for $dst"
         # write-then-rename: a power cut must not leave a half-written mandate,
         # which the listener would refuse to run on and the box would go quiet
         cp "$tmpd/$rel" "$dst.new" || die "write failed: $dst.new"
         mv "$dst.new" "$dst" || die "install failed: $dst"
         echo "wrote $dst"
+        if [ "$_was" != "$(sha "$tmpd/$rel")" ]; then
+            echo "changed $rel"
+            _svc=$(consumer_of "$rel")
+            case " $_restart " in *" $_svc "*) ;; *) [ -n "$_svc" ] && _restart="$_restart $_svc" ;; esac
+        fi
     done
+    # One line per service that read a changed output at its own start. This
+    # command does not restart anything: it is a generator, it runs at first
+    # boot before any of these exist, and who may bounce a service is the
+    # caller's business. Callers grep for exactly this prefix.
+    for _svc in $_restart; do echo "restart $_svc"; done
 
     # A card with a real NICK means this box has been provisioned. pipeos-save
     # gates on etc/pipeos/provisioned and silently exits 0 without it — so a

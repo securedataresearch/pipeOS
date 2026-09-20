@@ -400,6 +400,30 @@ rm -f "$ref_paths"
 # pipebox-card verify's rc, from ONE place (the dry run, the no-change
 # reasons and the step all ask the same question): 0 match, 1 divergent,
 # 2 cannot tell (no card, no generation stamp — or no pipebox-card at all).
+# A regenerated output is only live for whoever re-reads it. pipebox-card
+# names the services that read a CHANGED output at their own start
+# ("restart <svc>"); bounce those and nothing else, so a card write never
+# takes down the owner's terminals or a stream for a file they do not read
+# (pipeOS#329). Silent when nothing changed, which is the common case.
+restart_card_consumers() {
+    for _svc in $(printf '%s\n' "$1" | sed -n 's/^restart //p'); do
+        if [ "$NO_PERSIST" = 1 ] || [ -n "$ROOT" ]; then
+            say "card outputs: $_svc reads one of them at its start — a real box would restart it here"
+            continue
+        fi
+        if ! rc-service "$_svc" status >/dev/null 2>&1; then
+            continue                       # not running: it reads the new bytes when it starts
+        fi
+        if rc-service "$_svc" restart >/dev/null 2>&1 9>&-; then
+            say "restarted $_svc (it read a card output that just changed; the running copy had the old bytes)"
+            log "restarted $_svc after a card regeneration"
+        else
+            say "$_svc did NOT restart after its card output changed — it is running on the old bytes; rc-service $_svc status"
+            log "RESTART FAILED: $_svc after a card regeneration"
+        fi
+    done
+}
+
 card_verify_rc() {
     pbc="$ROOT/usr/local/bin/pipebox-card"
     [ -f "$pbc" ] || return 2
@@ -419,11 +443,14 @@ card_outputs_step() {
     case $? in
         0)  say "card outputs: match the deployed templates" ;;
         1)  say "card outputs: diverge from the deployed templates — regenerating with pipebox-card generate"
-            if sh "$pbc" generate --card "$CARD" --root "${ROOT:-/}" \
-                   --templates "$ROOT/usr/local/share/pipeos/card" >/dev/null 2>&1; then
+            _gen_out=$(sh "$pbc" generate --card "$CARD" --root "${ROOT:-/}" \
+                   --templates "$ROOT/usr/local/share/pipeos/card" 2>&1)
+            # shellcheck disable=SC2181  # the output is wanted whether or not it succeeded
+            if [ $? = 0 ]; then
                 card_regenerated=yes
                 say "regenerated the card outputs from $CARD"
                 log "regenerated card outputs after deploy (the templates or the generator changed, or a divergence was left behind)"
+                restart_card_consumers "$_gen_out"
             else
                 die "pipebox-card generate FAILED — the box's generated files do not match the deployed templates; run 'pipebox-card generate' by hand and read its error"
             fi ;;
