@@ -16,6 +16,7 @@ check-cluster-controls.py put the bugs back.
 import json
 import os
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
@@ -84,6 +85,9 @@ srv.serve_forever()
 '''
 
 
+BOXES = []      # every box this run built; a membership verb may restart any of them
+
+
 class Box:
     def __init__(self, bid, name):
         self.id, self.name = bid, name
@@ -92,6 +96,10 @@ class Box:
         self.tls = os.path.join(self.dir, "tls")
         self.cjson = os.path.join(self.dir, "cluster.json")
         self.saves = os.path.join(self.dir, "saves")
+        self.bundle = os.path.join(self.dir, "cluster-ca.pem")
+        self.no_restart = False     # set once a restart wait has timed out
+        self.weblog = os.path.join(self.dir, "webd.log")
+        BOXES.append(self)
         self.env = dict(os.environ, PATH=BIN + ":" + os.environ.get("PATH", ""),
                         PIPEOS_CLUSTER_JSON=self.cjson, PIPEOS_TLS_DIR=self.tls, PIPEOS_TLS_HOST="pipeos-" + bid,
                         PIPEOS_CLUSTER_BUNDLE=os.path.join(self.dir, "cluster-ca.pem"),
@@ -116,10 +124,91 @@ class Box:
     MEMBERSHIP = ("init", "add", "remove", "sync", "join", "adopt")
 
     def cli(self, *args, env=None, stdin=None):
+        membership = bool(args) and args[0] in self.MEMBERSHIP
+        # Before, not after: the trust store is rewritten by the verb itself, so
+        # a stamp read afterwards cannot tell a box that changed from one that
+        # never did.
+        watch = [(b, b.listens(), b.bundle_stamp()) for b in BOXES if b.alive()] if membership else []
         p = subprocess.run([sys.executable, CLUSTER] + list(args), capture_output=True, text=True, env=env or self.env, input=stdin)
-        if args and args[0] in self.MEMBERSHIP:
-            time.sleep(0.45)     # the listeners follow the trust store on disk (bundle_watcher, 0.05 s here)
+        for b, seen, stamp in watch:
+            if not b.alive():
+                continue
+            # Only the box that RAN the verb needs the restart proved: its webd
+            # is a different process and learns from bundle_watcher polling, so
+            # a bare connect can hit the pre-restart socket. A member it pushed
+            # to restarts in-process while answering, so for that one the socket
+            # being back is the whole question.
+            need = seen if (b is self and b.bundle_stamp() != stamp and not b.no_restart) else None
+            if not b.wait_https(restarts_past=need):
+                # NOT fatal, and not a FAIL line. `check-cluster-controls`
+                # control B removes the listener restart on purpose, and row 4
+                # is what must catch that — a probe that died here instead would
+                # report nothing and the control would read as "the probe did
+                # not notice". Said once per box, then stop waiting on it.
+                b.no_restart = True
+                print("note: %s's TLS listener did not come back after `cluster %s`"
+                      " (announcements %s -> %s) — later rows judge it"
+                      % (b.name, args[0], seen, b.listens()))
         return p.returncode, p.stdout + p.stderr
+
+    def alive(self):
+        return getattr(self, "proc", None) is not None and self.proc.poll() is None
+
+    def listens(self):
+        """How many times this box's TLS listener has announced itself —
+        `start_https` writes one line per bind to stderr, which is webd.log."""
+        try:
+            return open(self.weblog, errors="replace").read().count("pipeos-webd listening on")
+        except OSError:
+            return 0
+
+    def bundle_stamp(self):
+        try:
+            return os.stat(self.bundle).st_mtime_ns
+        except OSError:
+            return None
+
+    def wait_https(self, restarts_past=None, timeout=8.0):
+        """Wait out a listener restart — this box's, or a member it pushed to.
+
+        cluster.ON_CHANGE restarts the HTTPS listener whenever the member
+        list changes, so a call made right after `add`/`remove`/`sync` can
+        land in the window where nothing is listening and be refused at the
+        SOCKET (`handshake: [Errno 111] Connection refused`) instead of
+        answered at the application level. The sleep above allows for the
+        trust store reaching the other boxes; it is not a promise that this
+        one is back, and on a loaded machine 0.45 s is not enough — row 8
+        failed that way twice in full ci-local runs and never standalone
+        (pipeOS#345).
+
+        `cluster.py` runs in its own process, so the box whose verb it was does
+        not fire ON_CHANGE: its webd learns from `bundle_watcher` polling the
+        trust store, which is why a plain connect here is not proof — it can
+        succeed against the pre-restart socket. `restarts_past` is the count of
+        listener announcements seen before the verb, so the wait is for the
+        restart to have HAPPENED and the new socket to be up.
+
+        A member the verb PUSHED to restarts in-process while it answers, so it
+        needs the same wait on the other side of the connection — hence cli()
+        watching every live box, not only self.
+
+        This waits for the precondition rather than softening what the rows
+        assert: a refusal must still be the application's, for the reason
+        the row names."""
+        end = time.time() + timeout
+        while time.time() < end:
+            # An open socket is not evidence on its own: until the watcher
+            # thread is scheduled the OLD listener is still accepting, so a
+            # connect here succeeds against the very socket that is about to be
+            # torn down — which is the race, not the proof of its absence.
+            if restarts_past is None or self.listens() > restarts_past:
+                try:
+                    with socket.create_connection(("127.0.0.1", self.tls_port), timeout=0.5):
+                        return True
+                except OSError:
+                    pass
+            time.sleep(0.05)
+        return False
 
     def py(self, code, env=None):
         p = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, %r); import cluster, json\n%s" % (WEB, code)],
