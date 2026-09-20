@@ -155,6 +155,36 @@ with open(pA, "w") as f:
 n5 = L().ingest()
 check("9 a transcript rewritten with a new inode (same ids) adds no duplicates", n5 == 0, "n5=%d" % n5)
 
+# ── 9b-9c. the volume's two names (#330) ───────────────────────────────
+# The flip moves the bulk volume from /work to /data. Every cursor key
+# written before it is an absolute /work/... path; every transcript written
+# before it records cwd "/work/...". Neither may re-ingest a single row:
+# a cursor the ingest cannot match means off=0 for every transcript, the
+# whole history appends again, and month-to-date spend roughly doubles on
+# every box at once — enough to trip the caps and pause them.
+cur = os.path.join(LDIR, "cursor.json")
+before = json.load(open(cur))
+legacy = {}
+for k, v in before.items():
+    legacy["/work/claude/projects/" + k.lstrip("/")] = v      # the pre-#330 shape
+json.dump(legacy, open(cur, "w"))
+rows_before = len(list(L().rows(["2026-09"])))
+n6 = L().ingest()
+check("9b a cursor keyed by absolute /work paths (written before the volume moved) is read as this volume's — no re-ingest, no doubled spend",
+      n6 == 0 and len(list(L().rows(["2026-09"]))) == rows_before,
+      "n6=%d rows=%d/%d" % (n6, len(list(L().rows(["2026-09"]))), rows_before))
+# and both names collapse to one key rather than accumulating a second set
+after = json.load(open(cur))
+check("9c the rewritten cursor keys are relative to the transcripts dir, one per transcript — where the volume is mounted stops mattering",
+      len(after) == len(before) and all(not k.startswith("/") for k in after),
+      "keys=%r" % sorted(after))
+maps = ({}, {}, "")
+check("9d a transcript that records the OLD name attributes the same as one recording the new: /work/pipebox and <vol>/pipebox are both the watcher",
+      L().actor_for(None, "/work/pipebox", maps)["kind"] == "watch"
+      and L().actor_for(None, "/work/pipebox/webchat", maps)["kind"] == "assistant"
+      and L().actor_for(None, TR.rstrip("/").rsplit("/", 2)[0] + "/pipebox", maps)["kind"] == "watch",
+      "old=%r new=%r" % (L().actor_for(None, "/work/pipebox", maps), L().actor_for(None, TR.rstrip("/").rsplit("/", 2)[0] + "/pipebox", maps)))
+
 # ── 10. totals ─────────────────────────────────────────────────────────
 t = L().totals()
 check("10 totals: today counts only today's rows, 7 days includes yesterday, 30 days includes 20 days ago but not 35, the month only September; unpriced = 1; daily[29] is today; by_actor keys are kind:name",

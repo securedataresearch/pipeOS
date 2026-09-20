@@ -1,0 +1,138 @@
+#!/bin/sh
+# pipeos-data-migrate — rewrite the absolute paths that were written down
+# while the bulk volume was mounted at /work, after it moves to /data
+# (pipeOS#330, docs/cluster.md §8).
+#
+# The symlink makes every path RESOLVE either way; it does not make a stored
+# string right. Three stores key on the physical path and break quietly:
+#
+#   1. /etc/pipeos/schedule.json — a job's `cwd` is realpath'd when saved, so
+#      every job saved before the flip holds /work/... and the runner refuses
+#      it ("cwd ... is not under /data") on every tick, with a DM each time.
+#   2. /root/.claude.json — claude keys workdir TRUST by the physical cwd, so
+#      after the flip the listener's dir is untrusted and a headless run
+#      stalls on a dialog nobody can answer.
+#   3. /root/.claude/projects/-work-* — claude derives a project directory
+#      from the cwd, and `--resume`/`--continue` look for the session under
+#      that name. Left alone, every per-peer resume silently starts a new
+#      conversation and the DM thread loses its history.
+#
+# The ledger's cursor is NOT here: it migrates itself on load (ledger.py),
+# because a cursor left keyed by /work/... re-ingests every historical
+# transcript and roughly doubles month-to-date spend on every box at once —
+# enough to trip the box, agent and cluster caps and pause them. Something
+# that costly does not wait for a migration script that may never run.
+#
+# The backup layout on disk is NOT here either, on purpose: `pipeos-backup`
+# writes `work/` under pipeos-backup/<id>/ and that stays `work/`. It is a
+# persisted format, not a path on the box — renaming it would strand every
+# bundle taken before the flip and make restore-work rsync identity/ and
+# boot-media/ into the volume.
+#
+# Idempotent, and safe on a box that was never /work-mounted (it finds
+# nothing to do). Run by workspace.sh after the flip; also runnable by hand.
+# Seams (the probe, never production): PIPEOS_MIGRATE_FROM, _TO, _SCHED,
+# _CLAUDE_JSON, _CLAUDE_PROJECTS.
+set -u
+
+FROM=${PIPEOS_MIGRATE_FROM:-/work}
+TO=${PIPEOS_MIGRATE_TO:-/data}
+SCHED=${PIPEOS_MIGRATE_SCHED:-/etc/pipeos/schedule.json}
+CLAUDE_JSON=${PIPEOS_MIGRATE_CLAUDE_JSON:-/root/.claude.json}
+PROJECTS=${PIPEOS_MIGRATE_CLAUDE_PROJECTS:-/root/.claude/projects}
+
+[ "$FROM" = "$TO" ] && exit 0
+rc=0
+did=0
+say() { printf 'data-migrate: %s\n' "$*"; }
+
+# claude's project directory name is the cwd with every / turned into -.
+slug() { printf '%s' "$1" | tr '/' '-'; }
+
+# ---- 1. stored job cwds
+if [ -f "$SCHED" ] && command -v jq >/dev/null 2>&1; then
+    if jq -e --arg f "$FROM" '[.jobs[]? | select(.cwd == $f or (.cwd? // "" | startswith($f + "/")))] | length > 0' \
+        "$SCHED" >/dev/null 2>&1; then
+        if jq --arg f "$FROM" --arg t "$TO" \
+            '.jobs = [.jobs[]? | if (.cwd == $f) then .cwd = $t
+                                 elif ((.cwd? // "") | startswith($f + "/")) then .cwd = ($t + (.cwd | ltrimstr($f)))
+                                 else . end]' \
+            "$SCHED" > "$SCHED.new" 2>/dev/null && mv "$SCHED.new" "$SCHED"; then
+            say "rewrote job working directories $FROM -> $TO in $SCHED"
+            did=1
+        else
+            rm -f "$SCHED.new"
+            say "WARNING: could not rewrite $SCHED — jobs saved before the flip will be refused ('cwd ... is not under $TO')"
+            rc=1
+        fi
+    fi
+fi
+
+# ---- 2. claude's workdir trust
+if [ -f "$CLAUDE_JSON" ] && command -v jq >/dev/null 2>&1; then
+    if jq -e --arg f "$FROM" '(.projects? // {}) | keys[] | select(. == $f or startswith($f + "/"))' \
+        "$CLAUDE_JSON" >/dev/null 2>&1; then
+        # An entry already under the new name wins: it is the live one, and
+        # clobbering it with a stale copy would undo a trust the box has
+        # already been using.
+        if jq --arg f "$FROM" --arg t "$TO" \
+            '.projects = ((.projects // {}) | with_entries(
+                 if (.key == $f or (.key | startswith($f + "/")))
+                 then .key = ($t + (.key | ltrimstr($f))) else . end)
+                 + (.projects // {} | with_entries(select(.key | startswith($t)))))' \
+            "$CLAUDE_JSON" > "$CLAUDE_JSON.new" 2>/dev/null \
+            && mv "$CLAUDE_JSON.new" "$CLAUDE_JSON" && chmod 600 "$CLAUDE_JSON"; then
+            say "moved claude's workdir trust $FROM -> $TO in $CLAUDE_JSON"
+            did=1
+        else
+            rm -f "$CLAUDE_JSON.new"
+            say "WARNING: could not rewrite $CLAUDE_JSON — a headless run may stall on the trust dialog"
+            rc=1
+        fi
+    fi
+fi
+
+# ---- 3. claude's project (session) directories
+if [ -d "$PROJECTS" ]; then
+    fs=$(slug "$FROM")
+    ts=$(slug "$TO")
+    for d in "$PROJECTS/$fs"*; do
+        [ -d "$d" ] || continue
+        base=${d##*/}
+        new="$PROJECTS/$ts${base#"$fs"}"
+        if [ -e "$new" ]; then
+            # Both names hold sessions (a box that ran under each): the new
+            # name is the live one. Say it rather than merging blind.
+            say "NOTE: $new already exists — leaving $d alone; resumes older than the flip stay under the old name"
+            continue
+        fi
+        if mv "$d" "$new"; then
+            say "moved claude sessions $base -> ${new##*/}"
+            did=1
+        else
+            say "WARNING: could not move $d -> $new — --resume will not find sessions from before the flip"
+            rc=1
+        fi
+    done
+fi
+
+# ---- 4. the transcripts symlink, if it still points into the old name
+if [ -L "$PROJECTS" ]; then
+    tgt=$(readlink "$PROJECTS")
+    case "$tgt" in
+        "$FROM"|"$FROM"/*)
+            newt="$TO${tgt#"$FROM"}"
+            if rm -f "$PROJECTS" && ln -s "$newt" "$PROJECTS"; then
+                say "repointed $PROJECTS -> $newt"
+                did=1
+            else
+                say "WARNING: could not repoint $PROJECTS (was $tgt)"
+                rc=1
+            fi
+            ;;
+    esac
+fi
+
+[ "$did" = 1 ] || exit "$rc"
+say "done — the volume is $TO; $FROM still resolves to it through the symlink"
+exit "$rc"
