@@ -129,6 +129,16 @@ details summary { cursor: pointer; }
 .row .name { font-weight: 600; }
 .row.off .name, .row.off .desc { opacity: .55; }  /* a Machine on the roster but not answering (#241) */
 .row .desc { color: var(--muted); font-size: .85rem; }
+/* the update log (#335): a day heading, a row per change, its reason folded away */
+.upday { margin: 1.2rem 0 .5rem; font-size: .85rem; color: var(--muted); font-weight: 600; }
+.upday:first-child { margin-top: .2rem; }
+.uprow { padding: .6rem 0; border-bottom: 1px solid var(--line); }
+.uprow:last-child { border-bottom: 0; }
+.uphead { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem; justify-content: space-between; }
+.uptitle { font-weight: 600; }
+.upmore { margin-top: .4rem; }
+.upbody { white-space: pre-wrap; margin: .5rem 0 0; padding: .6rem .8rem; background: var(--line); border-radius: 6px; font-size: .85rem; line-height: 1.45; overflow-x: auto; }
+
 /* the network map (#217): the one table in the app */
 .tblwrap { overflow-x: auto; }
 .tbl { width: 100%; border-collapse: collapse; font-size: .9rem; }
