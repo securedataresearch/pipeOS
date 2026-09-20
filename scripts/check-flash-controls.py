@@ -33,6 +33,15 @@ BREAKS = [
     # one NEVER path inside a swept directory depends on. There was no such
     # restore to touch: #341 shipped as a comment promising it. Now E deletes
     # the restore itself.
+    # E0 is the OLD E, kept rather than replaced. It never touched the restore
+    # (there was none to touch — #341 shipped as a comment promising it), but it
+    # is the only mutation that makes row 5's etc/pipeos and root/.pipe assertions
+    # falsifiable: those paths survive the sweep incidentally, because no
+    # DEPLOY_PATHS entry covers them, so nothing else here proves the merge keeps
+    # them on purpose. Renamed for what it actually does.
+    ("E0 the merge copies the image's etc/pipeos over the box's (the identity the sweep never touches)",
+     '    if [ -f "$_t/b/etc/pipeos/.overlay-stamp" ]; then',
+     '    cp -a "$_t/b/etc/pipeos/." "$_t/a/etc/pipeos/" 2>/dev/null || true\n    if [ -f "$_t/b/etc/pipeos/.overlay-stamp" ]; then'),
     ("E  the merge does not carry the box's NEVER paths across the sweep",
      '''    for _n in $NEVER; do
         [ -e "$_t/keep/$_n" ] || continue''',
