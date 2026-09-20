@@ -63,6 +63,7 @@ AGENT_TIMEOUT_MIN=
 CLEAN_AFTER_RUN=
 WOL=
 WATCHDOG=
+BLINK=
 MONTHLY_CAP_USD=
 CLUSTER_CAP_USD=
 
@@ -113,6 +114,7 @@ read_card() {
             CLEAN_AFTER_RUN) ;;
             WOL) ;;
             WATCHDOG) ;;
+            BLINK) ;;
             MONTHLY_CAP_USD) ;;
             CLUSTER_CAP_USD) ;;
             *) die "unknown card key: $key" ;;
@@ -251,6 +253,7 @@ read_card() {
     # #247: kernel|off, empty = kernel. The hardware watchdog is armed by
     # default; a typo must not silently disarm a box in a closet.
     case "${WATCHDOG:-}" in ''|kernel|off) ;; *) die "WATCHDOG must be kernel or off: $WATCHDOG" ;; esac
+    case "${BLINK:-}" in ''|on|off) ;; *) die "BLINK must be on or off: $BLINK" ;; esac
     # #246: whole dollars, 0 = no cap. The ceiling is a typo guard, not a
     # product limit — nobody sets a six-figure monthly cap on one Machine.
     if [ -n "$MONTHLY_CAP_USD" ]; then
@@ -512,6 +515,7 @@ s|@@AGENT_TIMEOUT_MIN@@|$AGENT_TIMEOUT_MIN|g
 s|@@CLEAN_AFTER_RUN@@|$CLEAN_AFTER_RUN|g
 s|@@WOL@@|$WOL|g
 s|@@WATCHDOG@@|$WATCHDOG|g
+s|@@BLINK@@|$BLINK|g
 s|@@MONTHLY_CAP_USD@@|$MONTHLY_CAP_USD|g
 s|@@CLUSTER_CAP_USD@@|$CLUSTER_CAP_USD|g
 s|@@CARD_SHA@@|$CARD_SHA|g"
@@ -715,7 +719,7 @@ cmd_show() {
     echo "card:        $CARD (sha256:$CARD_SHA)"
     for k in NICK ROLE OWNER_NICK FOREMAN_NICK COHORT_ID GH_OWNER MAC \
              DISK_WARN_PCT DISK_CRIT_PCT GC_INTERVAL_HOURS WORKSWEEP_PCT \
-             OVERLAY_CRIT_DAYS AGENT_TIMEOUT_MIN CLEAN_AFTER_RUN WOL WATCHDOG MONTHLY_CAP_USD CLUSTER_CAP_USD; do
+             OVERLAY_CRIT_DAYS AGENT_TIMEOUT_MIN CLEAN_AFTER_RUN WOL WATCHDOG BLINK MONTHLY_CAP_USD CLUSTER_CAP_USD; do
         eval "v=\$$k"
         printf '%-12s %s\n' "$k:" "${v:-<unset>}"
     done

@@ -15,6 +15,7 @@
 +etc/pipeos/vault.sealed
 +etc/pipeos/vault-requests.json
 # wake-on-lan is armed at every boot (#241): tmpfs forgets an ethtool setting
++etc/init.d/pipeos-blink
 +etc/init.d/pipeos-wol
 # the hardware watchdog's init script is OURS over busybox-openrc's (#247): a
 # modified package file, which apk audit does see — the line is belt and braces
