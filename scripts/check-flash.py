@@ -227,10 +227,10 @@ def merge_into_tree(d, idfiles, imgfiles, name="cardmerge"):
     rc, out = run_fns('merge_apkovl "%s" "%s" "%s"' % (i, gimg, outp))
     tree = os.path.join(d, name + ".tree")
     os.makedirs(tree, exist_ok=True)
-    if rc == 0:
+    if rc == 0 and os.path.exists(outp):
         with tarfile.open(outp) as t:
             t.extractall(tree)
-    return rc, out, tree
+    return rc, out, tree, outp
 
 
 def card_verify(tree):
@@ -245,7 +245,7 @@ d = newdir()
 box = generated_tree(d, BOXCARD)
 # the release changes a template: old outputs beside new templates is the same
 # CRITICAL as the clobber, reached from the other direction
-rc, out, tree = merge_into_tree(d, box, image_files(("motd.tmpl", "\n# a line this release adds\n")))
+rc, out, tree, _outp = merge_into_tree(d, box, image_files(("motd.tmpl", "\n# a line this release adds\n")))
 motd = ""
 try:
     motd = open(os.path.join(tree, "etc/motd")).read()
@@ -258,10 +258,10 @@ check("5c a release that changes a card template regenerates the outputs in the 
 # a box that is not card-provisioned, and one that has never generated: the
 # generator's exit 2 means "cannot tell", which #313 says to leave alone
 d = newdir()
-rc_nc, out_nc, tree_nc = merge_into_tree(d, {"root/.pipe/identity.dat": "K"}, image_files(), "nocard")
+rc_nc, out_nc, tree_nc, _o1 = merge_into_tree(d, {"root/.pipe/identity.dat": "K"}, image_files(), "nocard")
 nostamp = dict(box)
 del nostamp["etc/pipeos/.card-stamp"]
-rc_ns, out_ns, tree_ns = merge_into_tree(d, nostamp, image_files(), "nostamp")
+rc_ns, out_ns, tree_ns, _o2 = merge_into_tree(d, nostamp, image_files(), "nostamp")
 check("5d a box with no card, and one that has never generated, are left alone — the image's copies stand and the merge still succeeds",
       rc_nc == 0 and rc_ns == 0
       and open(os.path.join(tree_nc, "etc/profile.d/10-pipebox-env.sh")).read() == "GENERATED-ON-THE-BUILD-WORKSTATION",
@@ -270,12 +270,30 @@ check("5d a box with no card, and one that has never generated, are left alone �
 # and if the generator itself fails, the apply must not die with it: the p1 is
 # already written by then, and a bricked update is worse than a divergence
 d = newdir()
-rc_f, out_f, tree_f = merge_into_tree(d, box, image_files(generator="#!/bin/sh\nexit 1\n"), "genfail")
-check("5e a generator that fails does not fail the merge: it says so, the box's own outputs stand, and the update completes",
-      rc_f == 0 and os.path.exists(os.path.join(tree_f, "etc/motd"))
-      and open(os.path.join(tree_f, "etc/profile.d/10-pipebox-env.sh")).read() == box["etc/profile.d/10-pipebox-env.sh"]
-      and "generate failed" in out_f,
-      "rc=%s out=%r" % (rc_f, out_f[-200:]))
+rc_f, out_f, tree_f, outp_f = merge_into_tree(d, box, image_files(generator="#!/bin/sh\nexit 1\n"), "genfail")
+check("5e a generator that fails FAILS the merge and writes nothing — it runs before the simulate gate, the typed confirmation and the dd, so refusing costs the box nothing, while carrying on would reflash it into a tree already known to report the divergence",
+      rc_f != 0 and not os.path.exists(outp_f) and "refusing the merge" in out_f,
+      "rc=%s outp_exists=%s out=%r" % (rc_f, os.path.exists(outp_f), out_f[-200:]))
+
+# 5f. the one output that is not safe to rewrite unattended
+d = newdir()
+box_if = dict(box)
+box_if["etc/network/interfaces"] = box["etc/network/interfaces"] + "\n# a static address someone set by hand\n"
+rc_if, out_if, tree_if, _o3 = merge_into_tree(d, box_if, image_files(("motd.tmpl", "\n# a line this release adds\n")), "ifkeep")
+check("5f a diverged etc/network/interfaces is NOT rewritten by an unattended regeneration: every other output is regenerated, the network stanza stays as the box had it, and the run says so — changing a Machine's network with nobody at the console is how a box does not come back",
+      rc_if == 0
+      and open(os.path.join(tree_if, "etc/network/interfaces")).read() == box_if["etc/network/interfaces"]
+      and "a line this release adds" in open(os.path.join(tree_if, "etc/motd")).read()
+      and "EXCEPT etc/network/interfaces" in out_if,
+      "rc=%s out=%r" % (rc_if, out_if[-240:]))
+
+# 5g. "cannot tell" is two different things
+d = newdir()
+rc_rej, out_rej, tree_rej, _o4 = merge_into_tree(
+    d, box, image_files(generator="#!/bin/sh\necho 'cannot read the model card: unknown key FOO' >&2\nexit 2\n"), "rejected")
+check("5g a card the image's NEWER generator cannot read is said and logged, not swallowed: pipebox-card's die() also exits 2, so the quiet 'no card here' arm would otherwise hide a release that rejects every box's card at once",
+      rc_rej == 0 and "could not read this box's card" in out_rej and "unknown key FOO" in out_rej,
+      "rc=%s out=%r" % (rc_rej, out_rej[-240:]))
 
 # ── 6. a full apply against a fake device: exact bounds, nothing past ────
 d = newdir()

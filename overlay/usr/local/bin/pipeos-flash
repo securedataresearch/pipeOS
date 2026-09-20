@@ -387,30 +387,69 @@ merge_apkovl() {   # IDENTITY GENERIC OUT
     # reached from the other direction.
     #
     # Exit codes are pipebox-card's stable API: 0 match, 1 diverge, 2 cannot
-    # tell (no card, or generate has never run here — a box from before the
-    # card path, which #313 says to leave alone rather than cry wolf over).
+    # tell. One difference from deploy-overlay's card_outputs_step: no service
+    # restarts, because nothing in this tree is running — the box reboots into
+    # it.
     #
-    # Two deliberate differences from deploy-overlay's card_outputs_step:
-    # no service restarts (nothing here is running — the box reboots into this
-    # tree), and a failed generate does NOT fail the apply. There, the box is
-    # running and unharmed, so it dies loudly; here the p1 is already written
-    # and bricking an update over a regenerate is a worse outcome than the
-    # divergence being fixed. Say it, log it, carry on.
+    # A FAILURE HERE FAILS THE MERGE. The first draft carried on instead, on
+    # the reasoning that the p1 was already written and a bricked update is
+    # worse than a divergence. That reasoning was false: this runs at line
+    # ~598, before the `apk --simulate` gate, before the typed confirmation
+    # and long before the dd. Nothing has been written and nobody has said
+    # yes, so aborting costs the box exactly nothing — and carrying on would
+    # reflash it into a tree already known to report the divergence this
+    # function exists to prevent.
     _pbc="$_t/a/usr/local/bin/pipebox-card"
     _pbcard="$_t/a/etc/pipeos/card.conf"
     _pbtmpl="$_t/a/usr/local/share/pipeos/card"
     if [ -f "$_pbc" ] && [ -r "$_pbcard" ] && [ -d "$_pbtmpl" ]; then
-        sh "$_pbc" verify --card "$_pbcard" --root "$_t/a" --templates "$_pbtmpl" >/dev/null 2>&1
+        _vout=$(sh "$_pbc" verify --card "$_pbcard" --root "$_t/a" --templates "$_pbtmpl" 2>&1)
         case $? in
             0)  : ;;
-            1)  if _gen=$(sh "$_pbc" generate --card "$_pbcard" --root "$_t/a" \
-                              --templates "$_pbtmpl" 2>&1); then
-                    say "card outputs: regenerated from this box's card against the image's templates"
-                else
-                    say "card outputs: pipebox-card generate failed — the image's copies stand and this box will report a card divergence until 'pipebox-card generate' is run on it:" >&2
+            1)  # The box's network stanza is stashed across the regeneration.
+                # etc/network/interfaces is a card output, so a diverged one
+                # would be rewritten here — unattended, on a box that reboots
+                # straight into it, with nobody at the console. A Machine whose
+                # address was adjusted by hand comes back on the card's stanza,
+                # headless, possibly at another address, and that is how a box
+                # does not come up at all (#322 is one of those). Everything
+                # else regenerates; the network waits for an operator.
+                _ifc="$_t/a/etc/network/interfaces"
+                _ifsave=""
+                if [ -f "$_ifc" ]; then
+                    _ifsave="$_t/interfaces.box"
+                    cp -a "$_ifc" "$_ifsave"
+                fi
+                if ! _gen=$(sh "$_pbc" generate --card "$_pbcard" --root "$_t/a" \
+                                --templates "$_pbtmpl" 2>&1); then
+                    say "card outputs: pipebox-card generate FAILED against this box's card — refusing the merge, the box is untouched:" >&2
                     printf '%s\n' "$_gen" >&2
+                    log "card outputs: generate failed during the merge — nothing written: $(printf '%s' "$_gen" | tr '\n' ' ')"
+                    rm -rf "$_t"
+                    return 1
+                fi
+                if [ -n "$_ifsave" ] && ! cmp -s "$_ifsave" "$_ifc"; then
+                    cp -a "$_ifsave" "$_ifc"
+                    say "card outputs: regenerated, EXCEPT etc/network/interfaces — it differs from the card, and changing a Machine's network unattended is how a box does not come back. Run 'pipebox-card generate' with someone at the console."
+                    log "card outputs: regenerated; etc/network/interfaces left as the box had it (differs from the card)"
+                else
+                    say "card outputs: regenerated from this box's card against the image's templates"
+                    log "card outputs: regenerated during the merge from $_pbcard"
                 fi ;;
-            *)  : ;;   # no card, or generate has never run here
+            *)  # "cannot tell" is two different things and only one is boring:
+                # no card or no stamp (a box from before the card path, #313 —
+                # leave it alone), or pipebox-card's die(), which also exits 2
+                # and covers the image's NEWER generator rejecting this box's
+                # card. That second one would otherwise be silent on every box
+                # at once, which is exactly how a fleet-wide release goes wrong
+                # quietly.
+                case "$_vout" in
+                    *"not card-provisioned"*|*"no stamp"*)
+                        : ;;
+                    *)  say "card outputs: pipebox-card could not read this box's card — outputs left as they are, and this Machine will report a card divergence until it is looked at:" >&2
+                        printf '%s\n' "$_vout" >&2
+                        log "card outputs: verify could not tell (card rejected?): $(printf '%s' "$_vout" | tr '\n' ' ')" ;;
+                esac ;;
         esac
     fi
     # busybox tar: no --owner/--group (GNU-isms — the first live run died on
