@@ -87,6 +87,8 @@ def run(d, release_commit, running_commit="0000old", *, sched_locked=False,
                PIPEOS_RELEASE_COMMIT=release_commit,
                PIPEOS_SELFUPDATE_LOG=os.path.join(d, "selfupdate.log"),
                PIPEOS_SELFUPDATE_LOCK=os.path.join(d, "su.lock"),
+               PIPEOS_UPDATING_MARK=os.path.join(d, "updating"),
+               PIPEOS_SELFUPDATE_CLUSTER=os.path.join(d, "no-cluster.py"),
                PIPEOS_SELFUPDATE_IMAGE_ONLY="1")
     os.makedirs(env["PIPEOS_PTS_DIR"], exist_ok=True)
     # point the tmux socket glob at our dir by faking /run/pipeos via the

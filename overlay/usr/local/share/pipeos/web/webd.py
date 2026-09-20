@@ -260,6 +260,7 @@ PEER_POSTS = ("/api/cluster/members", "/api/reboot", "/api/services", "/api/agen
 SELF_POSTS = ("/api/cluster/reboot-all", "/api/cluster/services", "/api/cluster/start", "/api/cluster/adopt",
               "/api/cluster/init", "/api/cluster/add", "/api/cluster/remove", "/api/cluster/sync",
               "/api/secrets/share", "/api/secrets/unshare", "/api/secrets/request", "/api/schedule/del", "/api/schedule/set")
+UPDATING_MARK = os.environ.get("PIPEOS_UPDATING_MARK", "/run/pipeos/updating")
 PTS_GLOB = os.environ.get("PIPEOS_PTS_GLOB", "/dev/pts/[0-9]*")   # an open terminal = a busy box; the probe points it elsewhere
 AUTH_DELAY = float(os.environ.get("PIPEOS_WEB_AUTH_DELAY", "2"))   # the pause a wrong password earns; the probes set 0
 
@@ -303,6 +304,13 @@ def box_summary():
         busy.append("a terminal is open")
     if os.path.exists("/run/pipeos/flash-pending"):
         busy.append("a new image is applied, reboot pending")
+    # mid-update (#216): the marker pipeos-selfupdate writes while it is
+    # fetching and applying a release. It lives on tmpfs, so the reboot that
+    # ends the update also clears it — a Machine that dies mid-apply comes
+    # back saying it is not updating, which is true.
+    updating = os.path.exists(UPDATING_MARK)
+    if updating:
+        busy.append("applying a new release")
     verdict, vsrc, vage = lanid.verdict_now(BOOT_REPORT, HEALTH_LAST)
     pm = proc_metrics()
     return {"id": lanid.mac4(), "name": box_name(), "role": card_get("ROLE") or "GENERIC",
@@ -310,7 +318,7 @@ def box_summary():
             "verdict": verdict, "verdict_source": vsrc, "verdict_age_s": vage, "boot_report": boot_report(),
             "uptime_s": up, "work_pct": pct, "work_free_mb": free_mb,
             "commit": img["commit"][:12], "built": img["built"],
-            "services": svcs, "busy": busy,
+            "services": svcs, "busy": busy, "updating": updating,
             # the agents that live on this Machine (#300) and the load the
             # idlest pick compares — an agent is started on a member and
             # stays; the cluster page lists every member's from this

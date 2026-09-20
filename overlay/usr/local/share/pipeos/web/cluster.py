@@ -847,6 +847,55 @@ def reboot_all(local_reboot):
     return res
 
 
+def rolling_ok(pg, me):
+    """§9: rolling updates, at least one member green at all times. May THIS
+    Machine apply a release right now? (True, "") or (False, why).
+
+    Leaderless, and it needs no clock and no coordinator — every member asks
+    the same three questions of the same shared list and only one can answer
+    yes at a time:
+
+      1. Is any member already applying one? Then wait: one at a time is the
+         whole point.
+      2. Is any member not green, or not answering at all? Then wait — going
+         now would risk the second one, and "at least one green" is the rule.
+      3. Among the members still on the OLD release, am I the lowest id? If
+         not, wait: the lowest goes, and when it comes back green on the new
+         release it is no longer in that set, so the next lowest goes. The
+         order is total and every member computes it identically.
+
+    A Machine in no cluster is always clear — there is nobody to protect.
+
+    Takes the page rather than building one, so the listener (which alone can
+    read this box's own summary) and the CLI (which asks the listener for the
+    same page `pipeos cluster page` prints) apply one rule, not two."""
+    members = pg.get("members") or []
+    if len(members) <= 1:
+        return True, ""
+    mine = next((r for r in members if r["id"] == me), {})
+    for r in members:
+        if r["id"] == me:
+            continue
+        if r.get("updating"):
+            return False, "%s is applying a release — one Machine at a time" % (r.get("name") or r["id"])
+        if not r.get("awake"):
+            return False, "%s is not answering — the cluster keeps at least one Machine green, so nobody updates while one is already out" % (r.get("name") or r["id"])
+        if "critical" in (r.get("verdict") or "").lower():
+            return False, "%s is not green (%s) — fix that first; the cluster keeps at least one Machine green" % (r.get("name") or r["id"], r.get("verdict"))
+    # Who else still needs it: the members reporting the SAME release this
+    # Machine is running. One of them goes, comes back on the new release,
+    # and so leaves this set — which is what makes the order advance without
+    # anybody keeping score. An unknown release here is not a licence to go
+    # first: it cannot be compared, so this Machine waits and asks again next
+    # hour rather than racing a member it cannot read.
+    if not mine.get("commit"):
+        return False, "this Machine cannot say which release it is running, so it cannot know whether it is first — holding"
+    same = sorted(r["id"] for r in members if (r.get("commit") or "") == mine["commit"])
+    if same and same[0] != me:
+        return False, "%s goes first (the lowest id still on this release) — this Machine follows when it is back and green" % same[0]
+    return True, ""
+
+
 def pick_idlest(rows):
     """The member to start an agent on when the owner says "idlest": awake,
     nothing busy, then the least load per cpu, then the fewest agents
@@ -1070,6 +1119,15 @@ def main(argv):
             if out.get("recovery_phrase"):
                 print("its recovery phrase (shown once, store it with this Machine's):\n  %s" % out["recovery_phrase"])
             return 0 if out.get("saved") else 1
+        if verb == "rolling-ok":
+            # the same page the `page` verb prints, from this box's own
+            # listener — the only thing that can read its own summary
+            st, out, who = call("local", "GET", "/api/cluster/page")
+            if st != 200 or not who:
+                print("cluster: the page did not answer (%s) — holding" % st, file=sys.stderr); return 1
+            ok, why = rolling_ok(out, self_id())
+            print("clear to update" if ok else "holding: %s" % why)
+            return 0 if ok else 1
         if verb == "page":
             st, out, who = call("local", "GET", "/api/cluster/page")
             if st != 200 or not who:
@@ -1170,7 +1228,7 @@ def main(argv):
     except ClusterError as e:
         print("cluster: %s" % e, file=sys.stderr)
         return 1
-    print("usage: pipeos cluster init [NAME] [--force] | status | ca | add ID|NAME|IP [NAME] | remove ID|NAME | sync | join MEMBER | adopt ID|IP [NAME] | page | agents | start NAME --on ID|NAME|idlest [--prompt TEXT [--cron SPEC|manual] ...] | reboot-all [--yes] | services KEY on|off [ID...] | call ID|NAME|IP METHOD PATH [JSON]", file=sys.stderr)
+    print("usage: pipeos cluster init [NAME] [--force] | status | ca | add ID|NAME|IP [NAME] | remove ID|NAME | sync | join MEMBER | adopt ID|IP [NAME] | page | rolling-ok | agents | start NAME --on ID|NAME|idlest [--prompt TEXT [--cron SPEC|manual] ...] | reboot-all [--yes] | services KEY on|off [ID...] | call ID|NAME|IP METHOD PATH [JSON]", file=sys.stderr)
     return 2
 
 
