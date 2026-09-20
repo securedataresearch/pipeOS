@@ -2934,7 +2934,16 @@ class Handler(BaseHTTPRequestHandler):
         or this Machine's own certificate (`pipeos cluster users` asks its own
         listener, as the page verb does) — and nothing else: SELF_GETS keeps
         ANOTHER member's certificate out, so a member may read one box's list
-        through the endpoint above but never gather the cluster's."""
+        through the endpoint above but never gather the cluster's.
+
+        ADMIN, not merely signed in. The reader gate on GET only asks for a
+        session, and `api_users` puts this Machine's own roster behind
+        `_user_admin_guard` — so without this a viewer could read through the
+        cluster what they may not read on the box they are signed in to, and
+        every other member's besides. Hiding the nav item is UI, not a fence.
+        `allow_self` keeps the verb's own-certificate path open."""
+        if self._peer_guard(allow_self=True) is None:
+            return
         self.send(200, cluster.users(users_here))
 
     def api_cluster_page(self):

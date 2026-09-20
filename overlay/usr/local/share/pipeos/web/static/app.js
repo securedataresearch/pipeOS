@@ -2706,17 +2706,26 @@ async function dashboard() {
         <div class="tblwrap"><table class="tbl"><tbody>${rows}</tbody></table></div></div>`;
     }).join("");
     const gaps = ms.filter(m => !m.users).length;
-    note.textContent = gaps ? `${gaps} Machine${gaps === 1 ? "" : "s"} did not answer` : `${ms.length} Machine${ms.length === 1 ? "" : "s"}`;
+    const at = new Date().toLocaleTimeString();
+    // The time it was gathered rides on the render, because this list is
+    // only worth anything as of a moment: an owner acts on who can sign in.
+    note.textContent = (gaps ? `${gaps} Machine${gaps === 1 ? "" : "s"} did not answer` : `${ms.length} Machine${ms.length === 1 ? "" : "s"}`) + ` · gathered ${at}`;
   };
+  let cluAt = 0;
   const loadClusterUsers = async () => {
-    try { renderClusterUsers(await api("/api/cluster/users")); }
+    try { renderClusterUsers(await api("/api/cluster/users")); cluAt = Date.now(); }
     catch (e) { const b = v.querySelector("#clusers"); if (b) { b.className = "note"; b.textContent = e.message; } }
   };
   const cluBtn = v.querySelector("#clurefresh");
   if (cluBtn) cluBtn.onclick = async () => { cluBtn.disabled = true; await loadClusterUsers(); cluBtn.disabled = false; };
-  let cluOnce = false;
   const pollCluster = async () => {
-    if (!cluOnce) { cluOnce = true; loadClusterUsers(); }
+    // Re-gathered on a bound, not once per dashboard lifetime: the view is
+    // set up once, so a `loaded` flag meant an owner who revoked an account
+    // on another Machine kept reading the old list until they pressed "look
+    // again". A fan-out per poll tick would be a TLS call to every member
+    // every few seconds, so it is time-bounded instead, and the render says
+    // when it gathered.
+    if (Date.now() - cluAt > 60000) loadClusterUsers();
     const rows = v.querySelector("#clrows"), note = v.querySelector("#clnote");
     const cands = v.querySelector("#clcands"), cnote = v.querySelector("#clcnote"), msg = v.querySelector("#clmsg");
     if (!rows) return;

@@ -638,6 +638,52 @@ check("19c2 the cluster's sign-ins: a member's certificate may read one Machine'
       and "hash" not in leak and "notahash" not in leak and "term_port" not in leak,
       repr((st_uh, st_ug, out_ug, rc_us, out_us[-200:], h_row)))
 
+# ── 19c3. ADMIN, not merely signed in. `api_users` puts THIS Machine's roster
+# behind the admin guard, so a reader gate that only asks for a session would
+# let a viewer read through the cluster what they may not read on the box they
+# are signed in to — and every other member's besides. Hiding the nav item is
+# UI, not a fence. (Found by the review pass on PR #344.)
+_gp = os.path.join(G.dir, "users_conf")
+_gdoc = json.load(open(_gp))
+_vhash = subprocess.run(["openssl", "passwd", "-6", "-stdin"], input="nosypassword\n",
+                        capture_output=True, text=True).stdout.strip()
+_gdoc["users"].append({"name": "nosy", "role": "viewer", "hash": _vhash})
+json.dump(_gdoc, open(_gp, "w"))
+_r = urllib.request.Request("http://127.0.0.1:%d/api/login" % G.port,
+                            data=json.dumps({"username": "nosy", "password": "nosypassword"}).encode(),
+                            method="POST")
+_r.add_header("Content-Type", "application/json")
+_resp = urllib.request.urlopen(_r, timeout=10)
+_vc = _resp.headers.get("Set-Cookie", "").split("session=")[1].split(";")[0]
+st_v, body_v = sess(G, _vc, "GET", "/api/cluster/users")
+st_va, _ = sess(G, _cg, "GET", "/api/cluster/users")      # the admin still gets it
+rc_vcli, _out_vcli = G.cli("users")                        # and so does the box's own verb
+check("19c3 a signed-in NON-admin cannot gather the cluster's sign-ins: a viewer session is refused (403) where the admin session and this Machine's own certificate are not — the same bar `api_users` sets for one box's roster",
+      st_v == 403 and "admin sign-in" in (body_v.get("error") or "")
+      and st_va == 200 and rc_vcli == 0,
+      repr((st_v, body_v, st_va, rc_vcli)))
+
+# ── 19c4. an answer is a LIST or it is a gap. fanout keeps a member's status
+# while replacing a body it could not attribute, and a member on an older
+# overlay answers 404 — both would render as a confident "0 sign-ins", which
+# is the quietly-wrong list this view exists to avoid. (Review pass, PR #344.)
+_stub = """
+import cluster
+cluster.view = lambda: {"cluster": "c", "self": "1111", "members": [
+    {"id": "1111", "name": "six", "self": True}, {"id": "2222", "name": "seven", "self": False}]}
+cluster.fanout = lambda ids, m, p, **kw: {"2222": (%s, %s)}
+r = cluster.users(lambda: [{"name": "admin", "role": "admin"}])
+print(json.dumps(r["members"][1]))
+"""
+row_na = json.loads(G.py(_stub % (200, '{"error": "not a member\'s answer"}')))
+row_404 = json.loads(G.py(_stub % (404, '{"error": "no such page"}')))
+row_empty = json.loads(G.py(_stub % (200, '{"users": []}')))
+check("19c4 a 200 that is not a member's list is a gap, not an empty roster: an unattributable answer and an older member's 404 both come back with no list (the 404 saying the overlay is older, not that the Machine is down), while a genuinely empty list is carried as one",
+      row_na["users"] is None and row_404["users"] is None
+      and "older" in row_404["error"] and "did not answer" not in row_404["error"]
+      and row_empty["users"] == [],
+      repr((row_na, row_404, row_empty)))
+
 # ── 19d. rolling updates (#216, §9): one Machine at a time, never while another
 # is out, and the lowest id still on this release goes first — asked of the
 # same shared list by every member, so it sequences itself with no coordinator

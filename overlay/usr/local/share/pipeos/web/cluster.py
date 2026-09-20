@@ -857,7 +857,6 @@ def users(local_users):
     surface: a list that is quietly out of date is worse than an honest gap,
     because it is the kind of thing an owner acts on."""
     v = view()
-    me = v["self"]
     others = [r["id"] for r in v["members"] if not r["self"]]
     answers = fanout(others, "GET", "/api/cluster/users-here")
     rows = []
@@ -866,11 +865,22 @@ def users(local_users):
             rows.append({"id": r["id"], "name": r["name"], "self": True, "users": local_users()})
             continue
         st, b = answers.get(r["id"], (0, {"error": "not asked"}))
-        if st == 200 and isinstance(b, dict):
-            rows.append({"id": r["id"], "name": r["name"], "self": False, "users": b.get("users") or []})
+        err = b.get("error") if isinstance(b, dict) else ""
+        # A 200 is not an answer by itself. fanout keeps the member's status
+        # while replacing a body it could not attribute ("not a member's
+        # answer"), and a member on an older overlay answers 200-shaped 404s
+        # with no list at all — both would otherwise render as a confident
+        # "0 sign-ins", which is the quietly-wrong list this view exists to
+        # avoid. An answer is a list or it is a gap.
+        if st == 200 and isinstance(b, dict) and isinstance(b.get("users"), list) and not err:
+            rows.append({"id": r["id"], "name": r["name"], "self": False, "users": b["users"]})
         else:
+            if st == 404:
+                # up, and answering — just older than this view. Saying
+                # "did not answer" mid-rollout reads as a box that is down.
+                err = "this Machine's overlay is older than the sign-in view (deploy it)"
             rows.append({"id": r["id"], "name": r["name"], "self": False, "users": None,
-                         "error": (b.get("error") if isinstance(b, dict) else "") or "did not answer"})
+                         "error": err or "did not answer"})
     return {"cluster": v.get("cluster", ""), "members": rows}
 
 

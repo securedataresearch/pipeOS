@@ -104,6 +104,20 @@ controls = [
     ("F: the reader does not drop a member seen in another cluster", C,
      lambda s: s.replace("        if pid in d[\"members\"] and pid != self_id() and p.get(\"cl\") and p[\"cl\"] != d[\"id\"]:\n",
                          "        if False:\n"), ["9"]),
+
+    # ---- the review pass on PR #344 found both of these in the sign-in view;
+    # these are the controls that keep them found.
+    ("T: the cluster's sign-in gather is open to any signed-in session (a viewer reads every Machine's roster)", W,
+     lambda s: s.replace('        if self._peer_guard(allow_self=True) is None:\n'
+                         '            return\n'
+                         '        self.send(200, cluster.users(users_here))',
+                         '        self.send(200, cluster.users(users_here))'), ["19c3"]),
+
+    ("U: any 200 counts as a member's sign-in list, whatever the body (an unattributable answer and an older member's 404 both read as '0 sign-ins')", C,
+     lambda s: s.replace('        if st == 200 and isinstance(b, dict) and isinstance(b.get("users"), list) and not err:\n'
+                         '            rows.append({"id": r["id"], "name": r["name"], "self": False, "users": b["users"]})',
+                         '        if st == 200 and isinstance(b, dict):\n'
+                         '            rows.append({"id": r["id"], "name": r["name"], "self": False, "users": b.get("users") or []})'), ["19c4"]),
 ]
 
 sys.path.insert(0, HERE)
