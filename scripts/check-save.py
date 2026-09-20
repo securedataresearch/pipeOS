@@ -84,11 +84,16 @@ check("1 no `lbu status` gate anywhere in pipeos-save (it compared against a fil
 rc1, out1 = run(); c1 = calls()
 check("2 a clean tick (the candidate equals the canonical): the hot set is flushed, lbu packages exactly once, the sha256 ends the save with rc 0 — and the worksweep does NOT run (GC before every persist, not before every no-op)",
       rc1 == 0 and c1 == ["work flush", "lbu package"], "rc=%s calls=%r out=%r" % (rc1, c1, out1[-200:]))
-open(CAND, "wb").write(tarball("changed\n"))
+# the bytes the stub will hand over, kept — NOT a freshly built tarball to
+# compare against later: gzip stamps its own mtime into the header, so two
+# tarballs of the same content built in different seconds differ, and the
+# comparison passes or fails on when the clock ticks (caught by CI, 2026-09-20)
+changed_bytes = tarball("changed\n")
+open(CAND, "wb").write(changed_bytes)
 rc2, out2 = run(); c2 = calls()
 canon_now = open(OVL, "rb").read()
 check("3 a changed tick: flush, one package, the sha256 differs, the worksweep runs before the write, and the canonical on the media is the candidate (rotation kept the old one)",
-      c2[:3] == ["work flush", "lbu package", "sweep"] and "mount remount,rw" in c2 and canon_now == tarball("changed\n") and any(f.startswith("pipeos.") and f.endswith(".tar.gz") and f != "pipeos.apkovl.tar.gz" for f in os.listdir(MEDIA)),
+      c2[:3] == ["work flush", "lbu package", "sweep"] and "mount remount,rw" in c2 and canon_now == changed_bytes and any(f.startswith("pipeos.") and f.endswith(".tar.gz") and f != "pipeos.apkovl.tar.gz" for f in os.listdir(MEDIA)),
       "rc=%s calls=%r out=%r media=%r" % (rc2, c2, out2[-200:], sorted(os.listdir(MEDIA))))
 check("4 the flush precedes the package and the sweep follows the sha256 decision, in the text too (check-work-hot's order row reads the same file)",
       save.index('"$WORK_BIN" flush') < save.index('"$LBU" package') < save.index("sha256sum") < save.index('"$WORKSWEEP"'), "")
