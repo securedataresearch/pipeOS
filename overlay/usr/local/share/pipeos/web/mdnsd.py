@@ -20,7 +20,7 @@ vanished.
 
 The roster (#241): the cache forgets a Machine 30 s after it goes quiet,
 which is right for "who is on the LAN now" and useless for "wake the one
-that is off". So every sighting is also folded into a roster on /work —
+that is off". So every sighting is also folded into a roster on /data —
 id, name, host, last ip, MAC, model, last_seen — that nothing here ever
 prunes. The dashboard shows a rostered Machine that is not in the cache as
 a grey row with a Wake button; `pipeos wake --forget` is the only eraser.
@@ -52,7 +52,7 @@ CACHE = os.environ.get("PIPEOS_MDNS_CACHE", "/run/pipeos/mdns/peers.json")
 # what webd publishes about this Machine's cluster (#211): id, key
 # fingerprint, members hash — read here because the key dir is root's
 CLUSTER_STATUS = os.environ.get("PIPEOS_CLUSTER_STATUS", "/run/pipeos/cluster.status")
-ROSTER = os.environ.get("PIPEOS_MDNS_ROSTER", "/work/pipeos/mdns/machines.json")
+ROSTER = os.environ.get("PIPEOS_MDNS_ROSTER", "/data/pipeos/mdns/machines.json")
 IDENT_FILE = os.environ.get("PIPEOS_MDNS_IDENT", "")
 LOOP = os.environ.get("PIPEOS_MDNS_LOOP") == "1"
 TTL = 120
@@ -252,9 +252,9 @@ def read_roster():
 
 
 def roster_upsert(state):
-    """Fold every live peer into the roster on /work. Never prunes; a peer
+    """Fold every live peer into the roster on /data. Never prunes; a peer
     with no MAC on the wire (an older image) is kept too, so the row shows
-    and the Wake button can say why it cannot. Silent when /work is not
+    and the Wake button can say why it cannot. Silent when /data is not
     there yet — the next tick tries again, and a roster is a convenience."""
     if not state["peers"]:
         return

@@ -99,7 +99,7 @@ PEERS = [
     {"id": "1a2b", "name": "", "host": "pipeos-1a2b.local", "ip": "10.0.0.3", "claimed": False,
      "verdict": "", "commit": "", "built": "", "model": "", "mac": ""},
 ]
-# the roster (#241): every Machine ever seen, on /work; a rostered id that is
+# the roster (#241): every Machine ever seen, on /data; a rostered id that is
 # not in the live cache is a grey row with a Wake button
 webd.MACHINES_ROSTER = tmp + "/machines.json"
 webd.WAKE_BIN = tmp + "/wake-stub"
@@ -229,9 +229,9 @@ _table = dict(re.findall(r'"(/api/[^"]+)":\s*self\.(\w+)', _src[_src.index("hand
 _no_save = {
     "/api/logout": "a session, tmpfs by design",
     "/api/claude-login/start": "starts a login; /code saves",
-    "/api/file-op": "/work, not the apkovl",
+    "/api/file-op": "/data, not the apkovl",
     "/api/backup": "writes an external disk",
-    "/api/chat": "a conversation, under /work",
+    "/api/chat": "a conversation, under /data",
     "/api/reboot": "the shutdown hook saves",
     "/api/reboot-firmware": "the shutdown hook saves",
     "/api/update-now": "pipeos-selfupdate saves itself",
@@ -241,7 +241,7 @@ _no_save = {
     "/api/wake": "a packet on the wire, no state (#241)",
     "/api/secrets/reveal": "a read that re-auths (#244)",
     "/api/secrets/phrase-ack": "forgets a tmpfs copy (#244)",
-    "/api/schedule/run": "starts a run; its record lives on /work (#242)",
+    "/api/schedule/run": "starts a run; its record lives on /data (#242)",
     "/api/secrets/have": "a member's question — does this box hold a name; nothing changes (#301)",
     "/api/secrets/requests/offer": "a member's open request, noted on tmpfs; the requester holds the record and re-offers at boot (#301)",
     "/api/cluster/sync": "pushes the list to the members; nothing here changes (#211)",
@@ -531,7 +531,7 @@ req("/api/secrets/phrase-ack", {})
 assert req("/api/secrets")["phrase_pending"] is False and not os.path.exists(webd.VAULT_PHRASE)
 ok("secrets: init is refused while a vault exists; a parked phrase shows until the owner acknowledges it")
 # ---- scheduled runs (#242): the job list, saved; hostile input refused; run-now; logs
-_work_ok = os.access("/work", os.W_OK) if os.path.isdir("/work") else False
+_work_ok = os.access("/data", os.W_OK) if os.path.isdir("/data") else False
 r = req("/api/schedule/set", {"name": "nightly", "cron": "0 2 * * *", "prompt": "run the tests", "backend": "claude", "notify": True})
 assert r["ok"] and r["job"]["cron"] == "0 2 * * *" and r["job"]["session"] == "fresh"
 sc = req("/api/schedule")
@@ -560,11 +560,11 @@ ok("schedule: a job made with a blank schedule (the form's payload) is manual �
 req("/api/schedule/set", {"name": "noprompt", "cron": "* * * * *", "prompt": ""}, expect=400)
 req("/api/schedule/set", {"name": "long", "cron": "* * * * *", "prompt": "x" * 9000}, expect=400)
 req("/api/schedule/set", {"name": "etc", "cron": "* * * * *", "prompt": "x", "cwd": "/etc"}, expect=400)
-req("/api/schedule/set", {"name": "dots", "cron": "* * * * *", "prompt": "x", "cwd": "/work/../etc"}, expect=400)
+req("/api/schedule/set", {"name": "dots", "cron": "* * * * *", "prompt": "x", "cwd": "/data/../etc"}, expect=400)
 req("/api/schedule/set", {"name": "skynet", "cron": "* * * * *", "prompt": "x", "backend": "skynet"}, expect=400)
 req("/api/schedule/set", {"name": "sess", "cron": "* * * * *", "prompt": "x", "session": "forever"}, expect=400)
 assert [j["name"] for j in req("/api/schedule")["jobs"]] == ["nightly"]
-ok("schedule: hostile cron strings, names, prompts, a cwd outside /work, an unknown assistant and a bad session mode are all refused and change nothing")
+ok("schedule: hostile cron strings, names, prompts, a cwd outside /data, an unknown assistant and a bad session mode are all refused and change nothing")
 # the handler detaches the runner (start_new_session); the probe wraps Popen
 # so the child is reaped before the row reads its record — a detached child
 # under a CI sandbox may not get scheduled until someone waits on it
@@ -781,12 +781,12 @@ h = req("/api/metrics-history?span=bogus")  # unknown span falls back, not 500
 assert "cpu" in h
 ok("metrics + history endpoints answer with shaped series")
 # files: paths are root-prefixed (work/…, ext/<dev>/…); "" lists the drives
-webd.FILES_WORK = tmp + "/work"
+webd.FILES_WORK = tmp + "/data"
 webd.FILES_EXT_BASE = tmp + "/ext"
-os.makedirs(tmp + "/work/sub", exist_ok=True)
-with open(tmp + "/work/hello.txt", "w") as f:
+os.makedirs(tmp + "/data/sub", exist_ok=True)
+with open(tmp + "/data/hello.txt", "w") as f:
     f.write("hi")
-os.symlink("/etc", tmp + "/work/escape")
+os.symlink("/etc", tmp + "/data/escape")
 req("/api/files?path=work/../../etc", expect=400)
 req("/api/files?path=work/escape", expect=400)
 req("/api/files?path=etc", expect=400)          # unknown root
@@ -800,7 +800,7 @@ r = req("/api/files?path=work")
 assert [d["name"] for d in r["dirs"]] == ["sub"]
 assert "hello.txt" in [f["name"] for f in r["files"]]
 ok("virtual root lists drives; work listing returns dirs and files")
-os.unlink(tmp + "/work/escape")
+os.unlink(tmp + "/data/escape")
 req("/api/file-op", {"op": "mkdir", "path": "work/sub", "name": "nested"})
 req("/api/file-op", {"op": "mkdir", "path": "work", "name": "../up"}, expect=400)
 req("/api/file-op", {"op": "mkdir", "path": "", "name": "x"}, expect=400)  # virtual root
@@ -812,8 +812,8 @@ req("/api/file-op", {"op": "delete", "path": "work/sub", "recursive": True})
 assert req("/api/files?path=work")["dirs"] == []
 ok("file ops: mkdir/move/rename/delete with guards")
 # folder-as-tarball download: jailed like everything else, streams gzip
-os.makedirs(tmp + "/work/tardir", exist_ok=True)
-with open(tmp + "/work/tardir/f.txt", "w") as f:
+os.makedirs(tmp + "/data/tardir", exist_ok=True)
+with open(tmp + "/data/tardir/f.txt", "w") as f:
     f.write("tarme")
 req("/api/file-tar?path=work/../../etc", expect=400)
 req("/api/file-tar?path=work/nope", expect=404)

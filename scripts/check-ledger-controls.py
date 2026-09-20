@@ -18,8 +18,14 @@ BREAKS = [
      '               + row["cache_w5m"] * r.get("cache_w5m", 0) + row["cache_w1h"] * r.get("cache_w1h", 0)) / 1e6',
      '               ) / 1e6'),
     ("C  the cursor never advances (everything re-ingested each time)", LEDGER,
-     '            cursor[path] = {"ino": st.st_ino, "off": off + consumed, "seen": seen[-SEEN_RING:]}',
-     '            cursor[path] = {"ino": st.st_ino, "off": 0, "seen": []}'),
+     '            cursor[key] = {"ino": st.st_ino, "off": off + consumed, "seen": seen[-SEEN_RING:]}',
+     '            cursor[key] = {"ino": st.st_ino, "off": 0, "seen": []}'),
+    # #330: the keys stopped being absolute paths. A cursor whose keys no
+    # longer match is a cursor that re-ingests everything — the same failure
+    # as C, arrived at by moving the volume instead of by breaking the write.
+    ("C2 the cursor keeps absolute keys, so moving the volume re-ingests every transcript", LEDGER,
+     "        parts = path.rstrip(\"/\").split(\"/\")\n        return \"/\".join(parts[-2:]) if len(parts) >= 2 else path",
+     "        return path"),
     ("D  the 80% DM is sent every time", LEDGER,
      "        if pct >= WARN_PCT and not os.path.exists(warned):\n", "        if pct >= WARN_PCT:\n"),
     ("E  the pause is never lifted", LEDGER,

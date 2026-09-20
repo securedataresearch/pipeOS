@@ -1,7 +1,7 @@
 #!/bin/sh
 # update-box.sh — apply the built pipeos repo to THIS box's boot media, the
 # sanctioned Path B sequence (docs/fleet-update-runbook.md). Runs on the box.
-# Requires the built repo at /work/repos/pipeOS/out/repo/pipeos (a build box,
+# Requires the built repo at /data/repos/pipeOS/out/repo/pipeos (a build box,
 # or one that fetched it). This is what took the fleet 0.41.15 -> 0.41.31 by
 # hand on 2026-08-09; kept here so that update is one command, not improvised.
 #
@@ -10,7 +10,7 @@
 # path used on the build box itself.
 set -e
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
-SRC=/work/repos/pipeOS/out/repo/pipeos/x86_64
+SRC=/data/repos/pipeOS/out/repo/pipeos/x86_64
 [ -f "$SRC/APKINDEX.tar.gz" ] || { echo "no built repo at $SRC" >&2; exit 1; }
 
 echo "== sync media (verified, atomic, self-reverting) =="

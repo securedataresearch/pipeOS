@@ -119,7 +119,7 @@ fi
 # every persist so the drive stays healthy all the time"). Every persist —
 # not every tick: a quiet box's 96 no-op ticks a day used to run this too
 # (#318). The allowlist-based worksweep only ever reclaims rebuildable build
-# output on /work, never source, and never blocks the save it precedes: a
+# output on /data, never source, and never blocks the save it precedes: a
 # save that does not happen is far worse than a sweep that is skipped.
 if [ -x "$WORKSWEEP" ]; then
     timeout 120 "$WORKSWEEP" >/dev/null 2>&1 \

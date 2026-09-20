@@ -352,7 +352,7 @@ check("13 a relocated run without NO_PERSIST=1 refuses (never reaches save)",
 # ── 14. a symlink in the overlay is refused, not silently mishandled ────
 c12 = Case()
 CASES.append(c12)
-os.symlink("/work/elsewhere", os.path.join(c12.repo, "overlay/usr/local/bin/pipeos-link"))
+os.symlink("/data/elsewhere", os.path.join(c12.repo, "overlay/usr/local/bin/pipeos-link"))
 git(c12.repo, "add", "-A")
 git(c12.repo, "commit", "-qm", "add a symlink")
 c12.run()

@@ -12,8 +12,8 @@ respawn_max=0
 
 export HOME=/root
 
-output_log=/work/logs/pipeos-web.log
-error_log=/work/logs/pipeos-web.log
+output_log=/data/logs/pipeos-web.log
+error_log=/data/logs/pipeos-web.log
 
 depend() {
 	need net
@@ -21,8 +21,8 @@ depend() {
 }
 
 start_pre() {
-	# same boot-time /work race every service here waits out; but the web
-	# surface must come up even if /work is sick — logs just go to syslog's
+	# same boot-time /data race every service here waits out; but the web
+	# surface must come up even if /data is sick — logs just go to syslog's
 	# tmpfs instead. 30s grace, then start anyway.
 	_i=0
 	# Either name: the volume is mounted at /data and /work is a symlink to
@@ -34,12 +34,12 @@ start_pre() {
 		if [ "$_i" -ge 30 ]; then
 			output_log=/dev/null
 			error_log=/dev/null
-			ewarn "/work not mounted after 30s — starting without a logfile"
+			ewarn "/data not mounted after 30s — starting without a logfile"
 			break
 		fi
 		sleep 1
 	done
-	mountpoint -q /work && { checkpath -d -m 0755 /work/logs || return 1; }
+	mountpoint -q /data && { checkpath -d -m 0755 /data/logs || return 1; }
 	# checkpath does not create parents — /run/pipeos may not exist yet
 	# (selfcheck writes it later in the boot)
 	checkpath -d -m 0755 /run/pipeos || return 1

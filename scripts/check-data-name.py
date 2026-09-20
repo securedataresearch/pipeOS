@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""check-data-name (pipeOS#219, step 1): `/data` is the bulk volume's name.
+"""check-data-name (pipeOS#219 named it, #330 moved it): `/data` is the bulk
+volume.
 
-This release makes the NAME work without moving anything: the volume still
-mounts at /work and /data is a symlink to it, laid at every boot by
-/etc/local.d/workspace.sh and by a deploy that installs a new one. Both paths
-then reach the same bytes, so a job's working dir may be /data/... on a box
-that has not rebooted since. A later release flips which of the two is the
-mount.
+Step 1 made the NAME work with the volume still mounted at /work and /data a
+symlink to it. This is the flip: the volume mounts at /data and /work is the
+symlink, laid at every boot by /etc/local.d/workspace.sh and by a deploy that
+installs a new one. Both names still reach the same bytes, so everything
+written down under the old one — a job's working dir, a transcript, a doc —
+keeps resolving.
+
+BOTH directions are legal, because a live box meets the script twice in the
+wrong order: a deploy installs it while the volume is still mounted at /work,
+and only the next boot moves it. So whichever name the volume is already
+mounted on is the mount, and the other is linked to it.
 
 The script's link logic is driven through its seams (PIPEOS_WORKSPACE_WORK,
 _DATA, _NO_MOUNT — a box never sets them); the rest asserts the wiring that
@@ -36,50 +42,70 @@ def run(work, data):
 
 
 def case():
+    """A fake root: the volume (the mount, /data's stand-in) exists; the old
+    name does not yet."""
     d = tempfile.mkdtemp(prefix="dataname-")
-    w = os.path.join(d, "work"); os.makedirs(w)
-    return d, w, os.path.join(d, "data")
+    vol = os.path.join(d, "data"); os.makedirs(vol)
+    return d, os.path.join(d, "work"), vol
 
 
+# The volume is $DATA now and $WORK is the name linked to it (the flip).
 # 1. nothing there yet: the link is laid, and the skeleton is under the volume
-d, w, data = case()
-rc1, out1 = run(w, data)
-check("1 with no /data the script lays it as a symlink to the volume, and the skeleton (repos, logs, cache, claude, pipebox, backup, home) is made under the volume itself",
-      rc1 == 0 and os.path.islink(data) and os.path.realpath(data) == os.path.realpath(w)
-      and all(os.path.isdir(os.path.join(w, x)) for x in ("repos", "logs", "cache", "claude", "pipebox", "backup", "home")),
-      "rc=%s link=%s out=%r" % (rc1, os.path.islink(data), out1[-200:]))
+d, work, vol = case()
+rc1, out1 = run(work, vol)
+check("1 with nothing there the script lays /work as a symlink to the volume at /data, and the skeleton (repos, logs, cache, claude, pipebox, backup, home) is made under the volume itself",
+      rc1 == 0 and os.path.islink(work) and os.path.realpath(work) == os.path.realpath(vol)
+      and all(os.path.isdir(os.path.join(vol, x)) for x in ("repos", "logs", "cache", "claude", "pipebox", "backup", "home")),
+      "rc=%s link=%s out=%r" % (rc1, os.path.islink(work), out1[-200:]))
 
-# 2. both paths reach the same bytes — that is the whole point of this release
-open(os.path.join(w, "logs", "a.log"), "w").write("one")
-check("2 the two names reach the same file: what is written under the volume is read under /data",
-      open(os.path.join(data, "logs", "a.log")).read() == "one", "")
+# 2. both paths reach the same bytes — what keeps every stored /work path alive
+open(os.path.join(vol, "logs", "a.log"), "w").write("one")
+check("2 the two names reach the same file: what is written under the volume is read under the old name",
+      open(os.path.join(work, "logs", "a.log")).read() == "one", "")
 
 # 3. run again (every boot, and every deploy that installs the script): idempotent
-rc3, _ = run(w, data)
+rc3, _ = run(work, vol)
 check("3 a second run leaves the link alone (it runs at every boot and after a deploy)",
-      rc3 == 0 and os.path.islink(data) and os.path.realpath(data) == os.path.realpath(w), "")
+      rc3 == 0 and os.path.islink(work) and os.path.realpath(work) == os.path.realpath(vol), "")
 
-# 4. an EMPTY real directory at /data (something mkdir -p'd it before the link existed) is replaced
-d4, w4, data4 = case(); os.makedirs(data4)
-rc4, _ = run(w4, data4)
-check("4 an empty real directory at /data — what a mkdir -p before the link leaves — is replaced by the link",
-      rc4 == 0 and os.path.islink(data4), "")
+# 4. an EMPTY real directory at the link's name is replaced
+d4, work4, vol4 = case(); os.makedirs(work4, exist_ok=True)
+rc4, _ = run(work4, vol4)
+check("4 an empty real directory at /work — what a mkdir -p before the link leaves — is replaced by the link",
+      rc4 == 0 and os.path.islink(work4), "")
 
 # 5. a real directory with something in it is NOT moved: it is left and said
-d5, w5, data5 = case(); os.makedirs(data5); open(os.path.join(data5, "someones.file"), "w").write("x")
-rc5, out5 = run(w5, data5)
+d5, work5, vol5 = case(); os.makedirs(work5, exist_ok=True); open(os.path.join(work5, "someones.file"), "w").write("x")
+rc5, out5 = run(work5, vol5)
 check("5 a real directory with content in it is left alone and said (moving an unknown directory is not this script's call), and the run still succeeds",
-      rc5 == 0 and not os.path.islink(data5) and os.path.isfile(os.path.join(data5, "someones.file")) and "is not a link to" in out5,
+      rc5 == 0 and not os.path.islink(work5) and os.path.isfile(os.path.join(work5, "someones.file")) and "is not a link to" in out5,
       "rc=%s out=%r" % (rc5, out5[-200:]))
 
 # 6. a link that points somewhere else is OURS to repoint — the name belongs to
 # the volume, and leaving it would make every boot and deploy a no-op while
 # selfcheck asked for one
-d6, w6, data6 = case(); os.symlink(os.path.join(d6, "elsewhere"), data6)
-rc6, out6 = run(w6, data6)
-check("6 a symlink at /data that points somewhere else (a dangling one, or somebody's own) is repointed at the volume and said — not left, which would make every boot and every deploy a no-op",
-      rc6 == 0 and os.path.islink(data6) and os.readlink(data6) == w6 and "repointing it at the volume" in out6,
-      "rc=%s target=%r out=%r" % (rc6, os.path.realpath(data6), out6[-200:]))
+d6, work6, vol6 = case(); os.symlink(os.path.join(d6, "elsewhere"), work6)
+rc6, out6 = run(work6, vol6)
+check("6 a symlink at /work that points somewhere else (a dangling one, or somebody's own) is repointed at the volume and said — not left, which would make every boot and every deploy a no-op",
+      rc6 == 0 and os.path.islink(work6) and os.readlink(work6) == vol6 and "repointing it at the volume" in out6,
+      "rc=%s target=%r out=%r" % (rc6, os.path.realpath(work6), out6[-200:]))
+
+# 6b. the other direction, which a live box is in between the deploy and its
+# reboot: the volume is STILL mounted at /work and nothing may move it out
+# from under a running daemon, so /work stays the mount and /data is linked to
+# it. A probe cannot make a mountpoint unprivileged, so this reads the branch
+# rather than running it — the runtime half is rows 1-6 and the reboot drill.
+ws = open(WS).read()
+check("6b a volume already mounted at /work keeps it (the deploy window): that name stays the mount and /data is linked to it, so a deploy never moves a mount out from under a running daemon",
+      re.search(r"if mounted_on \"\$WORK\"", ws) and "MOUNT=$WORK" in ws and "LINK=$DATA" in ws
+      and "MOUNT=$DATA" in ws and "LINK=$WORK" in ws
+      and re.search(r"mounted_on\(\)[^}]*\[ -L \"\$1\" \] && return 1", ws, re.S),
+      "the branch, or mounted_on's symlink guard, is not there")
+
+# 6c. the stored paths are rewritten once, after the flip only
+check("6c after the flip — and only then — the script runs pipeos-data-migrate, handing it the old name and the new: stored job cwds, claude's trust and its project dirs key on the physical path and do not follow a symlink",
+      '[ "$MOUNT" = "$DATA" ]' in ws and "pipeos-data-migrate" in ws
+      and "PIPEOS_MIGRATE_FROM=\"$WORK\"" in ws and "PIPEOS_MIGRATE_TO=\"$DATA\"" in ws, "")
 
 # 7. the wiring: a deploy that installs the script runs it and shows what it said
 dep = open(os.path.join(REPO, "overlay/usr/local/bin/pipeos-deploy-overlay")).read()

@@ -7,7 +7,7 @@ more dashboard accounts under **Users**.
 
 - **admin** — full control: services, streaming, files, users, saves.
 - **user** — everything a viewer sees, plus the file explorer works:
-  upload, download, move, rename and delete under `/work` and any shared
+  upload, download, move, rename and delete under `/data` and any shared
   drive. The role for someone who drops files on the box without running it.
 - **viewer** — sees every page, changes nothing except their own password.
   The server refuses viewer mutations; the greyed-out controls in the
@@ -16,7 +16,7 @@ more dashboard accounts under **Users**.
 ## Unix accounts and terminals
 
 An account can also get a unix login on the box. Its home lives under
-`/work/home/<name>`, so it survives a reflash of the boot media. Each such
+`/data/home/<name>`, so it survives a reflash of the boot media. Each such
 user can get a personal browser terminal on its own port (7701 and up) —
 enable the terminals service and share `http://<box>.local:<port>` with
 that user; the terminal asks for their password. In that terminal `claude`

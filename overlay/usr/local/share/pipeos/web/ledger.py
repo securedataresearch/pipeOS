@@ -8,8 +8,8 @@
 
 Nobody on a Machine could say what it spent. The owner found out from the
 bill. This reads what Claude Code already writes — every `assistant` line
-in /work/claude/projects/*/*.jsonl carries the model and a usage block —
-and appends one row per API call to /work/.pipeos/ledger/YYYY-MM.jsonl:
+in /data/claude/projects/*/*.jsonl carries the model and a usage block —
+and appends one row per API call to /data/.pipeos/ledger/YYYY-MM.jsonl:
 
   {ts, sid, id, source:"transcript", actor:{kind,name}, backend, provider,
    model, in, out, cache_read, cache_w5m, cache_w1h, cost_usd|null,
@@ -65,19 +65,21 @@ import subprocess
 import sys
 import time
 
-LEDGER_DIR = os.environ.get("PIPEOS_LEDGER_DIR", "/work/.pipeos/ledger")
-TRANSCRIPTS = os.environ.get("PIPEOS_LEDGER_TRANSCRIPTS", "/work/claude/projects")
+LEDGER_DIR = os.environ.get("PIPEOS_LEDGER_DIR", "/data/.pipeos/ledger")
+TRANSCRIPTS = os.environ.get("PIPEOS_LEDGER_TRANSCRIPTS", "/data/claude/projects")
 RATES = os.environ.get("PIPEOS_LEDGER_RATES", "/usr/local/share/pipeos/rates.json")
 CONF = os.environ.get("PIPEOS_LEDGER_CONF", "/etc/pipeos/pipebox.conf")
-RUNS_LOG = os.environ.get("PIPEOS_LEDGER_RUNS", "/work/.pipeos/schedule/runs.log")
-SESSIONS_DIR = os.environ.get("PIPEOS_LEDGER_SESSIONS", "/work/pipebox/sessions")
-WEBCHAT_SID = os.environ.get("PIPEOS_LEDGER_WEBCHAT_SID", "/work/pipebox/webchat/.dashboard-sid")
+RUNS_LOG = os.environ.get("PIPEOS_LEDGER_RUNS", "/data/.pipeos/schedule/runs.log")
+SESSIONS_DIR = os.environ.get("PIPEOS_LEDGER_SESSIONS", "/data/pipebox/sessions")
+WEBCHAT_SID = os.environ.get("PIPEOS_LEDGER_WEBCHAT_SID", "/data/pipebox/webchat/.dashboard-sid")
 SCHEDULE = os.environ.get("PIPEOS_LEDGER_SCHEDULE", "/etc/pipeos/schedule.json")
-CLUSTER_LAST = os.environ.get("PIPEOS_LEDGER_CLUSTER_LAST", "/work/pipeos/cluster/last")   # what each other member last said (cluster.py)
+CLUSTER_LAST = os.environ.get("PIPEOS_LEDGER_CLUSTER_LAST", "/data/pipeos/cluster/last")   # what each other member last said (cluster.py)
 PIPE_BIN = os.environ.get("PIPEOS_LEDGER_PIPE", "pipe")
-# The volume's name before pipeOS#330. Transcripts written under it are
-# still on disk and still say /work; it goes when the symlink does.
-LEGACY_ROOT = "/work"
+# The bulk volume's names: where it is mounted now, and what it was called
+# before pipeOS#330. Transcripts written under the old name are still on disk
+# and still say /work — a cwd is a string in a file nobody rewrites — so both
+# name the same directory here. The second goes when the symlink does.
+VOLUME_ROOTS = ("/data", "/work")
 SEEN_RING = 256
 KEEP_MONTHS = 13
 WARN_PCT = 80
@@ -203,7 +205,7 @@ class Ledger:
             return {"kind": "dashboard", "name": ""}
         # Under the volume root, whichever name it is mounted at. These were
         # literal "/work/..." until pipeOS#330; a transcript written before
-        # the flip still says /work and one written after says /data, and
+        # the flip still says /data and one written after says /data, and
         # both are the same directory — so the root comes off and the rest
         # is what identifies the actor.
         c = self._under_root((cwd or "").rstrip("/"))
@@ -216,7 +218,7 @@ class Ledger:
     def _under_root(self, path):
         """`path` relative to the bulk volume, under either of its names.
         Anything not on the volume comes back unchanged."""
-        for root in (self.root, LEGACY_ROOT):
+        for root in (self.root,) + VOLUME_ROOTS:
             if root and path == root:
                 return ""
             if root and path.startswith(root + "/"):
@@ -234,7 +236,7 @@ class Ledger:
         never its absolute path.
 
         Keys were absolute until pipeOS#330. The bulk volume's move from
-        /work to /data changes every one of them, and a cursor whose keys no
+        /data to /data changes every one of them, and a cursor whose keys no
         longer match means off=0 with an empty id ring for every transcript:
         the next ingest re-appends the whole history, month-to-date spend
         roughly doubles on every box at once, and that is enough to trip the
@@ -262,7 +264,7 @@ class Ledger:
                 cursor[key] = v
                 continue
             # Both names for the same transcript (a box that ingested under
-            # /work and again under /data). Keep the further-read offset and
+            # /data and again under /data). Keep the further-read offset and
             # the union of the id rings: reading less than we already have
             # is what double-counts.
             keep, other = (v, old) if v.get("off", 0) >= old.get("off", 0) else (old, v)

@@ -1,19 +1,19 @@
 #!/bin/sh
-# pipeos-restore-work — /work back from a backup, or from an old stick.
+# pipeos-restore-work — /data back from a backup, or from an old stick.
 #
 #   pipeos restore-work SRC [--force] [--onto DEV]
 #
 # SRC is one of:
 #   a `pipeos backup` root       DEST/pipeos-backup/<nick>  (its work/ is used)
-#   that root's work/ directory, or any directory holding a /work tree
+#   that root's work/ directory, or any directory holding a /data tree
 #   a device                     /dev/sdb2 — an old stick's PIPEWORK, mounted
 #                                read-only for the copy and released after
-# The destination is the mounted /work — or, with --onto DEV, an UNMOUNTED
+# The destination is the mounted /data — or, with --onto DEV, an UNMOUNTED
 # ext4 partition: the new stick's p2 that `pipeos flash apply --to` carved,
 # populated before the swap so the new stick boots with its data in place.
 #
-# Additive, on purpose: rsync -a with no --delete. On the empty /work a
-# swap produces, additive IS a mirror; on a --force'd non-empty /work,
+# Additive, on purpose: rsync -a with no --delete. On the empty /data a
+# swap produces, additive IS a mirror; on a --force'd non-empty /data,
 # --delete could erase repos newer than the backup (unrecoverable) whereas
 # a stale leftover is visible and fixable. Never restored: /.pipeos (this
 # box's runtime state — flash staging, stamps, clean-shutdown marks), /logs
@@ -33,7 +33,7 @@
 set -u
 
 R=${PIPEOS_RESTORE_ROOT:-}
-WORK=$R/work
+WORK=$R/data
 RUN=$R/run/pipeos
 LOCK=$R/run/pipeos-save.lock
 STATE=$RUN/restore-work.state
@@ -113,7 +113,7 @@ resolve_src() {
 resolve_dst() {
     if [ -n "$ONTO" ]; then
         is_block "$ONTO" || die "$ONTO is not a block device"
-        [ "$(src_of_mount "$WORK")" != "$ONTO" ] || die "$ONTO is the running /work — drop --onto"
+        [ "$(src_of_mount "$WORK")" != "$ONTO" ] || die "$ONTO is the running /data — drop --onto"
         _at=$(mounted_at "$ONTO")
         [ -z "$_at" ] || die "$ONTO is mounted at $_at — unmount it first"
         _t=$("$BLKID" -o value -s TYPE "$ONTO" 2>/dev/null)

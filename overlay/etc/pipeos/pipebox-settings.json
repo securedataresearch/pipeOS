@@ -3,9 +3,9 @@
   "effortLevel": "medium",
   "permissions": {
     "defaultMode": "acceptEdits",
-    "additionalDirectories": ["/work"],
+    "additionalDirectories": ["/data"],
     "allow": [
-      "Read(/work/**)",
+      "Read(/data/**)",
       "Bash(pipeos secrets request *)",
       "Bash(sh -n *)",
       "Bash(git *)",

@@ -4,7 +4,7 @@
 #   pipeos-schedule-run <job>
 #
 # The job comes from /etc/pipeos/schedule.json (the dashboard writes it):
-# a cron expression, a prompt, a working dir under /work, which assistant
+# a cron expression, a prompt, a working dir under /data, which assistant
 # (claude | hermes), whether to DM the owner, and whether the conversation
 # continues across runs. This runs the assistant EXACTLY the way the pipe
 # listener does — headless `claude -p`, the prompt on stdin, the box's
@@ -14,24 +14,24 @@
 #
 # One job at a time per Machine: a global lock, and a run that finds it
 # held exits 75 with a line in the log. Runtime state (last rc, status,
-# session, consecutive failures) lives on /work in state.json, written
+# session, consecutive failures) lives on /data in state.json, written
 # atomically under its own lock; every run appends one line to runs.log —
 # `<ts> <sid> <job> <status>` — which is how the usage ledger (#246) knows
 # which transcript was which job.
 #
 # Seams (the probe, never production): PIPEOS_SCHED_CONF, _STATE_DIR, _LOCK,
-# _LOGDIR, _PIPEBOX_CONF, _SETTINGS, _SECRETS, _WORK (the /work root).
+# _LOGDIR, _PIPEBOX_CONF, _SETTINGS, _SECRETS, _WORK (the /data root).
 set -u
 
 CONF=${PIPEOS_SCHED_CONF:-/etc/pipeos/schedule.json}
-STATE_DIR=${PIPEOS_SCHED_STATE_DIR:-/work/.pipeos/schedule}
+STATE_DIR=${PIPEOS_SCHED_STATE_DIR:-/data/.pipeos/schedule}
 LOCK=${PIPEOS_SCHED_LOCK:-/run/pipeos/schedule.lock}
-LOGDIR=${PIPEOS_SCHED_LOGDIR:-/work/logs}
+LOGDIR=${PIPEOS_SCHED_LOGDIR:-/data/logs}
 SETTINGS=${PIPEOS_SCHED_SETTINGS:-/etc/pipeos/pipebox-settings.json}
 SECRETS=${PIPEOS_SCHED_SECRETS:-/run/pipeos/secrets}
-WORKROOT=${PIPEOS_SCHED_WORK:-/work}
-PAUSED=${PIPEOS_SCHED_PAUSED:-/work/.pipeos/ledger/paused}
-PAUSED_JSON=${PIPEOS_SCHED_PAUSED_JSON:-/work/.pipeos/ledger/paused.json}
+WORKROOT=${PIPEOS_SCHED_WORK:-/data}
+PAUSED=${PIPEOS_SCHED_PAUSED:-/data/.pipeos/ledger/paused}
+PAUSED_JSON=${PIPEOS_SCHED_PAUSED_JSON:-/data/.pipeos/ledger/paused.json}
 
 job=${1:-}
 case "$job" in
@@ -67,7 +67,7 @@ if [ -r "$SECRETS/jobs.env" ]; then
     . "$SECRETS/jobs.env"
     set +a
 fi
-[ -d /work/buildroot/usr/bin ] && export PATH="/work/buildroot/usr/bin:$PATH"
+[ -d /data/buildroot/usr/bin ] && export PATH="/data/buildroot/usr/bin:$PATH"
 # The generated shell environment: nothing on this path is a login shell
 # (crond -> tick -> this -> claude -p), so source it here like the listener.
 [ -r /etc/profile.d/10-pipebox-env.sh ] && . /etc/profile.d/10-pipebox-env.sh
@@ -190,9 +190,9 @@ for _n in $needs; do
     exit 75
 done
 
-# ---- a parked /work (pipeos work park: read-only so the stick idles) is
+# ---- a parked /data (pipeos work park: read-only so the stick idles) is
 # unparked for the run — claude writes its transcript there — and re-parked
-# after. Only the real /work: the probe's WORKROOT is a tempdir.
+# after. Only the real /data: the probe's WORKROOT is a tempdir.
 _reparked=no
 _wreal=$(readlink -f "$WORKROOT" 2>/dev/null || printf '%s' "$WORKROOT")
 case "$_wreal" in

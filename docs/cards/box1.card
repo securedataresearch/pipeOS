@@ -17,7 +17,7 @@ GH_OWNER=securedataresearch
 # the media path; identity rides the stick until netboot lands.
 MAC=e8:6a:64:fa:48:b3
 
-# pipeOS#41: BUILD's 53G /work. Measured 2026-08-10: 79% (40G/53G) was already
+# pipeOS#41: BUILD's 53G /data. Measured 2026-08-10: 79% (40G/53G) was already
 # a single-directory cargo incremental cache (24G) with nobody warned; WARN 70
 # / CRIT 85 leaves real headroom (~16G / ~8G) to act before a repeat.
 DISK_WARN_PCT=70
@@ -56,7 +56,7 @@ REPOS=pipe
 # allow entries. Dropping them would have left the two fences disagreeing.
 PIPE_CAPS=read,send.dm,send.room,send.lobby,send.bbs,claim
 
-# pipeOS#41 (Foreman ruling 2026-08-10): BUILD's 53G /work, measured
+# pipeOS#41 (Foreman ruling 2026-08-10): BUILD's 53G /data, measured
 # 2026-08-10 at 23G/53G (45%) with 13G in target/ — the most absolute
 # headroom in the fleet relative to what accumulates, so the longest
 # interval: a daily pass is enough to keep this box near its floor without

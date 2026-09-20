@@ -2,7 +2,7 @@
 """Probe for pipeos-backup (#180): the shipped script, run against a fake
 root, a stub `lbu package`, a fake /proc/mounts and a recording rsync stub —
 the seams the script exposes for exactly this. Nothing here touches the real
-/media/usb, /root or /work.
+/media/usb, /root or /data.
 
 Rows cover the refusals (unmounted destination, unclaimed box, staged
 rollback, corrupt candidate), the bundle (sha in the manifest, key copies,
@@ -52,8 +52,8 @@ def box(provisioned=True, rollback=False):
     write(d + "/etc/pipeos/.overlay-stamp", "commit abc123def456\nref main\n")
     write(d + "/root/.pipe/identity.dat", "ID")
     write(d + "/root/.pipe/credentials.dat", "CRED")
-    write(d + "/work/data.txt", "precious")
-    write(d + "/work/cache/junk", "x")
+    write(d + "/data/data.txt", "precious")
+    write(d + "/data/cache/junk", "x")
     write(d + "/media/usb/pipeos-image.txt", "built=2026-09-01T00:00:00Z\n")
     write(d + "/media/usb/boot/vmlinuz-lts", "K")
     os.makedirs(d + "/run", exist_ok=True)

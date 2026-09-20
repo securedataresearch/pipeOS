@@ -1,4 +1,4 @@
-# /work paths staged in RAM by pipeos-hot and written back by `pipeos work
+# /data paths staged in RAM by pipeos-hot and written back by `pipeos work
 # flush` (hourly, before every save, at shutdown, before park). One relative
 # path per line. Add a path here when something new churns the stick;
 # never a path that is the only copy of something (Claude's transcripts,

@@ -12,8 +12,8 @@ if getent passwd svc-mdns >/dev/null 2>&1; then
 	command_user="svc-mdns:svc-mdns"
 fi
 
-output_log=/work/logs/pipeos-mdns.log
-error_log=/work/logs/pipeos-mdns.log
+output_log=/data/logs/pipeos-mdns.log
+error_log=/data/logs/pipeos-mdns.log
 
 depend() {
 	need net
@@ -21,14 +21,14 @@ depend() {
 }
 
 start_pre() {
-	mountpoint -q /work && { checkpath -d -m 0755 /work/logs || return 1; }
+	mountpoint -q /data && { checkpath -d -m 0755 /data/logs || return 1; }
 	# supervise-daemon opens the log AFTER dropping to command_user, and
-	# /work/logs is root's: on the first image with the svc-mdns account
+	# /data/logs is root's: on the first image with the svc-mdns account
 	# (2026-09-09, the first two Machines) the responder never started and
 	# nothing said so — the log it would have said it in was the thing it
 	# could not open. The file is made here, owned by the user.
-	if mountpoint -q /work && [ -n "${command_user:-}" ]; then
-		checkpath -f -m 0644 -o "$command_user" /work/logs/pipeos-mdns.log || return 1
+	if mountpoint -q /data && [ -n "${command_user:-}" ]; then
+		checkpath -f -m 0644 -o "$command_user" /data/logs/pipeos-mdns.log || return 1
 	fi
 	# the peer cache the lobby reads (checkpath makes no parents)
 	checkpath -d -m 0755 /run/pipeos || return 1
@@ -37,18 +37,18 @@ start_pre() {
 	else
 		checkpath -d -m 0755 /run/pipeos/mdns || return 1
 	fi
-	# the roster (#241): every Machine ever seen, with its MAC, on /work so a
+	# the roster (#241): every Machine ever seen, with its MAC, on /data so a
 	# powered-off one still has a row and a Wake button. Owned by the user
-	# like the cache; skipped without /work (the responder retries each tick)
-	if mountpoint -q /work; then
+	# like the cache; skipped without /data (the responder retries each tick)
+	if mountpoint -q /data; then
 		if getent passwd svc-mdns >/dev/null 2>&1; then
-			checkpath -d -m 0755 -o svc-mdns:svc-mdns /work/pipeos /work/pipeos/mdns || return 1
+			checkpath -d -m 0755 -o svc-mdns:svc-mdns /data/pipeos /data/pipeos/mdns || return 1
 		else
-			checkpath -d -m 0755 /work/pipeos /work/pipeos/mdns || return 1
+			checkpath -d -m 0755 /data/pipeos /data/pipeos/mdns || return 1
 		fi
 	fi
-	# no /work is not fatal for discovery — log to nowhere and answer anyway
-	if ! mountpoint -q /work; then
+	# no /data is not fatal for discovery — log to nowhere and answer anyway
+	if ! mountpoint -q /data; then
 		output_log=/dev/null
 		error_log=/dev/null
 	fi

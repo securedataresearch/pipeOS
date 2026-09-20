@@ -8,8 +8,8 @@ respawn_max=0
 
 export HOME=/root
 
-output_log=/work/logs/pipebox-listener-svc.log
-error_log=/work/logs/pipebox-listener-svc.log
+output_log=/data/logs/pipebox-listener-svc.log
+error_log=/data/logs/pipebox-listener-svc.log
 
 depend() {
 	need pipe-daemon
@@ -17,7 +17,7 @@ depend() {
 }
 
 start_pre() {
-	# wait out the boot-time /work mount race (see pipe-daemon start_pre)
+	# wait out the boot-time /data mount race (see pipe-daemon start_pre)
 	_i=0
 	# Either name: the volume is mounted at /data and /work is a symlink to
 	# it (#330), but a deploy installs this file while the volume is still
@@ -26,7 +26,7 @@ start_pre() {
 	while ! mountpoint -q /data && ! mountpoint -q /work; do
 		_i=$((_i+1))
 		if [ "$_i" -ge 30 ]; then
-			eerror "/work not mounted after 30s"
+			eerror "/data not mounted after 30s"
 			return 1
 		fi
 		sleep 1
@@ -35,5 +35,5 @@ start_pre() {
 		eerror "listener script missing"
 		return 1
 	fi
-	checkpath -d -m 0755 /work/logs /work/pipebox || return 1
+	checkpath -d -m 0755 /data/logs /data/pipebox || return 1
 }

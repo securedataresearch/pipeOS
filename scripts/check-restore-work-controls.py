@@ -19,7 +19,7 @@ BREAKS = [
      "    $RSYNC -a --exclude /lost+found", "    $RSYNC -a --delete --exclude /lost+found"),
     ("B  this box's runtime state is restored over",
      "--exclude /.pipeos ", ""),
-    ("C  every /work counts as empty",
+    ("C  every /data counts as empty",
      '            *) echo "$_n"; return 1 ;;', '            *) continue ;;'),
     ("D  --force is not parsed",
      "        --force) FORCE=yes ;;", "        --force) : ;;"),
@@ -27,7 +27,7 @@ BREAKS = [
      '        [ "$(src_of_mount "$WORK")" != "$SRC" ] ||', '        true ||'),
     ("F  the device source is mounted read-write",
      '        do_mount mount -t ext4 -o ro "$SRC"', '        do_mount mount -t ext4 "$SRC"'),
-    ("G  --onto the running /work is allowed",
+    ("G  --onto the running /data is allowed",
      '        [ "$(src_of_mount "$WORK")" != "$ONTO" ] ||', '        true ||'),
 ]
 

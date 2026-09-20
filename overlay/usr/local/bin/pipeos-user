@@ -3,7 +3,7 @@
 # the web dashboard shells out here (argv, never a shell string) and the same
 # commands work over ssh.
 #
-#   pipeos-user add NAME [--nologin]  create NAME with home /work/home/NAME;
+#   pipeos-user add NAME [--nologin]  create NAME with home /data/home/NAME;
 #                                 --nologin: shell /sbin/nologin, no ~/.ssh —
 #                                 exists for samba's passdb only (pipeOS#270)
 #   pipeos-user set-key NAME      install an ssh public key (stdin)
@@ -21,10 +21,10 @@
 #   - /etc/shadow and /etc/passwd edits go through awk → temp file → atomic
 #     rename. Never sed -i: a truncated shadow is a full ssh lockout,
 #     root included.
-#   - Homes are real paths on /work (ext4): they survive a media reflash even
+#   - Homes are real paths on /data (ext4): they survive a media reflash even
 #     though the accounts themselves (apkovl) do not. add re-adopts a
 #     surviving home's uid so a recreated user owns their old files, and
-#     /work/.pipeos/users.manifest records name:uid for that day.
+#     /data/.pipeos/users.manifest records name:uid for that day.
 set -eu
 
 usage() { sed -n '4,14p' "$0" >&2; exit 1; }
@@ -37,8 +37,8 @@ if [ "$cmd" != list ]; then
 		echo "pipeos-user: bad name '$name' (a-z, digits, _ -, max 32)" >&2; exit 1; }
 fi
 
-HOMES=/work/home
-MANIFEST=/work/.pipeos/users.manifest
+HOMES=/data/home
+MANIFEST=/data/.pipeos/users.manifest
 
 shadow_set() { # $1=user $2=field2 value — atomic
 	awk -F: -v u="$1" -v h="$2" 'BEGIN{OFS=":"} $1==u{$2=h} {print}' /etc/shadow \
@@ -49,7 +49,7 @@ shadow_set() { # $1=user $2=field2 value — atomic
 
 case "$cmd" in
 add)
-	mountpoint -q /work || { echo "pipeos-user: /work is not mounted — refusing" >&2; exit 1; }
+	mountpoint -q /data || { echo "pipeos-user: /data is not mounted — refusing" >&2; exit 1; }
 	id "$name" >/dev/null 2>&1 && { echo "pipeos-user: $name already exists" >&2; exit 1; }
 	mkdir -p "$HOMES"; chmod 755 "$HOMES"
 	UIDOPT=""

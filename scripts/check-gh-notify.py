@@ -48,7 +48,7 @@ def stage(tmp):
         out, n = pat.subn(repl, out, count=1)
         if n != 1:
             raise SystemExit(f"probe cannot stage the script: no match for {pat.pattern!r}")
-    if "/work/pipebox/state" in out or "/run/pipebox-gh-notify.lock" in out:
+    if "/data/pipebox/state" in out or "/run/pipebox-gh-notify.lock" in out:
         raise SystemExit("probe staging left a live path in the copy under test")
     path = os.path.join(tmp, "gh-notify")
     open(path, "w").write(out)

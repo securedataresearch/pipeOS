@@ -61,11 +61,11 @@ when host keys have changed (every reflash). Clocks are UTC.
 | `pipeos vault share NAME ID\|NAME...` / `unshare` | Secrets → *shared with* ticks | a copy of NAME to each member through ITS `/api/secrets/receive` over mutual TLS (that member saves it as `cluster:<this id>`); this box notes who has it; unshare only forgets — the copy stays that member's own. The one exception to no-propagation, on the owner's tap (#301) | yes |
 | `pipeos wake NAME\|ID\|--all\|--list` | Network → Wake | — | — |
 | `pipeos blink on\|off\|status\|test [N]` | — (card `BLINK`, no form yet) | card `BLINK`, regenerated; `pipeos-blink` restarted at once. A Machine that is a healthy cluster member blinks its member number on its cabled port's LED (#333); the one not blinking is the one not playing ball | yes |
-| `pipeos updates [--json]` | Updates view | — (reads `/work/logs/deploy-overlay.log`, the selfupdate log and the clone) | no |
+| `pipeos updates [--json]` | Updates view | — (reads `/data/logs/deploy-overlay.log`, the selfupdate log and the clone) | no |
 | `pipeos lan [--refresh] [--json]` | Network → Everything on this network | netgaze's pass (ICMP sweep, neighbour table, PTR), cached a minute, every row marked this Machine / member / a Machine / other (#217) | no |
-| `pipeos work status\|flush\|park\|unpark` | — (operator) | flush: the RAM-staged hot set → the stick; park: remount `/work` read-only | flush is the save |
+| `pipeos work status\|flush\|park\|unpark` | — (operator) | flush: the RAM-staged hot set → the stick; park: remount `/data` read-only | flush is the save |
 | `pipeos backup`, `flash`, `restore-work`, `pkg`, `rollback` | Files, System | see each verb's header | yes |
-| `pipeos unclaim [--yes]` | — (operator; a resale or a fresh start) | a factory reset: claim, users, name, owner, root ssh key, jobs + job dirs, shares, support port, assistant, vault, pipe + Claude + hermes sign-ins, cluster membership, a NEW CA, the agent's transcripts + memory, the ledger, `/work/backup`; the chassis identity, `/work/home` and `/work/repos` stay; refuses on a parked `/work` it cannot unpark | one save in unclaim mode (canonical + known-good as nobody's), then reboot |
+| `pipeos unclaim [--yes]` | — (operator; a resale or a fresh start) | a factory reset: claim, users, name, owner, root ssh key, jobs + job dirs, shares, support port, assistant, vault, pipe + Claude + hermes sign-ins, cluster membership, a NEW CA, the agent's transcripts + memory, the ledger, `/data/backup`; the chassis identity, `/data/home` and `/data/repos` stay; refuses on a parked `/data` it cannot unpark | one save in unclaim mode (canonical + known-good as nobody's), then reboot |
 
 `pipeos` with no verb prints the list; each verb refuses with rc 2 and
 one line when the input is wrong, exactly as the dashboard answers 400.
@@ -109,16 +109,16 @@ acceptance sheet (`docs/first-boot-acceptance.md`) lists the rows.
 - **Reboot:** `verify` PASS → `reboot` → selfcheck green, known-good
   matches.
 
-## The stick is /work: heat, RAM staging, park
+## The stick is /data: heat, RAM staging, park
 
-Until a Machine has an internal disk the boot stick is also `/work`. The
+Until a Machine has an internal disk the boot stick is also `/data`. The
 churn — `logs`, `pipeos/mdns`, `.pipeos/ledger`, `.pipeos/schedule`
 (`usr/local/share/pipeos/hot.list`) — is staged in a tmpfs by `pipeos-hot`
 at boot and written back by `pipeos work flush`: hourly, before every
 `pipeos save`, at shutdown, before `park`. `pipeos work park` flushes and
-remounts `/work` read-only so the stick takes nothing until `unpark`; a
+remounts `/data` read-only so the stick takes nothing until `unpark`; a
 scheduled run unparks itself and re-parks. If park says something holds
-`/work`, that is a session or a job: wait, or stop it. `/work` mounts
+`/data`, that is a session or a job: wait, or stop it. `/data` mounts
 `commit=120,lazytime`. Add a path to `hot.list` when something new churns;
 never one that is the only copy of anything.
 
