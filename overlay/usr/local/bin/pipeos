@@ -22,6 +22,7 @@
 #   pipeos unclaim [--yes]     nobody's box again: drop the claim, name, users; reboot
 #   pipeos wake NAME|ID|--all|--list|--forget ID   magic packet to a Machine this box has seen
 #   pipeos blink on|off|status|test [N]   the port-LED heartbeat: a Machine playing its part in the cluster blinks its member number (#333)
+#   pipeos updates [--json]   what has changed on this Machine, newest first: every update it took, with titles and descriptions (#335)
 #   pipeos lan [--refresh] [--json]   the network map: every device netgaze sees, Machines marked (#217)
 #   pipeos cluster init [NAME]|status|ca|add|remove|sync|join MEMBER|adopt ID [NAME]|page|reboot-all|services KEY on|off [ID...]|call ID|NAME|IP METHOD PATH [JSON]   the cluster: identity (its CA), member list, the page, the two cluster-wide acts (#222, #211, #212)
 #   pipeos cluster agents | start NAME --on ID|NAME|idlest [--prompt TEXT [--cron SPEC|manual]]   every member's agents; start one ON a member — it lives there; no --cron = runs now, then only when started (#300)
@@ -727,6 +728,7 @@ case "$1" in
     wake)        shift; exec /usr/local/bin/pipeos-wake "$@" ;;
     blink)       shift; cmd_blink "$@" ;;
     lan)         shift; exec python3 "${PIPEOS_LAN:-/usr/local/share/pipeos/web/lan.py}" "$@" ;;
+    updates)     shift; exec python3 "${PIPEOS_UPDATES:-/usr/local/share/pipeos/web/updates.py}" "$@" ;;
     cluster)     shift; exec python3 /usr/local/share/pipeos/web/cluster.py "$@" ;;
     vault)       shift; exec /usr/local/bin/pipeos-vault "$@" ;;
     schedule)    shift; exec python3 /usr/local/share/pipeos/web/schedctl.py "$@" ;;

@@ -646,6 +646,7 @@ async function dashboard() {
     secrets: '<svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
     schedule: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
     usage: '<svg viewBox="0 0 24 24"><path d="M12 2v20M17 6.5a4 4 0 0 0-3.5-2.5h-3a3 3 0 0 0 0 6h3a3 3 0 0 1 0 6h-3A4 4 0 0 1 7 13.5"/></svg>',
+    updates: '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 9 8 9"/><path d="M12 8v4l3 2"/></svg>',
     docs: '<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
     setup: '<svg viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
   };
@@ -674,6 +675,7 @@ async function dashboard() {
         ${navItem("network", "Network")}
         ${isAdmin ? navItem("cluster", "Cluster") : ""}
         ${navItem("system", "System")}
+        ${navItem("updates", "Updates")}
         ${navItem("docs", "Docs")}
       </nav>
       <div class="navfoot">
@@ -1148,6 +1150,15 @@ async function dashboard() {
         <div class="card">
           <div class="cardhead"><h2>Traffic</h2><span class="note" id="ntot"></span></div>
           <div class="ch" id="ch-net"></div>
+        </div>
+      </section>
+
+      <section data-view="updates" hidden>
+        <div class="viewhead"><h1>Updates</h1></div>
+        <div class="card">
+          <div class="cardhead"><h2>What has changed on this Machine</h2><span><span class="note" id="upnote"></span> <button id="uprefresh" class="ghost small" type="button" data-vok>look again</button></span></div>
+          <p class="sub">Newest first. Every change this Machine has taken, with what it was for — read from what the Machine itself wrote down when it took it, so this is its history and not the project's.</p>
+          <div id="uplist" class="note">looking…</div>
         </div>
       </section>
 
@@ -2219,6 +2230,41 @@ async function dashboard() {
       pollSystem();
     };
   });
+  // ---- the update log (#335): this Machine's own history, newest first ----
+  let upLoaded = false;
+  const renderUpdates = (d) => {
+    const list = v.querySelector("#uplist"), note = v.querySelector("#upnote");
+    if (!list) return;
+    const us = d.updates || [];
+    if (!us.length) { list.className = "note"; list.textContent = "Nothing recorded yet — this Machine has taken no update since it was set up."; return; }
+    list.className = "";
+    let day = "";
+    list.innerHTML = us.map((u, i) => {
+      const when = new Date((u.landed || 0) * 1000);
+      const d0 = when.toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+      const head = d0 === day ? "" : `<h3 class="upday">${esc(d0)}</h3>`;
+      day = d0;
+      const body = (u.body || "").trim();
+      return `${head}<div class="uprow">
+        <div class="uphead"><span class="uptitle">${esc(u.title)}</span>
+          <span class="note">${u.kind === "image" ? "system image" : "update"} · ${when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · ${esc(u.sha || "")}</span></div>
+        ${body ? `<button class="ghost small upmore" type="button" data-vok data-up="${i}">what this was for</button><pre class="upbody" id="upb-${i}" hidden>${esc(body)}</pre>` : ""}
+      </div>`;
+    }).join("");
+    list.querySelectorAll("[data-up]").forEach(b => b.onclick = () => {
+      const pre = list.querySelector("#upb-" + b.dataset.up);
+      pre.hidden = !pre.hidden;
+      b.textContent = pre.hidden ? "what this was for" : "hide";
+    });
+    note.textContent = `${us.length} change${us.length === 1 ? "" : "s"}` + (d.clone ? "" : " · no repo clone here, so only what arrived is listed, not what each change said");
+  };
+  const loadUpdates = async (refresh) => {
+    if (upLoaded && !refresh) return;
+    try { renderUpdates(await api("/api/updates" + (refresh ? "?refresh=1" : ""))); upLoaded = true; }
+    catch (e) { const l = v.querySelector("#uplist"); if (l) { l.className = "note"; l.textContent = e.message; } }
+  };
+  const upBtn = v.querySelector("#uprefresh");
+  if (upBtn) upBtn.onclick = async () => { upBtn.disabled = true; await loadUpdates(true); upBtn.disabled = false; };
   // ---- the network map (#217): netgaze's pass, every row marked ----
   let lanAt = 0;
   const renderLan = (d) => {
@@ -2748,7 +2794,7 @@ async function dashboard() {
   };
 
   const POLLERS = { system: pollSystem, network: pollNetwork, cluster: pollCluster, schedule: loadSchedule, usage: loadUsage };
-  const LAZY = { files: () => { loadFiles(""); loadFiles._disks(); }, pipe: loadPipe, users: loadUsers, secrets: loadSecrets, docs: loadDocs, setup: loadSetup };
+  const LAZY = { updates: loadUpdates, files: () => { loadFiles(""); loadFiles._disks(); }, pipe: loadPipe, users: loadUsers, secrets: loadSecrets, docs: loadDocs, setup: loadSetup };
   const seen = {};
   let viewTimer = null;
   const views = v.querySelectorAll("[data-view]");

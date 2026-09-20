@@ -57,6 +57,7 @@ import cronspec  # noqa: E402  — the cron expression a scheduled job carries (
 import ledger  # noqa: E402  — every model call, costed (#246)
 import cluster  # noqa: E402  — membership over mutual TLS: a member's client certificate is a session (#222, #211)
 import lan  # noqa: E402  — the network map (#217)
+import updates  # noqa: E402  — this Machine's own update log (#335)
 
 ETC = "/etc/pipeos"
 ADMIN_CONF = ETC + "/web-admin.conf"
@@ -2018,6 +2019,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/cluster/summary": self.api_cluster_summary,
             "/api/cluster/page": self.api_cluster_page,
             "/api/lan": self.api_lan,
+            "/api/updates": self.api_updates,
         }
         fn = readers.get(path)
         if fn is not None:
@@ -2233,6 +2235,14 @@ class Handler(BaseHTTPRequestHandler):
             "lan_name": lanid.lan_name(),
             "siblings": len(ps),
         })
+
+    def api_updates(self):
+        """What has changed on THIS Machine, newest first (#335): every
+        commit an overlay deploy brought in, with its own title and
+        description, and every released image it applied. Read from what the
+        Machine itself wrote down — no network. A signed-in reader only."""
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        self.send(200, updates.page(refresh=(q.get("refresh", ["0"])[0] not in ("", "0", "no", "false"))))
 
     def api_lan(self):
         """The network map (#217): netgaze's pass, cached a minute, with
