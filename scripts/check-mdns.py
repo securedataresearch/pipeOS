@@ -14,6 +14,7 @@ written atomically. Controls: check-mdns-controls.py.
 import importlib.util
 import json
 import os
+import re
 import shutil
 import signal
 import stat
@@ -167,7 +168,12 @@ peerA = b.get("7f3a", {})
 check("6 two Machines find each other within two intervals, every field carried; the unnamed one is reachable as pipeos-7f3a.local",
       found and peerB.get("name") == "studio" and peerB.get("host") == "studio.local" and peerB.get("claimed") is True
       and peerB.get("verdict") == "all green" and peerB.get("commit") == "abc1234def01" and peerB.get("model") == "Test Box"
-      and peerB.get("ip") == "127.0.0.1" and peerB.get("mac") == "aa:bb:cc:dd:9c:21"
+      # an address was carried, not WHICH one: a responder announces the
+      # address it detects toward the group, and that is the runner's own
+      # NIC (10.1.0.x on GitHub) as readily as the loopback — pinning
+      # 127.0.0.1 made this row pass here and fail there (pipeOS#338)
+      and re.fullmatch(r"\d+\.\d+\.\d+\.\d+", peerB.get("ip") or "")
+      and peerB.get("mac") == "aa:bb:cc:dd:9c:21"
       and peerA.get("name") == "" and peerA.get("host") == "pipeos-7f3a.local" and peerA.get("claimed") is False,
       "A=%r B=%r logA=%s" % (a, b, open(D + "/logA").read()[-300:]))
 check("7 each Machine excludes itself from its own cache", "7f3a" not in a and "9c21" not in b, repr((sorted(a), sorted(b))))
