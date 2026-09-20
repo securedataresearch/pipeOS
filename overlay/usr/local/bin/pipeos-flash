@@ -218,7 +218,10 @@ not_system_disk() {   # DEV
     _mu=$(disk_of_mount /media/usb)
     [ -n "$_mu" ] || { say "cannot tell which disk carries /media/usb — refusing rather than guessing" >&2; return 1; }
     [ "$_mu" != "$1" ] || { say "$1 holds this box's boot media (/media/usb) — in-place is \`pipeos flash apply\`" >&2; return 1; }
-    _mw=$(disk_of_mount /data)
+    # resolved: /proc/mounts names the real mount, and /data is the symlink
+    # until the reboot (#330). Asking by the wrong name returns nothing and
+    # this guard then passes for every device. (#342 review — the sixth site.)
+    _mw=$(disk_of_mount "$(readlink -f /data 2>/dev/null || printf '%s' /data)")
     [ "$_mw" != "$1" ] || { say "$1 holds this box's work disk (/data) — refusing" >&2; return 1; }
     _mr=$(disk_of_mount /)
     [ -z "$_mr" ] || [ "$_mr" != "$1" ] || { say "$1 holds the root filesystem — refusing" >&2; return 1; }

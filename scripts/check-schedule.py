@@ -351,6 +351,24 @@ clear("claude")
 runner("flaky", {"STUB_RC": "1"}); f1 = argv("claude"); clear("claude")
 runner("flaky"); f2 = argv("claude"); clear("claude")
 runner("flaky"); f3 = argv("claude")
+# ── 18d. the deploy window (#330/#342): a job saved under the volume's OLD
+# name must still run. The migration rewrites stored cwds at the NEXT BOOT,
+# and a deploy can precede its reboot by days — so for that whole window a
+# literal prefix test would refuse every tick with "cwd ... is not under
+# /data" and DM the owner each time. (The #342 review.)
+OLDVOL = os.path.join(D, "oldname")
+if not os.path.lexists(OLDVOL):
+    os.symlink(WORK, OLDVOL)
+jobs({"name": "preflip", "prompt": "hi", "cwd": os.path.join(OLDVOL, "pipebox", "jobs", "preflip")})
+rc_pf, _ = runner("preflip", {"PIPEOS_SCHED_WORK_ALT": OLDVOL})
+log_pf = open(os.path.join(RLOGS, "schedule-preflip.log")).read()
+rc_nf, _ = runner("preflip", {"PIPEOS_SCHED_WORK_ALT": os.path.join(D, "somewhere-else")})
+log_nf = open(os.path.join(RLOGS, "schedule-preflip.log")).read()[len(log_pf):]
+check("18d a job whose stored working dir is under the volume's OTHER name runs: the two names are one volume, so the run takes the current one instead of refusing every tick through the whole deploy window — and a dir that is genuinely elsewhere is still refused, by name",
+      rc_pf == 0 and "is not under" not in log_pf
+      and rc_nf != 0 and "is not under" in log_nf,
+      "preflip rc=%s log=%r ; elsewhere rc=%s log=%r" % (rc_pf, log_pf[-200:], rc_nf, log_nf[-200:]))
+
 check("19 session continue: a run that failed before a conversation existed is not resumed — the next run starts a new session id; only a run that reached the conversation is resumed",
       len(f1) == 1 and "--session-id" in f1[0] and len(f2) == 1 and "--session-id" in f2[0] and f2[0] != f1[0] and "--resume" not in f2[0]
       and len(f3) == 1 and f3[0].endswith("--resume " + f2[0].split("--session-id ")[1].strip()), repr((f1, f2, f3)))

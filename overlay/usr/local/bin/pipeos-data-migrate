@@ -99,6 +99,17 @@ if [ -d "$PROJECTS" ]; then
     for d in "$PROJECTS/$fs"*; do
         [ -d "$d" ] || continue
         base=${d##*/}
+        # The glob is a prefix, and a prefix is not a path boundary: with
+        # FROM=/work it also matches -workshop-thing, which would be renamed to
+        # -datashop-thing — a name matching no cwd, so those sessions are lost
+        # to --resume and no later run can undo it, because the glob no longer
+        # matches either. A directory is this volume's only if the next
+        # character ends the component. (The #342 review; it reproduced the
+        # mangling.)
+        case "$base" in
+            "$fs"|"$fs"-*) ;;
+            *) continue ;;
+        esac
         new="$PROJECTS/$ts${base#"$fs"}"
         if [ -e "$new" ]; then
             # Both names hold sessions (a box that ran under each): the new

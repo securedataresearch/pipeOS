@@ -244,7 +244,19 @@ class Ledger:
         <project>/<file>.jsonl, so the last two components identify a
         transcript wherever the volume happens to be mounted."""
         parts = path.rstrip("/").split("/")
-        return "/".join(parts[-2:]) if len(parts) >= 2 else path
+        if len(parts) < 2:
+            return path
+        proj, name = parts[-2], parts[-1]
+        # The project directory carries the volume's name too: claude derives
+        # it from the cwd, so /work/pipebox is -work-pipebox and /data/pipebox
+        # is -data-pipebox — and pipeos-data-migrate renames those directories
+        # on the very boot the volume moves. A key that kept the directory
+        # verbatim would therefore miss on exactly the boot it exists to
+        # survive, and the whole history would re-ingest: the doubled
+        # month-to-date spend this key was introduced to prevent. (The #342
+        # review reproduced it: one row in, two rows out.)
+        proj = re.sub(r"^-(work|data)(?=-|$)", "-vol", proj)
+        return proj + "/" + name
 
     def _load_cursor(self):
         try:

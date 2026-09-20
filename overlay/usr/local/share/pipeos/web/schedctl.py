@@ -123,8 +123,13 @@ def apply(job, flags, new):
     if "cwd" in flags:
         cwd = flags["cwd"].strip()
         if cwd:
+            # Compare resolved against RESOLVED: while /data is still the
+            # symlink (the window between a #330 deploy and its reboot),
+            # realpath("/data/x") is "/work/x" and a literal WORK prefix test
+            # refuses the very name the owner is told to use. (#342 review.)
             real = os.path.realpath(cwd)
-            if not (real == WORK or real.startswith(WORK + "/")) or any(c in cwd for c in "\n\r\0'\""):
+            root = os.path.realpath(WORK)
+            if not (real == root or real.startswith(root + "/")) or any(c in cwd for c in "\n\r\0'\""):
                 raise Refused("the working dir must be under %s" % WORK)
             job["cwd"] = real
         else:

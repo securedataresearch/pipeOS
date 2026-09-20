@@ -54,7 +54,7 @@ def fixture():
                             "/root": {"y": 2}},
                "hasCompletedOnboarding": True}, open(cj, "w"))
     pr = os.path.join(d, "projects")
-    for n in ("-work-pipebox", "-work-repos-x", "-data-pipebox", "-other"):
+    for n in ("-work-pipebox", "-work-repos-x", "-data-pipebox", "-other", "-workshop-thing"):
         os.makedirs(os.path.join(pr, n))
     open(os.path.join(pr, "-work-pipebox", "s1.jsonl"), "w").write("old\n")
     open(os.path.join(pr, "-data-pipebox", "live.jsonl"), "w").write("new\n")
@@ -97,6 +97,12 @@ check("6 a directory whose new name already holds sessions is left alone and sai
       "-work-pipebox" in names and "-data-pipebox" in names and "already exists" in out
       and open(os.path.join(pr, "-work-pipebox", "s1.jsonl")).read() == "old\n", repr(names) + out[-200:])
 check("7 a name that is nobody's business (-other) is untouched", "-other" in names, repr(names))
+# The glob is a prefix; a prefix is not a path boundary. -workshop-thing is
+# not this volume's, and renaming it to -datashop-thing would strand those
+# sessions for good — no cwd produces that name, and the glob would never
+# match it again to undo it. (The #342 review reproduced the mangling.)
+check("8b a directory that merely starts with the old name (-workshop-thing) is left alone: renaming it would produce a name no cwd makes, stranding those sessions beyond any later repair",
+      "-workshop-thing" in names and "-datashop-thing" not in names, repr(names))
 
 before = (open(sched).read(), open(cj).read(), sorted(os.listdir(pr)))
 rc2, out2 = run(sched, cj, pr)
