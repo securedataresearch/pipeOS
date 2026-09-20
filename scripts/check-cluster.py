@@ -804,6 +804,22 @@ check("21 a grey box's agents are grey too: the row of a member that stopped ans
       and ran_on(G) == ["pick"] and jobs_of(G) == ["pick"]
       and rc_ag2 == 0 and "grey (box off)" in out_ag2 and "nightly" in out_ag2,
       repr((st_p21, grey.get("awake"), grey.get("agents"), grey.get("agents_stale"), grey.get("agents_seen"), ran_on(G), jobs_of(G), rc_ag2, out_ag2[-240:])))
+
+# ── 21b. the OPPOSITE call for the sign-in list (#215, §5) ───────────────
+# A grey member's agents are worth showing stale (row 21): they say what that
+# Machine was doing. Who may sign in is not — a list that is quietly out of
+# date is the kind of thing an owner acts on, so an unreachable member is an
+# honest gap. Row 19c2 saw `office` on this very box while it answered; with
+# it stopped, that name must be nowhere in the answer.
+_cg21 = login(G, "sixpassword")
+st_u21, body_u21 = sess(G, _cg21, "GET", "/api/cluster/users")
+grey_u = next((r for r in body_u21.get("members", []) if r["id"] == "2222"), {})
+rc_u21, out_u21 = G.cli("users")
+check("21b a grey box's sign-ins are NOT shown stale: the member that stopped answering is an honest gap, its list is not served from the answer it last gave, and the verb says so",
+      st_u21 == 200 and grey_u.get("users") is None and grey_u.get("error")
+      and "office" not in json.dumps(body_u21)
+      and rc_u21 == 0 and "office" not in out_u21,
+      repr((st_u21, grey_u, rc_u21, out_u21[-200:])))
 H = Box("2222", "seven-c"); H.claim("sevenpassword")
 G.cli("remove", "2222"); G.see(H); G.cli("add", H.addr, stdin="sevenpassword\n"); G.see(H); H.see(G)
 
