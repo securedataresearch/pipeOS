@@ -1,5 +1,5 @@
 #!/bin/sh
-# pipeos-worksweep — bounded weekly reclaim of /work (pipeOS#90 item 3).
+# pipeos-worksweep — bounded weekly reclaim of /data (pipeOS#90 item 3).
 #
 # Sam's rule, and the whole design in one line: a full stick is a human visit,
 # a rebuilt artifact cache is minutes. So this deletes build output, and
@@ -17,38 +17,38 @@
 # NO TIER DELETES SOURCE. Every candidate shape below is build output or a
 # cache: a `target/` dir, the media `out/` tree, the shared artifact cache. An
 # earlier draft had a tier that deleted whole scratch checkouts under
-# /work/repos aged by directory mtime; box1 measured it on a live box and it
+# /data/repos aged by directory mtime; box1 measured it on a live box and it
 # selected two real clones and six git worktrees, so it is gone rather than
 # fenced (pipeOS#103 review). If reclaiming build output is ever not enough,
 # the replacement is an opt-in list of declared scratch SHAPES, not "any
 # directory name I do not recognise".
 #
 # Not swept, by construction (none of these are candidate shapes):
-#   /work/claude       agent transcripts and file memory — /root/.claude/
+#   /data/claude       agent transcripts and file memory — /root/.claude/
 #                      projects is a symlink onto it. Losing it is not a
 #                      stalled build, it is the box losing its ability to
 #                      report the problem. Not in the issue's list; added
 #                      here on purpose and disclosed in the PR.
-#   /work/backup       weekly apkovl copies AND the pipe identity/credentials
+#   /data/backup       weekly apkovl copies AND the pipe identity/credentials
 #                      written by pipeos-backup. Irreplaceable.
-#   /work/buildroot    toolchain
-#   /work/cargo-home   where pipeOS#90 item 1 puts the shared registry cache.
+#   /data/buildroot    toolchain
+#   /data/cargo-home   where pipeOS#90 item 1 puts the shared registry cache.
 #                      box2 is right that nothing creates it today — no box
 #                      sets CARGO_HOME, so the cache is still at ~/.cargo,
-#                      outside /work and therefore outside the allowlist
+#                      outside /data and therefore outside the allowlist
 #                      entirely. This line is pre-emptive, not load-bearing:
 #                      it costs nothing now and is already correct on the day
 #                      item 1 lands.
-#   /work/keys         the fleet signing key's durable home (pipeOS#90/#92)
-#   /work/pipebox      this box's own working state
+#   /data/keys         the fleet signing key's durable home (pipeOS#90/#92)
+#   /data/pipebox      this box's own working state
 #   every checkout's SOURCE, canonical or scratch, apart from build output
 #
 # Usage: pipeos-worksweep [--dry-run] [--force]
 #   --dry-run  print what would be reclaimed, delete nothing, exit 0
-#   --force    sweep even if /work is under the threshold (for the probe)
+#   --force    sweep even if /data is under the threshold (for the probe)
 set -u
 
-mountpoint -q /work || exit 0
+mountpoint -q /data || exit 0
 
 dry=0
 force=0
@@ -105,28 +105,28 @@ esac
 # the predicate "scratch", and nothing here relies on it being one.
 CANONICAL="pipe pipeOS"
 
-usage() { df -P /work 2>/dev/null | awk 'NR==2{print $5+0}'; }
+usage() { df -P /data 2>/dev/null | awk 'NR==2{print $5+0}'; }
 
 log() {
     echo "$*"
-    [ -d /work/logs ] && echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> /work/logs/worksweep.log
+    [ -d /data/logs ] && echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> /data/logs/worksweep.log
 }
 
 # Second gate. Anything here must never be deleted, whatever the allowlist
 # below decided. A hit means the two disagree, which is a bug, so it refuses.
 protected() {
     case "$1" in
-        /work|/work/|/|"") return 0 ;;
-        /work/claude|/work/claude/*)         return 0 ;;
-        /work/backup|/work/backup/*)         return 0 ;;
-        /work/buildroot|/work/buildroot/*)   return 0 ;;
-        /work/cargo-home|/work/cargo-home/*) return 0 ;;
-        /work/keys|/work/keys/*)             return 0 ;;
-        /work/pipebox|/work/pipebox/*)       return 0 ;;
-        /work/.pipeos|/work/.pipeos/*)       return 0 ;;   # the box's own state: ledger, schedule, stamps (#246)
-        /work/repos/pipeOS/out/keys|/work/repos/pipeOS/out/keys/*) return 0 ;;
-        /work/*) return 1 ;;
-        *) return 0 ;;   # anything outside /work is not ours to touch
+        /data|/data/|/|"") return 0 ;;
+        /data/claude|/data/claude/*)         return 0 ;;
+        /data/backup|/data/backup/*)         return 0 ;;
+        /data/buildroot|/data/buildroot/*)   return 0 ;;
+        /data/cargo-home|/data/cargo-home/*) return 0 ;;
+        /data/keys|/data/keys/*)             return 0 ;;
+        /data/pipebox|/data/pipebox/*)       return 0 ;;
+        /data/.pipeos|/data/.pipeos/*)       return 0 ;;   # the box's own state: ledger, schedule, stamps (#246)
+        /data/repos/pipeOS/out/keys|/data/repos/pipeOS/out/keys/*) return 0 ;;
+        /data/*) return 1 ;;
+        *) return 0 ;;   # anything outside /data is not ours to touch
     esac
 }
 
@@ -171,7 +171,7 @@ use=$(usage)
 if [ "$force" = 0 ] && [ "${use:-0}" -lt "$sweep_pct" ]; then
     exit 0
 fi
-log "pipeos-worksweep: /work ${use:-?}% used (threshold ${sweep_pct}%)$([ "$dry" = 1 ] && echo ' [dry-run]')"
+log "pipeos-worksweep: /data ${use:-?}% used (threshold ${sweep_pct}%)$([ "$dry" = 1 ] && echo ' [dry-run]')"
 
 is_canonical() {
     for c in $CANONICAL; do [ "$1" = "$c" ] && return 0; done
@@ -197,7 +197,7 @@ done_enough() {
 _ws_tmp=$(mktemp) || exit 0
 trap 'rm -f "$_ws_tmp"' EXIT INT TERM
 
-for d in /work/repos/*/; do
+for d in /data/repos/*/; do
     done_enough && break
     [ -d "$d" ] || continue
     name=$(basename "$d")
@@ -214,7 +214,7 @@ for d in /work/repos/*/; do
     # Both guards miss it without this. `[ -d "$d" ]` above is true of a
     # symlink-to-directory, and `reclaim`'s `[ -L "$p" ]` never fires because
     # the candidate find yields is `<link>/target`, a REAL directory behind the
-    # link; `protected()` is textual and that path starts with /work/, so it
+    # link; `protected()` is textual and that path starts with /data/, so it
     # answers "not protected". box2 raised it, box0 reproduced it independently
     # under both GNU and busybox find: a tree outside the workspace deleted, and
     # the log line naming it by the in-workspace path it was reached through, so
@@ -238,7 +238,7 @@ done
 # ---- tier 2: build output in the canonical clones
 for c in $CANONICAL; do
     done_enough && break
-    reclaim "/work/repos/$c/target" "canonical clone build output"
+    reclaim "/data/repos/$c/target" "canonical clone build output"
 done
 
 # ---- tier 3: the pipeOS media build tree. box1 classified this on 2026-08-14:
@@ -246,8 +246,8 @@ done
 # out/keys, which holds the fleet signing key and is protected above. Swept
 # entry by entry rather than as a whole so out/keys survives by construction
 # and not merely by the guard.
-if ! done_enough && [ -d /work/repos/pipeOS/out ]; then
-    for e in /work/repos/pipeOS/out/*; do
+if ! done_enough && [ -d /data/repos/pipeOS/out ]; then
+    for e in /data/repos/pipeOS/out/*; do
         done_enough && break
         [ -e "$e" ] || continue
         case "$(basename "$e")" in
@@ -260,13 +260,13 @@ fi
 # ---- tier 4: the shared artifact cache (pipeOS#90 item 1). Last, because
 # every checkout on the box shares it — reclaiming it costs one full rebuild
 # for all of them rather than one.
-done_enough || reclaim /work/cargo-target "shared artifact cache"
+done_enough || reclaim /data/cargo-target "shared artifact cache"
 
 use=$(usage)
 if [ "$dry" = 1 ]; then
-    log "pipeos-worksweep: would reclaim ${reclaimed}K; /work still ${use:-?}%"
+    log "pipeos-worksweep: would reclaim ${reclaimed}K; /data still ${use:-?}%"
 else
-    log "pipeos-worksweep: reclaimed ${reclaimed}K; /work now ${use:-?}%"
+    log "pipeos-worksweep: reclaimed ${reclaimed}K; /data now ${use:-?}%"
 fi
 [ "$refused" -gt 0 ] && log "pipeos-worksweep: $refused candidate(s) REFUSED — see pipeOS#90"
 exit 0

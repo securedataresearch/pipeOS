@@ -34,9 +34,9 @@ import subprocess
 import sys
 import time
 
-DEPLOY_LOG = os.environ.get("PIPEOS_UPDATES_DEPLOY_LOG", "/work/logs/deploy-overlay.log")
-SELFUPDATE_LOG = os.environ.get("PIPEOS_UPDATES_SELFUPDATE_LOG", "/work/logs/selfupdate.log")
-REPO = os.environ.get("PIPEOS_UPDATES_REPO", "/work/repos/pipeOS")
+DEPLOY_LOG = os.environ.get("PIPEOS_UPDATES_DEPLOY_LOG", "/data/logs/deploy-overlay.log")
+SELFUPDATE_LOG = os.environ.get("PIPEOS_UPDATES_SELFUPDATE_LOG", "/data/logs/selfupdate.log")
+REPO = os.environ.get("PIPEOS_UPDATES_REPO", "/data/repos/pipeOS")
 CACHE = os.environ.get("PIPEOS_UPDATES_CACHE", "/run/pipeos/updates.json")
 GIT = os.environ.get("PIPEOS_UPDATES_GIT", "git")
 MAX_ENTRIES = 400

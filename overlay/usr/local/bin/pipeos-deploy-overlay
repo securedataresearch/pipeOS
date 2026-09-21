@@ -51,13 +51,13 @@
 
 set -u
 
-REPO=${PIPEOS_REPO:-/work/repos/pipeOS}
+REPO=${PIPEOS_REPO:-/data/repos/pipeOS}
 STAMP=/etc/pipeos/.overlay-stamp
 CARD=/etc/pipeos/card.conf
 # LOG relocates with the test seam: box2 measured 100KB of probe noise in the
 # production log on a box that had never really deployed — the seam moved the
 # install target and left the audit trail behind.
-LOG=${PIPEOS_DEPLOY_ROOT:-}/work/logs/deploy-overlay.log
+LOG=${PIPEOS_DEPLOY_ROOT:-}/data/logs/deploy-overlay.log
 LOCK=/run/pipeos-deploy-overlay.lock
 # Test seam. PIPEOS_DEPLOY_ROOT relocates every install target, so the probe
 # can deploy a real commit into a throwaway tree. It is fenced: a relocated
@@ -141,7 +141,7 @@ fi
 if [ -n "$ROOT" ]; then
     STAMP="$ROOT$STAMP"
     CARD="$ROOT$CARD"
-    # The log and the lock follow the relocation too. /work/logs and /run are
+    # The log and the lock follow the relocation too. /data/logs and /run are
     # box paths: a relocated run has no business writing either, and on a CI
     # runner it cannot. Same reasoning as the root check above.
     LOG="$ROOT/deploy-overlay.log"
@@ -291,7 +291,7 @@ while read -r mode type blob path; do
         100644|100755) : ;;
         *)  die "overlay/$rel is mode $mode (symlink or submodule).
   This tool installs regular files only; a link needs a decision about its
-  target on a box where /work may not be mounted yet. Add explicit handling
+  target on a box where /data may not be mounted yet. Add explicit handling
   before shipping one." ;;
     esac
     dst="$ROOT/$rel"

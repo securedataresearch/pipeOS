@@ -95,7 +95,7 @@ check("2 one cycle is N identify bursts on the cabled port and nothing else — 
 
 # 3. every reason NOT to blink, each said in a sentence an owner can act on
 rc3a, out3a = run("status", card="BLINK=off\n")
-rc3b, out3b = run("status", health="CRITICAL: /work not mounted")
+rc3b, out3b = run("status", health="CRITICAL: /data not mounted")
 members("a4e0", "c2b0", "c360"); peers("ffff")   # an unclaimed box on the same wire is NOT a member
 rc3c, out3c = run("status")
 peers("a4e0", "c360")

@@ -89,7 +89,7 @@ check("5 the card field exists end to end: declared, allowed, kernel|off enum, r
       and "pipeos watchdog kernel|off|status" in front and "watchdog)    shift; cmd_watchdog" in front)
 check("6 the boot report can name the watchdog: a pstore record reads as a panic the dog rebooted, an unclean stop with the armed flag names the dog or the plug, and the flag is boot-written",
       "kernel panic — the watchdog rebooted us" in sc and "hard reset: watchdog (armed, 60 s) or power loss" in sc
-      and "WD_FLAG=/work/.pipeos/watchdog-armed" in sc and ': > "$WD_FLAG"' in sc and "# ---- 1cx." in sc)
+      and "WD_FLAG=/data/.pipeos/watchdog-armed" in sc and ': > "$WD_FLAG"' in sc and "# ---- 1cx." in sc)
 
 shutil.rmtree(D, ignore_errors=True)
 print("%d/%d" % (sum(RESULTS), len(RESULTS)))

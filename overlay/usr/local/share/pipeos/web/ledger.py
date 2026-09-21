@@ -8,8 +8,8 @@
 
 Nobody on a Machine could say what it spent. The owner found out from the
 bill. This reads what Claude Code already writes — every `assistant` line
-in /work/claude/projects/*/*.jsonl carries the model and a usage block —
-and appends one row per API call to /work/.pipeos/ledger/YYYY-MM.jsonl:
+in /data/claude/projects/*/*.jsonl carries the model and a usage block —
+and appends one row per API call to /data/.pipeos/ledger/YYYY-MM.jsonl:
 
   {ts, sid, id, source:"transcript", actor:{kind,name}, backend, provider,
    model, in, out, cache_read, cache_w5m, cache_w1h, cost_usd|null,
@@ -65,16 +65,18 @@ import subprocess
 import sys
 import time
 
-LEDGER_DIR = os.environ.get("PIPEOS_LEDGER_DIR", "/work/.pipeos/ledger")
-TRANSCRIPTS = os.environ.get("PIPEOS_LEDGER_TRANSCRIPTS", "/work/claude/projects")
+LEDGER_DIR = os.environ.get("PIPEOS_LEDGER_DIR", "/data/.pipeos/ledger")
+TRANSCRIPTS = os.environ.get("PIPEOS_LEDGER_TRANSCRIPTS", "/data/claude/projects")
 RATES = os.environ.get("PIPEOS_LEDGER_RATES", "/usr/local/share/pipeos/rates.json")
 CONF = os.environ.get("PIPEOS_LEDGER_CONF", "/etc/pipeos/pipebox.conf")
-RUNS_LOG = os.environ.get("PIPEOS_LEDGER_RUNS", "/work/.pipeos/schedule/runs.log")
-SESSIONS_DIR = os.environ.get("PIPEOS_LEDGER_SESSIONS", "/work/pipebox/sessions")
-WEBCHAT_SID = os.environ.get("PIPEOS_LEDGER_WEBCHAT_SID", "/work/pipebox/webchat/.dashboard-sid")
+RUNS_LOG = os.environ.get("PIPEOS_LEDGER_RUNS", "/data/.pipeos/schedule/runs.log")
+SESSIONS_DIR = os.environ.get("PIPEOS_LEDGER_SESSIONS", "/data/pipebox/sessions")
+WEBCHAT_SID = os.environ.get("PIPEOS_LEDGER_WEBCHAT_SID", "/data/pipebox/webchat/.dashboard-sid")
 SCHEDULE = os.environ.get("PIPEOS_LEDGER_SCHEDULE", "/etc/pipeos/schedule.json")
-CLUSTER_LAST = os.environ.get("PIPEOS_LEDGER_CLUSTER_LAST", "/work/pipeos/cluster/last")   # what each other member last said (cluster.py)
+CLUSTER_LAST = os.environ.get("PIPEOS_LEDGER_CLUSTER_LAST", "/data/pipeos/cluster/last")   # what each other member last said (cluster.py)
 PIPE_BIN = os.environ.get("PIPEOS_LEDGER_PIPE", "pipe")
+# The bulk volume. One name (pipeOS#330).
+VOLUME_ROOTS = ("/data",)
 SEEN_RING = 256
 KEEP_MONTHS = 13
 WARN_PCT = 80
@@ -100,6 +102,10 @@ class Ledger:
                  schedule=SCHEDULE, cluster_last=CLUSTER_LAST, members=None):
         self.dir = dir
         self.transcripts = transcripts
+        # <root>/claude/projects -> <root>; the probe points transcripts at a
+        # tmpdir, where this is simply that tmpdir's grandparent and matches
+        # nothing, which is the right answer there.
+        self.root = os.path.dirname(os.path.dirname(transcripts.rstrip("/")))
         self.rates_path = rates
         self.conf = conf
         self.schedule = schedule
@@ -194,17 +200,74 @@ class Ledger:
             return {"kind": "listener", "name": listeners[sid]}
         if sid and dash and sid == dash:
             return {"kind": "dashboard", "name": ""}
-        c = (cwd or "").rstrip("/")
-        if c == "/work/pipebox":
+        # Under the volume root, whichever name it is mounted at. These were
+        # the flip still says /data and one written after says /data, and
+        # both are the same directory — so the root comes off and the rest
+        # is what identifies the actor.
+        c = self._under_root((cwd or "").rstrip("/"))
+        if c == "pipebox":
             return {"kind": "watch", "name": ""}
-        if c == "/work/pipebox/webchat":
+        if c == "pipebox/webchat":
             return {"kind": "assistant", "name": ""}
         return {"kind": "other", "name": os.path.basename(c) or c}
+
+    def _under_root(self, path):
+        """`path` relative to the bulk volume, under either of its names.
+        Anything not on the volume comes back unchanged."""
+        for root in (self.root,) + VOLUME_ROOTS:
+            if root and path == root:
+                return ""
+            if root and path.startswith(root + "/"):
+                return path[len(root) + 1:]
+        return path
 
     # ---- ingest --------------------------------------------------------------
 
     def _cursor_path(self):
         return os.path.join(self.dir, "cursor.json")
+
+    @staticmethod
+    def _key(path):
+        """A cursor key: the transcript's place inside the transcripts dir,
+        never its absolute path.
+
+        Keys were absolute until pipeOS#330. An absolute key ties the cursor
+        to where the volume is mounted, and a cursor whose keys stop matching
+        means off=0 with an empty id ring for every transcript: the next
+        ingest re-appends the whole history and month-to-date spend roughly
+        doubles, which is enough to trip the box, agent and cluster caps and
+        pause them. The glob yields <project>/<file>.jsonl, so the last two
+        components identify a transcript on their own."""
+        parts = path.rstrip("/").split("/")
+        return "/".join(parts[-2:]) if len(parts) >= 2 else path
+
+    def _load_cursor(self):
+        try:
+            with open(self._cursor_path()) as f:
+                raw = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        cursor = {}
+        for k, v in raw.items():
+            if not isinstance(v, dict):
+                continue
+            key = self._key(k)
+            old = cursor.get(key)
+            if old is None:
+                cursor[key] = v
+                continue
+            # Both names for the same transcript (a box that ingested under
+            # /data and again under /data). Keep the further-read offset and
+            # the union of the id rings: reading less than we already have
+            # is what double-counts.
+            keep, other = (v, old) if v.get("off", 0) >= old.get("off", 0) else (old, v)
+            seen = list(other.get("seen") or []) + list(keep.get("seen") or [])
+            merged = dict(keep)
+            merged["seen"] = seen[-SEEN_RING:]
+            cursor[key] = merged
+        return cursor
 
     def _lock(self):
         os.makedirs(self.dir, exist_ok=True)
@@ -223,11 +286,7 @@ class Ledger:
             lk.close()
 
     def _ingest_locked(self):
-        try:
-            with open(self._cursor_path()) as f:
-                cursor = json.load(f)
-        except (OSError, ValueError):
-            cursor = {}
+        cursor = self._load_cursor()
         maps = (self._job_sids(), self._listener_sids(), self._dashboard_sid())
         new = 0
         out_files = {}
@@ -236,13 +295,14 @@ class Ledger:
                 st = os.stat(path)
             except OSError:
                 continue
-            c = cursor.get(path, {})
+            key = self._key(path)
+            c = cursor.get(key, {})
             off = c.get("off", 0)
             seen = list(c.get("seen", []))
             if c.get("ino") != st.st_ino or st.st_size < off:
                 off = 0   # start over, but KEEP the id ring: it is what stops a rewrite double-counting
             if st.st_size == off:
-                cursor[path] = {"ino": st.st_ino, "off": off, "seen": seen[-SEEN_RING:]}
+                cursor[key] = {"ino": st.st_ino, "off": off, "seen": seen[-SEEN_RING:]}
                 continue
             try:
                 with open(path, "rb") as f:
@@ -289,7 +349,7 @@ class Ledger:
                 month = ts.strftime("%Y-%m")
                 out_files.setdefault(month, []).append(json.dumps(row, separators=(",", ":")))
                 new += 1
-            cursor[path] = {"ino": st.st_ino, "off": off + consumed, "seen": seen[-SEEN_RING:]}
+            cursor[key] = {"ino": st.st_ino, "off": off + consumed, "seen": seen[-SEEN_RING:]}
         for month, rows in out_files.items():
             with open(os.path.join(self.dir, month + ".jsonl"), "a") as f:
                 f.write("\n".join(rows) + "\n")

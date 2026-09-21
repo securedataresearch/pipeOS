@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""/work's hot set in RAM (#264): pipeos-work stages hot.list from a tmpfs,
-flushes RAM -> disk, parks /work read-only; the listener idles on a policy
+"""/data's hot set in RAM (#264): pipeos-work stages hot.list from a tmpfs,
+flushes RAM -> disk, parks /data read-only; the listener idles on a policy
 denial instead of respawning; the mount carries commit=120. Rows run the
 shipped script through its no-mount seam over a throwaway tree (mounts are
 the box's; the probe pins the logic around them)."""
@@ -30,7 +30,7 @@ LIST = os.path.join(D, "hot.list")
 open(LIST, "w").write("# comment\nlogs\n\npipeos/mdns\n.pipeos/ledger\n")
 ENV = dict(os.environ, PIPEOS_WORK=WORK, PIPEOS_HOT=HOT, PIPEOS_WORK_DISK=DISK, PIPEOS_HOT_LIST=LIST,
            PIPEOS_WORK_NO_MOUNT="1", PIPEOS_WORK_RUN=RUN)
-# under the seam the "disk" view is a separate dir, so seed it as the box's /work would be
+# under the seam the "disk" view is a separate dir, so seed it as the box's /data would be
 os.makedirs(os.path.join(DISK, "logs"))
 open(os.path.join(DISK, "logs", "old.log"), "w").write("from disk\n")
 open(os.path.join(DISK, "logs", "stale.log"), "w").write("gone after flush\n")
@@ -44,13 +44,13 @@ def w(*args, env=None, script=SCRIPT):
 rc, out = w("hot-up")
 check("1 hot-up creates every hot.list path in RAM, seeded from the disk copy (comments and blanks in the list ignored), and records the status",
       rc == 0 and open(os.path.join(HOT, "logs", "old.log")).read() == "from disk\n" and os.path.isdir(os.path.join(HOT, "pipeos", "mdns"))
-      and os.path.isdir(os.path.join(HOT, ".pipeos", "ledger")) and open(os.path.join(RUN, "work.status")).read().startswith("hot "),
+      and os.path.isdir(os.path.join(HOT, ".pipeos", "ledger")) and open(os.path.join(RUN, "hotset.status")).read().startswith("hot "),
       "rc=%s out=%s" % (rc, out))
 open(os.path.join(HOT, "logs", "new.log"), "w").write("written in RAM\n")
 os.unlink(os.path.join(HOT, "logs", "stale.log"))
 open(os.path.join(HOT, "pipeos", "mdns", "machines.json"), "w").write("{}")
 rc, out = w("flush")
-st = open(os.path.join(RUN, "work.status")).read()
+st = open(os.path.join(RUN, "hotset.status")).read()
 check("2 flush carries RAM to disk with --delete: a new file lands, a file removed in RAM is removed on disk, the seed survives; the status records the flush",
       rc == 0 and open(os.path.join(DISK, "logs", "new.log")).read() == "written in RAM\n" and not os.path.exists(os.path.join(DISK, "logs", "stale.log"))
       and open(os.path.join(DISK, "logs", "old.log")).read() == "from disk\n" and os.path.exists(os.path.join(DISK, "pipeos", "mdns", "machines.json"))
@@ -67,7 +67,7 @@ rc_u, out_u = w("unpark")
 check("5 park flushes first, then (behind the no-mount seam) would remount read-only; unpark the reverse — both rc 0",
       rc_p == 0 and "flushed" in out_p and "read-only" in out_p and rc_u == 0, "%s %s" % (out_p, out_u))
 rc_d, out_d = w("hot-down")
-check("6 hot-down flushes and releases: the status file is gone, the disk holds the RAM copy", rc_d == 0 and not os.path.exists(os.path.join(RUN, "work.status"))
+check("6 hot-down flushes and releases: the status file is gone, the disk holds the RAM copy", rc_d == 0 and not os.path.exists(os.path.join(RUN, "hotset.status"))
       and os.path.exists(os.path.join(DISK, "logs", "new.log")), out_d)
 rc_f, out_f = w("flush")
 check("7 flush with nothing staged is a no-op, not an error", rc_f == 0 and "nothing to flush" in out_f, out_f)
@@ -88,10 +88,10 @@ check("8 wiring: hot.list names logs, the roster, the ledger and the schedule st
       and all(s in init for s in ("pipeos-web", "pipeos-mdns", "pipebox-listener", "crond", "pipeos-vault"))
       and "+etc/init.d/pipeos-hot" in lbu and "pipeos-workspace pipeos-hot " in build and os.access(hourly, os.X_OK) and "pipeos-work flush" in open(hourly).read(),
       repr(hotlist))
-check("9 /work mounts with commit=120,lazytime,noatime; pipeos save flushes the hot set first; the schedule runner unparks a parked /work for the run and re-parks after (also on the one-at-a-time refusal)",
+check("9 /data mounts with commit=120,lazytime,noatime; pipeos save flushes the hot set first; the schedule runner unparks a parked /data for the run and re-parks after (also on the one-at-a-time refusal)",
       "noatime,lazytime,commit=120" in ws and '"$WORK_BIN" flush' in save and save.index('"$WORK_BIN" flush') < save.index('"$WORKSWEEP"')
       and "pipeos-work unpark" in runner and runner.count("repark") >= 3 and "mount -o remount" not in runner, "")
-check("10 the listener idles an hour on a policy denial (rc 5) and writes /run/pipeos/listener.status, instead of exiting into supervise-daemon's respawn loop (#258); selfcheck WARNs on that status and on a hot path that is not a mountpoint, and notes a parked /work",
+check("10 the listener idles an hour on a policy denial (rc 5) and writes /run/pipeos/listener.status, instead of exiting into supervise-daemon's respawn loop (#258); selfcheck WARNs on that status and on a hot path that is not a mountpoint, and notes a parked /data",
       "sleep 3600; continue" in listener and "policy-denied" in listener and 'exit 1 ;;' not in listener.split('5) # terminal')[1].split('0) ;;')[0]
       and "listener.status" in selfcheck and "hot set not staged" in selfcheck and "parked" in selfcheck, "")
 

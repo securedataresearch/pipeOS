@@ -353,14 +353,14 @@ check("13 a matching pair is verified and says so",
 
 # ── 14-17. where config.sh puts the durable store by default ─────────────
 # Every row above exports SIGNING_KEY_DIR, so none of them can see the default
-# — and the default was the blocker box2 raised on #92: `/work` exists only on
+# — and the default was the blocker box2 raised on #92: `/data` exists only on
 # a box, and a box cannot run 10-mk-chroot.sh at all (sudo chroot and apk are
-# hard-banned there), so an unconditional /work default was a hard stop under
+# hard-banned there), so an unconditional /data default was a hard stop under
 # set -e on the one machine that builds the fleet.
 #
-# The block is extracted from config.sh and run with /work redirected into the
-# sandbox, which is what makes "the host has no /work" expressible here: this
-# suite runs ON a box, where /work does exist, so a test that read the real
+# The block is extracted from config.sh and run with /data redirected into the
+# sandbox, which is what makes "the host has no /data" expressible here: this
+# suite runs ON a box, where /data does exist, so a test that read the real
 # path could only ever exercise one of the three tiers.
 #
 # Extracted by SECTION boundaries — banner to the next assignment — not by the
@@ -376,7 +376,7 @@ if not m or "SIGNING_KEY_DIR" not in m.group(0):
 
 
 def resolve(home, work=None, export=None, mkdirs=(), keys=()):
-    """Run the tier logic with /work redirected.
+    """Run the tier logic with /data redirected.
 
     Returns (chosen, alt, rc, root). `keys` puts a REAL key in the named
     sandbox-relative stores, which is the thing `mkdirs` cannot express: the
@@ -394,7 +394,7 @@ def resolve(home, work=None, export=None, mkdirs=(), keys=()):
         os.makedirs(os.path.join(root, d), exist_ok=True)
     for d in keys:
         putkey(os.path.join(root, d), FLEET)
-    block = m.group(0).replace("/work", w)
+    block = m.group(0).replace("/data", w)
     env = dict(os.environ, HOME=h)
     env.pop("SIGNING_KEY_DIR", None)
     env.pop("SIGNING_KEY_DIR_ALT", None)
@@ -411,8 +411,8 @@ def resolve(home, work=None, export=None, mkdirs=(), keys=()):
     return chosen, alt, r.returncode, root
 
 
-got, alt, rc, root = resolve("home", work="work",
-                            mkdirs=("work", "work/keys/pipeos"),
+got, alt, rc, root = resolve("home", work="data",
+                            mkdirs=("data", "data/keys/pipeos"),
                             export="elsewhere/keys")
 check("14 an explicit SIGNING_KEY_DIR wins over both fallbacks",
       rc == 0 and got == os.path.join(root, "elsewhere/keys"), f"{rc} {got!r}")
@@ -420,16 +420,16 @@ check("14 an explicit SIGNING_KEY_DIR wins over both fallbacks",
 # and a key left in one of them is the disagreement the census exists to catch.
 check("14b an override still names both defaults as alternates",
       rc == 0 and alt.split() == [os.path.join(root, "home/.pipeos/keys"),
-                                  os.path.join(root, "work/keys/pipeos")],
+                                  os.path.join(root, "data/keys/pipeos")],
       f"{rc} alt={alt!r}")
 
 got, alt, rc, root = resolve("home")
-check("15 no /work (the build host): the durable store is under $HOME",
+check("15 no /data (the build host): the durable store is under $HOME",
       rc == 0 and got == os.path.join(root, "home/.pipeos/keys"), f"{rc} {got!r}")
 
-got, alt, rc, root = resolve("home", work="work", mkdirs=("work",))
-check("16 /work present and writable (on a box): the ext4 workspace wins",
-      rc == 0 and got == os.path.join(root, "work/keys/pipeos"), f"{rc} {got!r}")
+got, alt, rc, root = resolve("home", work="data", mkdirs=("data",))
+check("16 /data present and writable (on a box): the ext4 workspace wins",
+      rc == 0 and got == os.path.join(root, "data/keys/pipeos"), f"{rc} {got!r}")
 check("16b the $HOME store it passed over is named as the alternate",
       rc == 0 and alt.split() == [os.path.join(root, "home/.pipeos/keys")],
       f"{rc} alt={alt!r}")
@@ -441,26 +441,26 @@ check("16b the $HOME store it passed over is named as the alternate",
 # directories, so it passed identically whether the winner held the fleet key or
 # nothing at all — it was written to catch exactly the case it structurally
 # could not distinguish. (box3 on #92)
-got, alt, rc, root = resolve("home", work="work",
-                            mkdirs=("work", "work/keys/pipeos",
+got, alt, rc, root = resolve("home", work="data",
+                            mkdirs=("data", "data/keys/pipeos",
                                     "home/.pipeos/keys"),
-                            keys=("work/keys/pipeos",))
+                            keys=("data/keys/pipeos",))
 check("17 an on-box store HOLDING THE KEY wins over an existing $HOME one",
-      rc == 0 and got == os.path.join(root, "work/keys/pipeos")
-      and os.path.exists(os.path.join(root, "work/keys/pipeos", FLEET)),
+      rc == 0 and got == os.path.join(root, "data/keys/pipeos")
+      and os.path.exists(os.path.join(root, "data/keys/pipeos", FLEET)),
       f"{rc} {got!r}")
 
 # The inverse, which is the reachable half: the winner is an empty directory and
 # the LOSER holds the fleet key. The tiers still pick the empty one — selection
 # is on `-d` and that is deliberate — so the whole guarantee rests on the loser
 # being named, censused, and restorable. Rows 20-22 below are what that buys.
-got, alt, rc, root = resolve("home", work="work",
-                            mkdirs=("work", "work/keys/pipeos",
+got, alt, rc, root = resolve("home", work="data",
+                            mkdirs=("data", "data/keys/pipeos",
                                     "home/.pipeos/keys"),
                             keys=("home/.pipeos/keys",))
 check("17b an EMPTY on-box store still wins, and the populated $HOME store "
       "is named, not lost",
-      rc == 0 and got == os.path.join(root, "work/keys/pipeos")
+      rc == 0 and got == os.path.join(root, "data/keys/pipeos")
       and alt.split() == [os.path.join(root, "home/.pipeos/keys")],
       f"{rc} chosen={got!r} alt={alt!r}")
 

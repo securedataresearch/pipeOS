@@ -6,7 +6,7 @@ set -u
 AUTH=/run/pipeos/secrets/claude.env
 [ -r "$AUTH" ] || AUTH=/etc/pipeos/claude-auth.env
 SETTINGS=/etc/pipeos/pipebox-settings.json
-WORKDIR=/work/pipebox/webchat
+WORKDIR=/data/pipebox/webchat
 export HOME=/root
 if [ -r "$AUTH" ]; then
 	# shellcheck disable=SC1090

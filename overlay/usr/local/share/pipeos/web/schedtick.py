@@ -10,7 +10,7 @@ that has not already fired this minute, starts `pipeos-schedule-run
 No catch-up: a minute the box was off for is a minute that did not
 happen. One tick may be double-invoked (crond and a hand run) and must
 not double-fire — the state file remembers the last minute each job
-fired. Under the monthly cap (#246: /work/.pipeos/ledger/paused exists)
+fired. Under the monthly cap (#246: /data/.pipeos/ledger/paused exists)
 nothing starts and the reason is logged where the job's log is.
 
 Seams (the probe, never production): PIPEOS_SCHED_CONF, _STATE_DIR,
@@ -31,12 +31,12 @@ import cronspec  # noqa: E402
 import ledger  # noqa: E402  — read_paused/paused_for: which cap says no (#302)
 
 CONF = os.environ.get("PIPEOS_SCHED_CONF", "/etc/pipeos/schedule.json")
-STATE_DIR = os.environ.get("PIPEOS_SCHED_STATE_DIR", "/work/.pipeos/schedule")
+STATE_DIR = os.environ.get("PIPEOS_SCHED_STATE_DIR", "/data/.pipeos/schedule")
 RUN_BIN = os.environ.get("PIPEOS_SCHED_RUN_BIN", "/usr/local/bin/pipeos-schedule-run")
-LOG = os.environ.get("PIPEOS_SCHED_LOG", "/work/logs/schedule.log")
-LOGDIR = os.environ.get("PIPEOS_SCHED_LOGDIR", "/work/logs")
-PAUSED = os.environ.get("PIPEOS_SCHED_PAUSED", "/work/.pipeos/ledger/paused")
-PAUSED_JSON = os.environ.get("PIPEOS_SCHED_PAUSED_JSON", "/work/.pipeos/ledger/paused.json")
+LOG = os.environ.get("PIPEOS_SCHED_LOG", "/data/logs/schedule.log")
+LOGDIR = os.environ.get("PIPEOS_SCHED_LOGDIR", "/data/logs")
+PAUSED = os.environ.get("PIPEOS_SCHED_PAUSED", "/data/.pipeos/ledger/paused")
+PAUSED_JSON = os.environ.get("PIPEOS_SCHED_PAUSED_JSON", "/data/.pipeos/ledger/paused.json")
 STATE = os.path.join(STATE_DIR, "state.json")
 STATE_LOCK = os.path.join(STATE_DIR, ".state.lock")
 

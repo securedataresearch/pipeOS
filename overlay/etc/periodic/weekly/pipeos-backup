@@ -1,8 +1,8 @@
 #!/bin/sh
 # Weekly safety copies onto the ext4 workspace: the current apkovl and the
-# irreplaceable pipe identity/credentials. Quiet no-op if /work isn't mounted.
-mountpoint -q /work || exit 0
-dir=/work/backup
+# irreplaceable pipe identity/credentials. Quiet no-op if /data isn't mounted.
+mountpoint -q /data || exit 0
+dir=/data/backup
 mkdir -p "$dir/pipe"
 cp /media/usb/pipeos.apkovl.tar.gz "$dir/pipeos.apkovl.$(date +%Y%m%d).tar.gz" 2>/dev/null
 for f in identity.dat credentials.dat policy.json http.json; do

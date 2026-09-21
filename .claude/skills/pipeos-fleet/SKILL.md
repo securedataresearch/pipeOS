@@ -74,7 +74,7 @@ pipeos deploy-overlay --yes        # install, restart changed services, enrol ne
 
 ```sh
 pipeos schedule ls
-pipeos schedule add NAME --prompt "..." [--cron "0 2 * * *"|manual] [--cwd /work/...] [--backend claude|hermes] [--notify on|off] [--session fresh|continue] [--cap N] [--needs jobs.a,jobs.b]   # no --cron = manual: runs only when started; --needs: secrets the run must have — a missing one is asked for (share request) and the run waits
+pipeos schedule add NAME --prompt "..." [--cron "0 2 * * *"|manual] [--cwd /data/...] [--backend claude|hermes] [--notify on|off] [--session fresh|continue] [--cap N] [--needs jobs.a,jobs.b]   # no --cron = manual: runs only when started; --needs: secrets the run must have — a missing one is asked for (share request) and the run waits
 pipeos schedule set NAME --notify off           # only the given flags change
 pipeos schedule rm|enable|disable|run|log NAME  # run = Run now (detached); log NAME [N]
 pipeos usage                                    # totals today/7d/30d/month, by actor, the cap
@@ -95,10 +95,10 @@ pipeos wake NAME|ID|--all|--list                # magic packet to a Machine this
 pipeos blink status|test N|on|off              # the port-LED heartbeat (#333): a healthy cluster member blinks its member number on its cabled port; `status` says why it is or is not blinking, `test N` blinks N once. The power light is NOT drivable on these chassis (/sys/class/leds is empty) — the LED is on the NIC, at the back
 pipeos updates                                  # what changed on THIS Machine, newest first: every commit a deploy brought in with its title and description, and every released image it applied (#335)
 pipeos lan [--refresh]                          # the network map (#217): everything netgaze sees from this box, Machines and members marked; --refresh runs the pass now
-pipeos work status|flush|park|unpark            # the RAM-staged hot set; park = flush + /work read-only so the stick idles
+pipeos work status|flush|park|unpark            # the RAM-staged hot set; park = flush + /data read-only so the stick idles
 ```
 
-The stick is `/work` on these Machines (no internal disk yet). `pipeos work
+The stick is `/data` on these Machines (no internal disk yet). `pipeos work
 park` between operations keeps it cool; a job or session unparks as needed.
 Before pulling a stick: `pipeos work flush` (or `pipeos save`, which flushes).
 
@@ -106,8 +106,8 @@ Box clocks are UTC; cron expressions are box-local, so UTC.
 
 ## The drills (what "done" looks like)
 
-- **Scheduled job fires unattended:** `pipeos schedule add drill --cron "$M $H * * *" --prompt "Reply with exactly: drill ok"` three minutes out; after it, `pipeos schedule ls` shows `ok`, `pipeos schedule log drill` has the reply, `/work/.pipeos/schedule/runs.log` has the row, the owner got the DMs (notify on). Then `pipeos schedule rm drill`.
-- **Cap DM / pause:** `pipeos usage` for this month's spend; `pipeos usage cap N` with N below it → `enforce` prints paused, `/work/.pipeos/ledger/paused` exists, the owner gets the 100% DM, `pipeos schedule run X` is refused and the tick logs "paused". `pipeos usage cap none` (or a higher N) lifts it at once.
+- **Scheduled job fires unattended:** `pipeos schedule add drill --cron "$M $H * * *" --prompt "Reply with exactly: drill ok"` three minutes out; after it, `pipeos schedule ls` shows `ok`, `pipeos schedule log drill` has the reply, `/data/.pipeos/schedule/runs.log` has the row, the owner got the DMs (notify on). Then `pipeos schedule rm drill`.
+- **Cap DM / pause:** `pipeos usage` for this month's spend; `pipeos usage cap N` with N below it → `enforce` prints paused, `/data/.pipeos/ledger/paused` exists, the owner gets the 100% DM, `pipeos schedule run X` is refused and the tick logs "paused". `pipeos usage cap none` (or a higher N) lifts it at once.
 - **Vault first boot / rehome:** `rc-service pipeos-vault status`, `pipeos vault status` (open), `pipeos vault list`; `pipeos secrets phrase` shows the migration's phrase until acked — give it to Sam, then `--ack`. Rehome = the stick in another chassis: dashboard Secrets → recovery phrase.
 - **Wake a sibling:** from a member, `pipeos wake one`. **Only the onboard 1GbE (eth1) supports WoL; the SFP+ eth0 does not.** Uncabled eth1 = no wake. selfcheck says which.
 - **Watchdog drill (#247):** `pipeos watchdog status` says armed 60 20; `echo c > /proc/sysrq-trigger` (a real panic — the box is gone for ~90 s); back up, the boot report says `went down: kernel panic — the watchdog rebooted us`, `pipeos-selfcheck` green, known-good untouched. `pipeos watchdog off` → status says off, no petter; `kernel` re-arms.

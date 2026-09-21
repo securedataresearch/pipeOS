@@ -131,18 +131,14 @@ ROLE) are named where the design reuses them.
 
 ## 8. Data — `/data`, with a cluster-wide index
 
-- The bulk volume's name is **`/data`**; `/work` is reserved for something
-  else. It lands in two releases, because a live box cannot change where a
-  mounted volume is without a window where half its paths are wrong
-  (pipeOS#219). **This release: the name works.** The volume still mounts at
-  `/work`, `/data` is a symlink to it laid at every boot, and both paths
-  reach the same bytes — a job's working dir may be `/data/repos/x`, and
-  selfcheck says so when the link is missing or is something else. **The
-  next: the flip** — the volume mounts at `/data` and `/work` becomes the
-  symlink, with the tree's own text renamed. By then every box already
-  answers to both names, so the flip is a reboot and nothing else. The
-  filesystem label stays `PIPEWORK` throughout: the owner never sees a
-  label, and relabelling sticks in the field could only lose a volume.
+- The bulk volume is **`/data`** (pipeOS#219, pipeOS#330). One name: no
+  symlink, no second root, nothing else a path resolves through, and the name
+  it replaced is not referenced anywhere in the tree — a second name kept "for
+  a release or two" is a name kept for ever, and every reader then carries two
+  truths, which is how the ledger's ingest cursor, a job's stored working dir
+  and claude's session directories each acquired one. The filesystem label
+  stays `PIPEWORK`: a label is not a path, the owner never sees it, and
+  relabelling sticks in the field could only lose a volume.
 - The **file index** of every member is visible to the cluster (the Files
   view grows a box selector); bytes stay where they are.
 - An agent on one box reaching another box's files may use **any of
@@ -287,7 +283,7 @@ owner-facing fact for Cluster buyers.
   load per cpu, then the fewest agents running. Every member's agents ride
   its summary, so the page and `pipeos cluster agents` list them all; a
   grey member's row shows the agents it had at its last answer, marked
-  last-known, from a per-member note under `/work/pipeos/cluster/last` —
+  last-known, from a per-member note under `/data/pipeos/cluster/last` —
   nothing is ever restarted from it. Job placement writes no state on the
   box that asked. A placement without a schedule is a `manual` job: it
   runs now and then only when started (Run now, `pipeos schedule run`,

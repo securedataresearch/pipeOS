@@ -6,7 +6,7 @@
     pipeos wake --forget <id>      drop a Machine from the roster
     pipeos wake --list             the roster, one line each
 
-The roster is what pipeos-mdnsd keeps on /work: every Machine that ever
+The roster is what pipeos-mdnsd keeps on /data: every Machine that ever
 answered on this LAN, with the MAC it advertised. A Machine that is off is
 exactly the one not in the live cache, so the roster — not the cache — is
 what this reads. Stdlib only: the packet is six 0xff bytes then the MAC
@@ -16,7 +16,7 @@ about broadcast.
 
 Refuses an unknown name (rc 2), this box itself (rc 2), and a Machine that
 never sent a MAC — an image before #241 — with a line that says so. rc 1
-when there is no roster at all (discovery has not run on /work yet).
+when there is no roster at all (discovery has not run on /data yet).
 
 Seams (the probe, never production): PIPEOS_WAKE_ROSTER (the file),
 PIPEOS_WAKE_TARGET (host:port — replaces the broadcast and the unicast so
@@ -33,7 +33,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lanid  # noqa: E402
 
-ROSTER = os.environ.get("PIPEOS_WAKE_ROSTER", "/work/pipeos/mdns/machines.json")
+ROSTER = os.environ.get("PIPEOS_WAKE_ROSTER", "/data/pipeos/mdns/machines.json")
 TARGET = os.environ.get("PIPEOS_WAKE_TARGET", "")
 MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
 
@@ -110,7 +110,7 @@ def main(argv):
         return 0 if argv else 2
     machines, me = roster()
     if machines is None:
-        print("no roster yet — discovery has not written /work/pipeos/mdns/machines.json on this box (is /work mounted? is pipeos-mdns running?)", file=sys.stderr)
+        print("no roster yet — discovery has not written /data/pipeos/mdns/machines.json on this box (is /data mounted? is pipeos-mdns running?)", file=sys.stderr)
         return 1
     me = self_id() or me
     if argv[0] == "--list":

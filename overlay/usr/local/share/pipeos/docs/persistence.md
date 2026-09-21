@@ -9,7 +9,7 @@ Three things survive a reboot:
 - **Saved state** — the box's configuration (`/etc`) and its identities
   (pipe, SSH, agent credentials). Saved automatically every 15 minutes and
   at shutdown; **Save state now** in the dashboard does it on demand.
-- **`/work`** — an ordinary disk partition: repos, agent memory, logs,
+- **`/data`** — an ordinary disk partition: repos, agent memory, logs,
   uploads, user homes. It is real storage, it is finite, and it fills; the
   Overview disk tile is watching it.
 - **Installed packages** — software added with `pipeos pkg add` is fetched
@@ -17,7 +17,7 @@ Three things survive a reboot:
   network. A plain `apk add` on the console is gone at reboot — that is by
   design.
 
-Anything else written outside `/work` — a file in `/tmp`, a hand-edited
+Anything else written outside `/data` — a file in `/tmp`, a hand-edited
 system file that is not part of saved state — evaporates at reboot. If a
-change must stick, it either belongs in `/work` or it goes through the
+change must stick, it either belongs in `/data` or it goes through the
 dashboard (which saves what it changes).

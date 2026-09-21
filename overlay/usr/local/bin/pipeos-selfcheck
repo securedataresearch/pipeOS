@@ -9,7 +9,7 @@
 
 # Only --boot (passed by the init.d hook) opts into changing anything. A bare
 # hand-run observes and prints: it writes no file, starts no service, installs
-# no package, touches neither /work nor the boot media, and sends no DM. Every
+# no package, touches neither /data nor the boot media, and sends no DM. Every
 # remediation it declined is reported as "would fix", so read-only does not
 # mean quiet. See pipeOS#13.
 #
@@ -31,9 +31,9 @@ case "$1" in
 esac
 HEALTH_LAST=/run/pipeos/health.last
 
-LOG=/work/logs/selfcheck.log
-MARKER=/work/.pipeos/clean-shutdown
-FLAG=/work/pipebox/state/selfcheck-attention   # daily pipebox-report notices this
+LOG=/data/logs/selfcheck.log
+MARKER=/data/.pipeos/clean-shutdown
+FLAG=/data/pipebox/state/selfcheck-attention   # daily pipebox-report notices this
 MEDIA=/media/usb
 OVL=$MEDIA/pipeos.apkovl.tar.gz
 KNOWN_GOOD=$MEDIA/pipeos.known-good.tar.gz
@@ -70,8 +70,8 @@ noten() { echo "note: $*"     >> "$R"; nnote=$((nnote+1)); }
 would() { echo "would fix: $*" >> "$R"; nwould=$((nwould+1)); }
 log()   { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG" 2>/dev/null; }
 
-# ---- 1. /work first — the marker and the log both live on it
-if mountpoint -q /work; then
+# ---- 1. /data first — the marker and the log both live on it
+if mountpoint -q /data; then
     :
 elif [ "$BOOT" = yes ]; then
     # poll: device enumeration can lag well past service start
@@ -79,33 +79,33 @@ elif [ "$BOOT" = yes ]; then
     until dev=$(findfs LABEL=PIPEWORK 2>/dev/null); do
         _i=$((_i+1)); [ "$_i" -ge 60 ] && break; sleep 1
     done
-    [ -n "$dev" ] && mount -o noatime "$dev" /work 2>/dev/null
-    if mountpoint -q /work; then
-        fixed "/work was not mounted; mounted it"
+    [ -n "$dev" ] && mount -o noatime "$dev" /data 2>/dev/null
+    if mountpoint -q /data; then
+        fixed "/data was not mounted; mounted it"
     else
-        crit "/work not mounted and could not mount it (LABEL=PIPEWORK missing?)"
+        crit "/data not mounted and could not mount it (LABEL=PIPEWORK missing?)"
     fi
 else
-    # Still CRITICAL — an unmounted /work is the condition, not the mount
+    # Still CRITICAL — an unmounted /data is the condition, not the mount
     # attempt. The hand-run just reports it instead of correcting it, and
     # does not spend 60s polling for a device it will not mount.
-    crit "/work not mounted"
-    would "mount LABEL=PIPEWORK on /work"
+    crit "/data not mounted"
+    would "mount LABEL=PIPEWORK on /data"
 fi
 # Creating the state dirs is a write, so it waits for --boot too. Everything
 # under them (LOG, FLAG) is written only on the boot path anyway.
-[ "$BOOT" = yes ] && mkdir -p /work/.pipeos /work/logs /work/pipebox/state 2>/dev/null
+[ "$BOOT" = yes ] && mkdir -p /data/.pipeos /data/logs /data/pipebox/state 2>/dev/null
 
-# ---- 1b. /work is the declared block device, not just "something mounted
-# there" (pipe#650 item 11). box0's /work was tmpfs silently masking an
-# unmounted PIPEWORK partition; `mountpoint -q /work` was true the whole
+# ---- 1b. /data is the declared block device, not just "something mounted
+# there" (pipe#650 item 11). box0's /data was tmpfs silently masking an
+# unmounted PIPEWORK partition; `mountpoint -q /data` was true the whole
 # time, so section 1's check above would not have caught it — a tmpfs
 # mount is still a mountpoint. LABEL=PIPEWORK is the declared device (same
 # label section 1 already searches for); confirm the live backing device
 # actually resolves to it. Read-only: this only reports, never remounts —
-# swapping a live /work out from under running writes is not something a
+# swapping a live /data out from under running writes is not something a
 # health check should do to itself.
-if mountpoint -q /work; then
+if mountpoint -q /data; then
     _want=$(findfs LABEL=PIPEWORK 2>/dev/null)
     # /proc/mounts, not findmnt: findmnt does not ship on pipeOS (the image's
     # util-linux-misc carries findfs only), so the old findmnt lookup came
@@ -115,33 +115,13 @@ if mountpoint -q /work; then
     # and needs nothing installed; last matching line wins, the same rule as
     # 70-flash.sh's root_source(). "Cannot read the source" is now its own
     # answer instead of dressing up as a mismatch.
-    _have=$(awk '$2 == "/work" { src = $1 } END { print src }' /proc/mounts 2>/dev/null)
+    _have=$(awk '$2 == "/data" { src = $1 } END { print src }' /proc/mounts 2>/dev/null)
     if [ -z "$_want" ]; then
-        crit "/work is mounted but LABEL=PIPEWORK does not resolve to any device"
+        crit "/data is mounted but LABEL=PIPEWORK does not resolve to any device"
     elif [ -z "$_have" ]; then
-        crit "/work is a mountpoint but /proc/mounts shows no entry for it — cannot verify the backing device"
+        crit "/data is a mountpoint but /proc/mounts shows no entry for it — cannot verify the backing device"
     elif [ "$_have" != "$_want" ]; then
-        crit "/work is mounted from $_have, not the declared device $_want (LABEL=PIPEWORK) — writes may not persist across reboot"
-    fi
-fi
-
-# ---- 1ba. /data is the bulk volume's NAME (#219). This release makes the name
-# work without moving anything: the volume mounts at /work and /data is a
-# symlink to it, laid at every boot by /etc/local.d/workspace.sh. A box whose
-# agents write under /data when that link is absent or points elsewhere is
-# writing to RAM, and loses it at the next boot — so say which of the three
-# this box is. Silent success: the report has no per-check "ok" line, and a
-# name that resolves is not news.
-if mountpoint -q /work 2>/dev/null; then
-    _data_to=$(readlink /data 2>/dev/null)
-    if [ -L /data ] && [ "$_data_to" = /work ]; then
-        :
-    elif [ -L /data ]; then
-        crit "/data is a symlink to ${_data_to:-nowhere}, not to /work — anything written under /data misses the volume; rm /data and run 'sh /etc/local.d/workspace.sh' to lay it again"
-    elif [ ! -e /data ]; then
-        warnn "/data does not exist — the name the docs and a job's working dir use reaches nothing; 'sh /etc/local.d/workspace.sh' lays it, and so does every boot"
-    else
-        crit "/data is a real directory, not a link to /work — anything written under it is in RAM and gone at the next boot; move what is in it into /work, remove it, then 'sh /etc/local.d/workspace.sh'"
+        crit "/data is mounted from $_have, not the declared device $_want (LABEL=PIPEWORK) — writes may not persist across reboot"
     fi
 fi
 
@@ -218,9 +198,9 @@ fi
 # /run/pipeos/watchdog.state. Armed and petted = one line nowhere (the normal
 # case); off by card = a note; kernel but not running = WARN (a box in a
 # closet that will not come back from a hang), never CRIT — the box is up.
-# On --boot the armed flag is persisted to /work so the NEXT boot's section 2
+# On --boot the armed flag is persisted to /data so the NEXT boot's section 2
 # can say "watchdog" rather than "power loss" for an unclean stop.
-WD_FLAG=/work/.pipeos/watchdog-armed
+WD_FLAG=/data/.pipeos/watchdog-armed
 _wdm=$(sed -n 's/^WATCHDOG=["]*\([^"]*\)["]*$/\1/p' /etc/pipeos/card.conf 2>/dev/null | head -1 | tr 'A-Z' 'a-z')
 _wds=$(cat /run/pipeos/watchdog.state 2>/dev/null)
 _wd_was_armed=no; [ -f "$WD_FLAG" ] && _wd_was_armed=yes
@@ -235,7 +215,7 @@ else
             # read a running petter as gone (zero, 2026-09-15)
             _wdpid=$(cat /run/watchdog.pid 2>/dev/null)
             if [ -n "$_wdpid" ] && kill -0 "$_wdpid" 2>/dev/null; then
-                [ "$BOOT" = yes ] && { mkdir -p /work/.pipeos 2>/dev/null; : > "$WD_FLAG" 2>/dev/null; }
+                [ "$BOOT" = yes ] && { mkdir -p /data/.pipeos 2>/dev/null; : > "$WD_FLAG" 2>/dev/null; }
             else
                 warnn "watchdog: armed at boot but the petter is gone (${_wds}) — with nowayout=0 the dog is disarmed, not about to fire; rc-service watchdog restart"
             fi ;;
@@ -261,7 +241,7 @@ if [ ! -f /etc/pipeos/provisioned ]; then
     warnn "not claimed yet — open http://$(hostname).local/ (or http://pipeos.local/) on any phone or computer and choose a password; until then nothing done on this box survives a reboot"
 fi
 
-# ---- 2. how did the last run end? (marker readable only once /work is up)
+# ---- 2. how did the last run end? (marker readable only once /data is up)
 # A hard reset has three faces the box can tell apart (#247): a kernel panic
 # leaves a pstore record (efi_pstore, /sys/fs/pstore/dmesg-*) and the 60 s
 # watchdog is what rebooted us out of it; no record but the dog was armed at
@@ -289,7 +269,7 @@ fi
 
 # ---- 3. daemons (remediate: start what should be running)
 # At boot this script races the rest of the runlevel: OpenRC starts services
-# in parallel, pipeos-web's start_pre can wait up to 30s for /work, and the
+# in parallel, pipeos-web's start_pre can wait up to 30s for /data, and the
 # runlevel reconciler runs inside `local`. Probing mid-start read as "down
 # and would not start" (rc-service start fails on a service that is already
 # starting) — two clean boots on basho_box DMed DEGRADED for exactly this.
@@ -372,7 +352,7 @@ svc_unconfigured() {
     esac
 }
 nas_share_usable() {
-    # mirrors resolve_root in /etc/init.d/pipeos-nas: 'work' is /work, anything
+    # mirrors resolve_root in /etc/init.d/pipeos-nas: 'work' is /data, anything
     # else a filesystem UUID that must resolve to a mounted device
     _n=1
     while [ $_n -le 8 ]; do
@@ -382,7 +362,7 @@ nas_share_usable() {
         _n=$((_n + 1))
         [ -n "$_name" ] && [ -n "$_root" ] || continue
         if [ "$_root" = work ]; then
-            _base=/work
+            _base=/data
         else
             _dev=$(findfs "UUID=$_root" 2>/dev/null || blkid -U "$_root" 2>/dev/null) || continue
             [ -n "$_dev" ] || continue
@@ -433,7 +413,7 @@ done
 # Conservative: warn only when the log shows errors AND no frame progress, so a
 # healthy stream (an ffmpeg `frame=` stats line present) stays quiet.
 if [ "$SERVICE_STREAM" = on ] && rc-service pipeos-stream status >/dev/null 2>&1; then
-    _slog=/work/logs/pipeos-stream.log
+    _slog=/data/logs/pipeos-stream.log
     if [ -r "$_slog" ]; then
         _stail=$(tail -n 40 "$_slog" 2>/dev/null)
         if printf '%s\n' "$_stail" | grep -q "frame="; then
@@ -491,21 +471,21 @@ fi
 # missing/empty authorized_keys means the next connection attempt is refused
 # and the box is unreachable by shell — exactly what happened on basho0
 # (2026-08-29): the key vanished mid-uptime, unexplained, and nothing said so
-# until an operator bounced off "Permission denied". A backup lives on /work
+# until an operator bounced off "Permission denied". A backup lives on /data
 # so remediation is possible; do it at boot, warn loudly on a hand-run.
 if [ ! -s /root/.ssh/authorized_keys ]; then
-    if [ -s /work/.authorized_keys.backup ]; then
+    if [ -s /data/.authorized_keys.backup ]; then
         if [ "$BOOT" = yes ]; then
             mkdir -p /root/.ssh && chmod 700 /root/.ssh
-            if cp /work/.authorized_keys.backup /root/.ssh/authorized_keys \
+            if cp /data/.authorized_keys.backup /root/.ssh/authorized_keys \
                && chmod 600 /root/.ssh/authorized_keys; then
-                fixed "authorized_keys was missing/empty; restored from /work backup"
+                fixed "authorized_keys was missing/empty; restored from /data backup"
             else
-                crit "authorized_keys missing and the /work backup would not restore — box is unreachable by ssh"
+                crit "authorized_keys missing and the /data backup would not restore — box is unreachable by ssh"
             fi
         else
-            crit "authorized_keys missing/empty (backup exists on /work)"
-            would "restore /root/.ssh/authorized_keys from /work/.authorized_keys.backup"
+            crit "authorized_keys missing/empty (backup exists on /data)"
+            would "restore /root/.ssh/authorized_keys from /data/.authorized_keys.backup"
         fi
     elif grep -q '^root:\*:' /etc/shadow 2>/dev/null; then
         # the client posture: root locked, no key baked, the browser is the
@@ -514,12 +494,12 @@ if [ ! -s /root/.ssh/authorized_keys ]; then
         # attention" for a shell nobody promised them.
         noten "no operator ssh key (client image, root locked) — shell access is granted from the dashboard: Users → ssh key"
     else
-        crit "authorized_keys missing/empty and no /work backup — with key-only sshd this box is unreachable by shell"
+        crit "authorized_keys missing/empty and no /data backup — with key-only sshd this box is unreachable by shell"
     fi
-elif [ -f /etc/pipeos/provisioned ] && [ ! -s /work/.authorized_keys.backup ] && mountpoint -q /work; then
+elif [ -f /etc/pipeos/provisioned ] && [ ! -s /data/.authorized_keys.backup ] && mountpoint -q /data; then
     # seed the backup the first time a healthy key is seen
-    cp /root/.ssh/authorized_keys /work/.authorized_keys.backup 2>/dev/null \
-        && log "seeded /work/.authorized_keys.backup"
+    cp /root/.ssh/authorized_keys /data/.authorized_keys.backup 2>/dev/null \
+        && log "seeded /data/.authorized_keys.backup"
 fi
 
 # ---- 3c. claude: with pipe off there is no listener to probe, but "the
@@ -548,34 +528,34 @@ fi
 if [ -s /etc/pipeos/schedule.json ] && ! grep -q 'pipeos-schedule-tick' /etc/crontabs/root 2>/dev/null; then
     warnn "scheduled jobs exist but the tick line is missing from /etc/crontabs/root — jobs will not fire (redeploy the overlay)"
 fi
-if [ -s /work/.pipeos/schedule/state.json ] && command -v jq >/dev/null 2>&1; then
+if [ -s /data/.pipeos/schedule/state.json ] && command -v jq >/dev/null 2>&1; then
     # not `jq | while read`: the loop would be a subshell and warnn's count
     # would be lost — the line in the report, the verdict still "all green"
     _failing=$(jq -r '.jobs | to_entries[] | select((.value.consecutive_failures // 0) >= 3) | "\(.key)=\(.value.consecutive_failures)"' \
-        /work/.pipeos/schedule/state.json 2>/dev/null)
+        /data/.pipeos/schedule/state.json 2>/dev/null)
     for _jr in $_failing; do
         _jn=${_jr%%=*}; _jf=${_jr#*=}
         [ -n "$_jn" ] && warnn "scheduled job $_jn failed its last $_jf runs — open schedule-$_jn.log in the dashboard (Schedule → Log)"
     done
 fi
 
-# ---- 3ch. /work's hot set (#264). pipeos-hot binds the churny paths from a
+# ---- 3ch. /data's hot set (#264). pipeos-hot binds the churny paths from a
 # tmpfs; a writer that started before it, or a bind that did not come up,
 # means the stick is taking the stream again. Parked = read-only on purpose.
-if mountpoint -q /work 2>/dev/null && [ -r /usr/local/share/pipeos/hot.list ]; then
+if mountpoint -q /data 2>/dev/null && [ -r /usr/local/share/pipeos/hot.list ]; then
     _hot_missing=""
     for _e in $(grep -vE '^\s*(#|$)' /usr/local/share/pipeos/hot.list); do
-        mountpoint -q "/work/$_e" 2>/dev/null || _hot_missing="$_hot_missing $_e"
+        mountpoint -q "/data/$_e" 2>/dev/null || _hot_missing="$_hot_missing $_e"
     done
     if [ -n "$_hot_missing" ]; then
-        if [ "$BOOT" = yes ] && rc-service pipeos-hot restart >/dev/null 2>&1 && ! [ -n "$(for _e in $_hot_missing; do mountpoint -q "/work/$_e" || echo x; done)" ]; then
+        if [ "$BOOT" = yes ] && rc-service pipeos-hot restart >/dev/null 2>&1 && ! [ -n "$(for _e in $_hot_missing; do mountpoint -q "/data/$_e" || echo x; done)" ]; then
             fixed "hot set re-staged in RAM:$_hot_missing"
         else
             warnn "hot set not staged in RAM:$_hot_missing — the stick is taking every write (rc-service pipeos-hot restart)"
         fi
     fi
-    if awk '$2 == "/work" { print $4 }' /proc/mounts | grep -qE '(^|,)ro(,|$)'; then
-        noten "/work is parked (read-only, pipeos work park) — the stick idles; a scheduled run unparks itself"
+    if awk '$2 == "/data" { print $4 }' /proc/mounts | grep -qE '(^|,)ro(,|$)'; then
+        noten "/data is parked (read-only, pipeos work park) — the stick idles; a scheduled run unparks itself"
     fi
 fi
 # the listener idling on a policy denial (#258): one WARN, not a respawn loop
@@ -652,8 +632,8 @@ if [ -r "$_suc" ]; then
     # shellcheck disable=SC1090
     . "$_suc" 2>/dev/null
     if [ -n "${UPDATE_RELEASE_URL:-}${UPDATE_URL:-}" ]; then
-        _stamp=/work/.pipeos/selfupdate.applied
-        _sulog=/work/logs/selfupdate.log
+        _stamp=/data/.pipeos/selfupdate.applied
+        _sulog=/data/logs/selfupdate.log
         if [ ! -f "$_stamp" ]; then
             warnn "self-update is configured but has never applied anything — check $_sulog"
         elif [ -n "$(find "$_stamp" -mtime +14 2>/dev/null)" ]; then
@@ -663,10 +643,10 @@ if [ -r "$_suc" ]; then
             warnn "last self-update run ERRORED: $(tail -1 "$_sulog" | cut -c1-140)" ;;
         esac
         # the image half (#275): say when this boot IS the update, and when the owner turned it off
-        if [ -f /work/.pipeos/image-updated ] && [ -n "$(find /work/.pipeos/image-updated -newer /proc/1 2>/dev/null)" ]; then
+        if [ -f /data/.pipeos/image-updated ] && [ -n "$(find /data/.pipeos/image-updated -newer /proc/1 2>/dev/null)" ]; then
             : # written after this boot started — not this boot's update
-        elif [ -f /work/.pipeos/image-updated ] && [ -z "$(find /work/.pipeos/image-updated -mmin +30 2>/dev/null)" ]; then
-            noten "this boot is a self-applied image update: $(cat /work/.pipeos/image-updated)"
+        elif [ -f /data/.pipeos/image-updated ] && [ -z "$(find /data/.pipeos/image-updated -mmin +30 2>/dev/null)" ]; then
+            noten "this boot is a self-applied image update: $(cat /data/.pipeos/image-updated)"
         fi
         [ "${IMAGE_UPDATE:-auto}" = off ] && noten "automatic image updates are OFF (pipeos selfupdate image on) — packages still update; a new image waits for pipeos flash apply"
     fi
@@ -677,10 +657,10 @@ fi
 # path — a disagreement in the deletion tool's own map. It logs and moves on
 # (an unattended cron must not wedge), so this is where it becomes a finding
 # a human sees.
-if [ -r /work/logs/worksweep.log ]; then
-    _ws_ref=$(grep -c 'REFUSED' /work/logs/worksweep.log 2>/dev/null || echo 0)
+if [ -r /data/logs/worksweep.log ]; then
+    _ws_ref=$(grep -c 'REFUSED' /data/logs/worksweep.log 2>/dev/null || echo 0)
     [ "${_ws_ref:-0}" -gt 0 ] && \
-        warnn "worksweep has REFUSED $_ws_ref candidate(s) — its allowlist and protected list disagree; see /work/logs/worksweep.log (pipeOS#110)"
+        warnn "worksweep has REFUSED $_ws_ref candidate(s) — its allowlist and protected list disagree; see /data/logs/worksweep.log (pipeOS#110)"
 fi
 
 # ---- 4. will a reboot reproduce this state? (covers the incident: media
@@ -710,41 +690,41 @@ fi
 # one busy day, and nothing warned before the owner happened to look at a
 # dashboard. Falls back to 70/85 when the card leaves them unset (unprovisioned
 # boxes, or boxes not yet carrying this field), well below the old 90/95 that
-# let box1 reach 79% in silence. /work also holds this agent's own state
-# (/work/claude/projects — transcripts, file memory), so losing it is not just
+# let box1 reach 79% in silence. /data also holds this agent's own state
+# (/data/claude/projects — transcripts, file memory), so losing it is not just
 # a stalled build, it is losing the box's ability to report the problem — the
 # reason this is a crit near the top end and not just a warn.
 _dp_conf=/etc/pipeos/pipebox.conf
 [ -r "$_dp_conf" ] && . "$_dp_conf" 2>/dev/null
 disk_warn=${DISK_WARN_PCT:-70}
 disk_crit=${DISK_CRIT_PCT:-85}
-use=$(df /work 2>/dev/null | awk 'NR==2{print $5+0}')
+use=$(df /data 2>/dev/null | awk 'NR==2{print $5+0}')
 if [ "${use:-0}" -ge "$disk_crit" ] || [ "${use:-0}" -ge "$disk_warn" ]; then
     # Named, not just a percentage: "full-ish disk" with no culprit is exactly
     # how box1's 24G incremental cache went unnoticed. `du` here is read-only
     # (no writes, nothing mutated) and is only run once a threshold is already
-    # crossed, so a healthy box never pays for it. Depth-1 under /work finds
+    # crossed, so a healthy box never pays for it. Depth-1 under /data finds
     # the big-ticket subtree (e.g. repos/); a second pass one level into
     # repos/*/target catches the specific cargo cache pattern box1 found,
     # without hardcoding it as the only thing this check can name.
     top=""; topt=""
-    if [ "$LIVE" != yes ]; then   # --live names no culprit: du over /work is the cost it skips
-        top=$(du -xsk /work/*/ 2>/dev/null | sort -rn | head -1)
-        topt=$(du -xsk /work/repos/*/target 2>/dev/null | sort -rn | head -1)
+    if [ "$LIVE" != yes ]; then   # --live names no culprit: du over /data is the cost it skips
+        top=$(du -xsk /data/*/ 2>/dev/null | sort -rn | head -1)
+        topt=$(du -xsk /data/repos/*/target 2>/dev/null | sort -rn | head -1)
     fi
     culprit="top consumer: ${top:-unknown}"
     [ -n "$topt" ] && culprit="$culprit; ${topt}"
     if [ "${use:-0}" -ge "$disk_crit" ]; then
-        crit "/work ${use}% full (>= ${disk_crit}% crit) — $culprit"
+        crit "/data ${use}% full (>= ${disk_crit}% crit) — $culprit"
     else
-        warnn "/work ${use}% full (>= ${disk_warn}% warn) — $culprit"
+        warnn "/data ${use}% full (>= ${disk_warn}% warn) — $culprit"
     fi
 fi
 free=$(df -k "$MEDIA" 2>/dev/null | awk 'NR==2{printf "%d", $4/1024}')
 [ "${free:-0}" -lt 300 ] && warnn "boot media only ${free}MB free"
 
 # ---- 5b. agent state layout. root/.claude/projects is meant to be a symlink
-# onto /work so transcripts never reach the apkovl; lbu.list also excludes it
+# onto /data so transcripts never reach the apkovl; lbu.list also excludes it
 # defensively, but an unmigrated box should say so rather than silently bloat.
 # A DANGLING link is worse than no link: agent memory is then unreachable.
 #
@@ -769,7 +749,7 @@ if [ -L /root/.claude/projects ]; then
     [ -d /root/.claude/projects/ ] || \
         crit "/root/.claude/projects symlink target missing — agent memory unreachable"
 elif [ -d /root/.claude/projects ]; then
-    warnn "/root/.claude/projects is a real directory, not a symlink onto /work — transcripts land in the apkovl (migrate copy-first: link-first destroys agent memory)"
+    warnn "/root/.claude/projects is a real directory, not a symlink onto /data — transcripts land in the apkovl (migrate copy-first: link-first destroys agent memory)"
 elif [ -d /root/.claude ]; then
     # Guarded on /root/.claude existing so a box with no agent installed at
     # all stays quiet — this is about an agent box that is unmigrated, not
@@ -820,7 +800,7 @@ fi
 # behind a box is when the checkout is stale — an understatement that gets
 # corrected at the next fetch, rather than a fabricated reassurance.
 _ov_stamp=/etc/pipeos/.overlay-stamp
-_ov_repo=${PIPEOS_REPO:-/work/repos/pipeOS}
+_ov_repo=${PIPEOS_REPO:-/data/repos/pipeOS}
 _ov_ref=${PIPEOS_BASE_REF:-origin/main}
 _ov_crit=${OVERLAY_CRIT_DAYS:-3}          # $_dp_conf was sourced in section 5
 if [ ! -r "$_ov_stamp" ]; then
@@ -879,10 +859,10 @@ fi
 # minute; a ledger that stopped moving while sessions ran is a blind box
 # again. The cap rows are the boot-report copy of the DMs: an owner who
 # did not read the DM sees it here.
-if mountpoint -q /work && [ -x /usr/local/bin/pipeos-ledger-ingest ]; then
-    [ "$BOOT" = yes ] && mkdir -p /work/.pipeos/ledger 2>/dev/null
-    if [ -d /work/.pipeos/ledger ] && [ ! -w /work/.pipeos/ledger ]; then
-        warnn "usage ledger: /work/.pipeos/ledger is not writable — spend is not being recorded"
+if mountpoint -q /data && [ -x /usr/local/bin/pipeos-ledger-ingest ]; then
+    [ "$BOOT" = yes ] && mkdir -p /data/.pipeos/ledger 2>/dev/null
+    if [ -d /data/.pipeos/ledger ] && [ ! -w /data/.pipeos/ledger ]; then
+        warnn "usage ledger: /data/.pipeos/ledger is not writable — spend is not being recorded"
     elif _lt=$(/usr/local/bin/pipeos-ledger-ingest totals --json 2>/dev/null) && [ -n "$_lt" ] && command -v jq >/dev/null 2>&1; then
         _li=$(printf '%s' "$_lt" | jq -r '.last_ingest_ts // 0')
         _now=$(date +%s)
@@ -927,7 +907,7 @@ fi
 # the shared token. A stale startfail (older than 30 min, i.e. well past the
 # 15-min backoff pipebox-cohort-watch uses for rc=1) means it's not just a
 # single blip.
-for sf in /work/pipebox/state/cohort-*.startfail; do
+for sf in /data/pipebox/state/cohort-*.startfail; do
     [ -e "$sf" ] || continue
     ts=$(cat "$sf" 2>/dev/null)
     now=$(date -u +%s)
@@ -993,12 +973,12 @@ fi
 # to land on that, so the reasoning is recorded rather than left to be
 # rediscovered by whoever next thinks it looks wrong.
 #
-# `/work/buildroot/env.sh` documents that buildroot's gcc needs
-# `CFLAGS=--sysroot=/work/buildroot` to find libc headers, and exports it.
+# `/data/buildroot/env.sh` documents that buildroot's gcc needs
+# `CFLAGS=--sysroot=/data/buildroot` to find libc headers, and exports it.
 # That file is real, correct, and — this is the part that decides it —
 # **NOTHING SOURCES IT**. `pipebox-cohort-watch` and `pipebox-listener`, the
 # two scripts that start every unattended agent, each export
-# `PATH=/work/buildroot/usr/bin:$PATH` and nothing else; a grep across
+# `PATH=/data/buildroot/usr/bin:$PATH` and nothing else; a grep across
 # `overlay/`, `scripts/` and `.github/` for `env.sh` or `CFLAGS` finds those
 # PATH lines and no other caller.
 #
@@ -1086,7 +1066,7 @@ fi
 # remote IS a crit — it means work would land somewhere nobody is looking.
 if [ -n "${REPOS:-}" ]; then
     for _repo in $(echo "$REPOS" | tr ',' ' '); do
-        _rp=/work/repos/$_repo
+        _rp=/data/repos/$_repo
         if [ ! -d "$_rp" ]; then
             crit "card declares REPOS=$_repo but $_rp does not exist — this box cannot work an issue in it"
         elif [ ! -e "$_rp/.git" ]; then

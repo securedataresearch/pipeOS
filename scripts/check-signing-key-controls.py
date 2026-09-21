@@ -117,13 +117,13 @@ controls = [
 ]
 
 # One control lives in the other file: the tier logic that decides WHERE the
-# durable store is. Restoring the unconditional /work default is box2's
+# durable store is. Restoring the unconditional /data default is box2's
 # blocker on #92 verbatim.
 CFG_BLOCK_START = 'if [ -z "${SIGNING_KEY_DIR:-}" ]; then'
 cfg_controls = [
-    ("G: unconditional /work default (box2's blocker on pipeOS#92)",
+    ("G: unconditional /data default (box2's blocker on pipeOS#92)",
      lambda s: re.sub(r'^if \[ -z "\$\{SIGNING_KEY_DIR:-\}" \]; then\n.*?^fi$',
-                      'SIGNING_KEY_DIR="${SIGNING_KEY_DIR:-/work/keys/pipeos}"',
+                      'SIGNING_KEY_DIR="${SIGNING_KEY_DIR:-/data/keys/pipeos}"',
                       s, flags=re.S | re.M)),
 
     # config.sh knows which candidate it rejected and says nothing. This is the

@@ -31,9 +31,9 @@ set -u
 
 ETHTOOL=${PIPEOS_BLINK_ETHTOOL:-ethtool}
 CLUSTER=${PIPEOS_BLINK_CLUSTER:-/etc/pipeos/cluster.json}
-# The LIVE peer cache, on tmpfs. Not /work's roster: that one holds every
+# The LIVE peer cache, on tmpfs. Not /data's roster: that one holds every
 # Machine ever seen on the LAN and is never pruned, and `pipeos work park`
-# remounts /work read-only, after which mdnsd's writes fail silently and the
+# remounts /data read-only, after which mdnsd's writes fail silently and the
 # roster freezes — a parked-but-healthy cluster would all go steady (#334 review).
 PEERS=${PIPEOS_BLINK_PEERS:-/run/pipeos/mdns/peers.json}
 PEERS_MAX_AGE=${PIPEOS_BLINK_PEERS_MAX_AGE:-120}

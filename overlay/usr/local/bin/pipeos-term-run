@@ -3,7 +3,7 @@
 #
 # ttyd serves xterm.js on this user's port; the command is `su -l <user>`,
 # which root runs without a password, so the shell that appears is a REAL
-# non-root login shell in /work/home/<user> — not root's. The ttyd password on
+# non-root login shell in /data/home/<user> — not root's. The ttyd password on
 # argv is visible in `ps` to root only; same accepted trade-off as
 # pipeos-assistant-run.
 set -u

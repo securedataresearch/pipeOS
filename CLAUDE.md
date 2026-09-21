@@ -2,7 +2,7 @@
 
 Diskless Alpine appliance for headless agent boxes. The root fs is tmpfs,
 rebuilt every boot from the boot media (vfat `LABEL=PIPEOS`): apkovl for
-config/state, local apk repos for software. `/work` (ext4 `LABEL=PIPEWORK`)
+config/state, local apk repos for software. `/data` (ext4 `LABEL=PIPEWORK`)
 holds bulk data. Machine-scoped agent rules ship in
 `overlay/root/.claude/CLAUDE.md`; this file is about working on the repo.
 

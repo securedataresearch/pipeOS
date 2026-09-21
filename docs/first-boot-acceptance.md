@@ -86,7 +86,7 @@ is still owed.
 
 - Both Machines up and answering `/api/state` within a minute of power.
 - **Discovery dead on both**: the responder never started — supervise-daemon
-  opens its log after dropping to svc-mdns, and `/work/logs` is root's.
+  opens its log after dropping to svc-mdns, and `/data/logs` is root's.
   Fixed in the init script (the log file is made owned by the user).
 - **Both booted DEGRADED** with two CRITICALs a customer cannot act on: a
   stale card stamp shipped by the build (the stamp is gitignored; the

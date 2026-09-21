@@ -23,7 +23,7 @@ answers to nobody else's keys.
 Hardware: any 64-bit UEFI x86 machine with 8G+ RAM and a USB port or
 internal disk. The reference box is a 1-liter Lenovo ThinkCentre; old
 desktops and NUCs work fine. The boot media holds the OS + your saved state;
-a second partition (`/work`, created on first boot from free space) holds
+a second partition (`/data`, created on first boot from free space) holds
 bulk data.
 
 ## Building the image yourself
@@ -47,7 +47,7 @@ every piece. If a stranger can't audit it, we consider that a bug.
 Nothing in a self-built pipeOS phones home to us or trusts us:
 
 - **Signing key**: the first `make chroot` generates a fresh abuild keypair
-  (kept outside the repo, in `~/.pipeos/keys` or `/work/keys/pipeos`).
+  (kept outside the repo, in `~/.pipeos/keys` or `/data/keys/pipeos`).
   Every image you build trusts *your* key and only your key. Guard it — the
   build refuses to continue if it ever finds two different keys claiming to
   be yours.

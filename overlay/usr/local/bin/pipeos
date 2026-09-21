@@ -15,9 +15,9 @@
 #   pipeos save                commit state now (guarded, atomic)
 #   pipeos rollback [TS|known-good]  stage an older apkovl for next boot
 #   pipeos sync-media          push freshly built pipeos repo -> media
-#   pipeos backup DEST [--identity-only]   identity bundle + /work onto a mounted external
+#   pipeos backup DEST [--identity-only]   identity bundle + /data onto a mounted external
 #   pipeos flash check|fetch|apply [--to DEV]   a new released image: in place, or onto a spare disk
-#   pipeos restore-work SRC [--force] [--onto DEV]   /work back from a backup dir or an old stick's p2
+#   pipeos restore-work SRC [--force] [--onto DEV]   /data back from a backup dir or an old stick's p2
 #   pipeos deploy-overlay      install a repo commit's overlay onto this box
 #   pipeos unclaim [--yes]     nobody's box again: drop the claim, name, users; reboot
 #   pipeos wake NAME|ID|--all|--list|--forget ID   magic packet to a Machine this box has seen
@@ -36,7 +36,7 @@
 #   pipeos nas account NAME      share-only account + its SMB password (stdin) — Files → Network storage's form
 #   pipeos watchdog kernel|off|status   the hardware watchdog (card WATCHDOG, default kernel): regenerated, saved, restarted now
 #   pipeos selfupdate image on|off|status   automatic image updates (default on): a newer release is applied and the box reboots
-#   pipeos work status|flush|park|unpark   /work's hot set in RAM; park = flush + read-only (the stick idles)
+#   pipeos work status|flush|park|unpark   /data's hot set in RAM; park = flush + read-only (the stick idles)
 #
 # Read-only verbs (status/verify/diff/snapshot) are open to the resident
 # agent; mutating verbs are root/human territory (pipebox-settings.json).
@@ -46,8 +46,8 @@ LBU=${PIPEOS_LBU:-lbu}      # the probe's stub; a box never sets it
 REPO_DIR=$MEDIA/apks/pipeos/x86_64
 OVL=$MEDIA/pipeos.apkovl.tar.gz
 KNOWN_GOOD=$MEDIA/pipeos.known-good.tar.gz
-OVERLAY=/work/repos/pipeOS/overlay
-REPO=${PIPEOS_REPO:-/work/repos/pipeOS}
+OVERLAY=/data/repos/pipeOS/overlay
+REPO=${PIPEOS_REPO:-/data/repos/pipeOS}
 STAMP=/etc/pipeos/.overlay-stamp
 # operator-verb seams (the probe): the card, its generator, the saver, the ledger, the phrase file
 CARD=${PIPEOS_CARD:-/etc/pipeos/card.conf}
@@ -194,11 +194,11 @@ cmd_status() {
     else
         warn "UNCLAIMED — first visitor to http://$(hostname).local/ owns this box"
     fi
-    if mountpoint -q /work; then
-        use=$(df /work | awk 'NR==2{print $5+0}')
-        if [ "$use" -ge 90 ]; then warn "/work ${use}% full"; else ok "/work mounted, ${use}% used"; fi
+    if mountpoint -q /data; then
+        use=$(df /data | awk 'NR==2{print $5+0}')
+        if [ "$use" -ge 90 ]; then warn "/data ${use}% full"; else ok "/data mounted, ${use}% used"; fi
     else
-        fail "/work not mounted"
+        fail "/data not mounted"
     fi
     # images built since #179 carry their own descriptor; older ones say nothing
     if [ -r "$MEDIA/pipeos-image.txt" ]; then
@@ -488,7 +488,7 @@ cmd_rollback() {
 # users, the owner's name and owner nick go; the box reboots into the wizard
 # as an unclaimed Machine at pipeos-<id>.local. Kept on purpose, because they
 # are the operator's and not the claim's: root's ssh keys, the Claude
-# sign-in, the pipe identity (NICK) on a fleet-role box, /work. A GENERIC
+# sign-in, the pipe identity (NICK) on a fleet-role box, /data. A GENERIC
 # box's NICK is cleared too — it was derived from a sign-in that belonged to
 # the previous owner.
 cmd_unclaim() {
@@ -498,11 +498,11 @@ cmd_unclaim() {
     # the pinned support port, the assistant config — and `lbu commit -d`
     # deleted the canonical and known-good apkovl. Everything the owner made
     # goes — including their root ssh key, their agent's transcripts and
-    # memory, and the weekly backups under /work/backup (byte-copies of the
+    # memory, and the weekly backups under /data/backup (byte-copies of the
     # very credentials removed above; the #306 review). The chassis identity
-    # (hostname, MAC) stays, and so does the data on /work: homes and repos.
+    # (hostname, MAC) stays, and so does the data on /data: homes and repos.
     # Seams for scripts/check-unclaim.py; the box never sets them.
-    _etc=${PIPEOS_ETC:-/etc/pipeos}; _home=${PIPEOS_ROOT_HOME:-/root}; _run=${PIPEOS_RUN:-/run/pipeos}; _work=${PIPEOS_WORK:-/work}
+    _etc=${PIPEOS_ETC:-/etc/pipeos}; _home=${PIPEOS_ROOT_HOME:-/root}; _run=${PIPEOS_RUN:-/run/pipeos}; _work=${PIPEOS_WORK:-/data}
     _tls_init=${PIPEOS_TLS_INIT:-/usr/local/bin/pipeos-tls-init}; _reboot=${PIPEOS_REBOOT_BIN:-reboot}
     [ "$(id -u)" = 0 ] || [ -n "${PIPEOS_UNCLAIM_TEST:-}" ] || { echo "unclaim: root only" >&2; return 1; }
     [ -f "$_etc/rollback-pending" ] && { echo "unclaim: a rollback is staged — reboot first" >&2; return 1; }
@@ -511,8 +511,8 @@ cmd_unclaim() {
     if [ "$1" != "--yes" ]; then
         echo "This makes $_hn nobody's box: claim, dashboard users, name, owner, pipe and"
         echo "Claude sign-ins, root ssh keys, cluster membership, shares, schedule, support"
-        echo "port, the agent's transcripts and memory, and the backups under /work/backup"
-        echo "are removed and it reboots into the setup wizard. /work/home and /work/repos"
+        echo "port, the agent's transcripts and memory, and the backups under /data/backup"
+        echo "are removed and it reboots into the setup wizard. /data/home and /data/repos"
         echo "stay. Type the hostname to continue:"
         read -r _ans
         [ "$_ans" = "$_hn" ] || { echo "did not match $_hn — nothing changed" >&2; return 1; }
@@ -537,12 +537,12 @@ cmd_unclaim() {
     # the owner's root ssh key: with key-only sshd it is a door into the next
     # owner's Machine (the #306 review); the wizard's Users view grants a new one
     rm -f "$_home/.ssh/authorized_keys"
-    # the owner's private state on /work: the usage ledger (a new owner inherited
+    # the owner's private state on /data: the usage ledger (a new owner inherited
     # $2.46 of the old owner's spend), schedule runs and job dirs, the agent's
     # transcripts, sessions and memory, the dashboard chat, the logs, the key
-    # backup, and /work/backup (weekly copies of the apkovl and the pipe
-    # credentials). /work/home and /work/repos stay — the data, not the owner
-    # (a full wipe is a format). /work must be writable: a parked box is
+    # backup, and /data/backup (weekly copies of the apkovl and the pipe
+    # credentials). /data/home and /data/repos stay — the data, not the owner
+    # (a full wipe is a format). /data must be writable: a parked box is
     # unparked first, and the hot-set dirs (bind mounts) are emptied, not removed.
     _wb=${PIPEOS_WORK_BIN:-/usr/local/bin/pipeos-work}
     if awk -v w="$_work" '$2 == w { print $4 }' /proc/mounts 2>/dev/null | grep -qE '(^|,)ro(,|$)'; then

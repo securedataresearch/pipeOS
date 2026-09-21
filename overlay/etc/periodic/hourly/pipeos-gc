@@ -1,5 +1,5 @@
 #!/bin/sh
-# pipeos-gc — proactive reclamation of regenerable build cache under /work.
+# pipeos-gc — proactive reclamation of regenerable build cache under /data.
 #
 # For pipeOS#41's reclamation half (Foreman ruling, 2026-08-10, quoting Sam:
 # "we badly need some automatic garbage collection in pipeos" / "disk health
@@ -40,12 +40,12 @@
 
 set -u
 
-LOG=/work/logs/pipeos-gc.log
-STATE=/work/pipebox/state/gc-last-run
+LOG=/data/logs/pipeos-gc.log
+STATE=/data/pipebox/state/gc-last-run
 # Repos whose last `cargo clean` failed. Named per repo, NOT a box-global
 # "something failed" flag — see the retry handling at the bottom for why that
 # distinction is the whole fix (pipeOS#66, box3).
-RETRY=/work/pipebox/state/gc-retry
+RETRY=/data/pipebox/state/gc-retry
 CONF=/etc/pipeos/pipebox.conf
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG" 2>/dev/null; }
@@ -65,7 +65,7 @@ now=$(date -u +%s)
 # re-run hourly, re-cleaning repos that had succeeded. `target/` is gitignored,
 # so a box that has just built has a clean git tree and a full cache — the
 # normal resting state of a box that compiles, not an edge case. Measured on
-# box1 while writing this: tree clean, /work/repos/pipe/target = 12.4G. Under
+# box1 while writing this: tree clean, /data/repos/pipe/target = 12.4G. Under
 # the global flag, one persistently failing repo meant rebuilding that hourly,
 # on the box already measured as the fleet's serial bottleneck. Before the fix
 # it was lost at most once per 24h, so the "fix" regressed the axis nobody was
@@ -208,7 +208,7 @@ fi
 dirty=""
 for _repo in $(printf '%s' "${REPOS:-}" | tr ',' ' '); do
     [ -n "$_repo" ] || continue
-    rp="/work/repos/$_repo"
+    rp="/data/repos/$_repo"
     [ -d "$rp/.git" ] || continue
     if [ -n "$(git -C "$rp" status --porcelain 2>/dev/null)" ]; then
         dirty="$dirty $_repo"
@@ -236,7 +236,7 @@ else
 fi
 for _repo in $work_list; do
     [ -n "$_repo" ] || continue
-    rp="/work/repos/$_repo"
+    rp="/data/repos/$_repo"
     [ -d "$rp/target" ] || continue
     if ! command -v cargo >/dev/null 2>&1; then
         log "skip $rp/target: cargo not on PATH — not touching build output without the tool that owns it"
@@ -279,7 +279,7 @@ done
 # gitignored, so a box that has just built has a CLEAN git tree and a full
 # cache, which is the resting state of any box that compiles rather than an
 # edge case. Measured on box1 while writing this — tree clean,
-# /work/repos/pipe/target = 12.4G. One persistently failing repo would have
+# /data/repos/pipe/target = 12.4G. One persistently failing repo would have
 # meant rebuilding that every hour, on the box already measured as the fleet's
 # serial bottleneck, where the pre-fix behaviour lost it at most once a day.
 #

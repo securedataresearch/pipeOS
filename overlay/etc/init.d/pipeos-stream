@@ -23,8 +23,8 @@ supervisor=supervise-daemon
 respawn_delay=15
 respawn_max=0
 
-output_log=/work/logs/pipeos-stream.log
-error_log=/work/logs/pipeos-stream.log
+output_log=/data/logs/pipeos-stream.log
+error_log=/data/logs/pipeos-stream.log
 
 CONF=/etc/pipeos/stream.conf
 
@@ -51,10 +51,10 @@ start_pre() {
 	# shellcheck disable=SC1090
 	. "$CONF"
 	command -v ffmpeg >/dev/null 2>&1 || { eerror "ffmpeg is not installed on this image"; return 1; }
-	checkpath -d -m 0755 /work/logs || return 1
+	checkpath -d -m 0755 /data/logs || return 1
 	if [ -n "$(svc_user)" ]; then
 		# chromium needs a writable HOME/profile dir; stream-run picks this up
-		checkpath -d -m 0700 -o svc-stream:svc-stream /work/cache/stream || return 1
+		checkpath -d -m 0700 -o svc-stream:svc-stream /data/cache/stream || return 1
 	else
 		einfo "svc-stream account not on this media yet — streaming runs as root until the next image update"
 	fi

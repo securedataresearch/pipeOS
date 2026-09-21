@@ -69,7 +69,7 @@ only delivery channel before; it still works when pipe is on), toggles
 services, shows disk/uptime, saves state, changes the password — and, with
 Claude enabled, carries **web chat**: `POST /api/chat` feeds the box's Claude
 (same fence as the pipe listener, one continued conversation under
-`/work/pipebox/webchat`). For a pipe-less box this is the assistant surface.
+`/data/pipebox/webchat`). For a pipe-less box this is the assistant surface.
 
 Two more toggles ride the same services model:
 - **Vendor support access** (`pipeos-support`): opt-in reverse tunnel
@@ -142,7 +142,7 @@ users.json is missing or corrupt, auth falls back to the original admin
 password, so the dashboard is always reachable.
 
 - Unix accounts are created by `usr/local/bin/pipeos-user` (dashboard shells
-  out; also usable over ssh). Homes are real paths on `/work/home/<name>`
+  out; also usable over ssh). Homes are real paths on `/data/home/<name>`
   (ext4): they survive a media reflash even though the accounts (apkovl) do
   not — recreating the user re-adopts the surviving home's uid. Shadow gets
   `*`, never busybox's `!` (which blocks even pubkey auth); sshd_config is
@@ -154,10 +154,10 @@ password, so the dashboard is always reachable.
   next image update.
 - Browser terminals: one ttyd per terminal-enabled user (ports 7701+, own
   password), each running `su -l <user>` — a real non-root shell in their
-  /work home. `etc/init.d/pipeos-terminals` supervises the set;
+  /data home. `etc/init.d/pipeos-terminals` supervises the set;
   `/etc/pipeos/terminals.conf` is generated from users.json.
 - Guards: you cannot delete yourself, nor delete/disable the last enabled
-  admin; deleting keeps `/work/home/<name>` unless purge is chosen; every
+  admin; deleting keeps `/data/home/<name>` unless purge is chosen; every
   /etc/shadow edit is awk → temp → atomic rename.
 
 **Future work (deliberately out of scope):** the claude agent, pipe daemon,

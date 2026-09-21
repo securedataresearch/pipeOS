@@ -17,7 +17,7 @@ GH_OWNER=securedataresearch
 # the media path; identity rides the stick until netboot lands.
 MAC=8c:16:45:fa:84:33
 
-# pipeOS#41: TEST's 25G /work — less than half of box1's 53G, so the same
+# pipeOS#41: TEST's 25G /data — less than half of box1's 53G, so the same
 # percentage leaves much less absolute headroom. Measured 2026-08-10: this box
 # reached 57% (12G) from target/ alone before the Foreman took relief. WARN 65
 # / CRIT 80 warns and crits earlier than BUILD's 70/85 so there is still real
@@ -58,7 +58,7 @@ REPOS=pipe
 # allow entries. Dropping them would have left the two fences disagreeing.
 PIPE_CAPS=read,send.dm,send.room,send.lobby,send.bbs,claim
 
-# pipeOS#41 (Foreman ruling 2026-08-10): TEST's 25G /work, same size as box0
+# pipeOS#41 (Foreman ruling 2026-08-10): TEST's 25G /data, same size as box0
 # but measured with much lower churn — 3.8G/25G (17%) with 2.5G in target/.
 # Same disk, slower accumulation, so an interval between box0's 6h and
 # box1's 24h rather than sharing either.
