@@ -613,6 +613,77 @@ check("19b a placement the member refuses at run time (another job is running th
       repr((rc_rf, out_rf[-200:], jobs_of(H), H.nsaves() - h_saves2, ran_on(H))))
 H.cli("call", "local", "POST", "/api/schedule/del", json.dumps({"name": "later"}))
 
+# ── 19c2. who can sign in, across the cluster (#215, §5): gathered live, never
+# from a cache, and a member's certificate may read ONE box's list but never
+# gather the cluster's
+# ADD a user to seven, never rewrite the file: its real admin hash is what
+# the later rows sign in with (this row broke row 21 by replacing it once)
+_up = os.path.join(H.dir, "users_conf")
+_udoc = json.load(open(_up))
+_udoc["users"].append({"name": "office", "role": "user", "hash": "notahash", "share": True, "disabled": True})
+json.dump(_udoc, open(_up, "w"))
+st_uh, out_uh = https(G, "GET", "/api/cluster/users-here", cert_of=H)          # a member may read ONE box's list
+st_ug, out_ug = https(G, "GET", "/api/cluster/users", cert_of=H)               # but never gather the cluster's
+rc_us, out_us = G.cli("users")
+_cg = login(G, "sixpassword")
+st_us2, body_us2 = sess(G, _cg, "GET", "/api/cluster/users")
+h_row = next((r for r in body_us2.get("members", []) if r["id"] == "2222"), {})
+leak = json.dumps(body_us2)
+check("19c2 the cluster's sign-ins: a member's certificate may read one Machine's list and NOT gather the cluster's; the owner's session gathers every member's, side by side, with the other Machine's disabled share-only account carried — and no hash, key or terminal port anywhere in the answer",
+      st_uh == 200 and isinstance(out_uh, dict) and out_uh.get("users")
+      and st_ug == 403 and "certificate may not" in (out_ug.get("error") or "")
+      and rc_us == 0 and "editing is per Machine" in out_us
+      and st_us2 == 200 and "office" in [u["name"] for u in h_row.get("users") or []]
+      and next(u for u in h_row["users"] if u["name"] == "office")["disabled"] is True
+      and "hash" not in leak and "notahash" not in leak and "term_port" not in leak,
+      repr((st_uh, st_ug, out_ug, rc_us, out_us[-200:], h_row)))
+
+# ── 19c3. ADMIN, not merely signed in. `api_users` puts THIS Machine's roster
+# behind the admin guard, so a reader gate that only asks for a session would
+# let a viewer read through the cluster what they may not read on the box they
+# are signed in to — and every other member's besides. Hiding the nav item is
+# UI, not a fence. (Found by the review pass on PR #344.)
+_gp = os.path.join(G.dir, "users_conf")
+_gdoc = json.load(open(_gp))
+_vhash = subprocess.run(["openssl", "passwd", "-6", "-stdin"], input="nosypassword\n",
+                        capture_output=True, text=True).stdout.strip()
+_gdoc["users"].append({"name": "nosy", "role": "viewer", "hash": _vhash})
+json.dump(_gdoc, open(_gp, "w"))
+_r = urllib.request.Request("http://127.0.0.1:%d/api/login" % G.port,
+                            data=json.dumps({"username": "nosy", "password": "nosypassword"}).encode(),
+                            method="POST")
+_r.add_header("Content-Type", "application/json")
+_resp = urllib.request.urlopen(_r, timeout=10)
+_vc = _resp.headers.get("Set-Cookie", "").split("session=")[1].split(";")[0]
+st_v, body_v = sess(G, _vc, "GET", "/api/cluster/users")
+st_va, _ = sess(G, _cg, "GET", "/api/cluster/users")      # the admin still gets it
+rc_vcli, _out_vcli = G.cli("users")                        # and so does the box's own verb
+check("19c3 a signed-in NON-admin cannot gather the cluster's sign-ins: a viewer session is refused (403) where the admin session and this Machine's own certificate are not — the same bar `api_users` sets for one box's roster",
+      st_v == 403 and "admin sign-in" in (body_v.get("error") or "")
+      and st_va == 200 and rc_vcli == 0,
+      repr((st_v, body_v, st_va, rc_vcli)))
+
+# ── 19c4. an answer is a LIST or it is a gap. fanout keeps a member's status
+# while replacing a body it could not attribute, and a member on an older
+# overlay answers 404 — both would render as a confident "0 sign-ins", which
+# is the quietly-wrong list this view exists to avoid. (Review pass, PR #344.)
+_stub = """
+import cluster
+cluster.view = lambda: {"cluster": "c", "self": "1111", "members": [
+    {"id": "1111", "name": "six", "self": True}, {"id": "2222", "name": "seven", "self": False}]}
+cluster.fanout = lambda ids, m, p, **kw: {"2222": (%s, %s)}
+r = cluster.users(lambda: [{"name": "admin", "role": "admin"}])
+print(json.dumps(r["members"][1]))
+"""
+row_na = json.loads(G.py(_stub % (200, '{"error": "not a member\'s answer"}')))
+row_404 = json.loads(G.py(_stub % (404, '{"error": "no such page"}')))
+row_empty = json.loads(G.py(_stub % (200, '{"users": []}')))
+check("19c4 a 200 that is not a member's list is a gap, not an empty roster: an unattributable answer and an older member's 404 both come back with no list (the 404 saying the overlay is older, not that the Machine is down), while a genuinely empty list is carried as one",
+      row_na["users"] is None and row_404["users"] is None
+      and "older" in row_404["error"] and "did not answer" not in row_404["error"]
+      and row_empty["users"] == [],
+      repr((row_na, row_404, row_empty)))
+
 # ── 19d. rolling updates (#216, §9): one Machine at a time, never while another
 # is out, and the lowest id still on this release goes first — asked of the
 # same shared list by every member, so it sequences itself with no coordinator
@@ -779,6 +850,22 @@ check("21 a grey box's agents are grey too: the row of a member that stopped ans
       and ran_on(G) == ["pick"] and jobs_of(G) == ["pick"]
       and rc_ag2 == 0 and "grey (box off)" in out_ag2 and "nightly" in out_ag2,
       repr((st_p21, grey.get("awake"), grey.get("agents"), grey.get("agents_stale"), grey.get("agents_seen"), ran_on(G), jobs_of(G), rc_ag2, out_ag2[-240:])))
+
+# ── 21b. the OPPOSITE call for the sign-in list (#215, §5) ───────────────
+# A grey member's agents are worth showing stale (row 21): they say what that
+# Machine was doing. Who may sign in is not — a list that is quietly out of
+# date is the kind of thing an owner acts on, so an unreachable member is an
+# honest gap. Row 19c2 saw `office` on this very box while it answered; with
+# it stopped, that name must be nowhere in the answer.
+_cg21 = login(G, "sixpassword")
+st_u21, body_u21 = sess(G, _cg21, "GET", "/api/cluster/users")
+grey_u = next((r for r in body_u21.get("members", []) if r["id"] == "2222"), {})
+rc_u21, out_u21 = G.cli("users")
+check("21b a grey box's sign-ins are NOT shown stale: the member that stopped answering is an honest gap, its list is not served from the answer it last gave, and the verb says so",
+      st_u21 == 200 and grey_u.get("users") is None and grey_u.get("error")
+      and "office" not in json.dumps(body_u21)
+      and rc_u21 == 0 and "office" not in out_u21,
+      repr((st_u21, grey_u, rc_u21, out_u21[-200:])))
 H = Box("2222", "seven-c"); H.claim("sevenpassword")
 G.cli("remove", "2222"); G.see(H); G.cli("add", H.addr, stdin="sevenpassword\n"); G.see(H); H.see(G)
 

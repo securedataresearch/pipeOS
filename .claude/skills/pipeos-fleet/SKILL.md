@@ -42,6 +42,7 @@ pipeos-selfcheck --live  # the hourly live verdict (#290): same rows minus the h
 pipebox-card verify      # derived files match the card? deploy-overlay regenerates them after a template change (#281); FAIL otherwise -> pipebox-card generate; pipeos save
 pipeos cluster status    # this Machine's cluster identity (its CA) + member list (#222); `pipeos cluster call two GET /api/cluster` is a box-to-box call over mutual TLS
 pipeos cluster adopt ID  # (this box's password on stdin) claim an unclaimed Machine + add it in one step (#213); join MEMBER from the new box
+pipeos cluster users     # every member's sign-ins side by side, read-only (#215): who exists and at what level, never a hash or a key; editing stays on each Machine's own dashboard
 pipeos cluster page      # the pilot's one page (#212): every member's two lines + one verdict; reboot-all [--yes]; services KEY on|off [ID...]
 pipeos cluster add two   # (two's admin password on stdin) marks two out of the lobby into this cluster; remove ID|NAME (a4e0, pipeos-a4e0 or two) / sync push the list (#211)
 pipeos cluster agents    # every member's agents and what each last did; start NAME --on two|idlest [--prompt TEXT [--cron SPEC|manual] [--cap N]] places one ON a member (no --cron = manual: runs now, then only when started) — it lives there, a grey box's agents are grey (#300)

@@ -253,8 +253,8 @@ REBOOT_CMD = os.environ.get("PIPEOS_REBOOT_CMD", "reboot")
 # docs/cluster.md §3/§12), and what this Machine's OWN certificate may add
 # (its operator verbs call their own listener). Everything else needs a
 # session — a certificate is not an owner (the #314 review).
-PEER_GETS = ("/api/cluster", "/api/cluster/summary")
-SELF_GETS = ("/api/cluster/page",)
+PEER_GETS = ("/api/cluster", "/api/cluster/summary", "/api/cluster/users-here")
+SELF_GETS = ("/api/cluster/page", "/api/cluster/users")
 PEER_POSTS = ("/api/cluster/members", "/api/reboot", "/api/services", "/api/agent/start", "/api/name",
               "/api/secrets/have", "/api/secrets/receive",
               "/api/secrets/requests/offer", "/api/secrets/requests/close")
@@ -285,6 +285,16 @@ def _lock_held(path):
                 return True
     except OSError:
         return False
+
+
+def users_here():
+    """Who can sign in to THIS Machine, with nothing a reader could sign in
+    WITH: no hash, no key, no terminal port. The shape a member is handed and
+    the shape the cluster's Users view shows."""
+    return [{"name": u.get("name"), "role": u.get("role") or "user",
+             "disabled": bool(u.get("disabled")), "unix": bool(u.get("unix")),
+             "share": bool(u.get("share")), "terminal": bool(u.get("terminal"))}
+            for u in read_users()]
 
 
 def box_summary():
@@ -2026,6 +2036,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/cluster": self.api_cluster_get,
             "/api/cluster/summary": self.api_cluster_summary,
             "/api/cluster/page": self.api_cluster_page,
+            "/api/cluster/users": self.api_cluster_users,
+            "/api/cluster/users-here": self.api_cluster_users_here,
             "/api/lan": self.api_lan,
             "/api/updates": self.api_updates,
         }
@@ -2901,6 +2913,38 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_cluster_summary(self):
         self.send(200, box_summary())
+
+    def api_cluster_users_here(self):
+        """This Machine's sign-ins, for the cluster's Users view (#215, §5).
+
+        WHAT A MEMBER GETS: who can sign in here and at what level — a name,
+        a role, whether the account is disabled, whether it has a unix login
+        and a browser terminal. WHAT IT NEVER GETS: the password hash, any
+        key material, the terminal's port. Reading who exists is what makes
+        the cluster-wide list possible; it is not a way to become them.
+
+        Nothing about this endpoint makes a member an owner: editing stays
+        per box, on that box's own dashboard, exactly as §5 says."""
+        if self._peer_guard() is None:
+            return
+        self.send(200, {"users": users_here()})
+
+    def api_cluster_users(self):
+        """Every member's sign-ins, side by side (#215). The owner's session
+        or this Machine's own certificate (`pipeos cluster users` asks its own
+        listener, as the page verb does) — and nothing else: SELF_GETS keeps
+        ANOTHER member's certificate out, so a member may read one box's list
+        through the endpoint above but never gather the cluster's.
+
+        ADMIN, not merely signed in. The reader gate on GET only asks for a
+        session, and `api_users` puts this Machine's own roster behind
+        `_user_admin_guard` — so without this a viewer could read through the
+        cluster what they may not read on the box they are signed in to, and
+        every other member's besides. Hiding the nav item is UI, not a fence.
+        `allow_self` keeps the verb's own-certificate path open."""
+        if self._peer_guard(allow_self=True) is None:
+            return
+        self.send(200, cluster.users(users_here))
 
     def api_cluster_page(self):
         """The pilot's one page (#212): every member's two lines and one
