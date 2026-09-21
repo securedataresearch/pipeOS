@@ -328,6 +328,22 @@ merge_apkovl() {   # IDENTITY GENERIC OUT
     mkdir -p "$_t/a" "$_t/b"
     tar -xzf "$1" -C "$_t/a" 2>/dev/null || { say "cannot extract the identity apkovl" >&2; rm -rf "$_t"; return 1; }
     tar -xzf "$2" -C "$_t/b" 2>/dev/null || { say "cannot extract the image apkovl" >&2; rm -rf "$_t"; return 1; }
+    # A NEVER path inside a DEPLOY_PATHS DIRECTORY has to be carried across the
+    # sweep, because the sweep removes the directory whole. Two of the three
+    # NEVER entries (etc/pipeos, root/.pipe) survived only because no
+    # DEPLOY_PATHS entry covers them; the third,
+    # etc/profile.d/10-pipebox-env.sh, sits inside etc/profile.d and was
+    # therefore replaced by the BUILD WORKSTATION's copy of a file generated
+    # from the box's own card. `pipebox-card verify` then reports "hand-edited
+    # since generation" and selfcheck goes CRITICAL — on every box, on the
+    # release it takes, with nothing the owner can do (pipeOS#341, seen on zero
+    # 2026-09-20). $NEVER was declared here and read by nothing.
+    mkdir -p "$_t/keep"
+    for _n in $NEVER; do
+        [ -e "$_t/a/$_n" ] || continue
+        mkdir -p "$_t/keep/$(dirname "$_n")"
+        cp -a "$_t/a/$_n" "$_t/keep/$_n" || { say "cannot stash $_n" >&2; rm -rf "$_t"; return 1; }
+    done
     echo "$DEPLOY_PATHS" | while read -r _p; do
         [ -n "$_p" ] || continue
         rm -rf "${_t:?}/a/$_p"
@@ -336,7 +352,18 @@ merge_apkovl() {   # IDENTITY GENERIC OUT
             cp -a "$_t/b/$_p" "$_t/a/$_p"
         fi
     done
-    # NEVER paths stay the box's — except the stamp, which is the image's.
+    # NEVER paths stay the box's. One the box does not have is not restored:
+    # a box that has never generated keeps the image's copy, which is the right
+    # answer for one nobody has claimed yet.
+    for _n in $NEVER; do
+        [ -e "$_t/keep/$_n" ] || continue
+        rm -rf "${_t:?}/a/$_n"
+        mkdir -p "$_t/a/$(dirname "$_n")"
+        cp -a "$_t/keep/$_n" "$_t/a/$_n" || { say "cannot restore $_n" >&2; rm -rf "$_t"; return 1; }
+    done
+    rm -rf "$_t/keep"
+    # ... except the stamp, which is the image's: it describes the overlay this
+    # merge installs.
     if [ -f "$_t/b/etc/pipeos/.overlay-stamp" ]; then
         mkdir -p "$_t/a/etc/pipeos"
         cp -a "$_t/b/etc/pipeos/.overlay-stamp" "$_t/a/etc/pipeos/.overlay-stamp"
@@ -347,6 +374,83 @@ merge_apkovl() {   # IDENTITY GENERIC OUT
         mkdir -p "$_t/a/etc/apk"
         cat "$_t/a/etc/apk/world" "$_t/b/etc/apk/world" 2>/dev/null | grep -v '^$' | sort -u \
             > "$_t/a/world.merged" && mv "$_t/a/world.merged" "$_t/a/etc/apk/world"
+    fi
+    # The card outputs, regenerated in the tree the box is about to boot.
+    #
+    # This is the merge's other half of pipeOS#341, and the only place the two
+    # halves of the answer meet: the box's own card (kept, above) and the
+    # IMAGE's templates and generator (installed by the sweep a moment ago).
+    # `deploy-overlay` has done this since #281, but it is the operator's tool
+    # — a box that only ever takes releases, which is every customer box, had
+    # nothing that regenerated an output after a template changed. Old outputs
+    # beside new templates are the same "model card divergence" CRITICAL,
+    # reached from the other direction.
+    #
+    # Exit codes are pipebox-card's stable API: 0 match, 1 diverge, 2 cannot
+    # tell. One difference from deploy-overlay's card_outputs_step: no service
+    # restarts, because nothing in this tree is running — the box reboots into
+    # it.
+    #
+    # A FAILURE HERE FAILS THE MERGE. The first draft carried on instead, on
+    # the reasoning that the p1 was already written and a bricked update is
+    # worse than a divergence. That reasoning was false: this runs at line
+    # ~598, before the `apk --simulate` gate, before the typed confirmation
+    # and long before the dd. Nothing has been written and nobody has said
+    # yes, so aborting costs the box exactly nothing — and carrying on would
+    # reflash it into a tree already known to report the divergence this
+    # function exists to prevent.
+    _pbc="$_t/a/usr/local/bin/pipebox-card"
+    _pbcard="$_t/a/etc/pipeos/card.conf"
+    _pbtmpl="$_t/a/usr/local/share/pipeos/card"
+    if [ -f "$_pbc" ] && [ -r "$_pbcard" ] && [ -d "$_pbtmpl" ]; then
+        _vout=$(sh "$_pbc" verify --card "$_pbcard" --root "$_t/a" --templates "$_pbtmpl" 2>&1)
+        case $? in
+            0)  : ;;
+            1)  # The box's network stanza is stashed across the regeneration.
+                # etc/network/interfaces is a card output, so a diverged one
+                # would be rewritten here — unattended, on a box that reboots
+                # straight into it, with nobody at the console. A Machine whose
+                # address was adjusted by hand comes back on the card's stanza,
+                # headless, possibly at another address, and that is how a box
+                # does not come up at all (#322 is one of those). Everything
+                # else regenerates; the network waits for an operator.
+                _ifc="$_t/a/etc/network/interfaces"
+                _ifsave=""
+                if [ -f "$_ifc" ]; then
+                    _ifsave="$_t/interfaces.box"
+                    cp -a "$_ifc" "$_ifsave"
+                fi
+                if ! _gen=$(sh "$_pbc" generate --card "$_pbcard" --root "$_t/a" \
+                                --templates "$_pbtmpl" 2>&1); then
+                    say "card outputs: pipebox-card generate FAILED against this box's card — refusing the merge, the box is untouched:" >&2
+                    printf '%s\n' "$_gen" >&2
+                    log "card outputs: generate failed during the merge — nothing written: $(printf '%s' "$_gen" | tr '\n' ' ')"
+                    rm -rf "$_t"
+                    return 1
+                fi
+                if [ -n "$_ifsave" ] && ! cmp -s "$_ifsave" "$_ifc"; then
+                    cp -a "$_ifsave" "$_ifc"
+                    say "card outputs: regenerated, EXCEPT etc/network/interfaces — it differs from the card, and changing a Machine's network unattended is how a box does not come back. Run 'pipebox-card generate' with someone at the console."
+                    log "card outputs: regenerated; etc/network/interfaces left as the box had it (differs from the card)"
+                else
+                    say "card outputs: regenerated from this box's card against the image's templates"
+                    log "card outputs: regenerated during the merge from $_pbcard"
+                fi ;;
+            *)  # "cannot tell" is two different things and only one is boring:
+                # no card or no stamp (a box from before the card path, #313 —
+                # leave it alone), or pipebox-card's die(), which also exits 2
+                # and covers the image's NEWER generator rejecting this box's
+                # card. That second one would otherwise be silent on every box
+                # at once, which is exactly how a fleet-wide release goes wrong
+                # quietly.
+                case "$_vout" in
+                    *"not card-provisioned"*|*"no stamp"*)
+                        : ;;
+                    *)  say "card outputs: pipebox-card could not read this box's card — outputs left as they are, and this Machine will report a card divergence until it is looked at:" >&2
+                        printf '%s\n' "$_vout" >&2
+                        log "card outputs: verify could not tell (card rejected?): $(printf '%s' "$_vout" | tr '\n' ' ')" ;;
+                esac ;;
+        esac
     fi
     # busybox tar: no --owner/--group (GNU-isms — the first live run died on
     # them). Run as root over root-owned trees, --numeric-owner is enough.
