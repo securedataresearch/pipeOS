@@ -26,7 +26,7 @@ Done. The same page is your dashboard from now on.
 
 - **Talk to it**: the chat panel on the dashboard.
 - **Check on it**: the dashboard shows health, disk, and every log.
-- **Updates**: automatic, daily, verified — the dashboard shows the state.
+- **Updates**: automatic, hourly, verified — the dashboard shows the state.
 - **Something's weird?** Dashboard → Maintenance → **Repair remote
   access**, and if that doesn't do it, **Reboot the box** — a reboot
   restores the last saved state and is safe to do any time.

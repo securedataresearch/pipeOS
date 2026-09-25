@@ -76,8 +76,8 @@ Two more toggles ride the same services model:
   (`ssh -R`) OUT to a support relay (`/etc/pipeos/support.conf`; the key is
   made on first enable and `GET /api/support` shows it, #159); refuses to
   start unconfigured, off by default, one switch for the customer.
-- **Updates**: silent daily self-update once `UPDATE_RELEASE_URL` points at a
-  published release (`make release` → GitHub Release with SHA256SUMS +
+- **Updates**: silent hourly self-update once `UPDATE_RELEASE_URL` points at a
+  published release (`make release` → GitHub Release with pipeos-usb.img.xz.sha256 +
   pipeos-repo.tar.gz); applies through the existing verify → atomic swap →
   save → verify-or-rollback path, and selfcheck warns when the update path
   is configured but stale or erroring.

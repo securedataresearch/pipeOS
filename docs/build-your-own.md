@@ -58,8 +58,9 @@ Nothing in a self-built pipeOS phones home to us or trusts us:
   `pipeos-repo.tar.gz`, and your fleet updates from you. Updates apply
   through a verified, atomic, self-rolling-back path either way.
 - **Support relay**: the "Vendor support access" toggle dials out only to
-  the relay in `/etc/pipeos/support.conf` — which ships empty. Your boxes,
-  your relay or none.
+  the relay in `/etc/pipeos/support.conf`, which ships pointed at
+  `tunnel@relay.pipeterminal.com` with the toggle off. Blank it for your
+  own relay or none.
 - **pipe messaging**: entirely optional and off by default. A box without a
   pipe account is a fully functional appliance managed from its dashboard.
 

@@ -9,8 +9,8 @@ pipe 0.41.15 to 0.41.31.
 
 ## What it does
 
-`pipeos-selfupdate` (also `pipeos selfupdate`, and the daily cron
-`/etc/periodic/daily/pipeos-selfupdate`):
+`pipeos-selfupdate` (also `pipeos selfupdate`, and the hourly cron
+`/etc/periodic/hourly/pipeos-selfupdate`):
 
 1. Reads `UPDATE_RELEASE_URL` (the product path, shipped pointing at this
    repo's Releases) and `UPDATE_URL` (the pilot/fleet path) from
@@ -18,7 +18,7 @@ pipe 0.41.15 to 0.41.31.
    = disabled**.
 2. Probes for change cheaply — release mode hashes `SHA256SUMS`, URL mode
    the remote `APKINDEX.tar.gz` — and **exits early if it matches the last
-   applied digest** (`/data/.pipeos/selfupdate.applied`), so the daily run
+   applied digest** (`/data/.pipeos/selfupdate.applied`), so the hourly run
    is nearly free on a current box.
 3. On change: fetches the repo (release mode: `pipeos-repo.tar.gz`, checked
    against `SHA256SUMS`; URL mode: each apk) into ext4 staging and runs
@@ -40,7 +40,7 @@ a wrong `UPDATE_URL` does is fail verification and leave the box untouched.
 
 ## The origin — `UPDATE_RELEASE_URL`
 
-The shipped default (owner decision, 2026-08-30: silent daily self-update
+The shipped default (owner decision, 2026-08-30: silent hourly self-update
 is the client posture):
 
     # /etc/pipeos/selfupdate.conf
@@ -51,7 +51,7 @@ A release is a flat asset directory: `SHA256SUMS`, `pipeos-repo.tar.gz`
 (the signed repo, `APKINDEX.tar.gz` at its root) and, when the image is
 fresh, `pipeos-usb.img.xz` — published by `make release`
 (`scripts/80-publish-release.sh`, run on the build workstation because the
-signing key never enters CI). `SHA256SUMS` is the change probe; the daily
+signing key never enters CI). `SHA256SUMS` is the change probe; the hourly
 run on a current box fetches only that. The same key is what `pipeos flash`
 and the dashboard's Live disk row read, so one origin answers both "is
 there a newer package set" and "is there a newer image" — but the *image*
@@ -67,7 +67,7 @@ errored; a dead origin is loud, never silent.
 For a fleet fed from a dev box: point `UPDATE_URL` at a signed repo (the
 tree `30-build-apks.sh` builds under `out/repo/pipeos`, so
 `<UPDATE_URL>/x86_64/` holds the index and apks), blank the release URL,
-`pipeos save`. The daily cron takes it from there, or run `pipeos
+`pipeos save`. The hourly cron takes it from there, or run `pipeos
 selfupdate` once to apply immediately.
 
     # /etc/pipeos/selfupdate.conf

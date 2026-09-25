@@ -24,7 +24,7 @@ whole p1, kernel and all.
 `pipeos flash check` compares the running image with the latest release at
 `UPDATE_RELEASE_URL` (the same key self-update reads). `pipeos flash fetch`
 downloads `pipeos-usb.img.xz` into `/data/.pipeos/flash` and verifies it
-against the release's `SHA256SUMS` (~2 GB down, ~6 GB free needed for the
+against the release's `pipeos-usb.img.xz.sha256` (~2 GB down, ~6 GB free needed for the
 decompressed image). `pipeos flash apply` then, in order, and aborting with
 nothing written at any failure:
 
@@ -181,8 +181,8 @@ media; it is the last row of every drill.
 ## The generic image, from any machine
 
     curl -fLO https://github.com/securedataresearch/pipeOS/releases/latest/download/pipeos-usb.img.xz
-    curl -fLO https://github.com/securedataresearch/pipeOS/releases/latest/download/SHA256SUMS
-    sha256sum -c --ignore-missing SHA256SUMS
+    curl -fLO https://github.com/securedataresearch/pipeOS/releases/latest/download/pipeos-usb.img.xz.sha256
+    sha256sum -c pipeos-usb.img.xz.sha256
     xz -dc pipeos-usb.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync
 
 In this repo, `make flash DEV=/dev/sdX` runs `scripts/70-flash.sh`, which
