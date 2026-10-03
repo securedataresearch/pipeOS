@@ -1,5 +1,7 @@
 #!/bin/sh
-# Daily self-update. No-op (exit 0, silent) when UPDATE_URL is unset, so this
-# is safe to ship enabled: an unconfigured box simply never updates. All the
-# safety — verify, atomic swap, rollback, persistence guard — is in the script.
-exec /usr/local/bin/pipeos-selfupdate
+# Daily self-update, ticked hourly: --scheduled checks at most once every
+# UPDATE_INTERVAL_HOURS (default 24), and a held run (a job or terminal live,
+# the cluster's turn) retries on the next tick instead of the next day.
+# No-op (exit 0, silent) when no origin is configured. All the safety —
+# verify, atomic swap, rollback, persistence guard — is in the script.
+exec /usr/local/bin/pipeos-selfupdate --scheduled

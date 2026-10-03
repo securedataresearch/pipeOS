@@ -1204,7 +1204,7 @@ async function dashboard() {
           <p class="note" id="mmsg" hidden></p>
           <div id="updrow" style="margin-top:1rem">
             <span class="pill" id="updstate">updates: checking…</span>
-            <label class="switch" title="A newer release image is applied in place and the box reboots — hourly check, held while a job or a terminal is live"><input type="checkbox" id="updauto"><span></span></label> <span class="note">update automatically</span> <span class="note" id="updlast"></span>
+            <label class="switch" title="A newer release image is applied in place and the box reboots — daily check, held while a job or a terminal is live"><input type="checkbox" id="updauto"><span></span></label> <span class="note">update automatically</span> <span class="note" id="updlast"></span>
             <button id="updnow" class="ghost" hidden>Update now</button>
           </div>
           <div id="flashrow" style="margin-top:1rem">

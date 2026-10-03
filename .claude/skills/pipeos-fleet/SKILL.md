@@ -88,7 +88,7 @@ pipeos secrets phrase [--ack]                   # the vault's pending recovery p
 pipeos secrets request NAME [WHY]               # ask the cluster for a secret this box lacks (the agent may run this); approve once, on a Machine that HOLDS it → Secrets (#301)
 printf '%s' PW | pipeos assistant password      # -> vault assistant_pass, pipeos-assistant restarted, saved
 pipeos watchdog kernel|off|status               # the hardware watchdog (card WATCHDOG, default kernel, 60 s): regenerated, saved, restarted now
-pipeos selfupdate image on|off|status           # automatic image updates (default on): hourly check, apply in place, reboot — held while a job/terminal is live
+pipeos selfupdate image on|off|status           # automatic image updates (default on): daily check, apply in place, reboot — held while a job/terminal is live (a held check retries hourly); `pipeos selfupdate` checks now
 printf '%s' PW | pipeos nas account NAME        # share-only account (no sign-in, no shell) + its SMB password; tick it on a share in Files → Network storage
 pipeos vault status|list|get|set|export         # the sealed store; set reads stdin: printf '%s' V | pipeos vault set NAME [CONSUMER]
 pipeos vault share NAME two | unshare NAME two   # copy a text secret to a member (it saves it as a copy from this box); unshare only forgets — the single exception to no-propagation, on the owner's tap (#301)
