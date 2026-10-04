@@ -85,10 +85,20 @@ UPDATE_INTERVAL_HOURS=""
 # Only an explicit IMAGE_UPDATE=off turns it off.
 [ "${IMAGE_UPDATE:-}" = off ] || IMAGE_UPDATE=auto
 case "${UPDATE_INTERVAL_HOURS:-}" in ""|*[!0-9]*|0) UPDATE_INTERVAL_HOURS=24 ;; esac
-# set by every hold below: a held run is not a verdict, so the next hourly
-# tick retries instead of the next day's (see ONCE A DAY above)
+# set by every TRANSIENT hold below: a held run is not a verdict, so the next
+# hourly tick retries instead of the next day's (see ONCE A DAY above). Only
+# what clears by itself within hours holds — a job or terminal live, the
+# cluster's turn, GitHub's API not answering. A refusal that will say the
+# same thing every hour (an unclaimed box, a mirror origin with no tag to
+# read, a full /data) is a verdict: retried tomorrow, not hammered hourly
+# (#350 review).
 HELD=no
-mark_checked() { [ "$HELD" = yes ] || date -u +%s > "$CHECKED" 2>/dev/null || true; }
+mark_checked() {
+    # a packages-only run (Update now) never looked at the image: it is not
+    # the day's check, or a new image would wait a further day (#350 review)
+    [ "$PACKAGES_ONLY" = yes ] && return 0
+    [ "$HELD" = yes ] || date -u +%s > "$CHECKED" 2>/dev/null || true
+}
 
 log()  { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG" 2>/dev/null; }
 say()  { echo "pipeos-selfupdate: $*"; }
@@ -156,7 +166,10 @@ fi
 if [ "$SCHEDULED" = yes ] && [ -f "$CHECKED" ]; then
     _last=$(cat "$CHECKED" 2>/dev/null)
     case "$_last" in ''|*[!0-9]*) _last=0 ;; esac
-    [ $(( $(date -u +%s) - _last )) -lt $(( UPDATE_INTERVAL_HOURS * 3600 )) ] && exit 0
+    _age=$(( $(date -u +%s) - _last ))
+    # a stamp in the future (the clock was wrong when it was written, NTP
+    # fixed it since) is due, not "not yet" until that future passes
+    [ "$_age" -ge 0 ] && [ "$_age" -lt $(( UPDATE_INTERVAL_HOURS * 3600 )) ] && exit 0
 fi
 
 # fetch URL OUTFILE — wget with the failure mode NAMED (#116: "source down?"
@@ -219,13 +232,14 @@ image_update() {
     # flashed box has no flash.applied stamp and that is not "stale". After a
     # successful apply the running commit becomes the release's, so next hour
     # this same test holds: self-limiting, no digest bookkeeping needed.
-    _tag=""
+    _tag=""; _asked_api=no
     if [ -n "$RELEASE_COMMIT" ]; then
         _sha=$RELEASE_COMMIT; _tag="test-$RELEASE_COMMIT"
     else
         case "$UPDATE_RELEASE_URL" in
             https://github.com/*/releases/latest/download*)
                 _repo=${UPDATE_RELEASE_URL#https://github.com/}; _repo=${_repo%%/releases/*}
+                _asked_api=yes
                 _tag=$(wget -q -T 20 -O - "https://api.github.com/repos/$_repo/releases/latest" 2>/dev/null \
                        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
                 _sha=${_tag##*-} ;;
@@ -233,7 +247,10 @@ image_update() {
         esac
     fi
     if [ -z "$_sha" ] || [ -z "$_running" ]; then
-        HELD=yes; log "image: cannot determine the release/running commit — holding (running=${_running:-?} tag=${_tag:-?})"; return 1
+        # only GitHub's API not answering is transient; a non-GitHub origin
+        # or an image.txt with no commit= answers the same every hour
+        [ "$_asked_api" = yes ] && [ -z "$_tag" ] && [ -n "$_running" ] && HELD=yes
+        log "image: cannot determine the release/running commit — holding (running=${_running:-?} tag=${_tag:-?})"; return 1
     fi
     case "$_running" in "$_sha"*) log "image: up to date ($_tag)"; return 1 ;; esac
     # hold while someone is using the box (a scheduled run, or a real login /
@@ -269,13 +286,13 @@ image_update() {
     # no reason to reboot and clear it (#337 review). The successful path
     # ends in a reboot, which clears /run anyway.
     trap 'rm -f "$UPDATING_MARK"' EXIT INT TERM HUP
-    PIPEOS_FLASH_CALLER=selfupdate $FLASH_BIN fetch >/dev/null 2>&1 || { HELD=yes; rm -f "$UPDATING_MARK"; log "ERROR image: fetch failed"; return 1; }
+    PIPEOS_FLASH_CALLER=selfupdate $FLASH_BIN fetch >/dev/null 2>&1 || { rm -f "$UPDATING_MARK"; log "ERROR image: fetch failed"; return 1; }
     say "image: applying in place"
     # the caller seam lets flash apply run while WE hold the self-update lock;
     # without it flash refuses ("a self-update is running") and nothing ever
     # applies (pipeOS#275 review)
     if ! PIPEOS_FLASH_CALLER=selfupdate $FLASH_BIN apply --yes >/dev/null 2>&1; then
-        HELD=yes; rm -f "$UPDATING_MARK"
+        rm -f "$UPDATING_MARK"
         log "ERROR image: apply failed — box unchanged (pipeos-flash aborts before the write on any refusal)"; return 1
     fi
     echo "${_tag:-$_rd} $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$IMAGE_UPDATED"

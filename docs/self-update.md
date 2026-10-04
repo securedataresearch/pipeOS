@@ -16,9 +16,12 @@ pipe 0.41.15 to 0.41.31.
    nothing until `UPDATE_INTERVAL_HOURS` (selfupdate.conf, default 24) have
    passed since the last check that reached a verdict
    (`/data/.pipeos/selfupdate.checked`). A **held** run — a job or a
-   terminal live, the cluster's turn order, the origin not answering, a
-   failed fetch — is not a verdict: the clock stays put and the next hourly
-   tick retries, so a hold costs an hour, not a day. Sam, 2026-10-03: "every
+   terminal live, the cluster's turn order, GitHub's API not answering —
+   is not a verdict: the clock stays put and the next hourly tick retries,
+   so a hold costs an hour, not a day. A refusal that would repeat every
+   hour (an unclaimed box, a mirror origin, a failed fetch or apply) is a
+   verdict and is retried tomorrow. A packages-only run (Update now) never
+   stamps the clock: it did not look at the image. Sam, 2026-10-03: "every
    hour is way too often". A hand run (`pipeos selfupdate`, the dashboard's
    Update now) ignores the clock.
 

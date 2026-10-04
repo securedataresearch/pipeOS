@@ -188,6 +188,19 @@ with tempfile.TemporaryDirectory() as base:
     rc, out, m = run(d(), "abc123new", checked_ago_h=1)
     check("a hand run (no --scheduled) ignores the clock: checked 1 h ago and it still applies",
           "apply" in m["flash"], "flash=%r" % m["flash"])
+    # the #350 review: a refusal that repeats every hour is a verdict, not a hold
+    rc, out, m = run(d(), "", args=("--scheduled",))
+    check("--scheduled, a non-GitHub origin (no tag to read) -> a verdict: stamped, so it is not re-asked every hour for ever",
+          m["stamped"] and "apply" not in m["flash"], "stamped=%s" % m["stamped"])
+    rc, out, m = run(d(), "abc123new", args=("--scheduled",), flash_apply_rc=1)
+    check("--scheduled, apply refused (an unclaimed box, a full /data) -> a verdict: stamped, retried tomorrow, not hourly",
+          m["stamped"] and "apply" in m["flash"] and not m["reboot"], "stamped=%s flash=%r" % (m["stamped"], m["flash"]))
+    rc, out, m = run(d(), "abc123new", args=("--packages",))
+    check("--packages (Update now) never looked at the image -> NOT stamped, so a new image is still checked within the hour",
+          not m["stamped"] and "apply" not in m["flash"], "stamped=%s flash=%r" % (m["stamped"], m["flash"]))
+    rc, out, m = run(d(), "abc123new", args=("--scheduled",), checked_ago_h=-48)
+    check("--scheduled, a stamp in the FUTURE (the clock was wrong when it was written) -> due, the check runs",
+          "apply" in m["flash"], "flash=%r" % m["flash"])
     hook = open(os.path.join(REPO, "overlay/etc/periodic/hourly/pipeos-selfupdate")).read()
     check("the hourly cron hook passes --scheduled (without it every tick is a full check — the hourly cadence Sam turned down)",
           "pipeos-selfupdate --scheduled" in hook, hook[-120:])
