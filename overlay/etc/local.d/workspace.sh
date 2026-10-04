@@ -5,7 +5,8 @@
 # Device enumeration can lag boot (USB especially) — poll for the label
 # instead of probing once. Never block boot on a missing disk; the daemons'
 # start_pre waits too and the boot selfcheck reports the miss.
-# Seams (the probe, never production): PIPEOS_WORKSPACE_DATA, _NO_MOUNT.
+# Seams (the probe, never production): PIPEOS_WORKSPACE_DATA, _NO_MOUNT,
+# _CLAUDE (the agent's dir; set, it runs the link block without a mount).
 #
 # The volume is /data (pipeOS#219, #330, docs/cluster.md §8). One name, and
 # the name it replaced is not referenced anywhere in this tree: a second name
@@ -42,7 +43,21 @@ mkdir -p "$DATA"/repos "$DATA"/logs "$DATA"/cache "$DATA"/claude "$DATA"/pipebox
 # first run can create a real tmpfs directory there — a box born migrated
 # never loses a transcript. A real directory already present is a pre-fix box
 # mid-life: leave it for the copy-first operator migration; selfcheck warns.
-if [ -z "${PIPEOS_WORKSPACE_NO_MOUNT:-}" ] && [ ! -e /root/.claude/projects ] && [ ! -L /root/.claude/projects ]; then
-	mkdir -p "$DATA"/claude/projects /root/.claude
-	ln -s "$DATA"/claude/projects /root/.claude/projects
+CLAUDE_DIR=${PIPEOS_WORKSPACE_CLAUDE:-/root/.claude}
+if [ -z "${PIPEOS_WORKSPACE_NO_MOUNT:-}" ] || [ -n "${PIPEOS_WORKSPACE_CLAUDE:-}" ]; then
+	# A link whose target is GONE is repaired, not left: the link rides the
+	# apkovl, so a box saved under an older image comes back pointing at
+	# that image's volume path, and an image that moved the volume left the
+	# agent's memory unreachable (zero, 2026-10-04, the first box to take
+	# the /data release). Its contents were on this volume all along; only
+	# the path in the link was stale. A link that resolves, and a real
+	# directory, are never touched here.
+	if [ -L "$CLAUDE_DIR"/projects ] && [ ! -e "$CLAUDE_DIR"/projects ]; then
+		logger -t workspace "agent memory link pointed at a missing path ($(readlink "$CLAUDE_DIR"/projects)); re-pointed at $DATA/claude/projects"
+		rm -f "$CLAUDE_DIR"/projects
+	fi
+	if [ ! -e "$CLAUDE_DIR"/projects ] && [ ! -L "$CLAUDE_DIR"/projects ]; then
+		mkdir -p "$DATA"/claude/projects "$CLAUDE_DIR"
+		ln -s "$DATA"/claude/projects "$CLAUDE_DIR"/projects
+	fi
 fi

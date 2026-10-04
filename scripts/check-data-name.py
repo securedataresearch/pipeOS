@@ -71,6 +71,45 @@ check("6 a deploy that installs a new workspace.sh runs it (idempotent, so no rc
       'grep -qxF "etc/local.d/workspace.sh" "$installed_rels"' in dep and 'sh "$ROOT/etc/local.d/workspace.sh" 2>&1' in dep
       and "rc-service pipeos-workspace" not in dep and '_ws_out' in dep, "")
 
+# 6b. the agent memory link (zero, 2026-10-04): the link rides the apkovl, so
+# a box saved under an older image boots pointing at a path that is gone.
+def run_link(vol, claude):
+    env = dict(os.environ, PIPEOS_WORKSPACE_DATA=vol, PIPEOS_WORKSPACE_NO_MOUNT="1",
+               PIPEOS_WORKSPACE_CLAUDE=claude)
+    return subprocess.run(["sh", WS], capture_output=True, text=True, env=env).returncode
+
+d, vol = case()
+cl = os.path.join(d, "claude"); os.makedirs(cl)
+os.makedirs(os.path.join(vol, "claude", "projects"))
+open(os.path.join(vol, "claude", "projects", "memory.md"), "w").write("kept")
+os.symlink(os.path.join(d, "gone", "claude", "projects"), os.path.join(cl, "projects"))
+run_link(vol, cl)
+lk = os.path.join(cl, "projects")
+check("6b a memory link whose target is gone (saved under an older image) is re-pointed at the volume, and the memory there is reachable again",
+      os.path.islink(lk) and os.readlink(lk) == os.path.join(vol, "claude", "projects")
+      and os.path.exists(os.path.join(lk, "memory.md")), "link=%r" % (os.readlink(lk) if os.path.islink(lk) else None))
+
+d, vol = case()
+cl = os.path.join(d, "claude"); os.makedirs(cl)
+elsewhere = os.path.join(d, "elsewhere"); os.makedirs(elsewhere)
+os.symlink(elsewhere, os.path.join(cl, "projects"))
+run_link(vol, cl)
+check("6c a link that RESOLVES is left alone, wherever it points",
+      os.readlink(os.path.join(cl, "projects")) == elsewhere, os.readlink(os.path.join(cl, "projects")))
+
+d, vol = case()
+cl = os.path.join(d, "claude"); os.makedirs(os.path.join(cl, "projects"))
+open(os.path.join(cl, "projects", "t.jsonl"), "w").write("x")
+run_link(vol, cl)
+check("6d a real directory is left alone (the copy-first migration's, never a link-over that destroys it)",
+      not os.path.islink(os.path.join(cl, "projects")) and os.path.exists(os.path.join(cl, "projects", "t.jsonl")), "")
+
+d, vol = case()
+cl = os.path.join(d, "claude")
+run_link(vol, cl)
+check("6e a box with no link yet gets one at its first boot (pipeOS#80, unchanged)",
+      os.path.islink(os.path.join(cl, "projects")), "")
+
 # 7. selfcheck reports it — and calls helpers that EXIST. selfcheck has no root
 # seam, so a probe cannot run it; a row that greps for message text passes just
 # as happily when the line calls `warn` (no such function: the report gets
