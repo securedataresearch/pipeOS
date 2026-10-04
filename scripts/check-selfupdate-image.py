@@ -13,7 +13,10 @@ package step. Asserts:
   - the running commit already at the release -> hold, no apply;
   - an unknown release commit -> hold, never reflash on a guess;
   - a live session / a held schedule lock -> hold, no apply;
-  - the flash caller seam is what lets apply run under the self-update lock.
+  - the flash caller seam is what lets apply run under the self-update lock;
+  - --scheduled (the hourly cron hook) checks at most once a day: inside the
+    interval it does nothing; a verdict stamps the clock, a HOLD does not, so
+    a held box retries next hour; a hand run ignores the clock.
 Exit 0 if every row passes. Controls: none (the seams ARE the test; the
 apply-reached row is itself the control for the lock bug).
 """
@@ -30,12 +33,13 @@ RESULTS = []
 
 
 def check(desc, ok, detail=""):
-    RESULTS.append(ok)
+    RESULTS.append(bool(ok))
     print(("PASS " if ok else "FAIL ") + desc + ("" if ok else "  [%s]" % detail))
 
 
 def run(d, release_commit, running_commit="0000old", *, sched_locked=False,
-        who="", tmux_client=False, flash_apply_rc=0, real_flash=False, rolling_hold=""):
+        who="", tmux_client=False, flash_apply_rc=0, real_flash=False, rolling_hold="",
+        args=(), checked_ago_h=None):
     """One pipeos-selfupdate run, image step only. Returns (rc, output, marks)
     where marks is the dict of recorder files the fakes wrote."""
     bindir = os.path.join(d, "bin")
@@ -71,6 +75,10 @@ def run(d, release_commit, running_commit="0000old", *, sched_locked=False,
             s.bind(os.path.join(sockdir, "tmux.sock"))
         except OSError:
             pass
+    checked = os.path.join(d, "selfupdate.checked")
+    if checked_ago_h is not None:
+        import time
+        open(checked, "w").write("%d\n" % (time.time() - checked_ago_h * 3600))
     sched_lock = os.path.join(d, "schedule.lock")
     open(sched_lock, "w").close()
     # the cluster gate (#216): a stub that answers the way cluster.py's
@@ -97,6 +105,7 @@ def run(d, release_commit, running_commit="0000old", *, sched_locked=False,
                PIPEOS_SELFUPDATE_LOCK=os.path.join(d, "su.lock"),
                PIPEOS_UPDATING_MARK=os.path.join(d, "updating"),
                PIPEOS_SELFUPDATE_CLUSTER=cluster_stub,
+               PIPEOS_SELFUPDATE_CHECKED=checked,
                STUB_ROLLING_HOLD=rolling_hold,
                PIPEOS_SELFUPDATE_IMAGE_ONLY="1")
     os.makedirs(env["PIPEOS_PTS_DIR"], exist_ok=True)
@@ -109,14 +118,17 @@ def run(d, release_commit, running_commit="0000old", *, sched_locked=False,
         holder = subprocess.Popen(["sh", "-c", "exec 8>>%s; flock 8; sleep 5" % sched_lock])
         import time
         time.sleep(0.3)
-    p = subprocess.run(["sh", BIN], capture_output=True, text=True, env=env)
+    before = open(checked).read() if os.path.exists(checked) else None
+    p = subprocess.run(["sh", BIN, *args], capture_output=True, text=True, env=env)
     if sched_locked:
         holder.kill()
     def mark(name):
         f = os.path.join(marks, name)
         return open(f).read() if os.path.exists(f) else ""
     return p.returncode, p.stdout + p.stderr, {"flash": mark("flash.log"), "reboot": mark("reboot.log"),
-                                               "updated": os.path.exists(env["PIPEOS_IMAGE_UPDATED"])}
+                                               "updated": os.path.exists(env["PIPEOS_IMAGE_UPDATED"]),
+                                               "stamped": os.path.exists(checked)
+                                               and open(checked).read() != before}
 
 
 with tempfile.TemporaryDirectory() as base:
@@ -159,6 +171,39 @@ with tempfile.TemporaryDirectory() as base:
         rc, out, m = run(d6, "abc1234")          # the stub answers clear
         check("the cluster says clear -> the apply goes ahead (a standalone Machine, and every member whose turn it is, must not be held for ever)",
               bool("apply" in m["flash"] and m["reboot"]), "flash=%r" % m["flash"])
+
+    # once a day (Sam, 2026-10-03): the hook ticks hourly, the check is daily
+    rc, out, m = run(d(), "abc123new", args=("--scheduled",), checked_ago_h=1)
+    check("--scheduled inside the interval (checked 1 h ago) -> nothing at all: no fetch, no apply, rc 0",
+          rc == 0 and not m["flash"] and not m["reboot"] and not m["stamped"], "rc=%d flash=%r" % (rc, m["flash"]))
+    rc, out, m = run(d(), "abc123new", args=("--scheduled",), checked_ago_h=25)
+    check("--scheduled past the interval (checked 25 h ago) -> the check runs and a newer release applies",
+          "apply" in m["flash"] and m["reboot"], "flash=%r out=%s" % (m["flash"], out[-160:]))
+    rc, out, m = run(d(), "0000old", running_commit="0000old123", args=("--scheduled",))
+    check("--scheduled, never checked, up to date -> a verdict: the clock is stamped",
+          m["stamped"] and "apply" not in m["flash"], "stamped=%s" % m["stamped"])
+    rc, out, m = run(d(), "abc123new", args=("--scheduled",), checked_ago_h=25, who="root pts/0 2026")
+    check("--scheduled, HELD by a live login -> the clock is NOT stamped, so the next hourly tick retries (not tomorrow's)",
+          not m["stamped"] and "apply" not in m["flash"], "stamped=%s flash=%r" % (m["stamped"], m["flash"]))
+    rc, out, m = run(d(), "abc123new", checked_ago_h=1)
+    check("a hand run (no --scheduled) ignores the clock: checked 1 h ago and it still applies",
+          "apply" in m["flash"], "flash=%r" % m["flash"])
+    # the #350 review: a refusal that repeats every hour is a verdict, not a hold
+    rc, out, m = run(d(), "", args=("--scheduled",))
+    check("--scheduled, a non-GitHub origin (no tag to read) -> a verdict: stamped, so it is not re-asked every hour for ever",
+          m["stamped"] and "apply" not in m["flash"], "stamped=%s" % m["stamped"])
+    rc, out, m = run(d(), "abc123new", args=("--scheduled",), flash_apply_rc=1)
+    check("--scheduled, apply refused (an unclaimed box, a full /data) -> a verdict: stamped, retried tomorrow, not hourly",
+          m["stamped"] and "apply" in m["flash"] and not m["reboot"], "stamped=%s flash=%r" % (m["stamped"], m["flash"]))
+    rc, out, m = run(d(), "abc123new", args=("--packages",))
+    check("--packages (Update now) never looked at the image -> NOT stamped, so a new image is still checked within the hour",
+          not m["stamped"] and "apply" not in m["flash"], "stamped=%s flash=%r" % (m["stamped"], m["flash"]))
+    rc, out, m = run(d(), "abc123new", args=("--scheduled",), checked_ago_h=-48)
+    check("--scheduled, a stamp in the FUTURE (the clock was wrong when it was written) -> due, the check runs",
+          "apply" in m["flash"], "flash=%r" % m["flash"])
+    hook = open(os.path.join(REPO, "overlay/etc/periodic/hourly/pipeos-selfupdate")).read()
+    check("the hourly cron hook passes --scheduled (without it every tick is a full check — the hourly cadence Sam turned down)",
+          "pipeos-selfupdate --scheduled" in hook, hook[-120:])
 
     # the seam is load-bearing: pipeos-flash refuses the /run/pipeos-selfupdate.lock
     # UNLESS the caller says selfupdate, and pipeos-selfupdate sets it on apply.

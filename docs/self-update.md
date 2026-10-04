@@ -1,6 +1,6 @@
 # Self-updating pipeOS boxes
 
-A box updates its own OS from a canonical signed repo, on an hourly cron, with
+A box updates its own OS from a canonical signed repo, once a day, with
 the same safety the manual runbook (`docs/fleet-update-runbook.md`) uses —
 verified staging, atomic media swap, rollback, and a persistence guard.
 
@@ -9,8 +9,21 @@ pipe 0.41.15 to 0.41.31.
 
 ## What it does
 
-`pipeos-selfupdate` (also `pipeos selfupdate`, and the hourly cron
-`/etc/periodic/hourly/pipeos-selfupdate`):
+`pipeos-selfupdate` (also `pipeos selfupdate`, and the cron hook
+`/etc/periodic/hourly/pipeos-selfupdate`, which runs it `--scheduled`):
+
+0. **Once a day.** The hook ticks hourly, but a `--scheduled` run does
+   nothing until `UPDATE_INTERVAL_HOURS` (selfupdate.conf, default 24) have
+   passed since the last check that reached a verdict
+   (`/data/.pipeos/selfupdate.checked`). A **held** run — a job or a
+   terminal live, the cluster's turn order, GitHub's API not answering —
+   is not a verdict: the clock stays put and the next hourly tick retries,
+   so a hold costs an hour, not a day. A refusal that would repeat every
+   hour (an unclaimed box, a mirror origin, a failed fetch or apply) is a
+   verdict and is retried tomorrow. A packages-only run (Update now) never
+   stamps the clock: it did not look at the image. Sam, 2026-10-03: "every
+   hour is way too often". A hand run (`pipeos selfupdate`, the dashboard's
+   Update now) ignores the clock.
 
 1. Reads `UPDATE_RELEASE_URL` (the product path, shipped pointing at this
    repo's Releases) and `UPDATE_URL` (the pilot/fleet path) from
@@ -18,7 +31,7 @@ pipe 0.41.15 to 0.41.31.
    = disabled**.
 2. Probes for change cheaply — release mode hashes `SHA256SUMS`, URL mode
    the remote `APKINDEX.tar.gz` — and **exits early if it matches the last
-   applied digest** (`/data/.pipeos/selfupdate.applied`), so the hourly run
+   applied digest** (`/data/.pipeos/selfupdate.applied`), so the daily check
    is nearly free on a current box.
 3. On change: fetches the repo (release mode: `pipeos-repo.tar.gz`, checked
    against `SHA256SUMS`; URL mode: each apk) into ext4 staging and runs
@@ -40,8 +53,8 @@ a wrong `UPDATE_URL` does is fail verification and leave the box untouched.
 
 ## The origin — `UPDATE_RELEASE_URL`
 
-The shipped default (owner decision, 2026-08-30: silent hourly self-update
-is the client posture):
+The shipped default (owner decision, 2026-08-30: silent self-update is the
+client posture; daily since 2026-10-03):
 
     # /etc/pipeos/selfupdate.conf
     UPDATE_RELEASE_URL=https://github.com/securedataresearch/pipeOS/releases/latest/download
@@ -51,8 +64,8 @@ A release is a flat asset directory: `SHA256SUMS`, `pipeos-repo.tar.gz`
 (the signed repo, `APKINDEX.tar.gz` at its root) and, when the image is
 fresh, `pipeos-usb.img.xz` — published by `make release`
 (`scripts/80-publish-release.sh`, run on the build workstation because the
-signing key never enters CI). `SHA256SUMS` is the change probe; the hourly
-run on a current box fetches only that. The same key is what `pipeos flash`
+signing key never enters CI). `SHA256SUMS` is the change probe; the daily
+check on a current box fetches only that. The same key is what `pipeos flash`
 and the dashboard's Live disk row read, so one origin answers both "is
 there a newer package set" and "is there a newer image" — but the *image*
 is a flash, not an update; see `live-disk.md`.
@@ -67,7 +80,7 @@ errored; a dead origin is loud, never silent.
 For a fleet fed from a dev box: point `UPDATE_URL` at a signed repo (the
 tree `30-build-apks.sh` builds under `out/repo/pipeos`, so
 `<UPDATE_URL>/x86_64/` holds the index and apks), blank the release URL,
-`pipeos save`. The hourly cron takes it from there, or run `pipeos
+`pipeos save`. The daily check takes it from there, or run `pipeos
 selfupdate` once to apply immediately.
 
     # /etc/pipeos/selfupdate.conf
@@ -94,7 +107,7 @@ being done by hand.
 ## The image, too — automatic (#275)
 
 Sam, 2026-09-12: "any time there is an update boxes need to update themselves
-like windows" — reboot window: "frickin whenever". So the hourly run's first
+like windows" — reboot window: "frickin whenever". So the daily check's first
 step is the **image**: if the latest release's tag names a commit other than
 the one in the running `pipeos-image.txt` (or its image digest differs from
 what a flash last applied), the box `pipeos flash fetch`es it (verified),
