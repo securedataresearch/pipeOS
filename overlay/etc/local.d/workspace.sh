@@ -51,10 +51,21 @@ if [ -z "${PIPEOS_WORKSPACE_NO_MOUNT:-}" ] || [ -n "${PIPEOS_WORKSPACE_CLAUDE:-}
 	# agent's memory unreachable (zero, 2026-10-04, the first box to take
 	# the /data release). Its contents were on this volume all along; only
 	# the path in the link was stale. A link that resolves, and a real
-	# directory, are never touched here.
+	# directory, are never touched here — and neither is a dangling link to
+	# somewhere else (an operator's second disk not mounted yet): only a
+	# stale volume path, one ending in /claude/projects (#351 review).
+	# ln -sfn swaps it in one step and the notice follows success, so a
+	# failed mkdir leaves the old link rather than none (claude would then
+	# make a real tmpfs directory and lose that session). -s: deploy-overlay
+	# prints what this script says, and the boot CRIT this replaces is gone.
 	if [ -L "$CLAUDE_DIR"/projects ] && [ ! -e "$CLAUDE_DIR"/projects ]; then
-		logger -t workspace "agent memory link pointed at a missing path ($(readlink "$CLAUDE_DIR"/projects)); re-pointed at $DATA/claude/projects"
-		rm -f "$CLAUDE_DIR"/projects
+		_stale=$(readlink "$CLAUDE_DIR"/projects)
+		case "$_stale" in
+			*/claude/projects)
+				mkdir -p "$DATA"/claude/projects \
+					&& ln -sfn "$DATA"/claude/projects "$CLAUDE_DIR"/projects \
+					&& logger -s -t workspace "agent memory link pointed at a missing path ($_stale); re-pointed at $DATA/claude/projects" ;;
+		esac
 	fi
 	if [ ! -e "$CLAUDE_DIR"/projects ] && [ ! -L "$CLAUDE_DIR"/projects ]; then
 		mkdir -p "$DATA"/claude/projects "$CLAUDE_DIR"

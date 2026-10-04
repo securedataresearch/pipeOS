@@ -83,8 +83,12 @@ cl = os.path.join(d, "claude"); os.makedirs(cl)
 os.makedirs(os.path.join(vol, "claude", "projects"))
 open(os.path.join(vol, "claude", "projects", "memory.md"), "w").write("kept")
 os.symlink(os.path.join(d, "gone", "claude", "projects"), os.path.join(cl, "projects"))
-run_link(vol, cl)
+rc6b = subprocess.run(["sh", WS], capture_output=True, text=True,
+                      env=dict(os.environ, PIPEOS_WORKSPACE_DATA=vol, PIPEOS_WORKSPACE_NO_MOUNT="1",
+                               PIPEOS_WORKSPACE_CLAUDE=cl))
 lk = os.path.join(cl, "projects")
+check("6b' the repair SAYS so on stderr (deploy-overlay prints what the script said; the boot CRIT it replaces no longer fires)",
+      "re-pointed" in rc6b.stderr, rc6b.stderr[-200:])
 check("6b a memory link whose target is gone (saved under an older image) is re-pointed at the volume, and the memory there is reachable again",
       os.path.islink(lk) and os.readlink(lk) == os.path.join(vol, "claude", "projects")
       and os.path.exists(os.path.join(lk, "memory.md")), "link=%r" % (os.readlink(lk) if os.path.islink(lk) else None))
@@ -103,6 +107,22 @@ open(os.path.join(cl, "projects", "t.jsonl"), "w").write("x")
 run_link(vol, cl)
 check("6d a real directory is left alone (the copy-first migration's, never a link-over that destroys it)",
       not os.path.islink(os.path.join(cl, "projects")) and os.path.exists(os.path.join(cl, "projects", "t.jsonl")), "")
+
+d, vol = case()
+cl = os.path.join(d, "claude"); os.makedirs(cl)
+custom = os.path.join(d, "second-disk", "agent-memory")
+os.symlink(custom, os.path.join(cl, "projects"))
+run_link(vol, cl)
+check("6f a dangling link to somewhere ELSE (an operator's disk not mounted yet) is left alone — only a stale */claude/projects volume path is repaired",
+      os.readlink(os.path.join(cl, "projects")) == custom, os.readlink(os.path.join(cl, "projects")))
+
+d, vol = case()
+cl = os.path.join(d, "claude"); os.makedirs(cl)
+os.symlink(os.path.join(d, "gone", "claude", "projects"), os.path.join(cl, "projects"))
+open(vol, "w").write("not a directory")       # the volume cannot take the mkdir
+run_link(vol, cl)
+check("6g the repair cannot make the volume's dir -> the old link stays (never NO link: claude would make a tmpfs dir and lose the session)",
+      os.path.islink(os.path.join(cl, "projects")), "")
 
 d, vol = case()
 cl = os.path.join(d, "claude")
