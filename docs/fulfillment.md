@@ -123,16 +123,11 @@ A pilot is an order we walk through the door with. Per pilot:
    [first-boot-acceptance](first-boot-acceptance.md); we do not touch the
    keyboard.
 4. **The reboot drill**, from the sheet: Reboot the box → back with state.
-5. **The support door, both ways**: client flips **Vendor support access**
-   on; the Services view shows the box's key and "waiting for a port";
-   the client sends us the key (any channel — it is public); we pin it on
-   the relay to the next free port (`docs/support-relay.md`, the ledger in
-   `authorized_keys`) and tell them the number; the client types it into
-   the Services card ("Port your vendor gave you") and the pill goes "tunnel up"; we
-   prove it with `ssh -J`; the client flips it **off** and we show the
-   tunnel is gone. Then it stays off unless they need us.
+5. **No door for us**: there is no vendor-support tunnel on a pipeOS
+   Machine (removed 2026-10-14, Sam: "100% eliminated"). Support is done
+   through the owner, on their network, or by them handing over the stick.
 6. **Sign-off**: the filled acceptance sheet in `docs/acceptance/`, one
-   per pilot, with the release tag and the port assigned.
+   per pilot, with the release tag.
 
 The two pilot boxes get cards (`docs/cards/pilot0.card`, `pilot1.card`)
 only for our records; nothing on a card reaches a customer box — identity

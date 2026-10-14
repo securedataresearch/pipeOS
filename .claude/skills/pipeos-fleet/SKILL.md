@@ -121,10 +121,9 @@ site. The stick comes from the **released** image (`gh release download`,
 http://pipeos.local/api/state` → `"claimed": false` before it goes in the
 bag). On site **the client's hands**: claim, name, services, Claude sign-in
 from `docs/client-onboarding.md`; we read `docs/first-boot-acceptance.md`
-and fill in `docs/acceptance/pilot0.md` / `pilot1.md`. The support door is
-proven both ways (key → pinned to the port in `docs/support-relay.md`'s
-ledger → `ssh -J` → toggle off → tunnel gone) and then stays off. No ssh to
-a pilot box unless the owner has the toggle on and asked.
+and fill in `docs/acceptance/pilot0.md` / `pilot1.md`. There is no vendor
+support tunnel (removed 2026-10-14): no ssh to a pilot box unless the
+owner grants a key under Users and asked.
 
 ## What is NOT yours to do
 

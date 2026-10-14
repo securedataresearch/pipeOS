@@ -55,15 +55,10 @@ Release under test: `________`   Box: `________`   Date: `________`
 - [ ] **Watchdog** (#247, docs/hardware.md): `echo c > /proc/sysrq-trigger`
       on the bench; the box came back by itself in ____ s and the report
       said "went down: kernel panic — the watchdog rebooted us".
-- [ ] **Vendor support access** on: the key and "waiting for a port" card
-      appeared; key sent; port pinned on the relay; pill went "tunnel up"
-      in ____ s; operator reached the box with `ssh -J`; toggle off; the
-      tunnel died in ____ s.
 - [ ] **Secrets sealed** (#244): after claim the wizard showed the
       recovery phrase once; `grep -r sk-ant /etc /media/usb` on the box
       finds nothing; `pipeos verify` says *secrets sealed*; after a reboot
-      Claude is still signed in, the support tunnel and the terminal come
-      up. **Rehome drill**: this stick in another chassis → the boot
+      Claude is still signed in and the terminal comes up. **Rehome drill**: this stick in another chassis → the boot
       report says *chassis mismatch* and *vault is LOCKED*, the dashboard
       is reachable, Secrets → phrase → the services start; `pipeos save`.
 - [ ] **Scheduled run** (#242): a job added from Schedule fired at its

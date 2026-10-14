@@ -94,9 +94,6 @@ NAS_MINI_CONF = "/run/pipeos/smbpasswd.conf"  # just the private dir, for smbpas
 # what a share-only account (pipeOS#270) can never be given: anything that
 # would make it a login. One tuple, checked at creation and on every edit.
 SHARE_ONLY_FORBIDS = ("password", "ssh_key", "terminal", "term_pass", "sudo", "role")
-SUPPORT_CONF = ETC + "/support.conf"
-SUPPORT_KEY = SECRETS_DIR + "/support_key"
-SUPPORT_PUB = ETC + "/support_key.pub"
 MOUNTS_CONF = ETC + "/mounts.conf"
 NAS_MAX_SHARES = 8
 NAS_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
@@ -145,7 +142,7 @@ CAR_NAMES = (
     "karmann", "silvia", "skyline", "roadster", "bluebird", "quattro", "manta",
     "kadett", "escort", "anglia", "minor", "midget", "sprite", "javelin", "hornet",
 )
-SVC_KEYS = ("pipe", "claude", "stream", "support", "assistant", "terminals", "nas")
+SVC_KEYS = ("pipe", "claude", "stream", "assistant", "terminals", "nas")
 
 # How many stream targets (providers) the dashboard manages. Each is a slot in
 # stream.conf: STREAM_T{N}_URL / _KEY / _ON / _NAME.
@@ -1080,8 +1077,6 @@ def daemons_for(svcs):
             out.append("pipebox-listener")
     if svcs["stream"]:
         out.append("pipeos-stream")
-    if svcs["support"]:
-        out.append("pipeos-support")
     if svcs.get("assistant"):
         out.append("pipeos-assistant")
     if svcs.get("terminals"):
@@ -1142,64 +1137,11 @@ def restart_secret_consumers():
     start what the owner has on and what refused to start without them."""
     problems = []
     for svc in daemons_for(read_services()):
-        if svc in ("pipebox-listener", "pipeos-support", "pipeos-assistant", "pipeos-stream", "pipeos-nas"):
+        if svc in ("pipebox-listener", "pipeos-assistant", "pipeos-stream", "pipeos-nas"):
             rc, out = run(["rc-service", svc, "restart"], timeout=120)
             if rc != 0:
                 problems.append("%s: %s" % (svc, out.strip()[-160:]))
     return problems
-
-
-def support_ensure_key():
-    """The box's tunnel identity, made on first enable (ed25519, no
-    passphrase — a supervised daemon cannot type one). The private half
-    lives in the vault and is exported to SUPPORT_KEY; the public half is
-    a plain file under /etc (it is public). Idempotent."""
-    if "support_key" in vault_names() and os.path.exists(SUPPORT_PUB):
-        if not os.path.exists(SUPPORT_KEY):
-            try:
-                vault.export()
-            except (vault.VaultError, OSError, ValueError):
-                return False
-        return True
-    os.makedirs(os.path.dirname(SUPPORT_KEY), mode=0o700, exist_ok=True)
-    tmp = SUPPORT_KEY + ".gen"
-    for p in (tmp, tmp + ".pub"):
-        try:
-            os.unlink(p)
-        except OSError:
-            pass
-    rc, _ = run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C",
-                 "pipeos-support-" + (card_get("NICK") or socket.gethostname()),
-                 "-f", tmp], timeout=30)
-    if rc != 0 or not os.path.exists(tmp + ".pub"):
-        return False
-    try:
-        with open(tmp, "rb") as f:
-            priv = f.read()
-        with open(tmp + ".pub") as f:
-            pub = f.read()
-        vault_put("support_key", priv, by="system")
-        write_private(SUPPORT_PUB, pub)
-        os.chmod(SUPPORT_PUB, 0o644)
-    except (OSError, RuntimeError):
-        return False
-    finally:
-        for p in (tmp, tmp + ".pub"):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
-    return os.path.exists(SUPPORT_KEY)
-
-
-def support_info():
-    conf = read_conf_values(SUPPORT_CONF, ["SUPPORT_RELAY", "SUPPORT_PORT"])
-    try:
-        with open(SUPPORT_PUB) as f:
-            pub = f.read().strip()
-    except OSError:
-        pub = ""
-    return {"pubkey": pub, "relay": conf["SUPPORT_RELAY"], "port": conf["SUPPORT_PORT"]}
 
 
 def apply_services(svcs):
@@ -1208,10 +1150,7 @@ def apply_services(svcs):
     problems = []
     want = set(daemons_for(svcs))
     managed = ("pipe-daemon", "pipebox-listener", "pipeos-stream",
-               "pipeos-support", "pipeos-assistant", "pipeos-terminals",
-               "pipeos-nas")
-    if "pipeos-support" in want and not support_ensure_key():
-        problems.append("could not create the support key (ssh-keygen)")
+               "pipeos-assistant", "pipeos-terminals", "pipeos-nas")
     for svc in managed:
         if svc in want:
             # STREAM_BOOT=0 = "stream now when asked, but not by itself at
@@ -1225,13 +1164,10 @@ def apply_services(svcs):
                 run(["rc-update", "add", svc, "default"])
             rc, out = run(["rc-service", svc, "start"], timeout=150)
             if rc != 0:
-                # pipeos-stream / pipeos-support refuse to start unconfigured —
-                # that is their documented shape, not a broken box.
+                # pipeos-stream refuses to start unconfigured — that is its
+                # documented shape, not a broken box.
                 if svc == "pipeos-stream":
                     problems.append("streaming is enabled but not configured yet")
-                elif svc == "pipeos-support":
-                    # the relay is shipped; what a fresh box lacks is its port
-                    problems.append("support access is on but not connected yet — it needs a port from us: send the key shown under Services")
                 elif svc == "pipeos-assistant":
                     if "assistant_pass" in vault_names():
                         problems.append("the assistant terminal did not start: " + (out.strip()[-200:] or "no reason given") + " — it starts at the next boot, or from Services")
@@ -2226,7 +2162,6 @@ class Handler(BaseHTTPRequestHandler):
             "/api/assistant": self.api_assistant_get,
             "/api/claude": self.api_claude_get,
             "/api/github": self.api_github_get,
-            "/api/support": self.api_support_get,
             "/api/secrets": self.api_secrets,
             "/api/schedule": self.api_schedule,
             "/api/usage": self.api_usage,
@@ -2334,7 +2269,6 @@ class Handler(BaseHTTPRequestHandler):
             "/api/github-login/start": self.api_github_login_start,
             "/api/github-token": self.api_github_token,
             "/api/github-logout": self.api_github_logout,
-            "/api/support-port": self.api_support_set,
             "/api/pipe-key": self.api_pipe_key,
             "/api/pipe-contact": self.api_pipe_contact,
             "/api/file-op": self.api_file_op,
@@ -4312,23 +4246,6 @@ class Handler(BaseHTTPRequestHandler):
         saved, detail = save_state()
         self.send(200, {"ok": True, "saved": saved, "save_detail": "" if saved else detail})
 
-    def api_support_set(self, body):
-        """The port the vendor assigned, typed into the Services card instead
-        of edited into /etc/pipeos/support.conf by hand."""
-        port = (body.get("port") or "").strip()
-        if not re.fullmatch(r"\d{2,5}", port) or not 1 <= int(port) <= 65535:
-            return self.err(400, "the port is a number between 1 and 65535")
-        relay = read_conf_values(SUPPORT_CONF, ["SUPPORT_RELAY"])["SUPPORT_RELAY"]
-        write_private(SUPPORT_CONF, "SUPPORT_RELAY='%s'\nSUPPORT_PORT='%s'\n" % (relay, port))
-        problems = []
-        if read_services().get("support"):
-            rc, out = run(["rc-service", "pipeos-support", "restart"], timeout=60)
-            if rc != 0:
-                problems.append("support access did not reconnect: " + out.strip()[-200:])
-        saved, detail = save_state()
-        self.send(200, {"ok": True, "port": port, "problems": problems,
-                        "saved": saved, "save_detail": "" if saved else detail})
-
     def api_pipe_key(self, body):
         key = (body.get("key") or "").strip()
         if not key or len(key) > 256 or any(c.isspace() for c in key):
@@ -5413,18 +5330,6 @@ class PhaseB:
         saved, detail = save_state()
         self.send(200, {"ok": True, "problems": problems, "saved": saved,
                         "save_detail": "" if saved else detail})
-
-    def api_support_get(self):
-        """The support surface docs/support-relay.md promised: the box's
-        public key (the owner sends it to the vendor), the relay and port
-        it will dial, and whether the tunnel is up right now."""
-        info = support_info()
-        svcs = read_services()
-        info["enabled"] = bool(svcs.get("support"))
-        rc, _ = run(["rc-service", "pipeos-support", "status"], timeout=15)
-        info["connected"] = rc == 0
-        info["configured"] = bool(info["relay"] and info["port"])
-        self.send(200, info)
 
     def api_pipe_get(self):
         rc, out = run(["pipe", "status", "-o", "json"], timeout=20)

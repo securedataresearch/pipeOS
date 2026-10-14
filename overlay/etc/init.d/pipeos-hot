@@ -8,7 +8,7 @@ depend() {
 	need localmount
 	after pipeos-workspace
 	before pipeos-vault pipeos-web pipeos-mdns pipe-daemon pipebox-listener pipeos-assistant \
-	       pipeos-stream pipeos-support pipeos-terminals pipeos-nas crond pipeos-selfcheck
+	       pipeos-stream pipeos-terminals pipeos-nas crond pipeos-selfcheck
 }
 
 start() {

@@ -13,8 +13,8 @@
 4. **Name it** (optional): the name becomes its address, e.g.
    `http://studio.local/`.
 5. **Pick what it does**: flip the switches. The Claude assistant and its
-   terminal are on by default; streaming, pipe messaging, network storage
-   and vendor support access are off until you say otherwise.
+   terminal are on by default; streaming, pipe messaging and network
+   storage are off until you say otherwise.
 6. **Connect Claude**: press **Sign in with Claude**. The Machine shows
    a link — open it on your phone or computer, sign in, and paste back the
    code it shows. Your account, your billing, your data. (Have an
@@ -36,8 +36,9 @@ Done. The same page is your dashboard from now on.
 - **Something's weird?** Dashboard → Maintenance → **Repair remote
   access**, and if that doesn't do it, **Reboot the box** — a reboot
   restores the last saved state and is safe to do any time.
-- **Need help from us?** Flip **Vendor support access** ON and tell us.
-  Flip it OFF when we're done — you're always in control of that door.
+- **Need help from us?** Tell us. Nothing on the box opens a door to us:
+  there is no remote-support tunnel, by design. We work through you, on
+  your network, or you hand us the stick.
 
 ## The fine print that matters
 

@@ -28,7 +28,7 @@ description="open the sealed secret store into /run/pipeos/secrets"
 depend() {
 	need localmount
 	after pipeos-identity pipeos-workspace
-	before pipeos-web pipe-daemon pipebox-listener pipeos-nas pipeos-stream pipeos-assistant pipeos-support pipeos-terminals
+	before pipeos-web pipe-daemon pipebox-listener pipeos-nas pipeos-stream pipeos-assistant pipeos-terminals
 }
 
 VAULT=/etc/pipeos/vault.sealed

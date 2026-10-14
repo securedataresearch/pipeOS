@@ -28,8 +28,8 @@ its `pipeos-xxxx.local` name.
    to the media immediately, so it survives a reboot even if you stop here.
 2. **Name** — give the box a nick, and optionally your own nick as owner.
 3. **Services** — turn on what this box should run. Claude and its browser
-   terminal are on; pipe, streaming, network storage and vendor support are
-   off until you say so.
+   terminal are on; pipe, streaming and network storage are off until you
+   say so.
 4. **Connect** — sign in with your Claude account: the Machine shows a
    link, you open it on any device and paste back the code it shows (or
    paste an Anthropic API key or a setup-token instead). Sign in with

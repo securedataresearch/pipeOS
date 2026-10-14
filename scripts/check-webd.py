@@ -39,7 +39,6 @@ webd.TERMINALS_CONF = tmp + "/terminals.conf"
 webd.ASSISTANT_CONF = tmp + "/assistant.conf"
 webd.SELFUPDATE_CONF = tmp + "/selfupdate.conf"
 webd.NAS_CONF = tmp + "/nas.conf"
-webd.SUPPORT_CONF = tmp + "/support.conf"
 # the vault (#244): the sealed file, its export dir and the hardware
 # identity all live in the tempdir; a small PBKDF2 count for speed
 webd.VAULT = webd.vault.VAULT_FILE = tmp + "/vault.sealed"
@@ -74,8 +73,6 @@ os.makedirs(tmp + "/logs", exist_ok=True)
 webd.VAULT_STATUS = tmp + "/vault.status"
 webd.CLAUDE_AUTH = tmp + "/secrets/claude.env"
 webd.CLAUDE_AUTH_LEGACY = tmp + "/claude-auth.env"
-webd.SUPPORT_KEY = tmp + "/secrets/support_key"
-webd.SUPPORT_PUB = tmp + "/support_key.pub"
 # the LAN lobby: mdnsd's cache stands in as a file; identity and the
 # one-shot LAN question are stubbed on the lanid module webd imported
 webd.MDNS_CACHE = tmp + "/peers.json"
@@ -455,35 +452,6 @@ req("/api/claude-logout", {})
 assert req("/api/claude")["method"] == "none" and not os.path.exists(webd.CLAUDE_CREDS)
 ok("sign-out clears the credential")
 
-# ---- vendor support access (#159): the surface docs/support-relay.md promised
-sp = req("/api/support")
-assert sp["enabled"] is False and sp["pubkey"] == ""
-ok("support off: no key, card hidden")
-r = req("/api/support-port", {"port": "abc"}, expect=400)
-r = req("/api/support-port", {"port": "70000"}, expect=400)
-r = req("/api/support-port", {"port": "42001"})
-assert r["ok"] and r["port"] == "42001" and "SUPPORT_PORT='42001'" in open(webd.SUPPORT_CONF).read()
-assert req("/api/support")["port"] == "42001"
-ok("the vendor's port is typed into the card: validated, written beside the relay, read back")
-with open(webd.SUPPORT_CONF, "w") as f:
-    f.write("SUPPORT_RELAY=tunnel@relay.example\nSUPPORT_PORT=\n")
-r = req("/api/services", {"support": True})
-assert r["services"]["support"] is True
-sp = req("/api/support")
-assert sp["enabled"] and sp["pubkey"].startswith("ssh-ed25519 ") and sp["relay"] == "tunnel@relay.example"
-assert sp["configured"] is False and os.path.exists(webd.SUPPORT_KEY)
-assert (os.stat(webd.SUPPORT_KEY).st_mode & 0o077) == 0
-assert webd.vault.get("support_key").startswith(b"-----BEGIN OPENSSH PRIVATE KEY") and not os.path.exists(tmp + "/support_key")
-first_key = sp["pubkey"]
-ok("support on: an ed25519 key is made once — the private half in the vault and its export (owner-only), the public half beside the conf; the pubkey and relay are shown, no port = not configured")
-with open(webd.SUPPORT_CONF, "w") as f:
-    f.write("SUPPORT_RELAY=tunnel@relay.example\nSUPPORT_PORT=42001\n")
-req("/api/services", {"support": False})
-req("/api/services", {"support": True})
-sp = req("/api/support")
-assert sp["pubkey"] == first_key and sp["configured"] is True and sp["port"] == "42001"
-ok("toggling again keeps the same key; a port makes it configured")
-req("/api/services", {"support": False})
 with open(webd.SERVICES_CONF) as f:
     assert "SERVICE_CLAUDE=on" in f.read()
 ok("service toggle lands in services.conf")
@@ -558,8 +526,6 @@ ok("login grants a working session")
 sec = req("/api/secrets")
 names = {r["name"]: r for r in sec["secrets"]}
 assert sec["status"] == "open" and "claude_token" not in names, names  # signed out above: the token is gone from the vault too
-assert "support_key" in names and names["support_key"]["kind"] == "bytes" and names["support_key"]["consumer"] == "support" \
-    and names["support_key"]["by"] == "system" and names["support_key"]["set_at"] > 0, names
 assert "value" not in json.dumps(sec) and "sk-ant" not in json.dumps(sec) and "BEGIN OPENSSH" not in json.dumps(sec)
 ok("secrets: the list names what the box holds, who set it and for what — never a value")
 req("/api/secrets/set", {"name": "claude_token", "value": "x"}, expect=400)
@@ -573,7 +539,6 @@ ok("secrets: a service's own secret is refused here (its card sets it); hostile 
 req("/api/secrets/reveal", {"name": "jobs.gh_token", "password": "nope"}, expect=403)
 r = req("/api/secrets/reveal", {"name": "jobs.gh_token", "password": "hunter22hunter"})
 assert r["value"] == "ghp_custom"
-req("/api/secrets/reveal", {"name": "support_key", "password": "hunter22hunter"}, expect=400)
 req("/api/secrets/reveal", {"name": "nope", "password": "hunter22hunter"}, expect=404)
 ok("secrets: reveal needs the admin's own password, shows a text value, refuses a key file")
 r = req("/api/secrets/del", {"name": "jobs.gh_token"})

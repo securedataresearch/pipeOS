@@ -218,7 +218,6 @@ cmd_status() {
     [ "$SERVICE_PIPE" = on ] && svcs="$svcs pipe-daemon"
     [ "$SERVICE_PIPE" = on ] && [ "$SERVICE_CLAUDE" = on ] && svcs="$svcs pipebox-listener"
     [ "$SERVICE_STREAM" = on ] && svcs="$svcs pipeos-stream"
-    [ "${SERVICE_SUPPORT:-off}" = on ] && svcs="$svcs pipeos-support"
     for svc in $svcs; do
         if rc-service "$svc" status >/dev/null 2>&1; then ok "$svc running"; else fail "$svc not running"; fi
     done
@@ -370,10 +369,9 @@ cmd_verify() {
         _left=$(/usr/local/bin/pipeos-vault plaintext-left 2>/dev/null)
         if [ "$_left" != none ] && [ -n "$_left" ]; then
             fail "secrets still in the clear beside the vault: $(echo "$_left" | tr '\n' ' ')"
-        # anchored: support_key.pub is the PUBLIC half and lbu.list keeps it on
-        # purpose; an unanchored `support_key` matched it and failed verify on
-        # a clean box (zero, 2026-09-15), which blocks every deploy-overlay
-        elif [ -f "$OVL" ] && tar -tzf "$OVL" 2>/dev/null | grep -qE '^etc/pipeos/(claude-auth\.env$|support_key$|nas-private/)'; then
+        # anchored patterns: an unanchored name once matched a public half and
+        # failed verify on a clean box (zero, 2026-09-15), blocking every deploy
+        elif [ -f "$OVL" ] && tar -tzf "$OVL" 2>/dev/null | grep -qE '^etc/pipeos/(claude-auth\.env$|nas-private/)'; then
             fail "the canonical apkovl still carries a plaintext secret — pipeos save"
         else
             ok "secrets sealed: nothing in the clear, on disk or in the apkovl"
@@ -498,7 +496,7 @@ cmd_unclaim() {
     # Nobody's box means nobody's (single-box pass on zero, 2026-09-16): the
     # first unclaim left the pipe identity signed in as the old owner, the
     # cluster membership and the CA the old cluster trusts, the NAS shares,
-    # the pinned support port, the assistant config — and `lbu commit -d`
+    # the assistant config — and `lbu commit -d`
     # deleted the canonical and known-good apkovl. Everything the owner made
     # goes — including their root ssh key, their agent's transcripts and
     # memory, and the weekly backups under /data/backup (byte-copies of the
@@ -513,7 +511,7 @@ cmd_unclaim() {
     _hn=$(hostname)
     if [ "$1" != "--yes" ]; then
         echo "This makes $_hn nobody's box: claim, dashboard users, name, owner, pipe and"
-        echo "Claude sign-ins, root ssh keys, cluster membership, shares, schedule, support"
+        echo "Claude sign-ins, root ssh keys, cluster membership, shares, schedule"
         echo "port, the agent's transcripts and memory, and the backups under /data/backup"
         echo "are removed and it reboots into the setup wizard. /data/home and /data/repos"
         echo "stay. Type the hostname to continue:"
@@ -529,9 +527,8 @@ cmd_unclaim() {
     # the owner's records: claim, users, terminals, services, jobs, shares, mounts, assistant, stream
     rm -f "$_etc/web-admin.conf" "$_etc/users.json" "$_etc/terminals.conf" "$_etc/services.conf" \
           "$_etc/schedule.json" "$_etc/nas.conf" "$_etc/mounts.conf" "$_etc/assistant.conf" "$_etc/stream.conf"
-    # nobody's box has nobody's secrets: the vault, its export, the support key and port (#244)
-    rm -f "$_etc/vault.sealed" "$_etc/support_key.pub" "$_etc/vault-requests.json"
-    [ -f "$_etc/support.conf" ] && sed -i 's/^SUPPORT_PORT=.*/SUPPORT_PORT=/' "$_etc/support.conf"
+    # nobody's box has nobody's secrets: the vault and its export (#244)
+    rm -f "$_etc/vault.sealed" "$_etc/vault-requests.json"
     rm -rf "$_run/web-sessions" "$_run/secrets"
     # the sign-ins: pipe (identity, credentials, contacts, inbox), Claude, hermes
     rm -rf "$_home/.pipe/identity.dat" "$_home/.pipe/credentials.dat" "$_home/.pipe/config.dat" \

@@ -72,10 +72,10 @@ check("1 init makes a 0600 vault sealed to this chassis and prints an eight-grou
 # ── 2. set / list / get / del, never a value in the list ─────────────────
 vault("set", "claude_token", stdin=b"sk-ant-api03-SECRET-TOKEN\n")
 vault("set", "jobs.github_token", stdin=b"ghp_SECRET\n")
-rc_b, _ = vault("set", "support_key", "--bytes", stdin=b"-----BEGIN OPENSSH PRIVATE KEY-----\n\x00\x01binary\n")
+rc_b, _ = vault("set", "relay_key", "--bytes", stdin=b"-----BEGIN OPENSSH PRIVATE KEY-----\n\x00\x01binary\n")
 rc_l, lst = vault("list")
 rc_g, got = vault("get", "claude_token")
-rc_gb, gotb = vault("get", "support_key")
+rc_gb, gotb = vault("get", "relay_key")
 rc_d, _ = vault("del", "jobs.github_token")
 rc_l2, lst2 = vault("list")
 check("2 set/list/get/del round-trip; the listing carries name, consumer, kind and who — never a value; a bytes secret comes back byte for byte",
@@ -91,10 +91,10 @@ rc, out = vault("export")
 ce = open(os.path.join(RUN, "claude.env")).read()
 ae = open(os.path.join(RUN, "assistant.env")).read()
 se = open(os.path.join(RUN, "stream.env")).read()
-modes = {f: stat.S_IMODE(os.stat(os.path.join(RUN, f)).st_mode) for f in ("claude.env", "assistant.env", "stream.env", "support_key")}
+modes = {f: stat.S_IMODE(os.stat(os.path.join(RUN, f)).st_mode) for f in ("claude.env", "assistant.env", "stream.env", "relay_key")}
 check("3 export writes each consumer's file under the run dir: the Claude line by the token's prefix, the sourced envs single-quoted, the key file raw; dir 0700, files 0600",
       rc == 0 and ce == "ANTHROPIC_API_KEY=sk-ant-api03-SECRET-TOKEN\n" and ae == "ASSISTANT_PASS='hunter2'\n"
-      and se == "STREAM_T2_KEY='tw-secret'\n" and open(os.path.join(RUN, "support_key"), "rb").read().startswith(b"-----BEGIN")
+      and se == "STREAM_T2_KEY='tw-secret'\n" and open(os.path.join(RUN, "relay_key"), "rb").read().startswith(b"-----BEGIN")
       and stat.S_IMODE(os.stat(RUN).st_mode) == 0o700 and all(m == 0o600 for m in modes.values()),
       "rc=%s ce=%r ae=%r se=%r modes=%r out=%s" % (rc, ce, ae, se, modes, out))
 vault("del", "stream_key_2")
@@ -144,7 +144,6 @@ check("8 a flipped byte in the sealed data fails the integrity check (rc 3, 'int
 
 # ── 9. migrate ───────────────────────────────────────────────────────────
 open(os.path.join(ETC, "claude-auth.env"), "w").write("CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-MIGRATED\n")
-open(os.path.join(ETC, "support_key"), "wb").write(b"PRIVATE-KEY-BYTES")
 open(os.path.join(ETC, "assistant.conf"), "w").write("ASSISTANT_USER='admin'\nASSISTANT_PASS='migrated-pw'\nASSISTANT_PORT='7681'\n")
 open(os.path.join(ETC, "stream.conf"), "w").write("STREAM_MODE='browser'\nSTREAM_T1_KEY='yt-key'\nSTREAM_T1_URL='rtmp://x'\nSTREAM_T2_KEY=''\n")
 os.makedirs(os.path.join(ETC, "nas-private"))
@@ -160,8 +159,8 @@ aconf = open(os.path.join(ETC, "assistant.conf")).read()
 sconf = open(os.path.join(ETC, "stream.conf")).read()
 rc_p, left = vault("plaintext-left")
 check("9 migrate moves the five plaintext secrets in, shreds the files, blanks the conf fields (keeping the rest), leaves web-admin/users/tls alone, is idempotent, and plaintext-left says none",
-      rc == 0 and all(n in out for n in ("claude_token", "support_key", "assistant_pass", "stream_key_1", "nas_passdb"))
-      and not os.path.exists(os.path.join(ETC, "claude-auth.env")) and not os.path.exists(os.path.join(ETC, "support_key"))
+      rc == 0 and all(n in out for n in ("claude_token", "assistant_pass", "stream_key_1", "nas_passdb"))
+      and not os.path.exists(os.path.join(ETC, "claude-auth.env"))
       and not os.path.exists(os.path.join(ETC, "nas-private"))
       and "ASSISTANT_PASS=''" in aconf and "ASSISTANT_USER='admin'" in aconf and "ASSISTANT_PORT='7681'" in aconf
       and "STREAM_T1_KEY=''" in sconf and "STREAM_T1_URL='rtmp://x'" in sconf
@@ -191,13 +190,13 @@ build = open(os.path.join(REPO, "scripts/40-build-apkovl.sh")).read()
 default_line = next((l for l in build.splitlines() if l.startswith("mk_runlevel default")), "")
 consumers = {p: open(os.path.join(REPO, "overlay", p)).read() for p in
              ("usr/local/bin/pipebox-listener", "usr/local/bin/pipebox-cohort-watch", "usr/local/bin/pipeos-assistant-run",
-              "usr/local/bin/pipeos-assistant-claude", "etc/init.d/pipeos-support", "etc/init.d/pipeos-nas",
+              "usr/local/bin/pipeos-assistant-claude", "etc/init.d/pipeos-nas",
               "etc/init.d/pipeos-stream", "etc/init.d/pipeos-assistant")}
 check("11 the fence denies the verb and the sealed file and the run dir; `pipeos` dispatches it; lbu.list carries the vault + its service and no longer the three plaintext paths; the service is in the default runlevel before the web",
       all(all(m in s for m in ('"Bash(pipeos vault*)"', '"Bash(pipeos-vault*)"', '"Read(/etc/pipeos/vault.sealed)"', '"Read(/run/pipeos/secrets/**)"')) for s in settings)
       and "vault)       shift; exec /usr/local/bin/pipeos-vault" in front and "pipeos vault status" in front
       and "+etc/init.d/pipeos-vault" in lbu_lines and "+etc/pipeos/vault.sealed" in lbu_lines
-      and not any(l in lbu_lines for l in ("+etc/pipeos/claude-auth.env", "+etc/pipeos/support_key", "+etc/pipeos/nas-private"))
+      and not any(l in lbu_lines for l in ("+etc/pipeos/claude-auth.env", "+etc/pipeos/nas-private"))
       and "pipeos-vault pipeos-web" in default_line,
       "default=%r" % default_line)
 check("12 every consumer reads its secret from /run/pipeos/secrets (the vault's export), none from a plaintext /etc path first",
@@ -205,14 +204,13 @@ check("12 every consumer reads its secret from /run/pipeos/secrets (the vault's 
       and "PRIVATE=/run/pipeos/secrets/nas" in consumers["etc/init.d/pipeos-nas"]
       and "/run/pipeos/secrets/stream.env" in consumers["etc/init.d/pipeos-stream"]
       and "/run/pipeos/secrets/assistant.env" in consumers["etc/init.d/pipeos-assistant"]
-      and "/run/pipeos/secrets/support_key" in consumers["etc/init.d/pipeos-support"]
       and "AUTH=/run/pipeos/secrets/claude.env" in consumers["usr/local/bin/pipebox-listener"],
       "")
 init = open(INIT).read()
 _i = [init.find(k) for k in ("pipeos-vault init", "pipeos-vault migrate", "pipeos-vault export", "/usr/local/bin/pipeos-save")]
 check("13 the boot service migrates a claimed box (init, migrate, export, then SAVE — the shred is not real until the media no longer carries the plaintext), parks the phrase, and orders itself before every consumer",
       all(i >= 0 for i in _i) and _i == sorted(_i)
-      and "vault-phrase" in init and "before pipeos-web pipe-daemon pipebox-listener pipeos-nas pipeos-stream pipeos-assistant pipeos-support" in init
+      and "vault-phrase" in init and "before pipeos-web pipe-daemon pipebox-listener pipeos-nas pipeos-stream pipeos-assistant" in init
       and "web-admin.conf" in init,
       "")
 
