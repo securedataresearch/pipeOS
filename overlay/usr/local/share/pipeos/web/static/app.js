@@ -1262,8 +1262,13 @@ async function dashboard() {
         <div class="viewhead"><h1>Updates</h1></div>
         <div class="card">
           <div class="cardhead"><h2>What has changed on this Machine</h2><span><span class="note" id="upnote"></span> <button id="uprefresh" class="ghost small" type="button" data-vok>look again</button></span></div>
-          <p class="sub">Newest first. Every change this Machine has taken, with what it was for — read from what the Machine itself wrote down when it took it, so this is its history and not the project's.</p>
+          <p class="sub">Newest first. Every change this Machine has taken, with what it was for — read from what the Machine itself wrote down when it took it.</p>
           <div id="uplist" class="note">looking…</div>
+        </div>
+        <div class="card">
+          <div class="cardhead"><h2>What has changed in pipeOS</h2><span class="note" id="upprojnote"></span></div>
+          <p class="sub">The project's releases, newest first, each with the commits that landed since the one before. pipeOS is open source; this is its history as GitHub holds it, with the release this Machine runs marked.</p>
+          <div id="upproj" class="note">looking…</div>
         </div>
       </section>
 
@@ -2378,9 +2383,33 @@ async function dashboard() {
     });
     note.textContent = `${us.length} change${us.length === 1 ? "" : "s"}` + (d.clone ? "" : " · no repo clone here, so only what arrived is listed, not what each change said");
   };
+  const renderProject = (p) => {
+    const box = v.querySelector("#upproj"), note = v.querySelector("#upprojnote");
+    if (!box) return;
+    p = p || {};
+    const rels = p.releases || [];
+    note.textContent = p.error ? p.error : (p.at ? "from github.com/" + p.repo + " · " + new Date(p.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
+    if (!rels.length) { box.className = "note"; box.textContent = p.error || "No releases found."; return; }
+    box.className = "";
+    box.innerHTML = rels.map((r, ri) => {
+      const when = r.date ? new Date(r.date) : null;
+      const pill = r.running ? '<span class="pill status-ok">this Machine</span>' : (r.newer && p.running_known ? '<span class="pill status-warn">newer</span>' : "");
+      const cs = r.commits || [];
+      const rows = cs.map((c, ci) => `<div class="uprow">
+        <div class="uphead"><span class="uptitle">${esc(c.title)}</span> <span class="note">${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.sha)}</a>` : esc(c.sha)}</span></div>
+        ${c.body ? `<button class="ghost small upmore" type="button" data-vok data-pc="${ri}-${ci}">what this was for</button><pre class="upbody" id="upc-${ri}-${ci}" hidden>${esc(c.body)}</pre>` : ""}
+      </div>`).join("");
+      return `<h3 class="upday">${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.tag)}</a>` : esc(r.tag)} ${pill} <span class="note">${when ? when.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" }) : ""}${cs.length ? ` · ${cs.length} change${cs.length === 1 ? "" : "s"}` : (r.commits_unknown ? " · changes not available" : (ri === rels.length - 1 ? " · the earliest release listed" : " · a repo-only release, no new commits"))}</span></h3>${rows}`;
+    }).join("");
+    box.querySelectorAll("[data-pc]").forEach(b => b.onclick = () => {
+      const pre = box.querySelector("#upc-" + b.dataset.pc);
+      pre.hidden = !pre.hidden;
+      b.textContent = pre.hidden ? "what this was for" : "hide";
+    });
+  };
   const loadUpdates = async (refresh) => {
     if (upLoaded && !refresh) return;
-    try { renderUpdates(await api("/api/updates" + (refresh ? "?refresh=1" : ""))); upLoaded = true; }
+    try { const d = await api("/api/updates" + (refresh ? "?refresh=1" : "")); renderUpdates(d); renderProject(d.project); upLoaded = true; }
     catch (e) { const l = v.querySelector("#uplist"); if (l) { l.className = "note"; l.textContent = e.message; } }
   };
   const upBtn = v.querySelector("#uprefresh");

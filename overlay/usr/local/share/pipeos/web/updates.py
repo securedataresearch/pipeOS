@@ -41,6 +41,18 @@ CACHE = os.environ.get("PIPEOS_UPDATES_CACHE", "/run/pipeos/updates.json")
 GIT = os.environ.get("PIPEOS_UPDATES_GIT", "git")
 MAX_ENTRIES = 400
 MAX_BODY = 4000
+# The project's own history (Sam, 2026-10-13: "we need to show what the
+# changes really were, from the commits, since this is open source anyway").
+# A fresh Machine has taken no update, so its own log is empty — but the
+# release it runs has a history, and GitHub holds it. Releases newest first,
+# each with the commits that landed since the release before it; the one
+# this Machine runs is marked. Cached an hour; a Machine with no route out
+# says so once. GH_API="" turns it off (the probes).
+GH_API = os.environ.get("PIPEOS_UPDATES_GH_API", "https://api.github.com")
+GH_REPO = os.environ.get("PIPEOS_UPDATES_GH_REPO", "securedataresearch/pipeOS")
+PROJECT_CACHE = os.environ.get("PIPEOS_UPDATES_PROJECT_CACHE", "/run/pipeos/updates-project.json")
+PROJECT_TTL = 3600
+PROJECT_RELEASES = 12
 
 # The lines the box really writes, and only those. pipeos-deploy-overlay:697
 # `OK deployed $REF=$commit (N new, M changed)` and :702 `OK $did at
@@ -159,6 +171,86 @@ def entries():
                         "body": "The Machine fetched, verified and applied a released image, then rebooted into it."})
     out.sort(key=lambda e: (e.get("landed", 0), e.get("at", 0)), reverse=True)
     return {"at": int(time.time()), "clone": have_clone, "updates": out[:MAX_ENTRIES]}
+
+
+def _gh(path):
+    """One GitHub API GET as parsed JSON; raises on anything but 200."""
+    import urllib.request
+    req = urllib.request.Request(GH_API + path, headers={
+        "User-Agent": "pipeos-updates", "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=12) as r:
+        return json.load(r)
+
+
+def _project_fetch(image_commit):
+    rels = _gh("/repos/%s/releases?per_page=%d" % (GH_REPO, PROJECT_RELEASES))
+    rels = [r for r in rels if not r.get("draft")]
+    out = []
+    running_seen = False
+    for i, r in enumerate(rels):
+        tag = r.get("tag_name") or ""
+        # tags are repo-YYYY.MM.DD-<sha>; the sha is the release's commit
+        m = re.search(r"-([0-9a-f]{7,40})$", tag)
+        sha = m.group(1) if m else ""
+        running = bool(sha and image_commit and (image_commit.startswith(sha) or sha.startswith(image_commit)))
+        prev = rels[i + 1] if i + 1 < len(rels) else None
+        commits = []
+        if prev:
+            pm = re.search(r"-([0-9a-f]{7,40})$", prev.get("tag_name") or "")
+            if pm and sha:
+                try:
+                    cmp = _gh("/repos/%s/compare/%s...%s?per_page=250" % (GH_REPO, pm.group(1), sha))
+                    for c in cmp.get("commits", []):
+                        msg = (c.get("commit", {}).get("message") or "").strip()
+                        title, _, body = msg.partition("\n")
+                        # merge commits say nothing a reader wants; the PR's own commits are the history
+                        if title.startswith("Merge pull request") or title.startswith("Merge branch"):
+                            continue
+                        commits.append({"sha": (c.get("sha") or "")[:12], "title": title[:200],
+                                        "body": body.strip()[:MAX_BODY], "url": c.get("html_url") or "",
+                                        "date": c.get("commit", {}).get("committer", {}).get("date") or ""})
+                except Exception:   # noqa: BLE001 — a missing compare is a gap, not a failure
+                    commits = None
+        out.append({"tag": tag, "sha": sha, "date": r.get("published_at") or r.get("created_at") or "",
+                    "url": r.get("html_url") or "", "running": running,
+                    "newer": not running_seen and not running,
+                    "commits": commits if commits is not None else [],
+                    "commits_unknown": commits is None, "notes": (r.get("body") or "")[:MAX_BODY]})
+        running_seen = running_seen or running
+    return {"repo": GH_REPO, "releases": out, "at": int(time.time()), "error": "",
+            "running_known": running_seen, "image_commit": image_commit}
+
+
+def project(image_commit="", refresh=False):
+    """The project's releases and their commits, from GitHub, cached an hour.
+    Never raises: no network is {"error": ...} with whatever was cached."""
+    if not GH_API:
+        return {"repo": GH_REPO, "releases": [], "at": 0, "error": "project history is off on this Machine", "image_commit": image_commit}
+    cached = None
+    try:
+        with open(PROJECT_CACHE) as f:
+            cached = json.load(f)
+        if not refresh and cached.get("image_commit") == image_commit and time.time() - cached.get("at", 0) < PROJECT_TTL:
+            return cached
+    except (OSError, ValueError):
+        cached = None
+    try:
+        d = _project_fetch(image_commit)
+    except Exception as e:   # noqa: BLE001 — offline, rate-limited, GitHub down: say so
+        why = "could not reach GitHub for the project's history (%s)" % (str(e)[:120] or type(e).__name__)
+        if cached:
+            cached["error"] = why + " — showing what was fetched earlier"
+            return cached
+        return {"repo": GH_REPO, "releases": [], "at": 0, "error": why, "image_commit": image_commit}
+    try:
+        os.makedirs(os.path.dirname(PROJECT_CACHE), exist_ok=True)
+        tmp = PROJECT_CACHE + ".%d" % os.getpid()
+        with open(tmp, "w") as f:
+            json.dump(d, f)
+        os.replace(tmp, PROJECT_CACHE)
+    except OSError:
+        pass
+    return d
 
 
 def page(refresh=False):

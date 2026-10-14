@@ -2416,7 +2416,12 @@ class Handler(BaseHTTPRequestHandler):
         description, and every released image it applied. Read from what the
         Machine itself wrote down — no network. A signed-in reader only."""
         q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        self.send(200, updates.page(refresh=(q.get("refresh", ["0"])[0] not in ("", "0", "no", "false"))))
+        refresh = q.get("refresh", ["0"])[0] not in ("", "0", "no", "false")
+        d = dict(updates.page(refresh=refresh))
+        # and the project's history beside the Machine's own: the releases
+        # and their commits, the one this Machine runs marked
+        d["project"] = updates.project(lanid.image_info(FLASH_IMAGE_TXT).get("commit", ""), refresh=refresh)
+        self.send(200, d)
 
     def api_lan(self):
         """The network map (#217): netgaze's pass, cached a minute, with

@@ -191,6 +191,7 @@ with open(webd.SELFCHECK_BIN, "w") as f:
     f.write("#!/bin/sh\necho \"$*\" >> " + tmp + "/selfcheck.argv\necho 'ok all fine'\nprintf 'verdict: all green\\n'\n")
 os.chmod(webd.SELFCHECK_BIN, 0o755)
 webd.CLAUDE_HOME = tmp + "/home"
+webd.updates.GH_API = ""          # the project's history comes from GitHub; the probe is offline
 webd.CLAUDE_CREDS = tmp + "/home/.claude/.credentials.json"
 with open(webd.CARD, "w") as f:
     f.write("NICK=\nNAME=\nROLE=GENERIC\nOWNER_NICK=\n")
