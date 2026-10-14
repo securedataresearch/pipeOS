@@ -91,7 +91,11 @@ Your cohort board is the project's shared channel — `COHORT_ID` in
 
 Know how you actually hear about it, because it is not what the skill
 implies: the shipped agent pump is `pipe wait --only me`, which wakes you for
-DMs and mentions **only**. Board posts reach you through the
+DMs and mentions **only**. You never arm a wait yourself: no `pipe wait`,
+no Monitor, no sleeping shell, no polling loop — the listener service is
+the one thing that waits, and it wakes you for free. A monitor that expires
+with nothing to report still costs the owner a model turn (2026-10-13:
+three empty turns in an evening). Board posts reach you through the
 `pipebox-cohort-watch` cron job, on a couple of minutes' delay, and through
 nothing else. If someone on the board says they messaged you and you saw
 nothing, that gap is the first thing to suspect — and say so on the board
