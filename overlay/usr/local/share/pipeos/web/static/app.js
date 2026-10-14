@@ -782,6 +782,17 @@ async function dashboard() {
           <div class="tile"><div class="k">CPU temp</div><div class="val" id="ovtemp">…</div></div>
           <div class="tile"><div class="k">Spend today</div><div class="val">$${(st.spend_today_usd || 0).toFixed(2)}</div><div class="note">${st.usage_cap && st.usage_cap.usd ? "$" + (st.spend_month_usd || 0).toFixed(2) + " of $" + st.usage_cap.usd + " this month" : "$" + (st.spend_month_usd || 0).toFixed(2) + " this month · estimate"}</div></div>
         </div>
+        <div class="card">
+          <div class="cardhead"><h2>This Machine</h2><span class="note">${esc(st.model || "")}</span></div>
+          <div class="tblwrap"><table class="tbl">
+            <tr><th>Address</th><td class="mono">${esc(st.ip || "?")}${st.iface ? ` <span class="note">on ${esc(st.iface)}</span>` : ""}</td></tr>
+            <tr><th>Names</th><td class="mono">${st.name ? `<a href="http://${esc(st.name)}.local/">${esc(st.name)}.local</a> · ` : ""}<a href="http://${esc(st.hostname)}.local/">${esc(st.hostname)}.local</a></td></tr>
+            <tr><th>MAC</th><td class="mono">${esc(st.mac || "?")}</td></tr>
+            <tr><th>Machine id</th><td class="mono">${esc(st.id || "")}</td></tr>
+            <tr><th>Image</th><td class="mono">${st.image && st.image.commit ? esc(st.image.commit.slice(0, 12)) + `<span class="note"> · built ${esc((st.image.built || "").slice(0, 10))}${st.image.variant ? " · " + esc(st.image.variant) : ""}</span>` : "?"}</td></tr>
+            ${st.nick ? `<tr><th>pipe nick</th><td class="mono">${esc(st.nick)}${st.owner ? `<span class="note"> · owner ${esc(st.owner)}</span>` : ""}</td></tr>` : ""}
+          </table></div>
+        </div>
         ${showStream ? `
         <div class="card">
           <div class="cardhead"><h2>Streaming</h2><span class="onair off" id="ovair"><span class="blip"></span>checking…</span></div>
