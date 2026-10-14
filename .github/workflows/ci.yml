@@ -110,14 +110,6 @@ jobs:
           python3 scripts/check-cluster.py
           python3 scripts/check-cluster-controls.py
 
-      # #241. A Machine that is off has no row in the live cache, so waking
-      # it needs the roster mdnsd keeps on /data and a packet built right;
-      # the arming service must pick the NIC the chassis id came from.
-      - name: wake-on-lan — the packet, the roster, the arming, and the fence
-        run: |
-          python3 scripts/check-wake.py
-          python3 scripts/check-wake-controls.py
-
       # #247. The hardware watchdog was already shipped and armed; this pins
       # the card switch, the 60 s timeout, and the boot report's cause line.
       - name: hardware watchdog — the card switch, the arming, the cause line
@@ -151,8 +143,6 @@ jobs:
       # cadence; park remounts /data read-only between operations.
       - name: "/data is the bulk volume — it mounts there, and nothing answers to the old name (#219, #330)"
         run: python3 scripts/check-data-name.py
-      - name: "the cluster heartbeat on the port LED — who blinks, how many times, and who stays steady (#333)"
-        run: python3 scripts/check-blink.py
       - name: "the Machine's own update log — every change it took, with its title and what it was for (#335)"
         run: python3 scripts/check-updates.py
       - name: /data's hot set — staged in RAM, flushed, parked; the listener idles on a policy denial

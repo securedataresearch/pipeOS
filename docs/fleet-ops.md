@@ -59,9 +59,7 @@ when host keys have changed (every reflash). Clocks are UTC.
 | `pipeos nas account NAME` (SMB password on stdin) | Files → Network storage → new account for a share | `users.json` (share-only: no sign-in, no shell), `pipeos-user add --nologin`, vault `nas_passdb`; restarts `pipeos-nas` | yes |
 | `pipeos vault status\|list\|get\|set\|del\|export\|unlock\|rephrase` | Secrets view | the sealed store | set/del: the store is in `/etc`, save after |
 | `pipeos vault share NAME ID\|NAME...` / `unshare` | Secrets → *shared with* ticks | a copy of NAME to each member through ITS `/api/secrets/receive` over mutual TLS (that member saves it as `cluster:<this id>`); this box notes who has it; unshare only forgets — the copy stays that member's own. The one exception to no-propagation, on the owner's tap (#301) | yes |
-| `pipeos wake NAME\|ID\|--all\|--list` | Network → Wake | — | — |
 | `pipeos cluster users` | Cluster → Who can sign in, across the cluster | — (read-only; gathered live from each member, never cached) | no |
-| `pipeos blink on\|off\|status\|test [N]` | — (card `BLINK`, no form yet) | card `BLINK`, regenerated; `pipeos-blink` restarted at once. A Machine that is a healthy cluster member blinks its member number on its cabled port's LED (#333); the one not blinking is the one not playing ball | yes |
 | `pipeos updates [--json]` | Updates view | — (reads `/data/logs/deploy-overlay.log`, the selfupdate log and the clone) | no |
 | `pipeos lan [--refresh] [--json]` | Network → Everything on this network | netgaze's pass (ICMP sweep, neighbour table, PTR), cached a minute, every row marked this Machine / member / a Machine / other (#217) | no |
 | `pipeos work status\|flush\|park\|unpark` | — (operator) | flush: the RAM-staged hot set → the stick; park: remount `/data` read-only | flush is the save |
@@ -104,9 +102,6 @@ acceptance sheet (`docs/first-boot-acceptance.md`) lists the rows.
 - **Vault (#244):** first start migrates plaintext secrets and leaves the
   recovery phrase in tmpfs until `secrets phrase --ack`; the phrase rehomes
   the stick in another chassis.
-- **Wake-on-LAN (#241):** `pipeos wake NAME` from a sibling. **Only the
-  onboard 1GbE port supports it on the M920q; the SFP+ port's driver does
-  not.** selfcheck WARNs when the wakeable port is not the one in use.
 - **Reboot:** `verify` PASS → `reboot` → selfcheck green, known-good
   matches.
 

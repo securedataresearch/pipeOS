@@ -40,6 +40,8 @@ for k in ("identity.dat", "credentials.dat", "config.dat", "contacts.dat", "http
 open(HOME + "/.pipe/inbox/msg", "w").write("x")
 open(HOME + "/.claude/.credentials.json", "w").write("x"); open(HOME + "/.claude.json", "w").write("x")
 open(HOME + "/.hermes/auth.json", "w").write("x")
+os.makedirs(HOME + "/.config/gh", exist_ok=True); open(HOME + "/.config/gh/hosts.yml", "w").write("github.com:\n  oauth_token: gho_old\n")
+open(HOME + "/.gitconfig", "w").write("[user]\n\tname = box\n[credential \"https://github.com\"]\n\thelper = \n\thelper = !/usr/bin/gh auth git-credential\n")
 open(RUN + "/cluster-ca.pem", "w").write("x"); open(RUN + "/cluster.status", "w").write("x")
 open(ETC + "/vault-requests.json", "w").write('{"v":1,"requests":[{"id":"x","name":"jobs.old","why":"the old owner"}]}')
 for name, body in (("pipebox-card", 'echo "$*" >> %s/card.log\n' % MARK),
@@ -81,6 +83,9 @@ pipe_left = [k for k in ("identity.dat", "credentials.dat", "config.dat", "conta
 check("3 the sign-ins go: pipe identity, credentials, contacts and inbox; Claude's credentials and ~/.claude.json; hermes auth — policy.json (card-generated) stays",
       not pipe_left and not os.path.exists(HOME + "/.claude/.credentials.json") and not os.path.exists(HOME + "/.claude.json")
       and not os.path.exists(HOME + "/.hermes/auth.json") and os.path.exists(HOME + "/.pipe/policy.json"), repr(pipe_left))
+gc = open(HOME + "/.gitconfig").read()
+check("3b the GitHub sign-in goes: gh's token file and the credential-helper lines in git's config; the rest of .gitconfig stays",
+      not os.path.exists(HOME + "/.config/gh") and "helper" not in gc and "credential" not in gc and "name = box" in gc, repr(gc))
 check("4 the support port is unpinned but the relay setting stays; the cluster trust bundle and status go; the TLS dir is re-made with a NEW CA",
       "SUPPORT_PORT=\n" in open(ETC + "/support.conf").read() and "SUPPORT_RELAY=tunnel@relay" in open(ETC + "/support.conf").read()
       and not os.path.exists(RUN + "/cluster-ca.pem") and not os.path.exists(RUN + "/cluster.status")

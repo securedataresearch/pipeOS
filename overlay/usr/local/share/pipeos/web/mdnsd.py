@@ -23,7 +23,7 @@ which is right for "who is on the LAN now" and useless for "wake the one
 that is off". So every sighting is also folded into a roster on /data —
 id, name, host, last ip, MAC, model, last_seen — that nothing here ever
 prunes. The dashboard shows a rostered Machine that is not in the cache as
-a grey row with a Wake button; `pipeos wake --forget` is the only eraser.
+a grey row ("off · last seen"); nothing erases a row but a fresh /data.
 
 Seams for the probe (scripts/check-mdns.py), never set in production:
 PIPEOS_MDNS_PORT/_GROUP/_TTL/_INTERVAL/_CACHE/_ROSTER, PIPEOS_MDNS_IDENT (a

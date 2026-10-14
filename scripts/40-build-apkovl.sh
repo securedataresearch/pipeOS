@@ -83,6 +83,11 @@ if [ -n "${CARD:-}" ] && [ -n "$(sed -n 's/^NICK=//p' "$CARD" | head -1)" ]; the
 else
     printf 'SERVICE_PIPE=off\nSERVICE_CLAUDE=off\nSERVICE_STREAM=off\nSERVICE_SUPPORT=off\nSERVICE_ASSISTANT=off\nSERVICE_TERMINALS=off\nSERVICE_NAS=off\n' \
         > "$STAGE/etc/pipeos/services.conf"
+    # Fleet machinery with no business on a customer box: the cohort-board
+    # watcher and the GitHub-issues notifier run only where a card names a
+    # NICK. The scripts stay in the overlay; the schedule does not.
+    sed -i '/pipebox-cohort-watch/d' "$STAGE/etc/crontabs/root"
+    rm -f "$STAGE/etc/periodic/15min/pipebox-gh-notify"
 fi
 
 # apk must trust our repo signing key at initramfs install time.
@@ -148,12 +153,12 @@ mk_runlevel() {
 }
 mk_runlevel sysinit devfs dmesg mdev hwdrivers modloop
 # watchdog is OUR /etc/init.d/watchdog (overlay), card-aware (#247), not busybox's
-mk_runlevel boot     modules sysctl pipeos-identity hostname bootmisc syslog networking pipeos-wol hwclock seedrng watchdog
+mk_runlevel boot     modules sysctl pipeos-identity hostname bootmisc syslog networking hwclock seedrng watchdog
 # The pipe pair is NOT in the client default runlevel: pipe is a service the
 # wizard turns on (rc-update at claim time), not the box's spine. Fleet sticks
 # (CARD with a NICK) get it back via FLEET_SVCS above.
 # shellcheck disable=SC2086
-mk_runlevel default  crond chronyd sshd local pipeos-workspace pipeos-hot pipeos-vault pipeos-web pipeos-mdns pipeos-blink $FLEET_SVCS pipeos-selfcheck
+mk_runlevel default  crond chronyd sshd local pipeos-workspace pipeos-hot pipeos-vault pipeos-web pipeos-mdns $FLEET_SVCS pipeos-selfcheck
 mk_runlevel shutdown killprocs mount-ro savecache
 
 chmod +x "$STAGE/etc/local.d/"*.start "$STAGE/etc/local.d/"*.stop \

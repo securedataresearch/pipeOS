@@ -100,15 +100,8 @@ PEERS = [
      "verdict": "", "commit": "", "built": "", "model": "", "mac": ""},
 ]
 # the roster (#241): every Machine ever seen, on /data; a rostered id that is
-# not in the live cache is a grey row with a Wake button
+# not in the live cache is a grey row
 webd.MACHINES_ROSTER = tmp + "/machines.json"
-webd.WAKE_BIN = tmp + "/wake-stub"
-with open(webd.WAKE_BIN, "w") as f:
-    f.write("#!/bin/sh\nprintf '%s\\n' \"$@\" >> " + tmp + "/wake.argv\n"
-            "case \"$1\" in 4d4d) echo 'magic packet sent to attic (aa:bb:cc:dd:4d:4d)';; "
-            "ffff) echo 'ffff: not a Machine this box has ever seen' >&2; exit 2;; "
-            "*) echo 'no MAC on record' >&2; exit 1;; esac\n")
-os.chmod(webd.WAKE_BIN, 0o755)
 
 
 def seed_roster(rows):
@@ -170,6 +163,27 @@ with open(tmp + "/bin/claude", "w") as f:
             "  *) echo ok ;;\n"
             "esac\n")
 os.chmod(tmp + "/bin/claude", 0o755)
+# GitHub (Connect GitHub): a stub `gh` — `auth login --web` prints the
+# one-time code and the device URL the way the real one does, then "the
+# owner approves" a moment later (the token file appears, exit 0); `api
+# user` answers from that file; `--with-token` reads stdin. The argv log
+# is how a row sees setup-git and logout.
+with open(tmp + "/bin/gh", "w") as f:
+    f.write("#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + tmp + "/gh.argv\n"
+            "case \"$1 $2 $3\" in\n"
+            "  \"auth login --web\")\n"
+            "    printf '\\n! First copy your one-time code: \\033[1mABCD-1234\\033[0m\\n'\n"
+            "    printf 'Open this URL to continue in your web browser: https://github.com/login/device\\n'\n"
+            "    sleep 1; mkdir -p \"$HOME/.config/gh\"; printf 'github.com:\\n  oauth_token: gho_stub\\n  user: octocat\\n' > \"$HOME/.config/gh/hosts.yml\"\n"
+            "    echo 'Logged in as octocat'; exit 0 ;;\n"
+            "  \"auth login --with-token\") read -r tok; case \"$tok\" in ghp_good*) mkdir -p \"$HOME/.config/gh\"; printf 'github.com:\\n  oauth_token: %s\\n  user: octocat\\n' \"$tok\" > \"$HOME/.config/gh/hosts.yml\"; exit 0 ;; *) echo 'error validating token: HTTP 401' >&2; exit 1 ;; esac ;;\n"
+            "  \"auth setup-git --hostname\") printf '[credential \"https://github.com\"]\\n\\thelper = !gh auth git-credential\\n' >> \"$HOME/.gitconfig\" ;;\n"
+            "  \"auth logout --hostname\") rm -f \"$HOME/.config/gh/hosts.yml\" ;;\n"
+            "  \"auth token \") [ -f \"$HOME/.config/gh/hosts.yml\" ] && sed -n 's/^  oauth_token: //p' \"$HOME/.config/gh/hosts.yml\" ;;\n"
+            "  \"api user --jq\") if [ -f \"$HOME/.config/gh/hosts.yml\" ]; then echo octocat; else echo 'gh: not logged in' >&2; exit 4; fi ;;\n"
+            "  *) echo ok ;;\n"
+            "esac\n")
+os.chmod(tmp + "/bin/gh", 0o755)
 os.environ["PATH"] = tmp + "/bin:" + os.environ.get("PATH", "")
 # the live-verdict refresh every save fires (#290 follow-up): a stub that records its argv
 webd.SELFCHECK_BIN = tmp + "/selfcheck-stub"
@@ -229,6 +243,7 @@ _table = dict(re.findall(r'"(/api/[^"]+)":\s*self\.(\w+)', _src[_src.index("hand
 _no_save = {
     "/api/logout": "a session, tmpfs by design",
     "/api/claude-login/start": "starts a login; /code saves",
+    "/api/github-login/start": "starts a login; the finisher thread saves when gh exits",
     "/api/file-op": "/data, not the apkovl",
     "/api/backup": "writes an external disk",
     "/api/chat": "a conversation, under /data",
@@ -238,7 +253,6 @@ _no_save = {
     "/api/update-set": "the pipeos selfupdate verb saves; the handler reads its receipt (#275)",
     "/api/flash": "pipeos-flash writes the media directly",
     "/api/save": "is the save",
-    "/api/wake": "a packet on the wire, no state (#241)",
     "/api/secrets/reveal": "a read that re-auths (#244)",
     "/api/secrets/phrase-ack": "forgets a tmpfs copy (#244)",
     "/api/schedule/run": "starts a run; its record lives on /data (#242)",
@@ -308,8 +322,14 @@ ok("cross-origin claim refused")
 r = req("/api/claim", {"password": "hunter22hunter"})
 assert r["ok"] and os.path.exists(webd.PROVISIONED)
 ok("claim sets the provisioned marker")
-assert os.path.exists(webd.SERVICES_CONF) and webd.read_services()["claude"] is True and webd.read_services()["pipe"] is False
-ok("claim writes the default service set (Claude on, the rest off) — no file is no longer the fleet default")
+assert os.path.exists(webd.SERVICES_CONF) and webd.read_services()["claude"] is True and webd.read_services()["pipe"] is False \
+    and webd.read_services()["assistant"] is True
+ok("claim writes the default service set (Claude and the terminal on, the rest off) — no file is no longer the fleet default")
+assert webd.vault.get("assistant_pass") == "hunter22hunter", "the terminal's password is the dashboard's at claim"
+assert open(tmp + "/secrets/assistant.env").read() == "ASSISTANT_PASS='hunter22hunter'\n"
+assert os.path.exists(webd.ASSISTANT_CONF) and "ASSISTANT_PORT='7681'" in open(webd.ASSISTANT_CONF).read()
+assert isinstance(r.get("problems"), list)
+ok("claim seeds the terminal: assistant_pass in the vault = the admin password, a default assistant.conf, problems carried to the page")
 import select as _sel0   # a real wait, not a fixed sleep (time.sleep is no-op-patched further down)
 for _ in range(100):
     if os.path.exists(tmp + "/selfcheck.argv"):
@@ -376,6 +396,33 @@ req("/api/claude-token", {"token": "short"}, expect=400)
 assert not os.path.exists(webd.CLAUDE_AUTH_LEGACY) and webd.vault.get("claude_token") == "sk-ant-oat01-" + "t" * 60
 assert "sk-ant" not in open(webd.VAULT).read()
 ok("an API key and a setup-token each land as their own variable in the vault's export, never in /etc, and the sealed file does not contain them; the file wins over the sign-in; junk is refused")
+# ---- GitHub (Connect GitHub): device flow, token fallback, logout ------------
+g = req("/api/github")
+assert g["logged_in"] is False and g["pending"] is False and g["login"] == "", g
+ok("fresh box: no GitHub sign-in")
+r = req("/api/github-login/start", {})
+assert r["code"] == "ABCD-1234" and r["url"] == "https://github.com/login/device", r
+assert "auth login --web --hostname github.com --git-protocol https --skip-ssh-key --insecure-storage" in open(tmp + "/gh.argv").read()
+ok("sign-in start hands back the one-time code and the device URL gh printed, colour stripped")
+import select as _selg
+for _ in range(100):
+    if req("/api/github")["logged_in"]:
+        break
+    _selg.select([], [], [], 0.1)
+g = req("/api/github")
+assert g["logged_in"] is True and g["login"] == "octocat" and g["pending"] is False, g
+assert "auth setup-git --hostname github.com" in open(tmp + "/gh.argv").read() and "gh auth git-credential" in open(tmp + "/home/.gitconfig").read()
+ok("when the owner approves on GitHub the finisher wires git's credential helper and the status pill reads the login")
+r = req("/api/github-logout", {})
+assert r["ok"] and req("/api/github")["logged_in"] is False and "auth logout --hostname github.com" in open(tmp + "/gh.argv").read()
+ok("logout forgets the token")
+req("/api/github-token", {"token": "not a token"}, expect=400)
+r = req("/api/github-token", {"token": "ghp_bad" + "x" * 30}, expect=400)
+assert "401" in r["error"]
+r = req("/api/github-token", {"token": "ghp_good" + "x" * 30})
+assert r["ok"] and r["logged_in"] is True and r["login"] == "octocat"
+ok("a pasted token is checked with GitHub (junk and a refused token are 400) and signs the box in")
+req("/api/github-logout", {})
 req("/api/claude-login/start", {"billing": "claude"})
 r = req("/api/claude-login/code", {"code": "good#code"})
 assert r["method"] == "login" and not os.path.exists(webd.CLAUDE_AUTH)
@@ -388,6 +435,12 @@ ok("sign-out clears the credential")
 sp = req("/api/support")
 assert sp["enabled"] is False and sp["pubkey"] == ""
 ok("support off: no key, card hidden")
+r = req("/api/support-port", {"port": "abc"}, expect=400)
+r = req("/api/support-port", {"port": "70000"}, expect=400)
+r = req("/api/support-port", {"port": "42001"})
+assert r["ok"] and r["port"] == "42001" and "SUPPORT_PORT='42001'" in open(webd.SUPPORT_CONF).read()
+assert req("/api/support")["port"] == "42001"
+ok("the vendor's port is typed into the card: validated, written beside the relay, read back")
 with open(webd.SUPPORT_CONF, "w") as f:
     f.write("SUPPORT_RELAY=tunnel@relay.example\nSUPPORT_PORT=\n")
 r = req("/api/services", {"support": True})
@@ -466,17 +519,6 @@ assert len(r["names"]) == 5 and "studio" not in r["names"] and all(n in webd.CAR
 assert r["names"] == req("/api/name-suggest")["names"]
 os.unlink(webd.MDNS_CACHE)
 ok("the suggester offers five cars not on the network, the same five each time")
-# ---- wake (#241): admin sends the packet; the roster's word on the Machine is the answer
-seed_roster(ROSTER)
-r = req("/api/wake", {"id": "4d4d"})
-assert r["ok"] and r["mac"] == "aa:bb:cc:dd:4d:4d" and "magic packet" in r["detail"], r
-assert open(tmp + "/wake.argv").read().split() == ["4d4d"]
-req("/api/wake", {"id": "ffff"}, expect=404)
-req("/api/wake", {"id": "1a2b"}, expect=409)
-req("/api/wake", {"id": "../x"}, expect=400)
-req("/api/wake", {}, expect=400)
-os.unlink(webd.MACHINES_ROSTER)
-ok("wake: the admin's click runs pipeos-wake with the id and reports the MAC; unknown is 404, a Machine with no MAC 409, a hostile id 400")
 cookie["v"] = "0" * 64
 req("/api/status", expect=401)
 ok("bogus session refused")
@@ -1099,7 +1141,7 @@ req("/api/nas-account", {"name": "peek2", "password": "whatever12"}, expect=403)
 req("/api/update-set", {"image_update": "off"}, expect=403)
 req("/api/backup", {"dest": "ext/sdx1"}, expect=403)
 req("/api/flash", {"mode": "inplace", "confirm": "x"}, expect=403)
-req("/api/wake", {"id": "4d4d"}, expect=403)
+req("/api/github-login/start", {}, expect=403)
 req("/api/secrets", expect=403)
 req("/api/secrets/set", {"name": "jobs.x", "value": "y"}, expect=403)
 req("/api/schedule/set", {"name": "x", "cron": "* * * * *", "prompt": "x"}, expect=403)
@@ -1126,10 +1168,11 @@ req("/api/backup", {"dest": "ext/sdx1"}, expect=403)
 req("/api/flash", {"mode": "inplace", "confirm": "x"}, expect=403)
 req("/api/claude-login/start", {"billing": "claude"}, expect=403)
 req("/api/claude-token", {"token": "sk-ant-api03-" + "k" * 60}, expect=403)
-req("/api/wake", {"id": "4d4d"}, expect=403)
+req("/api/github-login/start", {}, expect=403)
+req("/api/github-token", {"token": "ghp_" + "k" * 40}, expect=403)
 req("/api/secrets", expect=403)
 req("/api/secrets/reveal", {"name": "claude_token", "password": "moverpassword"}, expect=403)
-ok("role user: file-op allowed; services/nas/users/name/backup/flash/claude/wake/secrets refused")
+ok("role user: file-op allowed; services/nas/users/name/backup/flash/claude/github/secrets refused")
 cookie["v"] = saved_admin2
 req("/api/users/del", {"name": "mover"})
 

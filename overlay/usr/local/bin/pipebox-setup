@@ -19,7 +19,7 @@ rc-service pipe-daemon start >/dev/null 2>&1 || true
 if pipe status 2>/dev/null | grep -q '^nick: anon'; then
     say ''
     say 'Step 1: sign this box in to pipe.'
-    say '  On your phone or laptop, get a one-time key at https://pipe.online'
+    say '  On your phone or laptop, get a one-time key at https://pipe.online/nicks'
     say '  (valid ~15 minutes).'
     while :; do
         printf 'paste key (or Enter to skip)> '
