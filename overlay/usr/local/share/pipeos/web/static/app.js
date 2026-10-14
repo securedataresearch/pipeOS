@@ -1179,11 +1179,10 @@ async function dashboard() {
           <div class="cardhead"><h2>Monthly cap</h2><span class="pill" id="uscappill"></span></div>
           <p class="note">Whole dollars; 0 = no cap. At 80% you get one DM; at 100% scheduled jobs pause until you raise it or the month turns. A session you are sitting in is only ever warned.</p>
           <label for="uscap">Cap (USD / month)</label>
-          <input id="uscap" type="number" min="0" max="100000" step="1">
-          <button id="uscapsave" type="button">Save</button>
-          <label for="usccap" style="margin-top:.6rem">Cluster cap (USD / month, every member's spend summed — set it on each member; this Machine judges from what the others last reported)</label>
-          <input id="usccap" type="number" min="0" max="100000" step="1">
-          <button id="usccapsave" type="button">Save cluster cap</button>
+          <div class="chatrow" style="margin-top:0"><input id="uscap" type="number" min="0" max="100000" step="1" style="flex:0 1 9rem"><button id="uscapsave" type="button">Save</button></div>
+          <label for="usccap">Cluster cap (USD / month)</label>
+          <p class="note" style="margin-top:0">Every member's spend summed. Set it on each member; this Machine judges from what the others last reported.</p>
+          <div class="chatrow" style="margin-top:0"><input id="usccap" type="number" min="0" max="100000" step="1" style="flex:0 1 9rem"><button id="usccapsave" type="button">Save cluster cap</button></div>
           <p class="note" id="usccapnote"></p>
           <p class="err" id="userr" hidden></p>
         </div>` : ""}
@@ -1206,23 +1205,23 @@ async function dashboard() {
         <div class="card">
           <div class="cardhead"><h2>A service on several Machines</h2><span class="note" id="clsvcnote"></span></div>
           <p class="note">Each Machine keeps its own settings; this flips one switch on the members you tick, and each saves its own change.</p>
-          <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <div class="chatrow">
             <select id="clsvc">${SERVICES.map(s => `<option value="${s.key}">${esc(s.name)}</option>`).join("")}</select>
             <select id="clsvcon"><option value="1">on</option><option value="0">off</option></select>
             <span id="clsvcids"></span>
-            <button id="clsvcgo" class="btn small" type="button">Apply</button>
+            <button id="clsvcgo" type="button">Apply</button>
           </div>
         </div>
         <div class="card">
           <div class="cardhead"><h2>Start an agent on a Machine</h2><span class="note" id="clagnote"></span></div>
           <p class="note">An agent is started <b>on</b> a member and lives there: its schedule, its work and its secrets stay on that Machine. Pick the Machine; “the idlest member” picks the one with nothing busy and the least load. A Machine that is off keeps its agents until it is back.</p>
-          <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
-            <input id="clagname" placeholder="name (a-z 0-9 -)" style="width:11rem" autocomplete="off">
+          <div class="chatrow">
+            <input id="clagname" placeholder="name (a-z 0-9 -)" autocomplete="off">
             <select id="clagon"></select>
-            <input id="clagcron" placeholder="schedule, e.g. @daily — blank: runs now, then only when started" style="width:16rem" autocomplete="off">
+            <input id="clagcron" placeholder="schedule, e.g. @daily — blank: runs now, then only when started" autocomplete="off">
           </div>
-          <textarea id="clagprompt" rows="2" placeholder="what it does (the prompt) — leave empty to run an agent that already lives on that Machine" style="width:100%;margin-top:.4rem"></textarea>
-          <div style="margin-top:.4rem"><button id="claggo" class="btn small" type="button">Start</button></div>
+          <textarea id="clagprompt" rows="2" placeholder="what it does (the prompt) — leave empty to run an agent that already lives on that Machine" style="margin-top:8px"></textarea>
+          <button id="claggo" type="button">Start</button>
         </div>
         <div class="card">
           <div class="cardhead"><h2>Who can sign in, across the cluster</h2><span><span class="note" id="clunote"></span> <button id="clurefresh" class="ghost small" type="button" data-vok>look again</button></span></div>
@@ -1298,7 +1297,7 @@ async function dashboard() {
         </div>
         <div class="card">
           <div class="cardhead"><h2>Logs</h2><span class="note" id="lognote"></span></div>
-          <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center">
+          <div class="chatrow">
             <select id="logsel"><option>selfcheck</option></select>
             <select id="loglines"><option value="150">last 150 lines</option><option value="500">last 500</option><option value="2000">last 2000</option><option value="5000">last 5000</option></select>
             <input id="loggrep" type="search" placeholder="filter lines…" autocomplete="off" style="flex:1;min-width:10rem">
@@ -1308,24 +1307,25 @@ async function dashboard() {
           </div>
           <pre class="report" id="logbox" hidden style="max-height:32rem;overflow:auto"></pre>
         </div>
-        <div class="card">
+        <div class="card maint">
           <h2>Maintenance</h2>
-          <button id="save" style="margin-top:0">Save state to boot media now</button>
-          <p class="note">The box also saves automatically every 15 minutes.</p>
-          <button id="repair" class="ghost">Repair remote access</button>
-          <button id="reboot" class="ghost">Reboot the box</button>
-          <button id="rebootfw" class="ghost">Reboot into BIOS</button>
-          <p class="note" id="mmsg" hidden></p>
-          <div id="updrow" style="margin-top:1rem">
-            <span class="pill" id="updstate">updates: checking…</span>
-            <label class="switch" title="A newer release image is applied in place and the box reboots — daily check, held while a job or a terminal is live"><input type="checkbox" id="updauto"><span></span></label> <span class="note">update automatically</span> <span class="note" id="updlast"></span>
-            <button id="updnow" class="ghost" hidden>Update now</button>
+          <div class="row">
+            <div><div class="name">Save state</div><div class="desc">Write settings to the boot media now. The box also saves every 15 minutes.</div></div>
+            <button id="save">Save now</button>
           </div>
-          <div id="flashrow" style="margin-top:1rem">
-            <span class="pill" id="fstate">live disk: checking…</span>
+          <div class="row" id="updrow">
+            <div><div class="name">Updates <span class="pill" id="updstate">checking…</span></div><div class="desc">A newer release is applied in place and the box reboots. Checked daily, held while a job or a terminal is live. <span id="updlast"></span></div></div>
+            <span style="display:flex;align-items:center;gap:10px"><button id="updnow" class="ghost" hidden>Update now</button><label class="switch" title="update automatically"><input type="checkbox" id="updauto"><span></span></label></span>
+          </div>
+          <div class="row" id="flashrow">
+            <div><div class="name">Live disk <span class="pill" id="fstate">checking…</span></div><div class="desc">Write this release to a spare stick or disk.</div><p class="note" id="fmsg" hidden></p></div>
             <button id="fflash" class="ghost" hidden>Flash a new live disk</button>
-            <p class="note" id="fmsg" hidden></p>
           </div>
+          <div class="row">
+            <div><div class="name">Restart</div><div class="desc">A reboot comes back to the last saved state. Repair re-opens remote access if it broke.</div></div>
+            <span style="display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end"><button id="repair" class="ghost">Repair remote access</button><button id="reboot" class="ghost">Reboot</button><button id="rebootfw" class="ghost">Reboot into BIOS</button></span>
+          </div>
+          <p class="note" id="mmsg" hidden></p>
           <details><summary class="note">Change admin password</summary>
             <label for="cur">Current password</label><input id="cur" type="password">
             <label for="new">New password</label><input id="new" type="password" minlength="8">
@@ -2271,7 +2271,7 @@ async function dashboard() {
   };
   loadHealthHistory();
   api("/api/update").then(u => {
-    v.querySelector("#updstate").textContent = "updates: " + u.state + (u.applied ? ` (applied ${u.applied})` : "")
+    v.querySelector("#updstate").textContent = u.state + (u.applied ? ` (applied ${u.applied})` : "")
       + (u.image_pending ? " · new image applied, reboot pending" : "");
     const au = v.querySelector("#updauto");
     if (au) {
@@ -2281,7 +2281,7 @@ async function dashboard() {
         catch (e) { au.checked = !au.checked; addAlert("bad", e.message); }
       };
       const ln = v.querySelector("#updlast");
-      if (ln) ln.textContent = u.image_last ? "last image update: " + u.image_last : "";
+      if (ln) ln.textContent = u.image_last ? "Last image update: " + u.image_last : "";
     }
     if (u.state === "update available") {
       v.querySelector("#updnow").hidden = false;
@@ -2290,10 +2290,10 @@ async function dashboard() {
   }).catch(() => {});
   v.querySelector("#updnow").onclick = async () => {
     const b = v.querySelector("#updnow"); busy(b, true);
-    v.querySelector("#updstate").textContent = "updates: applying (takes a few minutes)…";
+    v.querySelector("#updstate").textContent = "applying (takes a few minutes)…";
     try { const r = await api("/api/update-now", {});
-      v.querySelector("#updstate").textContent = "updates: " + (r.ok ? "applied — verified" : "FAILED: " + r.detail.slice(-120));
-    } catch (e) { v.querySelector("#updstate").textContent = "updates: " + e.message; }
+      v.querySelector("#updstate").textContent = (r.ok ? "applied — verified" : "FAILED: " + r.detail.slice(-120));
+    } catch (e) { v.querySelector("#updstate").textContent = e.message; }
     busy(b, false);
   };
   const loadFlash = async () => {
@@ -2301,7 +2301,7 @@ async function dashboard() {
     try {
       const f = await api("/api/flash");
       if (f.running) {
-        st8.textContent = "live disk: " + (f.step || "working") + "…" + (f.progress ? " " + f.progress : "");
+        st8.textContent = (f.step || "working") + "…" + (f.progress ? " " + f.progress : "");
         st8.className = "pill status-warn";
         btn.hidden = true;
         if (!loadFlash._t) loadFlash._t = setInterval(() => {
@@ -2310,18 +2310,18 @@ async function dashboard() {
         return;
       }
       if (loadFlash._t) { clearInterval(loadFlash._t); loadFlash._t = 0; }
-      if (f.ok === false) { st8.textContent = "live disk: FAILED"; st8.className = "pill status-bad"; msg.hidden = false; msg.textContent = f.detail; }
+      if (f.ok === false) { st8.textContent = "FAILED"; st8.className = "pill status-bad"; msg.hidden = false; msg.textContent = f.detail; }
       else if (f.ok === true && f.step === "done") {
-        st8.textContent = "live disk: written — reboot to finish";
+        st8.textContent = "written — reboot to finish";
         st8.className = "pill status-ok";
         msg.hidden = false; msg.textContent = "The new image is on the boot media with this box's identity. Reboot when ready.";
       } else {
         const cur = f.image && f.image.built ? f.image.built.slice(0, 10) : "unknown build";
-        st8.textContent = "live disk: " + cur;
+        st8.textContent = cur;
         st8.className = "pill";
         btn.hidden = false;
       }
-    } catch (e) { st8.textContent = "live disk: ?"; }
+    } catch (e) { st8.textContent = "?"; }
   };
   v.querySelector("#fflash").onclick = async () => {
     const msg = v.querySelector("#fmsg");
