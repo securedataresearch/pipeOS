@@ -766,7 +766,7 @@ cmd_apply() {
     state done
     say "done. Reboot to boot the new image as this box."
     say "identity copies kept at $STAGE (identity-$TS, previous-$TS)."
-    log "flash apply complete"
+    log "flash apply complete: $(cat "$APPLIED" 2>/dev/null || echo unknown)"
 }
 
 cmd_restore_identity() {
