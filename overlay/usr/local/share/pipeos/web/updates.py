@@ -36,6 +36,9 @@ import time
 
 DEPLOY_LOG = os.environ.get("PIPEOS_UPDATES_DEPLOY_LOG", "/data/logs/deploy-overlay.log")
 SELFUPDATE_LOG = os.environ.get("PIPEOS_UPDATES_SELFUPDATE_LOG", "/data/logs/selfupdate.log")
+# an image taken in place from the dashboard (pipeos flash apply) is a third
+# kind of update the Machine writes down — in flash.log, not selfupdate's
+FLASH_LOG = os.environ.get("PIPEOS_UPDATES_FLASH_LOG", "/data/logs/flash.log")
 REPO = os.environ.get("PIPEOS_UPDATES_REPO", "/data/repos/pipeOS")
 CACHE = os.environ.get("PIPEOS_UPDATES_CACHE", "/run/pipeos/updates.json")
 GIT = os.environ.get("PIPEOS_UPDATES_GIT", "git")
@@ -62,6 +65,7 @@ PROJECT_RELEASES = 12
 # opposite: an apply is staged and this boot is still the old one.
 _DEPLOYED = re.compile(r"^(\S+) OK (?:deployed|.*? at) \S+=([0-9a-f]{7,40})")
 _IMAGE = re.compile(r"^(\S+) OK image: applied ([^;\s]+)")
+_FLASHED = re.compile(r"^(\S+) flash apply complete(?::\s*(\S+))?\s*$")
 
 
 def _ts(stamp):
@@ -169,6 +173,13 @@ def entries():
             out.append({"kind": "image", "landed": _ts(m.group(1)), "sha": m.group(2),
                         "title": "system image %s" % m.group(2),
                         "body": "The Machine fetched, verified and applied a released image, then rebooted into it."})
+    for line in _lines(FLASH_LOG):
+        m = _FLASHED.match(line)
+        if m:
+            tag = m.group(2) or ""
+            out.append({"kind": "image", "landed": _ts(m.group(1)), "sha": tag,
+                        "title": "system image %s" % (tag or "(release not recorded)"),
+                        "body": "The owner updated this Machine in place from the dashboard: the released image was fetched, verified and written over the boot partition; the reboot that followed booted it."})
     out.sort(key=lambda e: (e.get("landed", 0), e.get("at", 0)), reverse=True)
     return {"at": int(time.time()), "clone": have_clone, "updates": out[:MAX_ENTRIES]}
 
@@ -185,6 +196,10 @@ def _gh(path):
 def _project_fetch(image_commit):
     rels = _gh("/repos/%s/releases?per_page=%d" % (GH_REPO, PROJECT_RELEASES))
     rels = [r for r in rels if not r.get("draft")]
+    # newest first by when it was published — GitHub's own order follows the
+    # tag's commit date, which several same-day releases share (2026-10-14:
+    # the list came back oldest-first and every diff was "no new commits")
+    rels.sort(key=lambda r: r.get("published_at") or r.get("created_at") or "", reverse=True)
     out = []
     running_seen = False
     for i, r in enumerate(rels):
@@ -258,7 +273,7 @@ def page(refresh=False):
     the cache is valid while its size and mtime are unchanged — a reload of
     the page costs nothing, and a fresh deploy shows up at once."""
     key = []
-    for path in (DEPLOY_LOG, SELFUPDATE_LOG):      # either log growing is new history
+    for path in (DEPLOY_LOG, SELFUPDATE_LOG, FLASH_LOG):      # any of these growing is new history
         try:
             st = os.stat(path)
             key.append("%d:%d" % (st.st_size, int(st.st_mtime)))
