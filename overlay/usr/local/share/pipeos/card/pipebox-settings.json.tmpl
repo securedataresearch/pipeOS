@@ -26,7 +26,6 @@
       "Bash(pipe dm *)",
       "Bash(pipe room *)",
       "Bash(pipe lobby *)",
-      "Bash(pipe wait *)",
       "Bash(pipe status*)",
       "Bash(pipe update*)",
       "Bash(pipe snapshot*)",
@@ -43,6 +42,9 @@
       "Bash(pipebox-card show*)"
     ],
     "deny": [
+      "Monitor",
+      "Bash(pipe wait*)",
+      "Bash(sleep *)",
       "Bash(git -c *)",
       "Bash(git config *)",
       "Bash(gh alias *)",

@@ -133,6 +133,10 @@ Former gaps, all fixed and boot-verified (2026-08-04):
   `/data/claude/projects` on the ext4 partition (`/dev/sda2` → `/data`), so
   transcripts and file-based memory survive reboot without touching the apkovl.
 - `+root/.abuild` and `+root/.config/gh` are in `lbu.list`.
+- Never arm a wait: no `pipe wait`, no Monitor, no `sleep` loop. The
+  listener (`pipebox-listener`) is the only waiter and wakes a session per
+  inbound batch; a self-armed monitor that expires empty bills the owner a
+  turn for nothing.
 - On a GENERIC (client) card the allow list has no general command runner:
   no `python3 *`, `find *`, `make *`; `git -c`/`git config`/`gh alias`/`gh
   extension`/`gh auth token` and the secret paths are denied. Work within
