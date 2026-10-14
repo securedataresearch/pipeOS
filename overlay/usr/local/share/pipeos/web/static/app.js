@@ -857,7 +857,7 @@ async function dashboard() {
         <div class="viewhead"><h1>Assistant</h1></div>
         <div class="card">
           <div class="cardhead"><h2>Backend</h2><span class="pill" id="abcur">…</span></div>
-          <p class="note">Which assistant the chat and the terminal run. The box can ship Claude and Hermes.</p>
+          <p class="note">Which assistant the terminal runs. The box can ship Claude and Hermes.</p>
           <div id="abchoices" class="note">loading…</div>
           <p class="note" id="abmsg" hidden></p>
         </div>
@@ -885,7 +885,7 @@ async function dashboard() {
 
       <section data-view="files" hidden>
         <div class="viewhead"><h1>Files</h1></div>
-        <div class="filegrid${st.services.claude ? "" : " nochat"}">
+        <div class="filegrid">
           <div class="card" data-userok>
             <div class="cardhead">
               <div class="crumbs" id="crumbs"></div>
@@ -900,16 +900,6 @@ async function dashboard() {
             <div id="flist">loading…</div>
             <p class="note" style="margin-bottom:0">Drop files anywhere on this card to upload; drag a row onto a folder to move it.</p>
           </div>
-          ${st.services.claude ? `
-          <div class="card chatpane">
-            <div class="cardhead"><h2>Assistant</h2></div>
-            <div id="fchatlog" class="chatlog"></div>
-            <div class="chatrow">
-              <input id="fchatmsg" type="text" autocomplete="off" placeholder="Ask about these files…">
-              <button id="fchatgo" type="button">Send</button>
-            </div>
-            <p class="note" id="fchatnote" hidden></p>
-          </div>` : ""}
         </div>
         <div class="card" style="margin-top:.9rem">
           <div class="cardhead"><h2>Disks</h2><button id="dreload" class="ghost small" type="button" data-vok>refresh</button></div>
@@ -1396,29 +1386,6 @@ async function dashboard() {
       if (c.dataset.k === "support") loadSupport();
     };
   });
-  // one wiring for every chat surface (assistant view, files pane)
-  const wireChat = (goId, msgId, logId, noteId) => {
-    const go = v.querySelector(goId);
-    if (!go) return;
-    const send = async () => {
-      const inp = v.querySelector(msgId), log = v.querySelector(logId), note = v.querySelector(noteId);
-      const msg = inp.value.trim();
-      if (!msg) return;
-      log.appendChild(el(`<p><strong>you:</strong> ${esc(msg)}</p>`));
-      inp.value = ""; busy(go, true);
-      note.hidden = false; note.textContent = "thinking…";
-      try {
-        const r = await api("/api/chat", { message: msg });
-        log.appendChild(el(`<p><strong>${esc(st.nick || "box")}:</strong> ${esc(r.reply)}</p>`));
-        note.hidden = true;
-      } catch (e) { note.textContent = e.message; }
-      busy(go, false);
-      log.scrollTop = log.scrollHeight;
-    };
-    go.onclick = send;
-    v.querySelector(msgId).addEventListener("keydown", e => { if (e.key === "Enter") send(); });
-  };
-  wireChat("#fchatgo", "#fchatmsg", "#fchatlog", "#fchatnote");
   // the terminal is the assistant's front door (Sam, 2026-10-13): one
   // button in the sidebar, the port from the assistant config
   const termopen = v.querySelector("#termopen");

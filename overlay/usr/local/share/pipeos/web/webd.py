@@ -2287,7 +2287,6 @@ class Handler(BaseHTTPRequestHandler):
             "/api/users/set": self.api_users_set,
             "/api/users/del": self.api_users_del,
             "/api/save": self.api_save,
-            "/api/chat": self.api_chat,
             "/api/reboot": self.api_reboot,
             "/api/reboot-firmware": self.api_reboot_firmware,
             "/api/repair-access": self.api_repair_access,
@@ -4350,58 +4349,6 @@ class Handler(BaseHTTPRequestHandler):
     def api_save(self, _body):
         saved, detail = save_state()
         self.send(200, {"ok": saved, "detail": "" if saved else detail})
-
-    def api_chat(self, body):
-        """Talk to the box's Claude from the dashboard — the assistant surface
-        for a pipe-less box. Same fence as the pipe listener (the shipped
-        pipebox settings); one conversation per box, continued across turns."""
-        msg = (body.get("message") or "").strip()
-        if not msg or len(msg) > 8000:
-            return self.err(400, "say something (under 8000 characters)")
-        svcs = read_services()
-        if not svcs["claude"]:
-            return self.err(400, "the assistant service is switched off")
-        backend = read_conf_values(ASSISTANT_CONF, ["ASSISTANT_BACKEND"])["ASSISTANT_BACKEND"] or "claude"
-        env = dict(os.environ, HOME="/root")
-        os.makedirs(WEBCHAT_DIR, exist_ok=True)
-        stdin = None
-        if backend == "hermes":
-            # -z = one-shot; a named --continue session keeps one conversation
-            argv = ["hermes", "-z", msg, "--continue", "webchat"]
-        else:
-            backend = "claude"
-            name, value = claude_auth_env()
-            if name:
-                env[name] = value
-            # The chat's OWN session (#246; Sam, 2026-09-10): --continue picked
-            # up whatever transcript was newest in this dir — the master
-            # session's — so the chat silently extended the assistant's
-            # conversation and the ledger could not tell the two apart.
-            try:
-                with open(WEBCHAT_SID) as f:
-                    sid = f.read().strip()
-            except OSError:
-                sid = ""
-            if not re.fullmatch(r"[0-9a-f-]{36}", sid):
-                sid = str(uuid.uuid4())
-                write_private(WEBCHAT_SID, sid + "\n")
-            argv = ["claude", "-p", "--settings", "/etc/pipeos/pipebox-settings.json"]
-            argv += ["--resume", sid] if os.path.exists(os.path.join(WEBCHAT_DIR, ".started")) else ["--session-id", sid]
-            stdin = msg
-        try:
-            p = subprocess.run(
-                argv, input=stdin, capture_output=True, text=True,
-                timeout=180, env=env, cwd=WEBCHAT_DIR,
-            )
-        except subprocess.TimeoutExpired:
-            return self.err(504, "the assistant took longer than 3 minutes — try again")
-        except FileNotFoundError:
-            return self.err(500, "%s is not installed on this image" % backend)
-        if p.returncode != 0:
-            return self.err(502, "%s errored: %s" % (backend, (p.stderr or p.stdout or "")[-300:].strip()))
-        with open(os.path.join(WEBCHAT_DIR, ".started"), "a"):
-            pass
-        self.send(200, {"reply": (p.stdout or "").strip()})
 
     def api_reboot(self, _body):
         """The recovery lever basho0's ssh lockout proved missing (pipeOS#148):

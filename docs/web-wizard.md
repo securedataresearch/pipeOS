@@ -76,10 +76,9 @@ default off; the pipe-first flow (`pipebox-setup`) remains for fleet boxes.
 
 The dashboard humanizes `/run/pipeos/boot-report` (the pipe owner-DM was the
 only delivery channel before; it still works when pipe is on), toggles
-services, shows disk/uptime, saves state, changes the password — and, with
-Claude enabled, carries **web chat**: `POST /api/chat` feeds the box's Claude
-(same fence as the pipe listener, one continued conversation under
-`/data/pipebox/webchat`). For a pipe-less box this is the assistant surface.
+services, shows disk/uptime, saves state and changes the password. The
+assistant's surface is its terminal, opened from the dashboard (there is no
+separate web chat: it was a second conversation beside the terminal's).
 
 Two more toggles ride the same services model:
 - **Vendor support access** (`pipeos-support`): opt-in reverse tunnel
