@@ -142,6 +142,8 @@ with open(webd.FLASH_BIN, "w") as f:
     f.write("#!/bin/sh\necho step=done > " + tmp + "/flash.state\n")
 os.chmod(webd.FLASH_BIN, 0o755)
 webd.LOG_ALLOW = {k: tmp + "/" + k + ".log" for k in webd.LOG_ALLOW}
+webd.LOGS_DIR = tmp + "/logs"; os.makedirs(webd.LOGS_DIR, exist_ok=True)
+webd.ACTIVITY_LOG = tmp + "/logs/activity.log"; webd.SELFCHECK_LOG = tmp + "/logs/selfcheck.log"
 # Claude, three ways (#192): a stub `claude` on PATH that behaves like the
 # real one from the outside — `auth login` prints the OSC-8-wrapped link and
 # reads the code from stdin, `auth status` answers from the credentials
@@ -191,6 +193,7 @@ with open(webd.SELFCHECK_BIN, "w") as f:
     f.write("#!/bin/sh\necho \"$*\" >> " + tmp + "/selfcheck.argv\necho 'ok all fine'\nprintf 'verdict: all green\\n'\n")
 os.chmod(webd.SELFCHECK_BIN, 0o755)
 webd.CLAUDE_HOME = tmp + "/home"
+webd.updates.GH_API = ""          # the project's history comes from GitHub; the probe is offline
 webd.CLAUDE_CREDS = tmp + "/home/.claude/.credentials.json"
 with open(webd.CARD, "w") as f:
     f.write("NICK=\nNAME=\nROLE=GENERIC\nOWNER_NICK=\n")
@@ -364,6 +367,26 @@ ok("status carries the live verdict when health.last is newer than the boot repo
 r = req("/api/services", {"claude": True, "pipe": False})
 assert r["services"]["claude"] is True and r["services"]["pipe"] is False
 ok("services toggle round-trips")
+# ---- the owner's trail and the log viewer (2026-10-13) --------------------------
+_act = open(webd.ACTIVITY_LOG).read()
+assert " admin services claude=on pipe=off\n" in _act and " admin claim" not in _act, _act
+with open(webd.LOGS_DIR + "/pipeos-gc.log", "w") as f:
+    f.write("one\ntwo match\nthree\n")
+with open(webd.SELFCHECK_LOG, "w") as f:
+    f.write("2026-10-14T03:48:04Z boot selfcheck: green with 2 warning(s)\n  note: x\n2026-10-14T04:48:04Z live selfcheck: all green\n")
+ls = req("/api/logs-list")
+names = {l["name"] for l in ls["logs"]}
+assert {"activity", "pipeos-gc", "selfcheck", "pipeos-web"} <= names and ls["logs"][0]["exists"] is True
+assert req("/api/logs?name=pipeos-gc&grep=MATCH")["text"] == "two match"
+req("/api/logs?name=../etc/passwd", expect=400)
+req("/api/logs?name=nope", expect=400)
+hh = req("/api/health-history")["history"]
+assert [h["kind"] for h in hh] == ["live", "boot"] and hh[0]["verdict"] == "all green"
+_rawr = urllib.request.urlopen(urllib.request.Request(base + "/api/logs?name=activity&raw=1", headers={"Cookie": "session=" + cookie["v"]}))
+assert _rawr.headers["Content-Type"].startswith("text/plain") and b"services" in _rawr.read()
+tr = req("/api/transcript")
+assert tr["turns"] == [] and "not had a conversation" in tr["note"]
+ok("activity log records who did what; the viewer lists every *.log, filters, refuses paths, serves raw; the health timeline parses selfcheck.log; an empty transcript says so")
 
 # ---- Claude, three ways (#192) ------------------------------------------
 c = req("/api/claude")

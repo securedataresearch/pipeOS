@@ -793,6 +793,10 @@ async function dashboard() {
             ${st.nick ? `<tr><th>pipe nick</th><td class="mono">${esc(st.nick)}${st.owner ? `<span class="note"> · owner ${esc(st.owner)}</span>` : ""}</td></tr>` : ""}
           </table></div>
         </div>
+        <div class="card">
+          <div class="cardhead"><h2>Recent activity</h2><span class="note"><a href="#/system">all logs</a></span></div>
+          <div id="ovact" class="note">looking…</div>
+        </div>
         ${showStream ? `
         <div class="card">
           <div class="cardhead"><h2>Streaming</h2><span class="onair off" id="ovair"><span class="blip"></span>checking…</span></div>
@@ -870,6 +874,12 @@ async function dashboard() {
             <button id="asave" type="button">Save & restart terminal</button>
           </details>
           <p class="note" id="amsg" hidden></p>
+        </div>` : ""}
+        ${isAdmin ? `
+        <div class="card">
+          <div class="cardhead"><h2>Conversation</h2><span><span class="note" id="trnote"></span> <button id="trrefresh" class="ghost small" type="button" data-vok>refresh</button></span></div>
+          <p class="sub">What the assistant was asked and what it said, from its own transcript — the same conversation the terminal shows.</p>
+          <div id="trlist" class="note">looking…</div>
         </div>` : ""}
       </section>` : ""}
 
@@ -1262,8 +1272,13 @@ async function dashboard() {
         <div class="viewhead"><h1>Updates</h1></div>
         <div class="card">
           <div class="cardhead"><h2>What has changed on this Machine</h2><span><span class="note" id="upnote"></span> <button id="uprefresh" class="ghost small" type="button" data-vok>look again</button></span></div>
-          <p class="sub">Newest first. Every change this Machine has taken, with what it was for — read from what the Machine itself wrote down when it took it, so this is its history and not the project's.</p>
+          <p class="sub">Newest first. Every change this Machine has taken, with what it was for — read from what the Machine itself wrote down when it took it.</p>
           <div id="uplist" class="note">looking…</div>
+        </div>
+        <div class="card">
+          <div class="cardhead"><h2>What has changed in pipeOS</h2><span class="note" id="upprojnote"></span></div>
+          <p class="sub">The project's releases, newest first, each with the commits that landed since the one before. pipeOS is open source; this is its history as GitHub holds it, with the release this Machine runs marked.</p>
+          <div id="upproj" class="note">looking…</div>
         </div>
       </section>
 
@@ -1287,12 +1302,21 @@ async function dashboard() {
         </div>
         <p class="note">History lives in memory and starts over when the dashboard restarts.</p>
         <div class="card">
-          <h2>Logs</h2>
-          <select id="logsel">
-            ${["selfcheck", "pipeos-web", "pipeos-mdns", "pipe-daemon", "pipebox-listener", "pipeos-stream", "pipeos-assistant", "schedule", "selfupdate", "worksweep"].map(l => `<option>${l}</option>`).join("")}
-          </select>
-          <button id="logview" class="ghost" data-vok style="margin-top:.4rem">View</button>
-          <pre class="report" id="logbox" hidden></pre>
+          <div class="cardhead"><h2>Health timeline</h2><span class="note" id="hhnote"></span></div>
+          <p class="sub">Every boot report and hourly check this Machine has written, newest first.</p>
+          <div id="hhlist" class="note">looking…</div>
+        </div>
+        <div class="card">
+          <div class="cardhead"><h2>Logs</h2><span class="note" id="lognote"></span></div>
+          <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center">
+            <select id="logsel"><option>selfcheck</option></select>
+            <select id="loglines"><option value="150">last 150 lines</option><option value="500">last 500</option><option value="2000">last 2000</option><option value="5000">last 5000</option></select>
+            <input id="loggrep" type="search" placeholder="filter lines…" autocomplete="off" style="flex:1;min-width:10rem">
+            <label class="note"><input type="checkbox" id="lognewest"> newest first</label>
+            <button id="logview" class="ghost small" data-vok type="button">Refresh</button>
+            <a id="logdl" class="btn ghost small" href="#" download>Download</a>
+          </div>
+          <pre class="report" id="logbox" hidden style="max-height:32rem;overflow:auto"></pre>
         </div>
         <div class="card">
           <h2>Maintenance</h2>
@@ -1401,6 +1425,22 @@ async function dashboard() {
   if (termopen) api("/api/assistant").then(a => {
     termopen.href = location.protocol + "//" + location.hostname + ":" + (a.port || "7681") + "/";
   }).catch(() => {});
+  // ---- overview: what was done here lately (the activity log, newest first) ----
+  const loadActivity = async () => {
+    const box = v.querySelector("#ovact");
+    if (!box) return;
+    try {
+      const r = await (await fetch("/api/logs?name=activity&lines=15")).json();
+      const lines = (r.text || "").split("\n").filter(l => /^\d{4}-/.test(l)).reverse();
+      if (!lines.length) { box.className = "note"; box.textContent = "Nothing yet — every change made from this dashboard will be listed here."; return; }
+      box.className = "";
+      box.innerHTML = `<div class="tblwrap"><table class="tbl">${lines.map(l => {
+        const [ts, who, ...rest] = l.split(" ");
+        return `<tr><td class="mono">${esc(ts.replace("T", " ").replace("Z", ""))}</td><td>${esc(who)}</td><td class="mono">${esc(rest.join(" "))}</td></tr>`;
+      }).join("")}</table></div>`;
+    } catch (e) { box.className = "note"; box.textContent = e.message; }
+  };
+  loadActivity();
   // ---- overview: attention strip + live tiles ----
   // The strip renders from a report + live state; "re-check now" swaps in a
   // fresh read-only selfcheck run, because the boot report is a snapshot of
@@ -1605,6 +1645,22 @@ async function dashboard() {
     }).catch(() => {});
     loadBackends();
   }
+  // ---- the assistant's conversation, read from its transcript ----
+  const loadTranscript = async () => {
+    const list = v.querySelector("#trlist"), note = v.querySelector("#trnote");
+    if (!list) return;
+    try {
+      const r = await api("/api/transcript?turns=40");
+      const ts = r.turns || [];
+      if (!ts.length) { list.className = "note"; list.textContent = r.note || "No conversation yet."; note.textContent = ""; return; }
+      list.className = "";
+      list.innerHTML = ts.map(t => `<div class="uprow"><div class="uphead"><span class="uptitle">${t.role === "user" ? "you" : esc(st.nick || "assistant")}</span> <span class="note">${t.ts ? esc(new Date(t.ts).toLocaleString()) : ""}</span></div><pre class="upbody" style="white-space:pre-wrap">${esc(t.text)}</pre></div>`).join("");
+      note.textContent = `${ts.length} of ${r.total || ts.length} turns`;
+      list.scrollTop = list.scrollHeight;
+    } catch (e) { list.className = "note"; list.textContent = e.message; }
+  };
+  const trBtn = v.querySelector("#trrefresh");
+  if (trBtn) { trBtn.onclick = loadTranscript; loadTranscript(); }
   const asave = v.querySelector("#asave");
   if (asave) {
     const aopen = v.querySelector("#aopen");
@@ -2200,13 +2256,53 @@ async function dashboard() {
       }
     });
   }
-  v.querySelector("#logview").onclick = async () => {
+  // ---- logs: every file the box writes, filtered, newest-first, downloadable ----
+  const logQuery = () => "name=" + encodeURIComponent(v.querySelector("#logsel").value)
+    + "&lines=" + encodeURIComponent(v.querySelector("#loglines").value)
+    + (v.querySelector("#loggrep").value.trim() ? "&grep=" + encodeURIComponent(v.querySelector("#loggrep").value.trim()) : "");
+  const showLog = async () => {
     const box = v.querySelector("#logbox"); box.hidden = false; box.textContent = "…";
+    v.querySelector("#logdl").href = "/api/logs?" + logQuery() + "&raw=1";
     try {
-      const r = await fetch("/api/logs?name=" + encodeURIComponent(v.querySelector("#logsel").value) + "&lines=150");
-      box.textContent = (await r.json()).text;
+      const r = await (await fetch("/api/logs?" + logQuery())).json();
+      let lines = (r.text || r.error || "").split("\n");
+      if (v.querySelector("#lognewest").checked) lines = lines.reverse();
+      box.textContent = lines.join("\n") || "(nothing matched)";
+      v.querySelector("#lognote").textContent = `${lines.filter(Boolean).length} line${lines.length === 1 ? "" : "s"}`;
     } catch (e) { box.textContent = e.message; }
   };
+  const loadLogList = async () => {
+    try {
+      const r = await api("/api/logs-list");
+      const sel = v.querySelector("#logsel"), cur = sel.value;
+      sel.innerHTML = (r.logs || []).map(l => `<option value="${esc(l.name)}"${l.exists ? "" : " disabled"}>${esc(l.name)}${l.exists ? ` · ${l.size < 1024 ? l.size + " B" : (l.size / 1024).toFixed(0) + " KB"} · ${agoShort(l.mtime)}` : " · (nothing yet)"}</option>`).join("");
+      if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+    } catch (e) {}
+  };
+  v.querySelector("#logview").onclick = () => { loadLogList(); showLog(); };
+  v.querySelector("#logsel").onchange = showLog;
+  v.querySelector("#loglines").onchange = showLog;
+  v.querySelector("#lognewest").onchange = showLog;
+  let grepT = null;
+  v.querySelector("#loggrep").addEventListener("input", () => { clearTimeout(grepT); grepT = setTimeout(showLog, 350); });
+  loadLogList();
+  // ---- health timeline ----
+  const loadHealthHistory = async () => {
+    const list = v.querySelector("#hhlist"), note = v.querySelector("#hhnote");
+    if (!list) return;
+    try {
+      const r = await api("/api/health-history");
+      const hs = r.history || [];
+      if (!hs.length) { list.className = "note"; list.textContent = "No reports written yet."; return; }
+      list.className = "";
+      list.innerHTML = `<div class="tblwrap"><table class="tbl">${hs.slice(0, 60).map(h => {
+        const [cls] = verdictClass("verdict: " + h.verdict);
+        return `<tr><td class="mono">${esc(h.ts.replace("T", " ").replace("Z", ""))}</td><td>${esc(h.kind)}</td><td><span class="${cls}">${esc(h.verdict)}</span></td></tr>`;
+      }).join("")}</table></div>`;
+      note.textContent = `${hs.length} report${hs.length === 1 ? "" : "s"}`;
+    } catch (e) { list.className = "note"; list.textContent = e.message; }
+  };
+  loadHealthHistory();
   api("/api/update").then(u => {
     v.querySelector("#updstate").textContent = "updates: " + u.state + (u.applied ? ` (applied ${u.applied})` : "")
       + (u.image_pending ? " · new image applied, reboot pending" : "");
@@ -2378,9 +2474,33 @@ async function dashboard() {
     });
     note.textContent = `${us.length} change${us.length === 1 ? "" : "s"}` + (d.clone ? "" : " · no repo clone here, so only what arrived is listed, not what each change said");
   };
+  const renderProject = (p) => {
+    const box = v.querySelector("#upproj"), note = v.querySelector("#upprojnote");
+    if (!box) return;
+    p = p || {};
+    const rels = p.releases || [];
+    note.textContent = p.error ? p.error : (p.at ? "from github.com/" + p.repo + " · " + new Date(p.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
+    if (!rels.length) { box.className = "note"; box.textContent = p.error || "No releases found."; return; }
+    box.className = "";
+    box.innerHTML = rels.map((r, ri) => {
+      const when = r.date ? new Date(r.date) : null;
+      const pill = r.running ? '<span class="pill status-ok">this Machine</span>' : (r.newer && p.running_known ? '<span class="pill status-warn">newer</span>' : "");
+      const cs = r.commits || [];
+      const rows = cs.map((c, ci) => `<div class="uprow">
+        <div class="uphead"><span class="uptitle">${esc(c.title)}</span> <span class="note">${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.sha)}</a>` : esc(c.sha)}</span></div>
+        ${c.body ? `<button class="ghost small upmore" type="button" data-vok data-pc="${ri}-${ci}">what this was for</button><pre class="upbody" id="upc-${ri}-${ci}" hidden>${esc(c.body)}</pre>` : ""}
+      </div>`).join("");
+      return `<h3 class="upday">${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.tag)}</a>` : esc(r.tag)} ${pill} <span class="note">${when ? when.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" }) : ""}${cs.length ? ` · ${cs.length} change${cs.length === 1 ? "" : "s"}` : (r.commits_unknown ? " · changes not available" : (ri === rels.length - 1 ? " · the earliest release listed" : " · a repo-only release, no new commits"))}</span></h3>${rows}`;
+    }).join("");
+    box.querySelectorAll("[data-pc]").forEach(b => b.onclick = () => {
+      const pre = box.querySelector("#upc-" + b.dataset.pc);
+      pre.hidden = !pre.hidden;
+      b.textContent = pre.hidden ? "what this was for" : "hide";
+    });
+  };
   const loadUpdates = async (refresh) => {
     if (upLoaded && !refresh) return;
-    try { renderUpdates(await api("/api/updates" + (refresh ? "?refresh=1" : ""))); upLoaded = true; }
+    try { const d = await api("/api/updates" + (refresh ? "?refresh=1" : "")); renderUpdates(d); renderProject(d.project); upLoaded = true; }
     catch (e) { const l = v.querySelector("#uplist"); if (l) { l.className = "note"; l.textContent = e.message; } }
   };
   const upBtn = v.querySelector("#uprefresh");

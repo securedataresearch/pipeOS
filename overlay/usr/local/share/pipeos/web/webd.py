@@ -2191,6 +2191,9 @@ class Handler(BaseHTTPRequestHandler):
             "/api/cluster/users-here": self.api_cluster_users_here,
             "/api/lan": self.api_lan,
             "/api/updates": self.api_updates,
+            "/api/logs-list": self.api_logs_list,
+            "/api/health-history": self.api_health_history,
+            "/api/transcript": self.api_transcript,
         }
         fn = readers.get(path)
         if fn is not None:
@@ -2329,6 +2332,7 @@ class Handler(BaseHTTPRequestHandler):
         fn = handlers.get(path)
         if fn is None:
             return self.err(404, "no such action")
+        activity(sess.get("user", ""), path, body)
         return fn(body)
 
     def serve_static(self, name):
@@ -2416,7 +2420,12 @@ class Handler(BaseHTTPRequestHandler):
         description, and every released image it applied. Read from what the
         Machine itself wrote down — no network. A signed-in reader only."""
         q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        self.send(200, updates.page(refresh=(q.get("refresh", ["0"])[0] not in ("", "0", "no", "false"))))
+        refresh = q.get("refresh", ["0"])[0] not in ("", "0", "no", "false")
+        d = dict(updates.page(refresh=refresh))
+        # and the project's history beside the Machine's own: the releases
+        # and their commits, the one this Machine runs marked
+        d["project"] = updates.project(lanid.image_info(FLASH_IMAGE_TXT).get("commit", ""), refresh=refresh)
+        self.send(200, d)
 
     def api_lan(self):
         """The network map (#217): netgaze's pass, cached a minute, with
@@ -4462,6 +4471,14 @@ LOG_ALLOW = {
     "selfupdate": "/data/logs/selfupdate.log",
     "worksweep": "/data/logs/worksweep.log",
 }
+# Every log the box writes lives here; the viewer lists the directory rather
+# than the table above (Sam, 2026-10-13: "improve other forms of logging").
+LOGS_DIR = "/data/logs"
+LOG_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
+# What was done to this Machine through the dashboard: one line per mutating
+# call — when, who, what. The owner's own audit trail, on /data.
+ACTIVITY_LOG = LOGS_DIR + "/activity.log"
+SELFCHECK_LOG = LOGS_DIR + "/selfcheck.log"
 STREAM_CONF = ETC + "/stream.conf"
 ASSISTANT_CONF = ETC + "/assistant.conf"
 # Scheduled runs (#242): the job list is owner intent and rides the apkovl;
@@ -4490,6 +4507,117 @@ LEDGER_LOCK = threading.Lock()
 LEDGER_STATE = {"obj": None, "last": 0}
 SELFUPDATE_CONF = ETC + "/selfupdate.conf"
 UPDATE_STAMP = "/data/.pipeos/selfupdate.applied"
+
+
+def activity(user, path, body):
+    """One line per mutating dashboard call: when, who, what — the owner's
+    own trail of what was done to this Machine. Never raises, never blocks."""
+    what = path[len("/api/"):] if path.startswith("/api/") else path
+    detail = ""
+    try:
+        b = body if isinstance(body, dict) else {}
+        if what == "services":
+            detail = " ".join("%s=%s" % (k, "on" if v else "off") for k, v in sorted(b.items()) if isinstance(v, bool))
+        elif what in ("users/add", "users/set", "users/del", "schedule/set", "schedule/del", "schedule/run",
+                      "secrets/set", "secrets/del", "secrets/reveal", "secrets/share", "secrets/unshare"):
+            detail = str(b.get("name") or "")
+        elif what == "file-op":
+            detail = "%s %s" % (b.get("op") or "", b.get("path") or "")
+        elif what == "name":
+            detail = str(b.get("hostname") or b.get("name") or "")
+        elif what == "assistant-config":
+            detail = " ".join(k for k in ("password", "port", "backend") if b.get(k))
+        elif what == "usage/cap":
+            detail = str(b.get("usd") or "")
+        elif what == "flash":
+            detail = str(b.get("mode") or "")
+    except Exception:   # noqa: BLE001
+        detail = ""
+    line = "%s %s %s%s\n" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), user or "-", what, (" " + detail.strip()) if detail.strip() else "")
+    try:
+        os.makedirs(os.path.dirname(ACTIVITY_LOG), exist_ok=True)
+        with open(ACTIVITY_LOG, "a") as f:
+            f.write(line)
+    except OSError:
+        pass
+
+
+_HEALTH_LINE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) (boot|live|health)\b[^:]*: (.*)$")
+
+
+def health_history(limit=200):
+    """selfcheck.log's verdict lines, newest first: [{ts, kind, verdict}]."""
+    text = tail_file(SELFCHECK_LOG, 4000) or ""
+    out = []
+    for l in text.splitlines():
+        m = _HEALTH_LINE.match(l)
+        if m:
+            out.append({"ts": m.group(1), "kind": m.group(2), "verdict": m.group(3).strip()})
+    out.reverse()
+    return out[:limit]
+
+
+def transcript_turns(n):
+    """The newest transcript of the master session (claude keys them by the
+    cwd, / -> -): the last n user/assistant turns as plain text. Tool calls
+    are named, not dumped."""
+    d = os.path.join(CLAUDE_HOME, ".claude", "projects", WEBCHAT_DIR.replace("/", "-"))
+    try:
+        files = sorted((os.path.join(d, f) for f in os.listdir(d) if f.endswith(".jsonl")),
+                       key=lambda p: os.path.getmtime(p))
+    except OSError:
+        files = []
+    if not files:
+        return {"turns": [], "note": "the assistant has not had a conversation on this Machine yet"}
+    path = files[-1]
+    turns = []
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                try:
+                    j = json.loads(line)
+                except ValueError:
+                    continue
+                if j.get("type") not in ("user", "assistant") or j.get("isSidechain"):
+                    continue
+                msg = j.get("message") or {}
+                content = msg.get("content")
+                parts = []
+                if isinstance(content, str):
+                    parts.append(content)
+                elif isinstance(content, list):
+                    for c in content:
+                        if not isinstance(c, dict):
+                            continue
+                        t = c.get("type")
+                        if t == "text" and c.get("text"):
+                            parts.append(c["text"])
+                        elif t == "tool_use":
+                            parts.append("[used %s]" % (c.get("name") or "a tool"))
+                        elif t == "tool_result":
+                            parts.append("[tool result]")
+                text = "\n".join(p for p in parts if p).strip()
+                if not text or text.startswith("<task-notification>") or text.startswith("<system-reminder>"):
+                    continue
+                turns.append({"role": j["type"], "text": text[:4000], "ts": j.get("timestamp") or ""})
+    except OSError:
+        pass
+    return {"turns": turns[-n:], "file": os.path.basename(path), "total": len(turns)}
+
+
+def log_path(name):
+    """A log the viewer may show: the fixed table, a scheduled job's own
+    log, or any *.log in LOGS_DIR by basename (never a path)."""
+    path = LOG_ALLOW.get(name)
+    # a scheduled job's own log (#242): schedule-<job>, for a job that exists
+    if path is None and name.startswith("schedule-") and JOB_NAME_RE.match(name[9:]) \
+            and any(j["name"] == name[9:] for j in read_schedule()):
+        path = os.path.join(SCHEDULE_LOGDIR, name + ".log")
+    if path is None and LOG_NAME_RE.match(name) and ".." not in name:
+        cand = os.path.join(LOGS_DIR, name + ".log")
+        if os.path.isfile(cand):
+            path = cand
+    return path
 
 
 def tail_file(path, lines):
@@ -4812,23 +4940,79 @@ def read_conf_values(path, keys):
 class PhaseB:
     """Mixin-style handlers kept in one place; bound onto Handler below."""
 
+    def api_logs_list(self):
+        """Every log this Machine has: the directory, not a table — a new
+        service's log shows up the day it starts writing."""
+        rows = {}
+        for name, path in LOG_ALLOW.items():
+            rows[name] = {"name": name, "size": 0, "mtime": 0, "exists": False}
+        try:
+            for fn in os.listdir(LOGS_DIR):
+                if not fn.endswith(".log"):
+                    continue
+                name = fn[:-4]
+                if not LOG_NAME_RE.match(name):
+                    continue
+                rows.setdefault(name, {"name": name})
+        except OSError:
+            pass
+        for j in read_schedule():
+            rows.setdefault("schedule-" + j["name"], {"name": "schedule-" + j["name"]})
+        out = []
+        for name, r in rows.items():
+            path = log_path(name)
+            try:
+                st = os.stat(path)
+                r.update({"size": st.st_size, "mtime": int(st.st_mtime), "exists": True})
+            except (OSError, TypeError):
+                r.update({"size": 0, "mtime": 0, "exists": False})
+            out.append(r)
+        out.sort(key=lambda r: (-r["mtime"], r["name"]))
+        self.send(200, {"logs": out, "dir": LOGS_DIR})
+
     def api_logs(self):
         q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         name = (q.get("name") or ["selfcheck"])[0]
-        path = LOG_ALLOW.get(name)
-        # a scheduled job's own log (#242): schedule-<job>, for a job that exists
-        if path is None and name.startswith("schedule-") and JOB_NAME_RE.match(name[9:]) \
-                and any(j["name"] == name[9:] for j in read_schedule()):
-            path = os.path.join(SCHEDULE_LOGDIR, name + ".log")
+        path = log_path(name)
         if path is None:
             return self.err(400, "unknown log (choose: %s)" % ", ".join(sorted(LOG_ALLOW)))
         try:
-            lines = min(500, max(10, int((q.get("lines") or ["100"])[0])))
+            lines = min(5000, max(10, int((q.get("lines") or ["100"])[0])))
         except ValueError:
             lines = 100
+        needle = (q.get("grep") or [""])[0][:200].lower()
         text = tail_file(path, lines)
+        if text is not None and needle:
+            text = "\n".join(l for l in text.splitlines() if needle in l.lower())
+        if (q.get("raw") or ["0"])[0] not in ("", "0", "no", "false"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="%s.log"' % name)
+            body = (text or "").encode("utf-8", "replace")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self.send(200, {"name": name, "text": text if text is not None
                         else "(no log yet — the service may not have run)"})
+
+    def api_health_history(self):
+        """Every boot report and hourly live verdict this Machine has written,
+        newest first — the timeline behind the one pill on the Overview."""
+        self.send(200, {"history": health_history()})
+
+    def api_transcript(self):
+        """The assistant's conversation, readable in the browser: the last N
+        turns of the one master session's transcript (admin only — it is the
+        box's own agent talking, with everything it was shown)."""
+        if self._user_admin_guard() is None:
+            return
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        try:
+            n = min(200, max(5, int((q.get("turns") or ["40"])[0])))
+        except ValueError:
+            n = 40
+        self.send(200, transcript_turns(n))
 
     def api_docs(self, path):
         """GET /api/docs — the operator docs index; /api/docs/<slug> — one
