@@ -249,7 +249,6 @@ _no_save = {
     "/api/github-login/start": "starts a login; the finisher thread saves when gh exits",
     "/api/file-op": "/data, not the apkovl",
     "/api/backup": "writes an external disk",
-    "/api/chat": "a conversation, under /data",
     "/api/reboot": "the shutdown hook saves",
     "/api/reboot-firmware": "the shutdown hook saves",
     "/api/update-now": "pipeos-selfupdate saves itself",
@@ -747,16 +746,6 @@ req("/api/schedule/set", {"name": "nightly", "cap_usd": 100001}, expect=400)
 req("/api/schedule/del", {"name": "nightly"}); req("/api/schedule/del", {"name": "other"})
 webd.card_set = _card_set
 ok("usage: an agent's own cap (scope agent) lives on its job, pauses only that job with a text that names the agent — Run now is refused with it, status lists it, the box is not paused — and 0 lifts it; hostile values and an unknown scope are refused")
-# the dashboard chat: its own session id, --session-id first then --resume
-req("/api/services", {"claude": True})
-os.unlink(tmp + "/claude.argv") if os.path.exists(tmp + "/claude.argv") else None
-r = req("/api/chat", {"message": "hello"})
-assert r["reply"] == "ok"
-r = req("/api/chat", {"message": "again"})
-_cargv = [l for l in open(tmp + "/claude.argv").read().splitlines() if l.startswith("-p ")]
-_sid = open(webd.WEBCHAT_SID).read().strip()
-assert len(_cargv) == 2 and _cargv[0].endswith("--session-id " + _sid) and _cargv[1].endswith("--resume " + _sid) and "--continue" not in "".join(_cargv), _cargv
-ok("chat: the dashboard chat has its own Claude session — --session-id on the first turn, --resume after — never --continue into the master session's transcript")
 req("/api/login", {"password": "hunter22hunter"})
 req("/api/logs?name=../../etc/shadow", expect=400)
 req("/api/logs?name=nope", expect=400)

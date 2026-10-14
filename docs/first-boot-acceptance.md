@@ -69,7 +69,7 @@ Release under test: `________`   Box: `________`   Date: `________`
 - [ ] **Scheduled run** (#242): a job added from Schedule fired at its
       minute with nobody attached; the started/done DMs arrived; the log
       opened from the row; a second Run now while it ran was refused.
-- [ ] **Usage** (#246): one dashboard chat and one assistant prompt showed
+- [ ] **Usage** (#246): one scheduled run and one assistant prompt showed
       as two rows under Usage within a minute, costed; a $1 cap produced
       the 80% DM, then the pause banner and a skipped job; raising it
       lifted the pause.
