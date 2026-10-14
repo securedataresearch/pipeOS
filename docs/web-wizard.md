@@ -80,11 +80,9 @@ services, shows disk/uptime, saves state and changes the password. The
 assistant's surface is its terminal, opened from the dashboard (there is no
 separate web chat: it was a second conversation beside the terminal's).
 
-Two more toggles ride the same services model:
-- **Vendor support access** (`pipeos-support`): opt-in reverse tunnel
-  (`ssh -R`) OUT to a support relay (`/etc/pipeos/support.conf`; the key is
-  made on first enable and `GET /api/support` shows it, #159); refuses to
-  start unconfigured, off by default, one switch for the customer.
+One more switch rides the same services model (the vendor-support reverse
+tunnel that used to sit beside it was removed on 2026-10-14 — no Machine
+holds a door open to us, by design):
 - **Updates**: silent daily self-update once `UPDATE_RELEASE_URL` points at a
   published release (`make release` → GitHub Release with pipeos-usb.img.xz.sha256 +
   pipeos-repo.tar.gz); applies through the existing verify → atomic swap →

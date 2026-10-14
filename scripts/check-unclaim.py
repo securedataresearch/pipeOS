@@ -29,8 +29,7 @@ for d in (ETC, HOME + "/.pipe/inbox", HOME + "/.claude", HOME + "/.hermes", RUN 
     os.makedirs(d, exist_ok=True)
 owner = {"web-admin.conf": "HASH='x'\n", "users.json": "{}", "terminals.conf": "", "services.conf": "SERVICE_PIPE=on\n",
          "schedule.json": '{"jobs":[{"name":"nightly"}]}', "nas.conf": "NAS_S1_NAME='office'\n", "mounts.conf": "MOUNT_UUIDS=''\n",
-         "assistant.conf": "x", "stream.conf": "x", "vault.sealed": "sealed", "support_key.pub": "ssh-ed25519 AAAA",
-         "support.conf": "SUPPORT_RELAY=tunnel@relay\nSUPPORT_PORT=42001\n", "cluster.json": '{"v":2}', "provisioned": "",
+         "assistant.conf": "x", "stream.conf": "x", "vault.sealed": "sealed", "cluster.json": '{"v":2}', "provisioned": "",
          "selfupdate.conf": "IMAGE_UPDATE=auto\n", "card.conf": "NICK=box0\nNAME=zero\nROLE=GENERIC\nOWNER_NICK=sam\n"}
 for k, v in owner.items():
     open(os.path.join(ETC, k), "w").write(v)
@@ -72,9 +71,9 @@ def mark(n):
 
 
 gone = ["web-admin.conf", "users.json", "terminals.conf", "services.conf", "schedule.json", "nas.conf", "mounts.conf",
-        "assistant.conf", "stream.conf", "vault.sealed", "vault-requests.json", "support_key.pub", "cluster.json", "provisioned"]
+        "assistant.conf", "stream.conf", "vault.sealed", "vault-requests.json", "cluster.json", "provisioned"]
 left = [k for k in gone if os.path.exists(os.path.join(ETC, k))]
-check("1 the owner's records go: claim, users, terminals, services, jobs, shares, mounts, assistant, stream, vault, support key, cluster membership, the provisioned marker",
+check("1 the owner's records go: claim, users, terminals, services, jobs, shares, mounts, assistant, stream, vault, cluster membership, the provisioned marker",
       p.returncode == 0 and not left, "rc=%s left=%r out=%s" % (p.returncode, left, (p.stdout + p.stderr)[-300:]))
 card = open(ETC + "/card.conf").read()
 check("2 the card is nobody's (NAME, OWNER_NICK, and NICK on a GENERIC box cleared) and regenerated; selfupdate.conf and the card itself stay",
@@ -86,9 +85,8 @@ check("3 the sign-ins go: pipe identity, credentials, contacts and inbox; Claude
 gc = open(HOME + "/.gitconfig").read()
 check("3b the GitHub sign-in goes: gh's token file and the credential-helper lines in git's config; the rest of .gitconfig stays",
       not os.path.exists(HOME + "/.config/gh") and "helper" not in gc and "credential" not in gc and "name = box" in gc, repr(gc))
-check("4 the support port is unpinned but the relay setting stays; the cluster trust bundle and status go; the TLS dir is re-made with a NEW CA",
-      "SUPPORT_PORT=\n" in open(ETC + "/support.conf").read() and "SUPPORT_RELAY=tunnel@relay" in open(ETC + "/support.conf").read()
-      and not os.path.exists(RUN + "/cluster-ca.pem") and not os.path.exists(RUN + "/cluster.status")
+check("4 the cluster trust bundle and status go; the TLS dir is re-made with a NEW CA",
+      not os.path.exists(RUN + "/cluster-ca.pem") and not os.path.exists(RUN + "/cluster.status")
       and open(ETC + "/tls/ca.key").read().strip() == "new" and "tls" in mark("tls.log"))
 check("5 sessions and materialised secrets go; then ONE save in unclaim mode with the provisioned marker already gone; then the reboot",
       not os.path.exists(RUN + "/web-sessions") and not os.path.exists(RUN + "/secrets")

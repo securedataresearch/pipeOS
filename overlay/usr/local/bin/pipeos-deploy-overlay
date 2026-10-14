@@ -642,12 +642,11 @@ svc_files() {
         pipeos-web)       echo "etc/init.d/pipeos-web usr/local/bin/pipeos-webd usr/local/share/pipeos/web/webd.py usr/local/share/pipeos/web/static/index.html usr/local/share/pipeos/web/static/app.js usr/local/share/pipeos/web/static/style.css usr/local/share/pipeos/web/lanid.py usr/local/share/pipeos/web/cluster.py" ;;
         pipeos-mdns)      echo "etc/init.d/pipeos-mdns usr/local/bin/pipeos-mdnsd usr/local/share/pipeos/web/mdnsd.py usr/local/share/pipeos/web/lanid.py" ;;
         pipeos-stream)    echo "etc/init.d/pipeos-stream" ;;
-        pipeos-support)   echo "etc/init.d/pipeos-support" ;;
         crond)            echo "etc/crontabs/root" ;;
         pipeos-vault)     echo "etc/init.d/pipeos-vault usr/local/bin/pipeos-vault usr/local/share/pipeos/web/vault.py" ;;
     esac
 }
-for svc in pipe-daemon pipebox-listener pipeos-web pipeos-mdns pipeos-stream pipeos-support crond pipeos-vault; do
+for svc in pipe-daemon pipebox-listener pipeos-web pipeos-mdns pipeos-stream crond pipeos-vault; do
     hit=no
     for f in $(svc_files "$svc"); do
         grep -qxF "$f" "$installed_rels" 2>/dev/null && hit=yes

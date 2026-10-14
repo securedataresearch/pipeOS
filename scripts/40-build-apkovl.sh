@@ -78,10 +78,10 @@ fi
 FLEET_SVCS=""
 if [ -n "${CARD:-}" ] && [ -n "$(sed -n 's/^NICK=//p' "$CARD" | head -1)" ]; then
     FLEET_SVCS="pipe-daemon pipebox-listener"
-    printf 'SERVICE_PIPE=on\nSERVICE_CLAUDE=on\nSERVICE_STREAM=off\nSERVICE_SUPPORT=off\nSERVICE_ASSISTANT=off\nSERVICE_TERMINALS=off\nSERVICE_NAS=off\n' \
+    printf 'SERVICE_PIPE=on\nSERVICE_CLAUDE=on\nSERVICE_STREAM=off\nSERVICE_ASSISTANT=off\nSERVICE_TERMINALS=off\nSERVICE_NAS=off\n' \
         > "$STAGE/etc/pipeos/services.conf"
 else
-    printf 'SERVICE_PIPE=off\nSERVICE_CLAUDE=off\nSERVICE_STREAM=off\nSERVICE_SUPPORT=off\nSERVICE_ASSISTANT=off\nSERVICE_TERMINALS=off\nSERVICE_NAS=off\n' \
+    printf 'SERVICE_PIPE=off\nSERVICE_CLAUDE=off\nSERVICE_STREAM=off\nSERVICE_ASSISTANT=off\nSERVICE_TERMINALS=off\nSERVICE_NAS=off\n' \
         > "$STAGE/etc/pipeos/services.conf"
     # Fleet machinery with no business on a customer box: the cohort-board
     # watcher and the GitHub-issues notifier run only where a card names a

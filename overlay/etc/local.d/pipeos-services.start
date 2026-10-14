@@ -30,12 +30,11 @@ if [ "${SERVICE_STREAM:-}" = on ]; then
 	boot=$( [ -r /etc/pipeos/stream.conf ] && . /etc/pipeos/stream.conf 2>/dev/null; echo "${STREAM_BOOT:-1}" )
 	[ "$boot" != 0 ] && want="$want pipeos-stream"
 fi
-[ "${SERVICE_SUPPORT:-}" = on ] && want="$want pipeos-support"
 [ "${SERVICE_ASSISTANT:-}" = on ] && want="$want pipeos-assistant"
 [ "${SERVICE_TERMINALS:-}" = on ] && want="$want pipeos-terminals"
 [ "${SERVICE_NAS:-}" = on ] && want="$want pipeos-nas"
 
-for svc in pipe-daemon pipebox-listener pipeos-stream pipeos-support pipeos-assistant pipeos-terminals pipeos-nas; do
+for svc in pipe-daemon pipebox-listener pipeos-stream pipeos-assistant pipeos-terminals pipeos-nas; do
 	case " $want " in
 	*" $svc "*)
 		rc-update -q add "$svc" default 2>/dev/null

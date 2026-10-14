@@ -277,7 +277,6 @@ want_svcs="pipeos-web pipeos-mdns"
 # the listener is the pipe→claude bridge: it needs BOTH ends switched on
 [ "$SERVICE_PIPE" = on ] && [ "$SERVICE_CLAUDE" = on ] && want_svcs="$want_svcs pipebox-listener"
 [ "$SERVICE_STREAM" = on ] && want_svcs="$want_svcs pipeos-stream"
-[ "${SERVICE_SUPPORT:-off}" = on ] && want_svcs="$want_svcs pipeos-support"
 [ "${SERVICE_ASSISTANT:-off}" = on ] && want_svcs="$want_svcs pipeos-assistant"
 [ "${SERVICE_TERMINALS:-off}" = on ] && want_svcs="$want_svcs pipeos-terminals"
 [ "${SERVICE_NAS:-off}" = on ] && want_svcs="$want_svcs pipeos-nas"
@@ -302,7 +301,7 @@ fi
 # reason, or nothing when the service is configured (pipeOS#266).
 svc_unconfigured() {
     case "$1" in
-        pipeos-support|pipeos-stream|pipeos-assistant)
+        pipeos-stream|pipeos-assistant)
             echo "$1 is enabled but not configured yet — set it up in the web UI, or turn it off" ;;
         pipeos-terminals)
             grep -qsE "^TERM_[0-9]+_USER='[^']+'" /etc/pipeos/terminals.conf \
@@ -561,7 +560,7 @@ if [ -s /etc/pipeos/web-admin.conf ]; then
     case "$_vst" in
     open*) ;;
     "locked chassis"*)
-        warnn "vault is LOCKED: this stick's secrets were sealed to another chassis — Claude, the support tunnel, the stream keys, the terminal password and the NAS logins are unavailable until the recovery phrase is entered under Secrets (pairs with the chassis-mismatch line above)" ;;
+        warnn "vault is LOCKED: this stick's secrets were sealed to another chassis — Claude, the stream keys, the terminal password and the NAS logins are unavailable until the recovery phrase is entered under Secrets (pairs with the chassis-mismatch line above)" ;;
     locked*)
         warnn "vault did not open: ${_vst#locked } — pipeos vault status" ;;
     none*|"")
@@ -1121,7 +1120,7 @@ _kind="boot report"; [ "$LIVE" = yes ] && _kind="health [live]"
 msg="pipeos $_kind [$_bhead] $(date -u '+%Y-%m-%d %H:%MZ')
 went down: $down
 claimed: $_claimed
-services: pipe=$SERVICE_PIPE claude=$SERVICE_CLAUDE stream=$SERVICE_STREAM support=$SERVICE_SUPPORT
+services: pipe=$SERVICE_PIPE claude=$SERVICE_CLAUDE stream=$SERVICE_STREAM
 verdict: $verdict"
 [ -s "$R" ] && msg="$msg
 $(cat "$R")"

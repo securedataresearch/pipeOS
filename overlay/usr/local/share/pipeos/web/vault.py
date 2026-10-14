@@ -13,7 +13,7 @@
     pipeos vault migrate           move the known plaintext secrets in, shred them
 
 Until #244 every secret on a Machine was a plain file under /etc/pipeos:
-the Claude token, the support tunnel key, the stream keys, the assistant
+the Claude token, the stream keys, the assistant
 password, samba's passdb. They rode the apkovl in plaintext onto the boot
 stick and into every clone. Now they live in ONE file, /etc/pipeos/
 vault.sealed, and are materialised at boot into /run/pipeos/secrets (tmpfs,
@@ -283,7 +283,7 @@ def set_(name, value, consumer="", by=""):
     _store(env, K, doc)
 
 
-PER_BOX = {"assistant_pass", "support_key", "nas_passdb"}
+PER_BOX = {"assistant_pass", "nas_passdb"}
 
 
 NEEDS_HELP = "needs is a list of jobs.NAME secrets (the vault's export for jobs, which the runner sources; a member could hand them over), comma-separated or a list, or none"
@@ -316,7 +316,7 @@ def parse_needs(value):
 
 def shareable(name, kind="text"):
     """Only a text secret that is not one Machine's own (its terminal
-    password, its support key, its SMB password db, its stream keys) may be
+    password, its SMB password db, its stream keys) may be
     copied to a member. The Claude token and jobs.*/custom values are
     exactly what an agent elsewhere needs."""
     return kind == "text" and name not in PER_BOX and not name.startswith("stream_key_")
@@ -378,13 +378,11 @@ def rephrase():
 # claude_token        claude.env      NAME=value   (NAME by the token's prefix)
 # assistant_pass      assistant.env   ASSISTANT_PASS='…'
 # stream_key_N        stream.env      STREAM_TN_KEY='…'  (N = 1..4)
-# support_key         support_key     raw bytes, 0600
 # nas_passdb          nas/passdb.tdb  raw bytes, dir 0700
 # jobs.*              jobs.env        NAME='…'  (uppercased, the dot stripped; #242)
 # anything else       custom.env      NAME='…'
 
-CONSUMER_OF = {"claude_token": "claude", "assistant_pass": "assistant", "support_key": "support",
-               "nas_passdb": "nas"}
+CONSUMER_OF = {"claude_token": "claude", "assistant_pass": "assistant", "nas_passdb": "nas"}
 for _n in range(1, STREAM_MAX + 1):
     CONSUMER_OF["stream_key_%d" % _n] = "stream"
 
@@ -443,8 +441,9 @@ def export():
             env_file("assistant.env").append("ASSISTANT_PASS=%s\n" % _sq(val))
         elif name.startswith("stream_key_"):
             env_file("stream.env").append("STREAM_T%s_KEY=%s\n" % (name[len("stream_key_"):], _sq(val)))
-        elif name == "support_key":
-            files["support_key"] = val if isinstance(val, bytes) else val.encode()
+        elif s.get("kind") == "bytes" and not name.startswith("jobs."):
+            # any other raw secret: its own file, named as the secret is
+            files[re.sub(r"[^A-Za-z0-9_.-]", "_", name)] = val if isinstance(val, bytes) else val.encode()
         elif name == "nas_passdb":
             files["nas/passdb.tdb"] = val if isinstance(val, bytes) else val.encode()
         elif name.startswith("jobs."):
@@ -460,7 +459,7 @@ def export():
             os.chmod(d, 0o700)
         _write_file(path, content if isinstance(content, bytes) else "".join(content))
         written.add(fname)
-    for fname in ("claude.env", "assistant.env", "stream.env", "support_key", "nas/passdb.tdb", "jobs.env", "custom.env"):
+    for fname in ("claude.env", "assistant.env", "stream.env", "nas/passdb.tdb", "jobs.env", "custom.env"):
         if fname not in written:
             try:
                 os.unlink(os.path.join(RUN_DIR, fname))
@@ -535,11 +534,6 @@ def migrate(by="boot"):
         if m:
             put("claude_token", m.group(1))
         _shred(p)
-    p = os.path.join(ETC, "support_key")
-    if os.path.exists(p):
-        with open(p, "rb") as f:
-            put("support_key", f.read(), "bytes")
-        _shred(p)
     p = os.path.join(ETC, "assistant.conf")
     v = _conf_value(p, "ASSISTANT_PASS")
     if v:
@@ -562,7 +556,7 @@ def migrate(by="boot"):
     return moved
 
 
-PLAINTEXT_PATHS = ("claude-auth.env", "support_key", "nas-private/passdb.tdb")
+PLAINTEXT_PATHS = ("claude-auth.env", "nas-private/passdb.tdb")
 
 
 def plaintext_left():

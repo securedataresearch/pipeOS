@@ -187,7 +187,6 @@ const SERVICES = [
   { key: "stream", name: "Streaming", desc: "Restream video with ffmpeg (configure after setup).", def: false },
   { key: "assistant", name: "Assistant terminal", desc: "A terminal into the box's assistant, in your browser. Same sign-in as this page.", def: true },
   { key: "pipe", name: "pipe messaging", desc: "Talk to the box by DM from anywhere, via pipe.online.", def: false },
-  { key: "support", name: "Vendor support access", desc: "Let your vendor connect to help. Off unless you switch it on.", def: false },
   { key: "nas", name: "Network storage", desc: "Share folders over SMB on your local network (set up under Files).", def: false },
 ];
 
@@ -999,16 +998,6 @@ async function dashboard() {
       <section data-view="services" hidden>
         <div class="viewhead"><h1>Services</h1></div>
         <div class="card">${rows}<p class="err" id="serr" hidden></p></div>
-        <div class="card" id="supcard" hidden>
-          <div class="cardhead"><h2>Vendor support access</h2><span class="pill" id="supstate">checking…</span></div>
-          <p class="note">While this is on, the Machine dials <b>out</b> to your vendor's relay and holds a door open for them; nothing listens on your network. Switch it off and the door closes within seconds. To let them in the first time, send them this key (it is public) — they pin it to a port on their side and tell you the number.</p>
-          <pre class="report" id="suppub"></pre>
-          <p class="note" id="supdetail"></p>
-          <label for="support">Port your vendor gave you</label>
-          <input id="support" inputmode="numeric" autocomplete="off" placeholder="e.g. 42001">
-          <button id="supportgo" class="ghost small" type="button">Save port</button>
-          <p class="note" id="supmsg2" hidden></p>
-        </div>
         ${st.services.pipe ? `
         <div class="card">
           <h2>pipe messaging</h2>
@@ -1093,7 +1082,7 @@ async function dashboard() {
         <div id="secbanner"></div>
         <div class="card">
           <div class="cardhead"><h2>What this Machine keeps</h2><span class="pill" id="secstate">…</span></div>
-          <p class="note">Sealed to this hardware in one file; the services read it through memory only. The Claude token, support key, stream keys, terminal password and SMB logins are set from their own cards — this page lists them and can remove them.</p>
+          <p class="note">Sealed to this hardware in one file; the services read it through memory only. The Claude token, stream keys, terminal password and SMB logins are set from their own cards — this page lists them and can remove them.</p>
           <div id="seclist" class="note">loading…</div>
           <div id="secreveal" hidden style="margin-top:.6rem">
             <div class="cardhead"><h2 id="secrevname" style="font-size:1rem"></h2></div>
@@ -1336,38 +1325,6 @@ async function dashboard() {
     </main>
   </div>`);
   v.querySelector("#logout").onclick = async () => { try { await api("/api/logout", {}); } catch (e) {} boot(); };
-  // the support card: shown while the toggle is on; the key, the relay and
-  // port, and whether the tunnel is up right now (#159)
-  const loadSupport = async () => {
-    const card = v.querySelector("#supcard");
-    if (!card) return;
-    try {
-      const r = await api("/api/support");
-      card.hidden = !r.enabled;
-      if (!r.enabled) return;
-      v.querySelector("#suppub").textContent = r.pubkey || "(no key yet — switch the toggle off and on)";
-      const pill = v.querySelector("#supstate");
-      pill.textContent = r.connected ? "tunnel up" : (r.configured ? "dialing…" : "waiting for a port");
-      pill.className = "pill " + (r.connected ? "status-ok" : "status-warn");
-      v.querySelector("#supdetail").textContent = r.configured
-        ? "Relay " + r.relay + ", port " + r.port + "."
-        : "Relay " + (r.relay || "not set") + ". No port assigned yet: send the key above to your vendor; they reply with a port number — type it below.";
-      if (r.port) v.querySelector("#support").placeholder = r.port;
-    } catch (e) { card.hidden = true; }
-  };
-  const supgo = v.querySelector("#supportgo");
-  if (supgo) supgo.onclick = async () => {
-    const m = v.querySelector("#supmsg2"); m.hidden = false; m.textContent = "saving…";
-    busy(supgo, true);
-    try {
-      const r = await api("/api/support-port", { port: v.querySelector("#support").value.trim() });
-      m.textContent = r.problems && r.problems.length ? r.problems.join("; ") : "Saved — port " + r.port + ".";
-      v.querySelector("#support").value = "";
-      loadSupport();
-    } catch (e) { m.textContent = e.message; }
-    busy(supgo, false);
-  };
-  loadSupport();
   v.querySelectorAll("input[type=checkbox]").forEach(c => {
     if (!c.dataset.k) return;  // service toggles only — not e.g. the VAAPI box
     c.onchange = async () => {
@@ -1382,7 +1339,6 @@ async function dashboard() {
         serr.textContent = e.message; serr.hidden = false;
         c.checked = !c.checked;
       }
-      if (c.dataset.k === "support") loadSupport();
     };
   });
   // ---- overview: what was done here lately (the activity log, newest first) ----
@@ -2778,7 +2734,7 @@ async function dashboard() {
     // the other members, for the "shared with" ticks (#301): a copy travels only on your tap
     let members = [];
     try { const pg = await api("/api/cluster"); members = (pg.members || []).filter(m => !m.self); } catch (e) { members = []; }
-    const perBox = n => ["assistant_pass", "support_key", "nas_passdb"].includes(n) || n.startsWith("stream_key_");
+    const perBox = n => ["assistant_pass", "nas_passdb"].includes(n) || n.startsWith("stream_key_");
     if (!rows.length) { list.className = "note"; list.textContent = r.status === "open" ? "Nothing yet." : ""; }
     else {
       list.className = "";
