@@ -39,8 +39,10 @@ libgcc
 libstdc++
 libva
 libva-utils
+mesa-vulkan-intel
 mtr
 ncdu
+netgaze
 nethack
 nftables
 nmap
@@ -67,4 +69,3 @@ usbutils
 util-linux-misc
 vim
 xvfb
-netgaze

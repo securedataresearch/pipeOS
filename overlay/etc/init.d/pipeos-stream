@@ -55,6 +55,10 @@ start_pre() {
 	if [ -n "$(svc_user)" ]; then
 		# chromium needs a writable HOME/profile dir; stream-run picks this up
 		checkpath -d -m 0700 -o svc-stream:svc-stream /data/cache/stream || return 1
+		# supervise-daemon opens the log AFTER dropping to svc-stream, and
+		# /data/logs is root's: without this the child died every 15 s with
+		# nothing written anywhere (bench, 2026-10-14) — same shape as mdns.
+		checkpath -f -m 0644 -o svc-stream:svc-stream "$output_log" || return 1
 	else
 		einfo "svc-stream account not on this media yet — streaming runs as root until the next image update"
 	fi

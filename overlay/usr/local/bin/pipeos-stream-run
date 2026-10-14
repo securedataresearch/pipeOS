@@ -127,9 +127,25 @@ XPID=$!
 sleep 1
 
 # Headless Chromium, kiosk fullscreen. --no-sandbox is required running as root
-# on a minimal box; software GL keeps the GPU free for the encoder; a throwaway
-# incognito profile in tmpfs so nothing persists across respawns. GL flags are
-# the version-sensitive part — STREAM_CHROME_ARGS lets us tune at deploy.
+# on a minimal box; a throwaway incognito profile in tmpfs so nothing persists
+# across respawns. GL flags are the version-sensitive part — STREAM_CHROME_ARGS
+# lets us tune at deploy.
+#
+# WebGL on the iGPU (#349): Xvfb has no DRI, so the page's GL goes through
+# ANGLE over Vulkan straight to the render node — the same device the VAAPI
+# encoder uses, which is what the Intel driver is for. STREAM_GL=vulkan is the
+# default when the Intel ICD is on the image; swiftshader is the software
+# fallback (WebGL still works, on the CPU); off is the old --disable-gpu.
+GL=${STREAM_GL:-auto}
+if [ "$GL" = auto ]; then
+	if [ -e /dev/dri/renderD128 ] && ls /usr/share/vulkan/icd.d/intel_icd.*.json >/dev/null 2>&1; then GL=vulkan; else GL=swiftshader; fi
+fi
+case "$GL" in
+	vulkan)      GL_ARGS="--ignore-gpu-blocklist --use-gl=angle --use-angle=vulkan --enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan --enable-gpu-rasterization --enable-zero-copy" ;;
+	swiftshader) GL_ARGS="--ignore-gpu-blocklist --use-gl=angle --use-angle=swiftshader-webgl" ;;
+	*)           GL_ARGS="--disable-gpu" ;;
+esac
+echo "pipeos-stream-run: page GL via $GL" >&2
 PROFILE=$(mktemp -d /tmp/pipeos-chromium.XXXXXX)
 # shellcheck disable=SC2086
 chromium \
@@ -137,7 +153,7 @@ chromium \
 	--no-first-run --no-default-browser-check \
 	--user-data-dir="$PROFILE" \
 	--window-size="${W},${H}" --window-position=0,0 \
-	--disable-dev-shm-usage --disable-gpu \
+	--disable-dev-shm-usage $GL_ARGS \
 	--autoplay-policy=no-user-gesture-required \
 	--noerrdialogs --hide-scrollbars --disable-infobars \
 	--disable-features=Translate,TranslateUI \
@@ -174,15 +190,19 @@ USE_VAAPI=0
 
 venc_for() { # $1 = bitrate → prints encoder args (space-separated, no spaces inside args)
 	if [ "$USE_VAAPI" = 1 ]; then
-		printf '%s' "-c:v h264_vaapi -rc_mode CBR -b:v $1 -maxrate $1 -bufsize $1 -g $GOP -keyint_min $GOP -bf 0"
+		# -quality 1 is the Intel driver's best-quality (slowest) mode — the
+		# iGPU has headroom at 1080p30; high profile, level 4.2 (1080p60 ceiling);
+		# a 2 s VBV at CBR keeps the rate smooth without the stutter a 1 s
+		# buffer showed. B-frames stay off: latency, and Twitch's decoder path.
+		printf '%s' "-c:v h264_vaapi -profile:v high -level 4.2 -quality 1 -rc_mode CBR -b:v $1 -maxrate $1 -bufsize $(( ${1%k} * 2 ))k -g $GOP -keyint_min $GOP -bf 0 -sei -timing"
 	else
-		printf '%s' "-c:v libx264 -preset veryfast -pix_fmt yuv420p -bf 0 -b:v $1 -maxrate $1 -bufsize $1 -g $GOP -keyint_min $GOP"
+		printf '%s' "-c:v libx264 -preset faster -tune zerolatency -profile:v high -pix_fmt yuv420p -bf 0 -b:v $1 -maxrate $1 -bufsize $(( ${1%k} * 2 ))k -g $GOP -keyint_min $GOP"
 	fi
 }
 
 CMD=(ffmpeg -hide_banner -loglevel warning -stats -nostdin)
 [ "$USE_VAAPI" = 1 ] && CMD+=(-vaapi_device /dev/dri/renderD128)
-CMD+=(-thread_queue_size 1024 -f x11grab -draw_mouse 0 -framerate "$FPS" -video_size "$RES" -i ":$DPY"
+CMD+=(-thread_queue_size 1024 -probesize 64M -f x11grab -draw_mouse 0 -framerate "$FPS" -video_size "$RES" -i ":$DPY"
 	-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100)
 
 if [ "$NG" -eq 1 ]; then
