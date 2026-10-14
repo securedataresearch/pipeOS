@@ -3376,6 +3376,13 @@ class Handler(BaseHTTPRequestHandler):
             "role": sess.get("role"),
             "hostname": socket.gethostname(),
             "id": lanid.mac4(),
+            # who this Machine is on the wire (Sam, 2026-10-13: the Overview
+            # should say the address and the MAC without a hunt)
+            "mac": lanid.mac(),
+            "ip": primary_ip()[0],
+            "iface": primary_ip()[1],
+            "model": lanid.model(),
+            "image": lanid.image_info(FLASH_IMAGE_TXT),
             "name": box_name(),
             "nick": card_get("NICK"),
             "owner": card_get("OWNER_NICK"),
