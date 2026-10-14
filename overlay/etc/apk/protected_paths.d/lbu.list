@@ -137,3 +137,8 @@
 # keeping them out of the apkovl means a reboot cannot make one permanent
 # on the boot media.
 -root/.cache/ms-playwright-go
+# the LAN-only packet filter (2026-10-13): our init script, the operator seam,
+# the IPv6-off sysctl — custom /etc files apk audit would drop at the next save
++etc/init.d/pipeos-firewall
++etc/pipeos/firewall.conf
++etc/sysctl.d/pipeos.conf

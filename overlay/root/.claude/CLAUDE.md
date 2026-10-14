@@ -133,6 +133,10 @@ Former gaps, all fixed and boot-verified (2026-08-04):
   `/data/claude/projects` on the ext4 partition (`/dev/sda2` → `/data`), so
   transcripts and file-based memory survive reboot without touching the apkovl.
 - `+root/.abuild` and `+root/.config/gh` are in `lbu.list`.
+- On a GENERIC (client) card the allow list has no general command runner:
+  no `python3 *`, `find *`, `make *`; `git -c`/`git config`/`gh alias`/`gh
+  extension`/`gh auth token` and the secret paths are denied. Work within
+  `rg`, `git`, `gh` and the Read/Edit tools; ask the owner for anything else.
 - Userland is GNU-ish now: `coreutils`, `findutils`, `diffutils`, `sed`, `gawk`,
   `gh`, plus `git`, `ripgrep`, `jq`, `python3`, `curl`, `vim`, `tmux`, `rsync`,
   `openssh`, network tooling.

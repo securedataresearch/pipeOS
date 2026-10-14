@@ -745,7 +745,7 @@ async function dashboard() {
         ${navItem("overview", "Overview")}
         ${showStream ? navItem("streaming", "Streaming") : ""}
         ${showAssist ? navItem("assistant", "Assistant") : ""}
-        ${navItem("files", "Files")}
+        ${role !== "viewer" ? navItem("files", "Files") : ""}
         ${st.services.pipe ? navItem("pipe", "pipe") : ""}
         ${navItem("services", "Services")}
         ${isAdmin ? navItem("users", "Users") : ""}
@@ -762,7 +762,7 @@ async function dashboard() {
       <div class="navfoot">
         <span class="note">up ${fmtUptime(st.uptime_s)} · ${st.work_pct == null ? "disk ?" : st.work_pct + "% disk"}${st.work_free_mb != null ? " · " + Math.round(st.work_free_mb / 1024) + " GB free" : ""}</span>
         <span class="note">${esc(st.user || "")}${st.role ? " · " + esc(st.role) : ""}</span>
-        ${st.services.assistant ? '<a id="termopen" class="btn" href="#" target="_blank" rel="noopener">Open terminal ↗</a>' : ""}
+        ${st.services.assistant && isAdmin ? '<a id="termopen" class="btn" href="/terminal/" target="_blank" rel="noopener">Open terminal ↗</a>' : ""}
         <button id="logout" class="ghost" data-vok>Sign out</button>
       </div>
     </aside>
@@ -861,17 +861,16 @@ async function dashboard() {
           <div id="abchoices" class="note">loading…</div>
           <p class="note" id="abmsg" hidden></p>
         </div>
-        ${st.services.assistant ? `
+        ${st.services.assistant && isAdmin ? `
         <div class="card">
-          <div class="cardhead"><h2>Terminal</h2><a id="aopen" class="btn" href="#" target="_blank" rel="noopener" style="display:none">Open terminal ↗</a></div>
-          <p class="note">A full terminal into this box's one assistant session, in your browser. Sign in with <b>admin</b> and this page's password. Every browser and every user terminal shares the same conversation.</p>
-          <p class="note" id="anopass" hidden>The terminal has no password yet (the admin password has a ' or : in it, which the terminal cannot take). Set one here.</p>
+          <div class="cardhead"><h2>Terminal</h2><a id="aopen" class="btn" href="/terminal/" target="_blank" rel="noopener">Open terminal ↗</a></div>
+          <p class="note">A full terminal into this box's one assistant session, in your browser. It opens with your dashboard sign-in — nothing else to type. The terminal itself listens only on the box's loopback; this page is its only door. Every browser and every user terminal shares the same conversation.</p>
           <details><summary class="note">Terminal settings</summary>
-            <label for="apass">Terminal password</label>
-            <input id="apass" type="password" autocomplete="off" placeholder="leave blank to keep the dashboard password">
-            <label for="aport">Port</label>
+            <label for="aport">Internal port</label>
             <input id="aport" type="text" placeholder="7681">
             <button id="asave" type="button">Save & restart terminal</button>
+            <button id="aregen" type="button" class="ghost">Regenerate internal credential</button>
+            <p class="note">The credential is a random secret only this dashboard presents to the terminal. Regenerate it if you suspect it leaked.</p>
           </details>
           <p class="note" id="amsg" hidden></p>
         </div>` : ""}
@@ -1386,12 +1385,6 @@ async function dashboard() {
       if (c.dataset.k === "support") loadSupport();
     };
   });
-  // the terminal is the assistant's front door (Sam, 2026-10-13): one
-  // button in the sidebar, the port from the assistant config
-  const termopen = v.querySelector("#termopen");
-  if (termopen) api("/api/assistant").then(a => {
-    termopen.href = location.protocol + "//" + location.hostname + ":" + (a.port || "7681") + "/";
-  }).catch(() => {});
   // ---- overview: what was done here lately (the activity log, newest first) ----
   const loadActivity = async () => {
     const box = v.querySelector("#ovact");
@@ -1601,7 +1594,7 @@ async function dashboard() {
         if (btn) btn.onclick = async () => {
           const m = v.querySelector("#abmsg"); m.hidden = false; m.textContent = "switching…";
           try {
-            const r = await api("/api/assistant-config", { backend: b.id, keep_pass: true });
+            const r = await api("/api/assistant-config", { backend: b.id });
             m.textContent = "Now using " + (BNAMES[b.id] || b.id) + "." +
               (r.problems && r.problems.length ? " (" + r.problems.join("; ") + ")" : "");
             loadBackends();
@@ -1630,29 +1623,24 @@ async function dashboard() {
   if (trBtn) { trBtn.onclick = loadTranscript; loadTranscript(); }
   const asave = v.querySelector("#asave");
   if (asave) {
-    const aopen = v.querySelector("#aopen");
-    const showOpen = (port) => {
-      aopen.href = location.protocol + "//" + location.hostname + ":" + (port || "7681") + "/";
-      aopen.style.display = "";
-    };
-    api("/api/assistant").then(a => {
-      v.querySelector("#aport").value = a.port || "";
-      if (a.pass_set) showOpen(a.port);
-      else { const n = v.querySelector("#anopass"); if (n) n.hidden = false; }
-    }).catch(() => {});
+    api("/api/assistant").then(a => { v.querySelector("#aport").value = a.port || ""; }).catch(() => {});
+    const amsg = (t) => { const m = v.querySelector("#amsg"); m.hidden = false; m.textContent = t; };
     asave.onclick = async () => {
-      const msg = v.querySelector("#amsg"); msg.hidden = false; msg.textContent = "saving…";
-      busy(asave, true);
+      amsg("saving…"); busy(asave, true);
       try {
-        const r = await api("/api/assistant-config", {
-          password: v.querySelector("#apass").value,
-          port: v.querySelector("#aport").value,
-          keep_pass: !v.querySelector("#apass").value,
-        });
-        msg.textContent = r.problems.length ? r.problems.join("; ") : "Saved — terminal restarted.";
-        showOpen(v.querySelector("#aport").value);
-      } catch (e) { msg.textContent = e.message; }
+        const r = await api("/api/assistant-config", { port: v.querySelector("#aport").value });
+        amsg(r.problems.length ? r.problems.join("; ") : "Saved — terminal restarted.");
+      } catch (e) { amsg(e.message); }
       busy(asave, false);
+    };
+    const aregen = v.querySelector("#aregen");
+    aregen.onclick = async () => {
+      amsg("regenerating…"); busy(aregen, true);
+      try {
+        const r = await api("/api/assistant-config", { regen: true });
+        amsg(r.problems.length ? r.problems.join("; ") : "New credential in place — terminal restarted.");
+      } catch (e) { amsg(e.message); }
+      busy(aregen, false);
     };
   }
   // ---- pipe panel ----
@@ -1923,7 +1911,7 @@ async function dashboard() {
       };
       return r;
     };
-    const rootLabel = key => key === "work" ? "data disk"
+    const rootLabel = key => key === "work" ? "data disk" : key === "home" ? "my files"
       : key.startsWith("ext/") ? key.slice(4) + " (external)" : key;
     const drow = (key) => {
       const r = el(`<div class="frow">

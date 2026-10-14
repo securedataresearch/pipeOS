@@ -57,7 +57,8 @@ for card in "$SHIPPED" docs/cards/*.card; do
         # the deny list is the hard-ban fence; a card that can drop an entry
         # from it is a card that can quietly unarm the mandate
         for must in 'Bash(lbu*)' 'Bash(apk *)' 'Bash(mount*)' 'Bash(rc-*)' \
-                    'Read(/root/.pipe/**)' 'Edit(/etc/**)' 'Edit(/media/usb/**)'; do
+                    'Read(/root/.pipe/**)' 'Edit(/etc/**)' 'Edit(/media/usb/**)' \
+                    'Read(/etc/pipeos/users.json)' 'Read(/etc/pipeos/tls/**)' 'Bash(gh auth token*)' 'Bash(git config *)'; do
             if jq -e --arg m "$must" '.permissions.deny | index($m)' \
                  "$a/etc/pipeos/pipebox-settings.json" >/dev/null 2>&1; then :; else
                 bad "$name: hard ban missing from deny list: $must"

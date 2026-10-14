@@ -18,7 +18,8 @@ these docs for the details and the settled bitrates.
 
 Pick the assistant backend the box runs (Claude or Hermes) and open the
 browser terminal — the assistant's front door. It is on from the claim and
-takes the dashboard's own sign-in (`admin` and the same password); every
+opens at `/terminal/` with the dashboard's own sign-in — no second prompt,
+and the terminal itself listens only on the box's loopback; every
 browser and every user terminal lands in the one conversation. **Open
 terminal** in the sidebar goes there too.
 

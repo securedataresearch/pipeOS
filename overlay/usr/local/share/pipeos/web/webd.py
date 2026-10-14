@@ -404,22 +404,27 @@ def assistant_pass_ok(pw):
         and all(ord(c) >= 32 for c in pw)
 
 
-def assistant_pass_follow(pw):
-    """The admin password changed: the terminal's follows when it was the
-    same key (set at claim). Returns a problem sentence or ''."""
-    if "assistant_pass" not in vault_names():
-        return ""
-    if not assistant_pass_ok(pw):
-        return "the terminal kept its old password (the new one has ' or :) — change it under Assistant"
+def assistant_pass_new(by="admin"):
+    """A fresh random terminal credential into the vault. Only this
+    dashboard ever presents it (the /terminal/ proxy adds it as Basic auth to
+    a ttyd that listens on loopback); the browser authenticates with its
+    session. urlsafe characters pass assistant_pass_ok and vault._sq.
+    Returns a problem sentence or ''."""
     try:
-        vault_put("assistant_pass", pw, by="admin")
+        vault_put("assistant_pass", secrets.token_urlsafe(24), by=by)
+        return ""
     except RuntimeError as e:
-        return "the terminal password did not follow: %s" % e
-    if read_services().get("assistant"):
-        rc, out = run(["rc-service", "pipeos-assistant", "restart"], timeout=60)
-        if rc != 0:
-            return "the terminal did not restart: " + out.strip()[-200:]
-    return ""
+        return "the terminal credential could not be stored: %s" % e
+
+
+def assistant_credential():
+    """(user, password) the proxy presents to ttyd, from the vault's export
+    (or the vault itself); ('', '') when there is none."""
+    vals = read_conf_values(ASSISTANT_CONF, ["ASSISTANT_USER", "ASSISTANT_PORT"])
+    pw = read_conf_values(os.path.join(SECRETS_DIR, "assistant.env"), ["ASSISTANT_PASS"])["ASSISTANT_PASS"]
+    if not pw:
+        pw = vault_get("assistant_pass") or ""
+    return vals["ASSISTANT_USER"] or "admin", pw, vals["ASSISTANT_PORT"] or "7681"
 
 
 def _req_load(path):
@@ -1231,7 +1236,7 @@ def apply_services(svcs):
                     if "assistant_pass" in vault_names():
                         problems.append("the assistant terminal did not start: " + (out.strip()[-200:] or "no reason given") + " — it starts at the next boot, or from Services")
                     else:
-                        problems.append("the assistant terminal is enabled but has no password yet")
+                        problems.append("the assistant terminal has no credential yet — Save under Assistant generates one")
                 elif svc == "pipeos-terminals":
                     problems.append("user terminals are enabled but no user has one configured yet")
                 elif svc == "pipeos-nas":
@@ -1471,6 +1476,48 @@ SELFCHECK_BIN = "/usr/local/bin/pipeos-selfcheck"
 
 FILES_WORK = "/data"
 FILES_EXT_BASE = "/media/ext"
+FILES_HOME_BASE = "/data/home"
+# nothing below an admin's scope for the other roles; belt and braces — a
+# user's root is their home, which is none of these
+FILES_NONADMIN_DENY = ("/data/pipebox", "/data/claude", "/data/.pipeos", "/data/logs", "/data/backup")
+
+
+def file_roots(sess):
+    """{key: abs_path} this session may see. admin: work=/data plus every
+    external drive; user: home=/data/home/<name> (made on first use) plus the
+    drives; viewer or nobody: nothing. The Files API is root; the roots are
+    what keep a role inside its own files."""
+    role = (sess or {}).get("role")
+    roots = {}
+    if role == "admin":
+        roots["work"] = FILES_WORK
+    elif role == "user":
+        name = (sess or {}).get("user") or ""
+        if not USER_NAME_RE.fullmatch(name):
+            return {}
+        home = os.path.join(FILES_HOME_BASE, name)
+        try:
+            if not os.path.isdir(home):
+                os.makedirs(home, mode=0o750, exist_ok=True)
+                try:
+                    import pwd
+                    pw = pwd.getpwnam(name)
+                    os.chown(home, pw.pw_uid, pw.pw_gid)
+                except (KeyError, OSError):
+                    pass
+        except OSError:
+            return {}
+        roots["home"] = home
+    else:
+        return {}
+    try:
+        for n in os.listdir(FILES_EXT_BASE):
+            p = os.path.join(FILES_EXT_BASE, n)
+            if os.path.ismount(p):
+                roots["ext/" + n] = p
+    except OSError:
+        pass
+    return roots
 PROTECTED_LABELS = ("PIPEOS", "PIPEWORK")
 PROTECTED_MOUNTS = ("/", "/data", "/media/usb")
 DEV_RE = re.compile(r"^[a-z][a-z0-9]{1,31}$")
@@ -2033,6 +2080,7 @@ class Handler(BaseHTTPRequestHandler):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        self._sec_headers()
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         if cookie is not None:
@@ -2123,6 +2171,7 @@ class Handler(BaseHTTPRequestHandler):
         identity is NOT per request — it is the connection's client
         certificate, the same for every request on it — so it is the one
         thing that may be kept; the body is not."""
+        self._roots_cache = None
         self._raw = b""
 
     # -- routes --
@@ -2133,6 +2182,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.serve_static("index.html")
         if path.startswith("/static/"):
             return self.serve_static(path[len("/static/"):])
+        if path == TERMINAL_PREFIX or path.startswith(TERMINAL_PREFIX + "/"):
+            return self.proxy_terminal()
         if path == "/api/state":
             return self.api_state()
         if path == "/api/lobby":
@@ -2223,8 +2274,20 @@ class Handler(BaseHTTPRequestHandler):
         # Every mutation serializes on MUTATE_LOCK; GET readers are not held, so
         # the dashboard still loads while a slow POST runs. The lock also keeps
         # the claim race single-winner now that the server is threaded.
+        self._slow = None
         with MUTATE_LOCK:
             self._do_post_locked()
+        if self._slow:
+            # a refused password costs its flat delay AFTER the lock is
+            # released: one guesser must not stall every other owner's POST
+            code, msg = self._slow
+            self._slow = None
+            time.sleep(AUTH_DELAY)
+            self.err(code, msg)
+
+    def fail_slow(self, code, msg):
+        """Refuse with the flat AUTH_DELAY, paid outside MUTATE_LOCK."""
+        self._slow = (code, msg)
 
     def _do_post_locked(self):
         if not self.same_origin():
@@ -2333,6 +2396,139 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(404, "no such action")
         activity(sess.get("user", ""), path, body)
         return fn(body)
+
+    def proxy_terminal(self):
+        """The assistant terminal behind the dashboard session. ttyd listens
+        on loopback with a credential only webd knows; a signed-in ADMIN (a
+        session — never a member certificate) reaches it here, and webd adds
+        the Basic header. GET and the WebSocket upgrade both pass through;
+        after a 101 the two sockets are pumped byte for byte."""
+        sess = valid_session(self.cookie_token())
+        if not sess:
+            return self.unauth()
+        if sess.get("role") != "admin":
+            return self.err(403, "the terminal is the admin's — your account cannot open it")
+        path = self.path
+        if path.split("?")[0] == TERMINAL_PREFIX:
+            q = path[len(TERMINAL_PREFIX):]
+            self.send_response(302)
+            self.send_header("Location", TERMINAL_PREFIX + "/" + q)
+            self.send_header("Content-Length", "0")
+            self._sec_headers()
+            self.end_headers()
+            return
+        user, pw, port = assistant_credential()
+        if not pw:
+            return self.err(503, "the terminal has no credential — Save under Assistant generates one")
+        try:
+            up = socket.create_connection((TERMINAL_HOST, int(port)), timeout=10)
+        except (OSError, ValueError):
+            return self.err(502, "the terminal is not running — turn the assistant on under Services")
+        upgrade = "upgrade" in (self.headers.get("Connection") or "").lower()
+        up_path = path[len(TERMINAL_PREFIX):] or "/" if TERMINAL_STRIP_PREFIX else path
+        lines = ["%s %s HTTP/1.1" % (self.command, up_path)]
+        for k, v in self.headers.items():
+            kl = k.lower()
+            if kl in ("cookie", "authorization") or kl.startswith("proxy-"):
+                continue
+            if kl == "connection" and not upgrade:
+                continue
+            lines.append("%s: %s" % (k, v))
+        lines.append("Authorization: Basic " + base64.b64encode(("%s:%s" % (user, pw)).encode()).decode())
+        if not upgrade:
+            lines.append("Connection: close")
+        try:
+            up.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1", "replace"))
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > 0:
+                up.sendall(self.rfile.read(min(n, 1 << 20)))
+            head = b""
+            while b"\r\n\r\n" not in head and len(head) < 65536:
+                chunk = up.recv(65536)
+                if not chunk:
+                    break
+                head += chunk
+        except OSError:
+            up.close()
+            return self.err(502, "the terminal did not answer")
+        if b"\r\n\r\n" not in head:
+            up.close()
+            return self.err(502, "the terminal sent no response head")
+        hdr, _, leftover = head.partition(b"\r\n\r\n")
+        status_line = hdr.split(b"\r\n", 1)[0].decode("latin-1", "replace")
+        try:
+            status = int(status_line.split()[1])
+        except (IndexError, ValueError):
+            up.close()
+            return self.err(502, "the terminal spoke no HTTP")
+        if status == 401:
+            up.close()
+            return self.err(502, "terminal credential mismatch — Save under Assistant to regenerate it")
+        self.close_connection = True
+        out = [status_line]
+        for line in hdr.split(b"\r\n")[1:]:
+            k = line.split(b":", 1)[0].strip().lower()
+            if status != 101 and k in (b"connection", b"keep-alive"):
+                continue
+            out.append(line.decode("latin-1", "replace"))
+        if status != 101:
+            out.append("Connection: close")
+        out += ["X-Frame-Options: DENY", "X-Content-Type-Options: nosniff", "Referrer-Policy: no-referrer"]
+        try:
+            self.wfile.write(("\r\n".join(out) + "\r\n\r\n").encode("latin-1", "replace"))
+            if leftover:
+                self.wfile.write(leftover)
+            if status == 101:
+                activity_event(sess.get("user", ""), "terminal open", "from %s" % self.client_address[0])
+                self.connection.settimeout(None)
+                up.settimeout(None)
+                conn = self.connection
+
+                def pump_up():
+                    try:
+                        while True:
+                            data = up.recv(65536)
+                            if not data:
+                                break
+                            conn.sendall(data)
+                    except OSError:
+                        pass
+                    finally:
+                        try:
+                            conn.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+                t = threading.Thread(target=pump_up, daemon=True)
+                t.start()
+                try:
+                    while True:
+                        data = self.rfile.read1(65536)
+                        if not data:
+                            break
+                        up.sendall(data)
+                except (OSError, ValueError):
+                    pass
+                finally:
+                    try:
+                        up.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                t.join(timeout=5)
+            else:
+                while True:
+                    data = up.recv(65536)
+                    if not data:
+                        break
+                    self.wfile.write(data)
+        except OSError:
+            pass
+        finally:
+            up.close()
+
+    def _sec_headers(self):
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
 
     def serve_static(self, name):
         if "/" in name or name.startswith("."):
@@ -2671,8 +2867,7 @@ class Handler(BaseHTTPRequestHandler):
         name = (body.get("name") or "").strip().lower()
         u = find_user(read_users(), sess.get("user", ""))
         if not u or not check_hash(body.get("password") or "", u.get("hash", "")):
-            time.sleep(AUTH_DELAY)
-            return self.err(403, "that is not your password")
+            return self.fail_slow(403, "that is not your password")
         v = vault_get(name)
         if v is None:
             return self.err(404, "no secret named %s" % name)
@@ -2692,8 +2887,7 @@ class Handler(BaseHTTPRequestHandler):
             vault.unlock(phrase)
             vault.export()
         except vault.Locked:
-            time.sleep(AUTH_DELAY)
-            return self.err(403, "that is not this vault's recovery phrase")
+            return self.fail_slow(403, "that is not this vault's recovery phrase")
         except (vault.VaultError, OSError, ValueError) as e:
             return self.err(500, "vault: %s" % e)
         try:
@@ -3193,9 +3387,10 @@ class Handler(BaseHTTPRequestHandler):
         # the wizard's join (#213): the box minted a one-time token and
         # handed it to the member that is now calling — accepted once
         if not cluster.take_join_token(pw):
-            if u is None or not check_hash(pw, u.get("hash")):
-                time.sleep(AUTH_DELAY)
-                return self.err(403, "wrong password for this Machine")
+            if u is None or u.get("disabled") or not check_hash(pw, u.get("hash")):
+                activity_event("-", "cluster/join failed", "from %s" % self.client_address[0])
+                return self.fail_slow(403, "wrong password for this Machine")
+        activity_event("-", "cluster/join ok", "from %s" % self.client_address[0])
         try:
             ans = cluster.join(body.get("cluster") or {}, name=box_name())
         except cluster.ClusterError as e:
@@ -3211,9 +3406,10 @@ class Handler(BaseHTTPRequestHandler):
         if not claimed():
             return self.err(403, "this Machine is not claimed")
         u = find_user(read_users(), "admin")
-        if u is None or not check_hash(body.get("password") or "", u.get("hash")):
-            time.sleep(AUTH_DELAY)
-            return self.err(403, "wrong password for this member")
+        if u is None or u.get("disabled") or not check_hash(body.get("password") or "", u.get("hash")):
+            activity_event("-", "cluster/add-request failed", "from %s" % self.client_address[0])
+            return self.fail_slow(403, "wrong password for this member")
+        activity_event("-", "cluster/add-request ok", "from %s" % self.client_address[0])
         target = (body.get("addr") or body.get("id") or "").strip()
         token = body.get("token") or ""
         if not target or not token:
@@ -3243,9 +3439,8 @@ class Handler(BaseHTTPRequestHandler):
         with THIS Machine's password (typed once to confirm), added, named."""
         u = find_user(read_users(), "admin")
         pw = body.get("password") or ""
-        if u is None or not check_hash(pw, u.get("hash")):
-            time.sleep(AUTH_DELAY)
-            return self.err(403, "that is not this Machine's admin password")
+        if u is None or u.get("disabled") or not check_hash(pw, u.get("hash")):
+            return self.fail_slow(403, "that is not this Machine's admin password")
         target = (body.get("id") or body.get("addr") or "").strip()
         if not target:
             return self.err(400, "which Machine")
@@ -3302,18 +3497,13 @@ class Handler(BaseHTTPRequestHandler):
             vault.export()
         except (vault.VaultError, OSError, ValueError) as e:
             sys.stderr.write("pipeos-webd: vault init at claim failed: %s\n" % e)
-        # The terminal's password IS the dashboard password: one key, as the
-        # sheet promises. ttyd takes user:pass on its argv, so a password
-        # with ':' (or a quote the sourced export cannot carry) is left for
-        # the Assistant card to set separately — said, not hidden.
+        # The terminal opens with the dashboard session: ttyd listens on
+        # loopback behind the /terminal/ proxy with a credential only webd
+        # knows. Nothing for the owner to type twice, nothing on the LAN.
         problems = []
-        if assistant_pass_ok(pw):
-            try:
-                vault_put("assistant_pass", pw, by="admin")
-            except RuntimeError as e:
-                problems.append("the terminal password could not be stored: %s" % e)
-        else:
-            problems.append("the terminal needs a password without ' or : — set one under Assistant")
+        why = assistant_pass_new()
+        if why:
+            problems.append(why)
         if not os.path.exists(ASSISTANT_CONF):
             try:
                 write_private(ASSISTANT_CONF, "ASSISTANT_USER='admin'\nASSISTANT_PORT='7681'\n"
@@ -3337,6 +3527,7 @@ class Handler(BaseHTTPRequestHandler):
         with open(PROVISIONED, "a"):
             pass
         saved, detail = save_state()
+        activity_event("admin", "claim", "from %s" % self.client_address[0])
         tok = new_session()
         self.send(200, {"ok": True, "saved": saved, "save_detail": "" if saved else detail,
                         "recovery_phrase": phrase, "problems": problems},
@@ -3351,8 +3542,9 @@ class Handler(BaseHTTPRequestHandler):
         # one flat cost and one message for every failure — no user enumeration
         if (u is None or u.get("disabled") or u.get("share")
                 or not check_hash(body.get("password") or "", u.get("hash"))):
-            time.sleep(AUTH_DELAY)
-            return self.err(403, "wrong username or password")
+            activity_event("-", "login failed", "%s from %s" % (name[:40], self.client_address[0]))
+            return self.fail_slow(403, "wrong username or password")
+        activity_event(name, "login ok", "from %s" % self.client_address[0])
         if not os.path.exists(USERS_CONF) and name == "admin":
             # pre-multi-user box: lazily seed the store from the legacy hash
             write_users([{"name": "admin", "role": "admin", "hash": u["hash"],
@@ -3423,38 +3615,47 @@ class Handler(BaseHTTPRequestHandler):
     # "work/…" or "ext/<dev>/…"; "" is the virtual root listing the drives.
 
     def _file_roots(self):
-        roots = {"work": FILES_WORK}
-        try:
-            for name in os.listdir(FILES_EXT_BASE):
-                p = os.path.join(FILES_EXT_BASE, name)
-                if os.path.ismount(p):
-                    roots["ext/" + name] = p
-        except OSError:
-            pass
-        return roots
+        """The roots of THIS session (see file_roots). Cached per request."""
+        if getattr(self, "_roots_cache", None) is None:
+            self._roots_cache = file_roots(self.authed())
+        return self._roots_cache
 
-    def _files_path(self, rel):
+    def _files_guard(self):
+        """403 when the session has no file access at all; True otherwise."""
+        if not self._file_roots():
+            self.err(403, "your account has no file access")
+            return False
+        return True
+
+    def _files_path(self, rel, writable=False):
         """Resolve a root-prefixed path, or return None for the virtual root.
-        Raises ValueError on escape attempts and unknown roots."""
+        Raises ValueError on escape attempts and unknown roots. `writable`
+        refuses hidden names anywhere in the path and, for non-admins, the
+        box's own directories under /data."""
         rel = (rel or "").strip().strip("/")
         if "\0" in rel:
             raise ValueError("bad path")
         if not rel:
             return None
         parts = rel.split("/")
-        if parts[0] == "work":
-            key, rest = "work", parts[1:]
+        if parts[0] in ("work", "home"):
+            key, rest = parts[0], parts[1:]
         elif parts[0] == "ext" and len(parts) >= 2:
             key, rest = "ext/" + parts[1], parts[2:]
         else:
             raise ValueError("unknown drive")
-        base = self._file_roots().get(key)
+        roots = self._file_roots()
+        base = roots.get(key)
         if base is None:
             raise ValueError("that drive is not mounted")
+        if writable and any(seg.startswith(".") for seg in rest if seg):
+            raise ValueError("hidden names (a leading dot) are not yours to write")
         p = os.path.realpath(os.path.join(base, *rest))
         rb = os.path.realpath(base)
         if p != rb and not p.startswith(rb + "/"):
             raise ValueError("path escapes the drive")
+        if writable and "work" not in roots and any(p == d or p.startswith(d + "/") for d in FILES_NONADMIN_DENY):
+            raise ValueError("that folder belongs to the box")
         return p
 
     def _files_rel(self, p):
@@ -3468,6 +3669,8 @@ class Handler(BaseHTTPRequestHandler):
         return ""
 
     def api_files(self):
+        if not self._files_guard():
+            return
         q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         raw = (q.get("path") or [""])[0]
         try:
@@ -3504,9 +3707,11 @@ class Handler(BaseHTTPRequestHandler):
                         "truncated": len(dirs) > 2000 or len(files) > 2000})
 
     def api_file_op(self, body):
+        if not self._files_guard():
+            return
         op = body.get("op")
         try:
-            p = self._files_path(body.get("path"))
+            p = self._files_path(body.get("path"), writable=True)
         except ValueError as e:
             return self.err(400, str(e))
         if p is None:
@@ -3521,11 +3726,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self.err(400, "folder name: no slashes, no leading dot")
                 os.makedirs(os.path.join(p, name), exist_ok=False)
             elif op in ("move", "rename"):
-                dest = self._files_path(body.get("dest"))
+                try:
+                    dest = self._files_path(body.get("dest"), writable=True)
+                except ValueError as e:
+                    return self.err(400, str(e))
                 if dest is None:
                     return self.err(400, "pick a destination drive first")
                 if os.path.isdir(dest):
                     dest = os.path.join(dest, os.path.basename(p))
+                if os.path.basename(dest).startswith("."):
+                    return self.err(400, "hidden names (a leading dot) are not yours to write")
                 if os.path.exists(dest):
                     return self.err(400, "destination already exists")
                 try:
@@ -3552,6 +3762,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, {"ok": True})
 
     def api_file_dl(self):
+        if not self._files_guard():
+            return
         q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         try:
             p = self._files_path((q.get("path") or [""])[0])
@@ -3579,6 +3791,8 @@ class Handler(BaseHTTPRequestHandler):
     def api_file_tar(self):
         """A folder as one download: streamed tar.gz, no temp file. Length is
         unknowable up front, so the connection closes to end the stream."""
+        if not self._files_guard():
+            return
         q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         try:
             p = self._files_path((q.get("path") or [""])[0])
@@ -3609,8 +3823,10 @@ class Handler(BaseHTTPRequestHandler):
         name = (q.get("name") or [""])[0]
         if not name or "/" in name or name.startswith(".") or "\0" in name:
             return self.err(400, "file name: no slashes, no leading dot")
+        if not self._files_guard():
+            return
         try:
-            d = self._files_path((q.get("path") or [""])[0])
+            d = self._files_path((q.get("path") or [""])[0], writable=True)
         except ValueError as e:
             return self.err(400, str(e))
         if not os.path.isdir(d):
@@ -4153,8 +4369,8 @@ class Handler(BaseHTTPRequestHandler):
         if u is None:
             return self.err(403, "your account no longer exists")
         if not check_hash(body.get("current") or "", u.get("hash")):
-            time.sleep(AUTH_DELAY)
-            return self.err(403, "current password is wrong")
+            activity_event(sess["user"], "password change failed", "")
+            return self.fail_slow(403, "current password is wrong")
         new = body.get("new") or ""
         if len(new) < 8:
             return self.err(400, "new password must be at least 8 characters")
@@ -4169,14 +4385,17 @@ class Handler(BaseHTTPRequestHandler):
             # keep the legacy fallback credential in step — it is the
             # users.json-corruption escape hatch and must never go stale
             write_private(ADMIN_CONF, "HASH='%s'\n" % h)
-            why = assistant_pass_follow(new)
-            if why:
-                problems.append(why)
         if u.get("unix") and u.get("sudo"):
             run(["/usr/local/bin/pipeos-user", "set-hash", u["name"]],
                 input_text=h + "\n")
+        activity_event(u["name"], "password changed", "")
+        # every other session of this account ends with the old password;
+        # the caller gets a fresh one so the page they are on stays signed in
+        drop_user_sessions(u["name"])
+        tok = new_session(u["name"], u.get("role") or "admin")
         saved, detail = save_state()
-        self.send(200, {"ok": True, "problems": problems, "saved": saved, "save_detail": "" if saved else detail})
+        self.send(200, {"ok": True, "problems": problems, "saved": saved, "save_detail": "" if saved else detail},
+                  cookie="session=%s; HttpOnly; SameSite=Strict; Path=/" % tok)
 
     # -- users ----------------------------------------------------------------
 
@@ -4256,6 +4475,7 @@ class Handler(BaseHTTPRequestHandler):
         return nas_read_shares()
 
     def api_users_set(self, body):
+        self._remint = None
         sess = self._user_admin_guard()
         if sess is None:
             return
@@ -4290,12 +4510,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.err(500, str(e))
             if u["name"] == "admin":
                 write_private(ADMIN_CONF, "HASH='%s'\n" % u["hash"])
-                why = assistant_pass_follow(body["password"])
-                if why:
-                    problems.append(why)
             if u.get("unix") and u.get("sudo"):
                 run(["/usr/local/bin/pipeos-user", "set-hash", u["name"]],
                     input_text=u["hash"] + "\n")
+            activity_event(sess.get("user", ""), "password reset", u["name"])
+            # the reset ends that account's sessions (an admin resetting
+            # their own password keeps this one: it is re-minted below)
+            drop_user_sessions(u["name"])
+            if u["name"] == sess.get("user"):
+                self._remint = new_session(u["name"], u.get("role") or "admin")
         if body.get("ssh_key") and u.get("unix"):
             rc, out = run(["/usr/local/bin/pipeos-user", "set-key", u["name"]],
                           input_text=body["ssh_key"].strip() + "\n")
@@ -4310,7 +4533,7 @@ class Handler(BaseHTTPRequestHandler):
         problems += apply_terminals(users)
         saved, detail = save_state()
         self.send(200, {"ok": True, "problems": problems,
-                        "saved": saved, "save_detail": "" if saved else detail})
+                        "saved": saved, "save_detail": "" if saved else detail}, cookie=("session=%s; HttpOnly; SameSite=Strict; Path=/" % self._remint) if getattr(self, "_remint", None) else None)
 
     def api_users_del(self, body):
         sess = self._user_admin_guard()
@@ -4425,6 +4648,10 @@ LOG_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 # What was done to this Machine through the dashboard: one line per mutating
 # call — when, who, what. The owner's own audit trail, on /data.
 ACTIVITY_LOG = LOGS_DIR + "/activity.log"
+# The assistant terminal: ttyd on loopback behind this path, admin session only
+TERMINAL_PREFIX = "/terminal"
+TERMINAL_HOST = os.environ.get("PIPEOS_TERMINAL_HOST", "127.0.0.1")
+TERMINAL_STRIP_PREFIX = os.environ.get("PIPEOS_TERMINAL_STRIP", "0") == "1"
 SELFCHECK_LOG = LOGS_DIR + "/selfcheck.log"
 STREAM_CONF = ETC + "/stream.conf"
 ASSISTANT_CONF = ETC + "/assistant.conf"
@@ -4480,7 +4707,16 @@ def activity(user, path, body):
             detail = str(b.get("mode") or "")
     except Exception:   # noqa: BLE001
         detail = ""
-    line = "%s %s %s%s\n" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), user or "-", what, (" " + detail.strip()) if detail.strip() else "")
+    activity_event(user, what, detail)
+
+
+def activity_event(user, what, detail=""):
+    """One line in the owner's trail: `ts user what detail`. The security
+    events (login ok/failed, claim, cluster join attempts, password changes,
+    terminal opens) come through here with their source address; nothing
+    secret is ever part of a line."""
+    detail = (detail or "").strip()
+    line = "%s %s %s%s\n" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), user or "-", what, (" " + detail) if detail else "")
     try:
         os.makedirs(os.path.dirname(ACTIVITY_LOG), exist_ok=True)
         with open(ACTIVITY_LOG, "a") as f:
@@ -5129,7 +5365,7 @@ class PhaseB:
                         "backend": vals["ASSISTANT_BACKEND"] or "claude",
                         "backends": [{"id": b, "installed": shutil.which(b) is not None}
                                      for b in ASSISTANT_BACKENDS],
-                        "running": rc == 0})
+                        "running": rc == 0, "url": TERMINAL_PREFIX + "/"})
 
     def api_assistant_set(self, body):
         fields = {}
@@ -5143,8 +5379,7 @@ class PhaseB:
         else:
             fields["ASSISTANT_BACKEND"] = read_conf_values(
                 ASSISTANT_CONF, ["ASSISTANT_BACKEND"])["ASSISTANT_BACKEND"] or "claude"
-        for k, name in (("user", "ASSISTANT_USER"), ("port", "ASSISTANT_PORT"),
-                        ("password", "ASSISTANT_PASS")):
+        for k, name in (("user", "ASSISTANT_USER"), ("port", "ASSISTANT_PORT")):
             v = (body.get(k) or "").strip()
             # sourced by the init/wrapper: same single-quote guard as stream.conf
             if any(c in v for c in "'\n\r\0"):
@@ -5160,19 +5395,14 @@ class PhaseB:
             return self.err(400, "port must be a number")
         if not fields["ASSISTANT_PORT"]:
             fields["ASSISTANT_PORT"] = prev["ASSISTANT_PORT"] or "7681"
-        keep = not fields["ASSISTANT_PASS"] and body.get("keep_pass") and (
-            "assistant_pass" in vault_names()
-            or read_conf_values(ASSISTANT_CONF, ["ASSISTANT_PASS"])["ASSISTANT_PASS"])
-        if not fields["ASSISTANT_PASS"] and not keep and not (backend and body.get("keep_pass")):
-            # backend-only flips on a not-yet-configured terminal are fine;
-            # anything that would SERVE a terminal still demands a password
-            return self.err(400, "set a password — the terminal is shell access and must not be served open")
-        # the password lives in the vault (#244); the conf carries a blank
-        if fields["ASSISTANT_PASS"]:
-            try:
-                vault_put("assistant_pass", fields["ASSISTANT_PASS"], by=(self.authed() or {}).get("user", ""))
-            except RuntimeError as e:
-                return self.err(500, str(e))
+        if body.get("password"):
+            return self.err(400, "the terminal has no password of its own any more — it opens with your dashboard sign-in; use regen to rotate its internal credential")
+        # the credential lives in the vault (#244) and is webd's alone: generated
+        # at claim, regenerated on request or when missing. The conf carries a blank.
+        if body.get("regen") or "assistant_pass" not in vault_names():
+            why = assistant_pass_new(by=(self.authed() or {}).get("user", "") or "admin")
+            if why:
+                return self.err(500, why)
         fields["ASSISTANT_PASS"] = ""
         write_private(ASSISTANT_CONF, "".join("%s='%s'\n" % (k, v) for k, v in fields.items()))
         problems = []

@@ -20,6 +20,7 @@
 #   pipeos restore-work SRC [--force] [--onto DEV]   /data back from a backup dir or an old stick's p2
 #   pipeos deploy-overlay      install a repo commit's overlay onto this box
 #   pipeos unclaim [--yes]     nobody's box again: drop the claim, name, users; reboot
+#   pipeos firewall status|allow CIDR...|apply|render|flush   the LAN-only packet filter (table inet pipeos)
 #   pipeos updates [--json]   what has changed on this Machine, newest first: every update it took, with titles and descriptions (#335)
 #   pipeos lan [--refresh] [--json]   the network map: every device netgaze sees, Machines marked (#217)
 #   pipeos cluster init [NAME]|status|ca|add|remove|sync|join MEMBER|adopt ID [NAME]|page|reboot-all|services KEY on|off [ID...]|call ID|NAME|IP METHOD PATH [JSON]   the cluster: identity (its CA), member list, the page, the two cluster-wide acts (#222, #211, #212)
@@ -221,6 +222,9 @@ cmd_status() {
     for svc in $svcs; do
         if rc-service "$svc" status >/dev/null 2>&1; then ok "$svc running"; else fail "$svc not running"; fi
     done
+    if ! command -v nft >/dev/null 2>&1; then warn "firewall: nft not installed (media predates the packet filter)"
+    elif nft list table inet pipeos >/dev/null 2>&1; then ok "firewall: LAN-only (table inet pipeos)"
+    else warn "firewall NOT loaded — rc-service pipeos-firewall start"; fi
     # the caps (#302): which one, if any, is stopping work right now — named
     if _ut=$(python3 "$LEDGER_PY" totals --json 2>/dev/null) && [ -n "$_ut" ] && command -v jq >/dev/null 2>&1; then
         _up=$(printf '%s' "$_ut" | jq -r '.cap.paused // ""')
@@ -709,6 +713,7 @@ case "$1" in
     deploy-overlay) shift; exec /usr/local/bin/pipeos-deploy-overlay "$@" ;;
     selfupdate)  shift; exec /usr/local/bin/pipeos-selfupdate "$@" ;;
     unclaim)     shift; cmd_unclaim "$@" ;;
+    firewall)    shift; exec /usr/local/bin/pipeos-firewall "$@" ;;
     lan)         shift; exec python3 "${PIPEOS_LAN:-/usr/local/share/pipeos/web/lan.py}" "$@" ;;
     updates)     shift; exec python3 "${PIPEOS_UPDATES:-/usr/local/share/pipeos/web/updates.py}" "$@" ;;
     cluster)     shift; exec python3 /usr/local/share/pipeos/web/cluster.py "$@" ;;

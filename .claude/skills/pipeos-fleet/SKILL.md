@@ -92,6 +92,7 @@ pipeos selfupdate image on|off|status           # automatic image updates (defau
 printf '%s' PW | pipeos nas account NAME        # share-only account (no sign-in, no shell) + its SMB password; tick it on a share in Files → Network storage
 pipeos vault status|list|get|set|export         # the sealed store; set reads stdin: printf '%s' V | pipeos vault set NAME [CONSUMER]
 pipeos vault share NAME two | unshare NAME two   # copy a text secret to a member (it saves it as a copy from this box); unshare only forgets — the single exception to no-propagation, on the owner's tap (#301)
+pipeos firewall status|allow CIDR...|apply      # the LAN-only packet filter (table inet pipeos): status shows the drop counters; allow trusts another IPv4 range (a VPN subnet) and saves
 pipeos updates                                  # what changed on THIS Machine, newest first: every commit a deploy brought in with its title and description, and every released image it applied (#335)
 pipeos lan [--refresh]                          # the network map (#217): everything netgaze sees from this box, Machines and members marked; --refresh runs the pass now
 pipeos work status|flush|park|unpark            # the RAM-staged hot set; park = flush + /data read-only so the stick idles

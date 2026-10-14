@@ -1,0 +1,43 @@
+#!/sbin/openrc-run
+# pipeos-firewall — the LAN-only packet filter (nftables, table inet pipeos).
+#
+# The product's trust boundary is the LAN: the first LAN visitor claims the
+# box, every listener exists to be reached from it. Nothing from outside the
+# private ranges may reach a listener, whatever a router forwards. The
+# ruleset is rendered by /usr/local/bin/pipeos-firewall from
+# /etc/pipeos/firewall.conf and loaded atomically (checked, then applied) —
+# a bad render never leaves a half-loaded drop policy, and a missing nft
+# fails this service loudly while the box keeps booting (selfcheck WARNs).
+description="the LAN-only packet filter (nftables, table inet pipeos)"
+
+depend() {
+	need localmount
+	after sysctl modules
+	before net
+	provide firewall
+}
+
+start_pre() {
+	# IPv6 off before any interface is on the wire. /etc/sysctl.d/pipeos.conf
+	# says the same for the sysctl service; this copy reaches a box updated by
+	# deploy-overlay, where etc/sysctl.d is not a deploy path. lo keeps ::1.
+	sysctl -q -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 \
+		net.ipv6.conf.lo.disable_ipv6=0 || ewarn "could not disable IPv6"
+	if ! command -v nft >/dev/null 2>&1; then
+		eerror "nft is not installed — this media predates the packet filter (take the release image, or: pipeos pkg add nftables)"
+		return 1
+	fi
+	checkpath -d -m 0755 /run/pipeos
+}
+
+start() {
+	ebegin "Loading the LAN-only packet filter"
+	/usr/local/bin/pipeos-firewall apply
+	eend $?
+}
+
+stop() {
+	ebegin "Removing the packet filter (every port open)"
+	/usr/local/bin/pipeos-firewall flush
+	eend $?
+}

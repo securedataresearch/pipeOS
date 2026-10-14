@@ -137,6 +137,11 @@ ident = apkovl(d, "ident", {
     # honoured" apart from "etc/profile.d fell out of DEPLOY_PATHS"
     "etc/profile.d/10-pipebox-env.sh": "GENERATED-FROM-THIS-BOX-CARD",
     "etc/profile.d/zz-other.sh": "OLD-SIBLING",
+    # build-owned posture (IMAGE_PATHS): the boot runlevel and fstab come from
+    # the image; the default runlevel is the wizard's and stays the box's
+    "etc/runlevels/boot/pipeos-oldsvc": "OLD-BOOT",
+    "etc/runlevels/default/pipeos-nas": "BOX-DEFAULT",
+    "etc/fstab": "OLD-FSTAB",
 }, ["a", "b"])
 generic = apkovl(d, "generic", {
     "etc/pipeos/card.conf": "NICK=\n",
@@ -145,6 +150,8 @@ generic = apkovl(d, "generic", {
     "etc/pipeos/.overlay-stamp": "commit image\n",
     "etc/profile.d/10-pipebox-env.sh": "GENERATED-ON-THE-BUILD-WORKSTATION",
     "etc/profile.d/zz-other.sh": "NEW-SIBLING",
+    "etc/runlevels/boot/pipeos-firewall": "IMG-BOOT",
+    "etc/fstab": "NEW-FSTAB",
 }, ["a", "c", "optional-extra"])
 merged = os.path.join(d, "merged.tar.gz")
 rc, out = run_fns('merge_apkovl "%s" "%s" "%s"' % (ident, generic, merged))
@@ -166,6 +173,17 @@ check("5 the merge takes the image's overlay, keeps the box's identity, unions t
       and g("etc/profile.d/zz-other.sh") == "NEW-SIBLING"
       and sorted(g("etc/apk/world").split()) == ["a", "b", "c", "optional-extra"],
       repr((rc, out, sorted(got)))[:400])
+
+# ── 5a. build-owned posture rides the image (IMAGE_PATHS) ────────────────
+# A new BOOT service in the image (pipeos-firewall) must run on an updated
+# box, so the boot/sysinit runlevels, fstab, sysctl.d and sshd_config are the
+# image's; the default runlevel is the wizard's service set and stays.
+check("5a the boot runlevel, fstab (and the other posture files) come from the image; the default runlevel stays the box's",
+      g("etc/runlevels/boot/pipeos-firewall") == "IMG-BOOT"
+      and "etc/runlevels/boot/pipeos-oldsvc" not in got and "./etc/runlevels/boot/pipeos-oldsvc" not in got
+      and g("etc/runlevels/default/pipeos-nas") == "BOX-DEFAULT"
+      and g("etc/fstab") == "NEW-FSTAB",
+      repr(sorted(k for k in got if "runlevels" in k or "fstab" in k)))
 
 # ── 5b. a NEVER path inside a swept directory (#341) ─────────────────────
 # etc/profile.d is a DEPLOY_PATHS *directory*, so the sweep removes it whole

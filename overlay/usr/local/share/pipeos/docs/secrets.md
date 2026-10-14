@@ -1,7 +1,8 @@
 # Secrets
 
 Everything this Machine has to keep to itself — the Claude token, the
-vendor-support key, the streaming keys, the assistant terminal's password,
+vendor-support key, the streaming keys, the assistant terminal's internal
+credential,
 the network-storage logins — lives in **one sealed file** on the boot
 stick. The services read it through the box's memory only; the stick and
 every clone of it carry the sealed file and nothing in the clear.
@@ -29,7 +30,8 @@ Under **Secrets**:
   needs, a token for a service. Named `jobs.something` it reaches jobs as
   `SOMETHING`.
 
-The Claude token, support key, stream keys, terminal password and SMB
+The Claude token, support key, stream keys, terminal credential (generated,
+never typed) and SMB
 logins are set from their own cards (Setup, Services, Streaming, Files);
 Secrets lists them and can delete them, nothing more.
 

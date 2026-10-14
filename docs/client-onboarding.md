@@ -28,9 +28,9 @@ Done. The same page is your dashboard from now on.
 
 ## Day to day
 
-- **Talk to it**: **Open terminal** in the dashboard's sidebar. Sign in
-  with `admin` and the same password as the page. That is the assistant,
-  the same conversation from every browser.
+- **Talk to it**: **Open terminal** in the dashboard's sidebar. It opens
+  with the same sign-in as the page — nothing to type. That is the
+  assistant, the same conversation from every browser.
 - **Check on it**: the dashboard shows health, disk, and every log.
 - **Updates**: automatic, daily, verified — the dashboard shows the state.
 - **Something's weird?** Dashboard → Maintenance → **Repair remote

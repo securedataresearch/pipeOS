@@ -60,6 +60,7 @@ when host keys have changed (every reflash). Clocks are UTC.
 | `pipeos vault status\|list\|get\|set\|del\|export\|unlock\|rephrase` | Secrets view | the sealed store | set/del: the store is in `/etc`, save after |
 | `pipeos vault share NAME ID\|NAME...` / `unshare` | Secrets → *shared with* ticks | a copy of NAME to each member through ITS `/api/secrets/receive` over mutual TLS (that member saves it as `cluster:<this id>`); this box notes who has it; unshare only forgets — the copy stays that member's own. The one exception to no-propagation, on the owner's tap (#301) | yes |
 | `pipeos cluster users` | Cluster → Who can sign in, across the cluster | — (read-only; gathered live from each member, never cached) | no |
+| `pipeos firewall status\|allow CIDR...\|apply\|render\|flush` | — (operator; System shows the row) | `/etc/pipeos/firewall.conf` (`allow` appends to ALLOW_FROM and applies); the ruleset is rendered to `/run/pipeos/firewall.nft` and loaded atomically | `allow` saves |
 | `pipeos updates [--json]` | Updates view | — (reads `/data/logs/deploy-overlay.log`, the selfupdate log and the clone) | no |
 | `pipeos lan [--refresh] [--json]` | Network → Everything on this network | netgaze's pass (ICMP sweep, neighbour table, PTR), cached a minute, every row marked this Machine / member / a Machine / other (#217) | no |
 | `pipeos work status\|flush\|park\|unpark` | — (operator) | flush: the RAM-staged hot set → the stick; park: remount `/data` read-only | flush is the save |

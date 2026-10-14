@@ -470,6 +470,24 @@ elif [ -f /etc/pipeos/provisioned ] && [ ! -s /data/.authorized_keys.backup ] &&
         && log "seeded /data/.authorized_keys.backup"
 fi
 
+# ---- 3b3. the LAN-only packet filter (2026-10-13). The table is the proof,
+# not the service's status; cheap enough for --live. WARN, not CRIT: the box
+# is up and serving, it is just reachable from more networks than it should be.
+if ! command -v nft >/dev/null 2>&1; then
+    warnn "firewall: nft is not installed — this media predates the packet filter; every listener is open to any network that can route here"
+elif nft list table inet pipeos >/dev/null 2>&1; then
+    :
+elif grep -qs '^FIREWALL=off' /etc/pipeos/firewall.conf; then
+    noten "firewall: off by /etc/pipeos/firewall.conf"
+elif [ "$BOOT" = yes ] && rc-service pipeos-firewall start >/dev/null 2>&1; then
+    fixed "firewall was not loaded; loaded it (table inet pipeos)"
+else
+    warnn "firewall: table inet pipeos is NOT loaded — rc-service pipeos-firewall start"
+fi
+if [ -n "$(ip -6 addr show scope global 2>/dev/null)" ]; then
+    warnn "IPv6 global address present — net.ipv6.conf.all.disable_ipv6 did not apply (etc/sysctl.d/pipeos.conf)"
+fi
+
 # ---- 3c. claude: with pipe off there is no listener to probe, but "the
 # Claude service is on and has no credential" is still a box that cannot do
 # its job — a WARN, not a crit: the wizard's sign-in step is skippable and

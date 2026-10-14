@@ -352,6 +352,17 @@ merge_apkovl() {   # IDENTITY GENERIC OUT
             cp -a "$_t/b/$_p" "$_t/a/$_p"
         fi
     done
+    # Build-owned, release-only: the sysinit/boot runlevels are the build's
+    # (the wizard only ever touches default) and the posture files change with
+    # a release, not with a deploy. Without this a NEW boot service in the
+    # image never ran on an updated box — pipeos-firewall was the first to notice.
+    IMAGE_PATHS="etc/runlevels/sysinit etc/runlevels/boot etc/sysctl.d etc/fstab etc/ssh/sshd_config"
+    for _p in $IMAGE_PATHS; do
+        [ -e "$_t/b/$_p" ] || continue
+        rm -rf "${_t:?}/a/$_p"
+        mkdir -p "$(dirname "$_t/a/$_p")"
+        cp -a "$_t/b/$_p" "$_t/a/$_p"
+    done
     # NEVER paths stay the box's. One the box does not have is not restored:
     # a box that has never generated keeps the image's copy, which is the right
     # answer for one nobody has claimed yet.

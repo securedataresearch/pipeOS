@@ -8,6 +8,7 @@ CI runs this (a probe nobody runs gates nothing — pipeOS#109).
 """
 import importlib.util
 import json
+import socket
 import os
 import sys
 import time
@@ -327,11 +328,12 @@ ok("claim sets the provisioned marker")
 assert os.path.exists(webd.SERVICES_CONF) and webd.read_services()["claude"] is True and webd.read_services()["pipe"] is False \
     and webd.read_services()["assistant"] is True
 ok("claim writes the default service set (Claude and the terminal on, the rest off) — no file is no longer the fleet default")
-assert webd.vault.get("assistant_pass") == "hunter22hunter", "the terminal's password is the dashboard's at claim"
-assert open(tmp + "/secrets/assistant.env").read() == "ASSISTANT_PASS='hunter22hunter'\n"
+_ap = webd.vault.get("assistant_pass")
+assert re.fullmatch(r"[A-Za-z0-9_-]{32}", _ap or "") and _ap != "hunter22hunter", "the terminal's credential is webd's own random secret, never the admin password"
+assert open(tmp + "/secrets/assistant.env").read() == "ASSISTANT_PASS='%s'\n" % _ap
 assert os.path.exists(webd.ASSISTANT_CONF) and "ASSISTANT_PORT='7681'" in open(webd.ASSISTANT_CONF).read()
 assert isinstance(r.get("problems"), list)
-ok("claim seeds the terminal: assistant_pass in the vault = the admin password, a default assistant.conf, problems carried to the page")
+ok("claim seeds the terminal: a random assistant_pass in the vault (not the admin password), a default assistant.conf, problems carried to the page")
 import select as _sel0   # a real wait, not a fixed sleep (time.sleep is no-op-patched further down)
 for _ in range(100):
     if os.path.exists(tmp + "/selfcheck.argv"):
@@ -368,7 +370,7 @@ assert r["services"]["claude"] is True and r["services"]["pipe"] is False
 ok("services toggle round-trips")
 # ---- the owner's trail and the log viewer (2026-10-13) --------------------------
 _act = open(webd.ACTIVITY_LOG).read()
-assert " admin services claude=on pipe=off\n" in _act and " admin claim" not in _act, _act
+assert " admin services claude=on pipe=off\n" in _act and " admin claim from 127.0.0.1\n" in _act, _act
 with open(webd.LOGS_DIR + "/pipeos-gc.log", "w") as f:
     f.write("one\ntwo match\nthree\n")
 with open(webd.SELFCHECK_LOG, "w") as f:
@@ -796,17 +798,23 @@ g2 = req("/api/stream")
 assert g2["targets"][0]["key_set"] is True and g2["targets"][1]["key_set"] is False, g2["targets"]
 assert webd.vault.get("stream_key_1") == "yt-secret" and "stream_key_2" not in {r["name"] for r in webd.vault.list_()}
 ok("blank provider key with keep_key preserves the saved key; a target posted without keep_key drops its key from the vault")
-# assistant terminal: guards injection + port, and refuses an open terminal
+# assistant terminal: the credential is webd's own random secret; a password
+# field is refused; the port is checked
+_ap0 = webd.vault.get("assistant_pass")
+assert re.fullmatch(r"[A-Za-z0-9_-]{32}", _ap0 or ""), _ap0
 req("/api/assistant-config", {"password": "x'; rm -rf /"}, expect=400)
-req("/api/assistant-config", {"port": "notaport", "password": "p"}, expect=400)
-req("/api/assistant-config", {"user": "admin"}, expect=400)
-ok("assistant config guards injection/port and refuses a passwordless terminal")
-r = req("/api/assistant-config", {"password": "hunter2pass", "port": "7681"})
+req("/api/assistant-config", {"port": "notaport"}, expect=400)
+req("/api/assistant-config", {"user": "x'y"}, expect=400)
+ok("assistant config: a password field is refused (the terminal opens with the session), the port is checked")
+r = req("/api/assistant-config", {"port": "7681"})
 assert r["ok"]
 a = req("/api/assistant")
-assert a["pass_set"] is True and a["port"] == "7681" and "password" not in a, a
-assert webd.vault.get("assistant_pass") == "hunter2pass" and "hunter2pass" not in open(webd.ASSISTANT_CONF).read()
-assert open(tmp + "/secrets/assistant.env").read() == "ASSISTANT_PASS='hunter2pass'\n"
+assert a["pass_set"] is True and a["port"] == "7681" and "password" not in a and a["url"] == "/terminal/", a
+assert webd.vault.get("assistant_pass") == _ap0, "a port change keeps the credential"
+r = req("/api/assistant-config", {"regen": True})
+assert r["ok"] and webd.vault.get("assistant_pass") != _ap0 and re.fullmatch(r"[A-Za-z0-9_-]{32}", webd.vault.get("assistant_pass"))
+assert open(tmp + "/secrets/assistant.env").read() == "ASSISTANT_PASS='%s'\n" % webd.vault.get("assistant_pass")
+assert "ASSISTANT_PASS=''" in open(webd.ASSISTANT_CONF).read()
 # backend selection: allowlisted, install-checked, and a backend-only flip
 # keeps the saved password and port
 req("/api/assistant-config", {"backend": "skynet"}, expect=400)
@@ -815,14 +823,75 @@ if _absent:
     req("/api/assistant-config", {"backend": _absent}, expect=400)  # not installed here
 assert a["backend"] == "claude" and any(b["id"] == "hermes" for b in a["backends"])
 if any(b["id"] == "hermes" and b["installed"] for b in a["backends"]):
-    req("/api/assistant-config", {"backend": "hermes", "keep_pass": True})
+    req("/api/assistant-config", {"backend": "hermes"})
     a2 = req("/api/assistant")
     assert a2["backend"] == "hermes" and a2["pass_set"] is True and a2["port"] == "7681", a2
-    req("/api/assistant-config", {"backend": "claude", "keep_pass": True})
+    req("/api/assistant-config", {"backend": "claude"})
 ok("assistant backend allowlist + lossless backend-only flips")
-with open(webd.ASSISTANT_CONF) as f:
-    assert "ASSISTANT_PASS=''" in f.read() and webd.vault.get("assistant_pass") == "hunter2pass"
-ok("assistant config round-trips and hides the password")
+# ---- the terminal behind the session: /terminal/ proxied to a loopback ttyd ----
+import socketserver as _ss, base64 as _b64, http.client as _hc
+class _TtydH(_ss.StreamRequestHandler):
+    def handle(self):
+        head = b""
+        while b"\r\n\r\n" not in head:
+            c = self.request.recv(4096)
+            if not c:
+                return
+            head += c
+        lines = head.split(b"\r\n\r\n", 1)[0].decode().split("\r\n")
+        path = lines[0].split()[1]
+        hdr = {l.split(":", 1)[0].lower(): l.split(":", 1)[1].strip() for l in lines[1:] if ":" in l}
+        if "websocket" in hdr.get("upgrade", "").lower():
+            self.request.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: x\r\n\r\n")
+            while True:
+                d = self.request.recv(65536)
+                if not d:
+                    break
+                self.request.sendall(d)
+            return
+        if hdr.get("authorization") != TTYD_WANT[0]:
+            self.request.sendall(b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=ttyd\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            return
+        body = json.dumps({"path": path, "auth": hdr.get("authorization", ""), "cookie": hdr.get("cookie", "")}).encode()
+        self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % len(body) + body)
+class _Ttyd(_ss.ThreadingTCPServer):
+    allow_reuse_address = True
+TTYD_WANT = [""]
+_ttyd = _Ttyd(("127.0.0.1", 0), _TtydH); threading.Thread(target=_ttyd.serve_forever, daemon=True).start()
+req("/api/assistant-config", {"port": str(_ttyd.server_address[1])})
+TTYD_WANT[0] = "Basic " + _b64.b64encode(("admin:" + webd.vault.get("assistant_pass")).encode()).decode()
+def _raw(path, cookie_v=None, extra=None):
+    c = _hc.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+    h = {"Cookie": "session=" + cookie_v} if cookie_v else {}
+    h.update(extra or {})
+    c.request("GET", path, headers=h)
+    r = c.getresponse(); b = r.read(); c.close()
+    return r.status, dict(r.getheaders()), b
+st_, _, _ = _raw("/terminal/"); assert st_ == 401, st_
+st_, h_, b_ = _raw("/terminal/", cookie["v"])
+assert st_ == 200 and json.loads(b_) == {"path": "/terminal/", "auth": TTYD_WANT[0], "cookie": ""}, (st_, b_)
+assert h_.get("X-Frame-Options") == "DENY"
+st_, _, b_ = _raw("/terminal/token?x=1", cookie["v"]); assert st_ == 200 and json.loads(b_)["path"] == "/terminal/token?x=1"
+st_, h_, _ = _raw("/terminal", cookie["v"]); assert st_ == 302 and h_.get("Location") == "/terminal/", (st_, h_)
+# the websocket upgrade is pumped both ways
+_sk = socket.create_connection(("127.0.0.1", srv.server_address[1]), timeout=10)
+_sk.sendall(("GET /terminal/ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nCookie: session=%s\r\n\r\n" % cookie["v"]).encode())
+_hd = b""
+while b"\r\n\r\n" not in _hd:
+    _hd += _sk.recv(4096)
+assert _hd.startswith(b"HTTP/1.1 101"), _hd
+_sk.sendall(b"hello-through-two-pumps"); assert _sk.recv(4096) == b"hello-through-two-pumps"
+_sk.close()
+assert "admin terminal open from 127.0.0.1" in open(webd.ACTIVITY_LOG).read()
+assert req("/api/status")["user"] == "admin"   # the server is still healthy after the pump
+# a credential mismatch upstream is a 502 with a hint, never a browser auth dialog
+TTYD_WANT[0] = "Basic nope"
+st_, h_, b_ = _raw("/terminal/", cookie["v"]); assert st_ == 502 and "regenerate" in b_.decode() and "WWW-Authenticate" not in h_
+TTYD_WANT[0] = "Basic " + _b64.b64encode(("admin:" + webd.vault.get("assistant_pass")).encode()).decode()
+_ttyd.shutdown(); _ttyd.server_close()
+st_, _, _ = _raw("/terminal/", cookie["v"]); assert st_ == 502
+req("/api/assistant-config", {"port": "7681"})
+ok("the terminal is behind the dashboard session: 401 without one, proxied to loopback ttyd with the vault credential and no cookie, /terminal redirects to /terminal/, the websocket is pumped both ways, a mismatch is a 502 hint, a dead ttyd is a 502")
 r = req("/api/update")
 assert r["state"] in ("self-update disabled", "origin unreachable", "current", "update available", "unknown")
 ok("update endpoint reports a coherent state")
@@ -1147,6 +1216,10 @@ req("/api/status", expect=200)
 req("/api/services", {"stream": False}, expect=403)
 req("/api/users", expect=403)
 req("/api/file-op", {"op": "mkdir", "path": "work", "name": "nope"}, expect=403)
+req("/api/files?path=", expect=403)
+req("/api/file-dl?path=work/hello.txt", expect=403)
+req("/api/file-tar?path=work", expect=403)
+_st, _, _ = _raw("/terminal/", cookie["v"]); assert _st == 403
 req("/api/nas", {"shares": []}, expect=403)
 req("/api/nas-password", {"name": "peek", "password": "whatever12"}, expect=403)
 req("/api/nas-account", {"name": "peek2", "password": "whatever12"}, expect=403)
@@ -1162,16 +1235,40 @@ req("/api/usage/cap", {"usd": 5}, expect=403)
 r = req("/api/password", {"current": "peekpassword", "new": "peekpassword2"})
 assert r["ok"]
 assert req("/api/docs")["pages"], "viewer must be able to read the docs"
-ok("viewer reads but cannot mutate; can change own password")
+ok("viewer reads but cannot mutate (and has no file access, no terminal); can change own password")
+_act = open(webd.ACTIVITY_LOG).read()
+assert "peek login ok from 127.0.0.1" in _act and " peek password changed" in _act and "peekpassword" not in _act
+ok("the trail records the viewer's login and password change, never a password")
+# a wrong password's delay is paid outside the mutation lock: the sleep the
+# refusal costs must run with MUTATE_LOCK released (the harness no-ops
+# time.sleep, so the probe records where the call happens, not how long)
+_held = []
+webd.time.sleep = lambda _s: _held.append(webd.MUTATE_LOCK.locked())
+req("/api/login", {"username": "ghost", "password": "nope-nope"}, expect=403)
+webd.time.sleep = lambda _s: None
+assert _held == [False], _held
+ok("a refused password costs its delay after the lock is released, not inside it")
 # role "user": files move, nothing else does
 cookie["v"] = admin_cookie
 r = req("/api/users/add", {"name": "mover", "password": "moverpassword", "role": "user"})
 assert r["ok"]
 saved_admin2 = cookie["v"]
 cookie["v"] = None
+webd.FILES_HOME_BASE = tmp + "/data/home"
 req("/api/login", {"username": "mover", "password": "moverpassword"})
-r = req("/api/file-op", {"op": "mkdir", "path": "work", "name": "dropbox"})
-assert r["ok"]
+r = req("/api/files?path=")
+assert [d["name"] for d in r["dirs"]] == ["home"] and r["roots"] is True, r
+req("/api/files?path=work", expect=400)
+r = req("/api/file-op", {"op": "mkdir", "path": "home", "name": "dropbox"})
+assert r["ok"] and os.path.isdir(tmp + "/data/home/mover/dropbox")
+req("/api/file-op", {"op": "mkdir", "path": "home", "name": ".claude"}, expect=400)
+req("/api/file-op", {"op": "rename", "path": "home/dropbox", "dest": "home/.hidden"}, expect=400)
+req("/api/files?path=home/../hello.txt", expect=400)
+os.symlink("/etc", tmp + "/data/home/mover/esc")
+req("/api/files?path=home/esc", expect=400)
+req("/api/file-op", {"op": "delete", "path": "home/esc"}, expect=400)   # the link resolves outside: refused, not followed
+os.unlink(tmp + "/data/home/mover/esc")
+_st, _, _ = _raw("/terminal/", cookie["v"]); assert _st == 403
 req("/api/services", {"stream": False}, expect=403)
 req("/api/nas", {"shares": []}, expect=403)
 req("/api/users", expect=403)
@@ -1184,7 +1281,7 @@ req("/api/github-login/start", {}, expect=403)
 req("/api/github-token", {"token": "ghp_" + "k" * 40}, expect=403)
 req("/api/secrets", expect=403)
 req("/api/secrets/reveal", {"name": "claude_token", "password": "moverpassword"}, expect=403)
-ok("role user: file-op allowed; services/nas/users/name/backup/flash/claude/github/secrets refused")
+ok("role user: files inside the user's own home only (no work, no dot-names, no escape, no symlink out); services/nas/users/name/backup/flash/claude/github/secrets/terminal refused")
 cookie["v"] = saved_admin2
 req("/api/users/del", {"name": "mover"})
 

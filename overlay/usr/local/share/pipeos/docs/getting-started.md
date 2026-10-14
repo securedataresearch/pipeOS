@@ -39,7 +39,10 @@ its `pipeos-xxxx.local` name.
 
 After the wizard, the same address is the dashboard. Sign in with the
 password you set. **Open terminal** in the sidebar is the assistant: a
-terminal into the box's one Claude session, same sign-in as the page.
+terminal into the box's one Claude session, opened with the page's own
+sign-in (no password prompt). The box answers only its own network: a
+packet filter drops everything from outside the private ranges, IPv6 is off,
+and the terminal is reachable through the dashboard alone.
 
 ## SSH
 

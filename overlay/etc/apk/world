@@ -42,6 +42,7 @@ libva-utils
 mtr
 ncdu
 nethack
+nftables
 nmap
 nvme-cli
 openssh

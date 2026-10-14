@@ -318,10 +318,19 @@ caps_block() {
 role_block() {
     case "$1" in
         BUILD|TEST)
-            # BUILD authors, TEST runs the gate; both need the toolchain.
+            # BUILD authors, TEST runs the gate; both need the toolchain, and
+            # python3 is the fleet's documented escape hatch (docs/box-fence.md).
+            # A GENERIC (client) box gets none of these: its allow list has no
+            # general command runner (2026-10-13).
             printf '      "Bash(cargo *)",\n'
             printf '      "Bash(rustc *)",\n'
             printf '      "Bash(just *)",\n'
+            printf '      "Bash(python3 *)",\n'
+            printf '      "Bash(make *)",\n'
+            ;;
+        SHIP)
+            printf '      "Bash(python3 *)",\n'
+            printf '      "Bash(make *)",\n'
             ;;
         *) : ;;
     esac

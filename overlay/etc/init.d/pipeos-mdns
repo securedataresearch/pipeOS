@@ -32,6 +32,13 @@ start_pre() {
 	fi
 	# the peer cache the lobby reads (checkpath makes no parents)
 	checkpath -d -m 0755 /run/pipeos || return 1
+	# /media/usb is root-only (fmask=0077); the responder runs as svc-mdns. Root
+	# copies the image descriptor it publishes in TXT. Stale after `pipeos flash
+	# apply` until the reboot — which is when the box actually runs that image.
+	if [ -r /media/usb/pipeos-image.txt ]; then
+		cp /media/usb/pipeos-image.txt /run/pipeos/image.txt.new 2>/dev/null \
+			&& chmod 0644 /run/pipeos/image.txt.new && mv /run/pipeos/image.txt.new /run/pipeos/image.txt
+	fi
 	if getent passwd svc-mdns >/dev/null 2>&1; then
 		checkpath -d -m 0755 -o svc-mdns:svc-mdns /run/pipeos/mdns || return 1
 	else

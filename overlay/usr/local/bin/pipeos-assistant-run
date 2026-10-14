@@ -6,10 +6,12 @@
 # and the dashboard's chat are the same assistant (same conversation, same
 # /root/.claude memory). Run under supervise-daemon (see the init script).
 #
-# NOTE: ttyd takes the password on its argv, so it is visible in `ps` to a root
-# user on the box — acceptable on a single-owner appliance (root already owns
-# the box), and the password never leaves the box. Config is /etc/pipeos/
-# assistant.conf (mode 600); the OAuth token comes from claude-auth.env.
+# The terminal is reached through the dashboard: ttyd listens on LOOPBACK
+# under --base-path /terminal, and pipeos-webd proxies /terminal/ for a
+# signed-in admin, adding the Basic credential below. That credential is a
+# random secret generated at claim (the vault's assistant_pass) that only
+# webd ever presents; it is on ttyd's argv, which is why it is not the
+# owner's password. Config is /etc/pipeos/assistant.conf (mode 600).
 set -u
 
 CONF=/etc/pipeos/assistant.conf
@@ -89,7 +91,7 @@ fi
 
 # --writable so the client can type; every browser attaches to the one
 # master session.
-exec ttyd --writable --interface 0.0.0.0 --port "$PORT" \
+exec ttyd --writable --interface 127.0.0.1 --port "$PORT" --base-path /terminal \
 	--credential "${TTYD_USER}:${ASSISTANT_PASS}" \
 	-t "titleFixed=$(hostname 2>/dev/null || echo pipeos) assistant" \
 	-t 'theme={"background":"#131417"}' \
