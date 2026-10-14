@@ -1228,7 +1228,10 @@ def apply_services(svcs):
                     # the relay is shipped; what a fresh box lacks is its port
                     problems.append("support access is on but not connected yet — it needs a port from us: send the key shown under Services")
                 elif svc == "pipeos-assistant":
-                    problems.append("the assistant terminal is enabled but has no password yet")
+                    if "assistant_pass" in vault_names():
+                        problems.append("the assistant terminal did not start: " + (out.strip()[-200:] or "no reason given") + " — it starts at the next boot, or from Services")
+                    else:
+                        problems.append("the assistant terminal is enabled but has no password yet")
                 elif svc == "pipeos-terminals":
                     problems.append("user terminals are enabled but no user has one configured yet")
                 elif svc == "pipeos-nas":
@@ -3316,6 +3319,12 @@ class Handler(BaseHTTPRequestHandler):
         # so the terminal answers before the wizard's services step.
         write_services(dict(read_services(), claude=True, assistant=True))
         problems += apply_services(read_services())
+        if any(p.startswith("the assistant terminal did not start") for p in problems):
+            # the first start can race the box's own boot (the workspace, the
+            # vault's export dir); one more try before the page hears about it
+            time.sleep(2)
+            problems = [p for p in problems if not p.startswith("the assistant terminal did not start")]
+            problems += apply_services(read_services())
         # Save NOW — a claim that exists only in RAM is not a claim.
         with open(PROVISIONED, "a"):
             pass
