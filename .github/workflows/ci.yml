@@ -115,6 +115,14 @@ jobs:
       - name: hardware watchdog — the card switch, the arming, the cause line
         run: python3 scripts/check-watchdog.py
 
+      # 2026-10-13. The LAN-only packet filter: the generator renders one
+      # ruleset, refuses a CIDR that is not one, loads atomically (check, then
+      # apply), and the wiring (service, boot runlevel, lbu.list, world, IPv6
+      # off, sshd/fstab posture, the flash merge carrying the boot runlevel)
+      # is pinned.
+      - name: the LAN-only packet filter — the ruleset, the seam, the wiring
+        run: python3 scripts/check-firewall.py
+
       # #244. Every service secret used to be a plain file in the apkovl;
       # now one sealed store, chassis-bound, opened into /run at boot. The
       # rows are the binding, the phrase, the integrity check, the

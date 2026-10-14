@@ -9,8 +9,10 @@
 # the image's default runlevel. Refuses to start until a password is set — the
 # terminal is shell access on the LAN and must never be served open.
 #
-# /etc/pipeos/assistant.conf (mode 600 — ASSISTANT_PASS is a secret):
-#   ASSISTANT_PASS=  terminal password (required)
+# ttyd listens on loopback under /terminal; pipeos-webd proxies it for an
+# admin session. /etc/pipeos/assistant.conf (mode 600):
+#   ASSISTANT_PASS=  the internal credential webd presents (generated at claim,
+#                    kept in the vault; its export is what start_pre reads)
 #   ASSISTANT_USER=  username (default "admin")
 #   ASSISTANT_PORT=  TCP port (default 7681)
 description="browser terminal into the box assistant (ttyd + tmux + claude)"

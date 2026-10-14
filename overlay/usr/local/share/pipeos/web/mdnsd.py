@@ -59,7 +59,7 @@ TTL = 120
 SERVICE = lanid.SERVICE
 PROVISIONED = "/etc/pipeos/provisioned"
 BOOT_REPORT = "/run/pipeos/boot-report"
-IMAGE_TXT = "/media/usb/pipeos-image.txt"
+IMAGE_TXT = "/run/pipeos/image.txt"   # root copies it from the media (fmask=0077) in the init script
 CARD = "/etc/pipeos/card.conf"
 
 

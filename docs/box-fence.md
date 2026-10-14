@@ -62,9 +62,14 @@ Measured on box3, 2026-08-11.
 | `foo 2>&1 \| head; echo x` | approval on the tail |
 
 **What works:** one command per call, no shell metaprogramming. For anything
-needing loops, variables, or a script, use `python3 - <<'PY' … PY` — it is
-permitted and is the general escape hatch. `sh -n file` (syntax check) is
-permitted even though `sh file` is not.
+needing loops, variables, or a script, use `python3 - <<'PY' … PY` — on the
+fleet roles (BUILD, TEST, SHIP) it is permitted and is the general escape
+hatch. **A GENERIC (client) box has no general command runner at all** since
+2026-10-13: no `python3 *`, `find *` or `make *` in its allow list, and
+`git -c`, `git config`, `gh alias`, `gh extension`, `gh auth token` and the
+secret paths (`/run/pipeos/secrets`, `/etc/pipeos/tls`, `users.json`) are
+denied outright. `sh -n file` (syntax check) is permitted even though `sh
+file` is not.
 
 ## MEASURED — filesystem reach
 

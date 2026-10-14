@@ -120,7 +120,28 @@ Two more toggles ride the same services model:
   the box from outside, not about a padlock on the LAN.
 - Sessions are random tokens in `/run/pipeos/web-sessions` (tmpfs — a reboot
   signs everyone out). Cookies are `HttpOnly; SameSite=Strict`; cross-origin
-  POSTs are refused; failed logins cost a flat 2 s.
+  POSTs are refused; failed logins cost a flat 2 s, paid after the mutation
+  lock is released so a guesser cannot stall the owner. A password change
+  ends the account's other sessions. Every response carries
+  `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`.
+- **The LAN is enforced, not assumed (2026-10-13).** `pipeos-firewall` (boot
+  runlevel, nftables `table inet pipeos`) drops everything that does not come
+  from the private ranges (10/8, 172.16/12, 192.168/16, 169.254/16, plus
+  `ALLOW_FROM` in `/etc/pipeos/firewall.conf`); replies to the box's own
+  connections pass. IPv6 is off box-wide (`etc/sysctl.d/pipeos.conf`), so a
+  SLAAC address is no second door. sshd is inet-only with no forwarding. The
+  boot media is root-only (`fmask=0077`).
+- **The terminal is behind the session.** ttyd binds `127.0.0.1` under
+  `--base-path /terminal` with a random credential generated at claim (the
+  vault's `assistant_pass`, never the owner's password); webd proxies
+  `/terminal/` — GET and the WebSocket upgrade — for an admin session only,
+  adding the Basic header itself. Nothing on the LAN hears a terminal
+  password.
+- **Roles are scoped in the Files API.** `admin` sees `/data` and the
+  external drives; `user` sees `/data/home/<name>` and the drives, with no
+  dot-names and none of the box's own directories; `viewer` has no file
+  access.
 
 ## Files
 

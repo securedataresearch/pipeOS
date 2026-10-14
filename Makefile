@@ -4,7 +4,7 @@ SHELL := /bin/bash
 VARIANT ?= vm
 export VARIANT
 
-.PHONY: all host-deps chroot pipe netgaze apks apkovl image usb metal images stick vm flash release clean-chroot clean cards check-cards
+.PHONY: all host-deps chroot pipe netgaze apks apks-extra apkovl image usb metal images stick vm flash release clean-chroot clean cards check-cards
 
 all: image
 
@@ -69,6 +69,11 @@ netgaze:
 
 apks: chroot netgaze
 	./scripts/30-build-apks.sh
+
+# only the CDN closure (overlay/etc/apk/world -> out/repo/extra); the slow
+# pipe/claude/hermes/netgaze builds are left as they are
+apks-extra: chroot
+	EXTRA_ONLY=1 ./scripts/30-build-apks.sh
 
 apkovl:
 	./scripts/40-build-apkovl.sh

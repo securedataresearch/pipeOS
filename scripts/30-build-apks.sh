@@ -8,6 +8,9 @@ CR="$PIPEOS_ROOT/scripts/chroot-run.sh"
 
 mountpoint -q "$CHROOT/proc" || { echo "run 10-mk-chroot.sh first" >&2; exit 1; }
 
+# EXTRA_ONLY=1: only the CDN closure (overlay/etc/apk/world -> out/repo/extra);
+# the slow pipe/claude/hermes/netgaze builds are left as they stand.
+if [ "${EXTRA_ONLY:-0}" != 1 ]; then
 # ---------------------------------------------------------------- claude stage
 # Run the official installer inside the chroot so it picks the musl artifact.
 # This is the riskiest external dependency — do it first.
@@ -71,6 +74,10 @@ for pkg in $PIPEOS_PKGS; do
 done
 
 ls -lh "$OUT/repo/pipeos/$ALPINE_ARCH/"
+else
+    echo "==> EXTRA_ONLY=1: leaving out/repo/pipeos as built; rebuilding only the extra closure"
+    [ -f "$OUT/repo/pipeos/$ALPINE_ARCH/APKINDEX.tar.gz" ] || { echo "no pipeos repo yet — run the full build first" >&2; exit 1; }
+fi
 
 # ---------------------------------------------------------------- extra repo
 # The standard ISO's onboard repo only carries a subset of main — fetch every
@@ -93,7 +100,7 @@ UTILS=$(grep -vxF -f <(printf '%s\n' $PIPEOS_PKGS) "$PIPEOS_ROOT/overlay/etc/apk
 # exactly today's closure, not the union of every closure since August.
 rm -rf "$OUT/repo/extra"
 mkdir -p "$OUT/repo/extra/$ALPINE_ARCH"; chmod -R a+rwX "$OUT/repo/extra" 2>/dev/null || true
-"$CR" "apk fetch --recursive -o /pipeOS/out/repo/extra/$ALPINE_ARCH \
+"$CR" "apk update --quiet && apk fetch --recursive -o /pipeOS/out/repo/extra/$ALPINE_ARCH \
     --repository https://dl-cdn.alpinelinux.org/alpine/v3.24/community \
     $(echo $UTILS)"
 # apk-3 ADB index with the ../noarch split — the SAME recipe extra-add runs
