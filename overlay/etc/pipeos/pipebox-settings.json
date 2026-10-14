@@ -59,8 +59,6 @@
       "Bash(pipeos-selfupdate*)",
       "Bash(pipeos restore-work*)",
       "Bash(pipeos-restore-work*)",
-      "Bash(pipeos wake*)",
-      "Bash(pipeos-wake*)",
       "Bash(pipeos vault*)",
       "Bash(pipeos-vault*)",
       "Bash(pipeos cluster*)",

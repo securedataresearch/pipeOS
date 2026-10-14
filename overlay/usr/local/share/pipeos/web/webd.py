@@ -111,7 +111,6 @@ HEALTH_LAST = "/run/pipeos/health.last"     # the hourly live verdict (#290)
 # The LAN lobby (#lobby): mdnsd's peer cache, and how stale a row may be
 # before the lobby stops showing it (3× the responder's 10 s interval).
 MACHINES_ROSTER = "/data/pipeos/mdns/machines.json"
-WAKE_BIN = "/usr/local/bin/pipeos-wake"
 MDNS_CACHE = "/run/pipeos/mdns/peers.json"
 MDNS_EXPIRE_S = 30
 LAN_QUERY_S = 1.0
@@ -399,6 +398,30 @@ def vault_put(name, value, by=""):
 REQ_LOCK = threading.Lock()
 
 
+def assistant_pass_ok(pw):
+    """Can this password ride ttyd's user:pass argv and the sourced export?"""
+    return bool(pw) and len(pw) <= 200 and not any(c in pw for c in "':\n\r\0") \
+        and all(ord(c) >= 32 for c in pw)
+
+
+def assistant_pass_follow(pw):
+    """The admin password changed: the terminal's follows when it was the
+    same key (set at claim). Returns a problem sentence or ''."""
+    if "assistant_pass" not in vault_names():
+        return ""
+    if not assistant_pass_ok(pw):
+        return "the terminal kept its old password (the new one has ' or :) — change it under Assistant"
+    try:
+        vault_put("assistant_pass", pw, by="admin")
+    except RuntimeError as e:
+        return "the terminal password did not follow: %s" % e
+    if read_services().get("assistant"):
+        rc, out = run(["rc-service", "pipeos-assistant", "restart"], timeout=60)
+        if rc != 0:
+            return "the terminal did not restart: " + out.strip()[-200:]
+    return ""
+
+
 def _req_load(path):
     try:
         with open(path) as f:
@@ -644,6 +667,130 @@ def claude_login_code(code):
         return True, ""
     m = re.search(r"(Login failed[^\n]*|[Ee]rror[^\n]*)", text)
     return False, (m.group(1) if m else text.strip()[-200:] or "sign-in did not complete")
+
+
+# ---- GitHub auth (Connect GitHub) ------------------------------------------
+# The same shape as the Claude sign-in, one step shorter: `gh auth login
+# --web` prints a one-time code and github.com/login/device, then polls on
+# its own until the owner approves on any device. Nothing is pasted back.
+# The token lands where gh keeps it (/root/.config/gh/hosts.yml, in lbu's
+# list) and `gh auth setup-git` points git's credential helper at it, so the
+# terminal, the listener and scheduled jobs all reach GitHub from /root.
+GH_BIN = "gh"
+GH_LOGIN_LOCK = threading.Lock()
+GH_LOGIN = {"proc": None, "code": "", "url": "", "started": 0, "out": [], "done": None}
+GH_LOGIN_TTL = 600
+
+
+def gh_env():
+    env = dict(os.environ, HOME=CLAUDE_HOME, BROWSER="/bin/false", NO_COLOR="1",
+               GH_PROMPT_DISABLED="1", GH_NO_UPDATE_NOTIFIER="1")
+    # an env token would make `gh auth status` describe something other
+    # than the stored sign-in
+    env.pop("GH_TOKEN", None)
+    env.pop("GITHUB_TOKEN", None)
+    return env
+
+
+def gh_status():
+    """{"logged_in", "login", "pending", "last_error"} — one cheap API call."""
+    rc, out = run([GH_BIN, "api", "user", "--jq", ".login"], timeout=20, env=gh_env())
+    login = out.strip().splitlines()[0].strip() if rc == 0 and out.strip() else ""
+    p = GH_LOGIN["proc"]
+    done = GH_LOGIN["done"]
+    return {"logged_in": bool(login), "login": login,
+            "pending": p is not None and p.poll() is None,
+            "last_error": "" if (done is None or done[0]) else done[1]}
+
+
+def gh_setup_git():
+    """Point git's https credential helper at gh (writes /root/.gitconfig)."""
+    return run([GH_BIN, "auth", "setup-git", "--hostname", "github.com"], timeout=30, env=gh_env())
+
+
+def gh_login_reap():
+    """Drop a finished or abandoned sign-in. Caller holds GH_LOGIN_LOCK."""
+    p = GH_LOGIN["proc"]
+    if p is None:
+        return
+    if p.poll() is None and time.time() - GH_LOGIN["started"] < GH_LOGIN_TTL:
+        return
+    try:
+        p.kill()
+    except OSError:
+        pass
+    GH_LOGIN.update({"proc": None, "code": "", "url": "", "started": 0, "out": []})
+
+
+def gh_login_start():
+    """Spawn `gh auth login --web`; return (code, url). A finisher thread
+    waits for gh, wires git and saves state when the owner approves."""
+    with GH_LOGIN_LOCK:
+        gh_login_reap()
+        if GH_LOGIN["proc"] is not None:
+            try:
+                GH_LOGIN["proc"].kill()
+            except OSError:
+                pass
+        argv = [GH_BIN, "auth", "login", "--web", "--hostname", "github.com",
+                "--git-protocol", "https", "--skip-ssh-key", "--insecure-storage"]
+        try:
+            p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, text=True, env=gh_env(), cwd=CLAUDE_HOME)
+        except FileNotFoundError:
+            raise RuntimeError("the gh command is not installed on this box")
+        out = []
+        GH_LOGIN.update({"proc": p, "code": "", "url": "", "started": time.time(), "out": out, "done": None})
+
+        def pump():
+            for line in p.stdout:
+                out.append(ANSI_RE.sub("", line))
+
+        def finish():
+            p.wait()
+            text = "".join(out)
+            ok = p.returncode == 0
+            if ok:
+                gh_setup_git()
+                with MUTATE_LOCK:
+                    save_state()
+            m = re.search(r"(error[^\n]*|failed[^\n]*)", text, re.I)
+            GH_LOGIN["done"] = (ok, "" if ok else (m.group(1) if m else text.strip()[-200:] or "sign-in did not complete"))
+            if GH_LOGIN["proc"] is p:
+                GH_LOGIN.update({"proc": None, "code": "", "url": "", "started": 0, "out": []})
+        threading.Thread(target=pump, daemon=True).start()
+        deadline = time.time() + 15
+        code = url = ""
+        while time.time() < deadline and not (code and url):
+            text = "".join(out)
+            m = re.search(r"\b([A-Z0-9]{4}-[A-Z0-9]{4})\b", text)
+            if m:
+                code = m.group(1)
+            m = re.search(r"https://\S+", text)
+            if m:
+                url = m.group(0)
+            if not (code and url) and p.poll() is not None:
+                break
+            if not (code and url):
+                time.sleep(0.2)
+        if not (code and url):
+            p.kill()
+            GH_LOGIN.update({"proc": None, "code": "", "url": "", "started": 0, "out": []})
+            raise RuntimeError("gh did not offer a sign-in code: " + "".join(out).strip()[-200:])
+        GH_LOGIN.update({"code": code, "url": url})
+        threading.Thread(target=finish, daemon=True).start()
+        return code, url
+
+
+def gh_login_cancel():
+    with GH_LOGIN_LOCK:
+        p = GH_LOGIN["proc"]
+        if p is not None:
+            try:
+                p.kill()
+            except OSError:
+                pass
+        GH_LOGIN.update({"proc": None, "code": "", "url": "", "started": 0, "out": [], "done": None})
 
 
 # ---- the LAN lobby ------------------------------------------------------------
@@ -2024,6 +2171,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/stream-log": self.api_stream_log,
             "/api/assistant": self.api_assistant_get,
             "/api/claude": self.api_claude_get,
+            "/api/github": self.api_github_get,
             "/api/support": self.api_support_get,
             "/api/secrets": self.api_secrets,
             "/api/schedule": self.api_schedule,
@@ -2114,6 +2262,10 @@ class Handler(BaseHTTPRequestHandler):
             "/api/claude-login/start": self.api_claude_login_start,
             "/api/claude-login/code": self.api_claude_login_code,
             "/api/claude-logout": self.api_claude_logout,
+            "/api/github-login/start": self.api_github_login_start,
+            "/api/github-token": self.api_github_token,
+            "/api/github-logout": self.api_github_logout,
+            "/api/support-port": self.api_support_set,
             "/api/pipe-key": self.api_pipe_key,
             "/api/pipe-contact": self.api_pipe_contact,
             "/api/file-op": self.api_file_op,
@@ -2139,7 +2291,6 @@ class Handler(BaseHTTPRequestHandler):
             "/api/update-now": self.api_update_now,
             "/api/update-set": self.api_update_set,
             "/api/flash": self.api_flash,
-            "/api/wake": self.api_wake,
             "/api/secrets/set": self.api_secrets_set,
             "/api/secrets/del": self.api_secrets_del,
             "/api/secrets/reveal": self.api_secrets_reveal,
@@ -3117,23 +3268,6 @@ class Handler(BaseHTTPRequestHandler):
         saved, out = save_state()
         self.send(200, {"ok": True, "cluster": d["id"], "saved": saved, "save_output": out})
 
-    def api_wake(self, body):
-        """A magic packet to a rostered Machine (#241). Admin only — the
-        role gate lets every admin POST in, but powering hardware on is an
-        owner's act, so it is said here too. Writes nothing: no save."""
-        if self._user_admin_guard() is None:
-            return
-        mid = (body.get("id") or "").strip().lower()
-        if not re.fullmatch(r"[0-9a-f]{4}", mid):
-            return self.err(400, "which Machine? (its id)")
-        rc, out = run([WAKE_BIN, mid], timeout=20)
-        if rc == 2:
-            return self.err(404, out.strip() or "not a Machine this box has seen")
-        if rc != 0:
-            return self.err(409, out.strip()[-300:] or "could not send the packet")
-        r = roster().get(mid, {})
-        self.send(200, {"ok": True, "id": mid, "mac": r.get("mac", ""), "detail": out.strip()})
-
     def api_claim(self, body):
         if claimed():
             return self.err(403, "this box is already claimed")
@@ -3157,20 +3291,38 @@ class Handler(BaseHTTPRequestHandler):
             vault.export()
         except (vault.VaultError, OSError, ValueError) as e:
             sys.stderr.write("pipeos-webd: vault init at claim failed: %s\n" % e)
+        # The terminal's password IS the dashboard password: one key, as the
+        # sheet promises. ttyd takes user:pass on its argv, so a password
+        # with ':' (or a quote the sourced export cannot carry) is left for
+        # the Assistant card to set separately — said, not hidden.
+        problems = []
+        if assistant_pass_ok(pw):
+            try:
+                vault_put("assistant_pass", pw, by="admin")
+            except RuntimeError as e:
+                problems.append("the terminal password could not be stored: %s" % e)
+        else:
+            problems.append("the terminal needs a password without ' or : — set one under Assistant")
+        if not os.path.exists(ASSISTANT_CONF):
+            try:
+                write_private(ASSISTANT_CONF, "ASSISTANT_USER='admin'\nASSISTANT_PORT='7681'\n"
+                                              "ASSISTANT_PASS=''\nASSISTANT_BACKEND='claude'\n")
+            except (OSError, RuntimeError) as e:
+                problems.append("the terminal's settings file could not be written: %s" % e)
         # The claim IS the provisioning event: from here on, saves persist.
-        # The service set is written NOW, as the sheet promises (Claude on,
-        # the rest off): a claim over the API that never visited the wizard's
-        # services step left no services.conf, and selfcheck's legacy reading
-        # of "no file" is the fleet default — pipe on (zero, 2026-09-16).
-        if not os.path.exists(SERVICES_CONF):
-            write_services(dict(read_services(), claude=True))
+        # The service set is written NOW, as the sheet promises (Claude and
+        # the terminal on, the rest off) — merged over whatever the image
+        # shipped (the generic image carries an all-off file), and applied,
+        # so the terminal answers before the wizard's services step.
+        write_services(dict(read_services(), claude=True, assistant=True))
+        problems += apply_services(read_services())
         # Save NOW — a claim that exists only in RAM is not a claim.
         with open(PROVISIONED, "a"):
             pass
         saved, detail = save_state()
         tok = new_session()
         self.send(200, {"ok": True, "saved": saved, "save_detail": "" if saved else detail,
-                        "recovery_phrase": phrase},
+                        "recovery_phrase": phrase, "problems": problems},
                   cookie="session=%s; HttpOnly; SameSite=Strict; Path=/" % tok)
 
     def api_login(self, body):
@@ -3885,6 +4037,58 @@ class Handler(BaseHTTPRequestHandler):
         saved, detail = save_state()
         self.send(200, {"ok": True, "saved": saved, "save_detail": "" if saved else detail})
 
+    # -- GitHub (Connect GitHub) ---------------------------------------------
+
+    def api_github_get(self):
+        self.send(200, gh_status())
+
+    def api_github_login_start(self, body):
+        try:
+            code, url = gh_login_start()
+        except RuntimeError as e:
+            return self.err(500, str(e))
+        self.send(200, {"ok": True, "code": code, "url": url})
+
+    def api_github_token(self, body):
+        token = (body.get("token") or "").strip()
+        if not re.fullmatch(r"(gh[pousr]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255})", token):
+            return self.err(400, "that does not look like a GitHub token (ghp_…, gho_… or github_pat_…)")
+        gh_login_cancel()
+        rc, out = run([GH_BIN, "auth", "login", "--with-token", "--hostname", "github.com",
+                       "--insecure-storage"], timeout=60, input_text=token + "\n", env=gh_env())
+        if rc != 0:
+            return self.err(400, "GitHub refused the token: " + out.strip()[-200:])
+        gh_setup_git()
+        saved, detail = save_state()
+        st = gh_status()
+        st.update({"ok": True, "saved": saved, "save_detail": "" if saved else detail})
+        self.send(200, st)
+
+    def api_github_logout(self, body):
+        gh_login_cancel()
+        run([GH_BIN, "auth", "logout", "--hostname", "github.com"], timeout=30, env=gh_env())
+        run(["git", "config", "--global", "--unset-all", "credential.https://github.com.helper"],
+            timeout=15, env=gh_env())
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "saved": saved, "save_detail": "" if saved else detail})
+
+    def api_support_set(self, body):
+        """The port the vendor assigned, typed into the Services card instead
+        of edited into /etc/pipeos/support.conf by hand."""
+        port = (body.get("port") or "").strip()
+        if not re.fullmatch(r"\d{2,5}", port) or not 1 <= int(port) <= 65535:
+            return self.err(400, "the port is a number between 1 and 65535")
+        relay = read_conf_values(SUPPORT_CONF, ["SUPPORT_RELAY"])["SUPPORT_RELAY"]
+        write_private(SUPPORT_CONF, "SUPPORT_RELAY='%s'\nSUPPORT_PORT='%s'\n" % (relay, port))
+        problems = []
+        if read_services().get("support"):
+            rc, out = run(["rc-service", "pipeos-support", "restart"], timeout=60)
+            if rc != 0:
+                problems.append("support access did not reconnect: " + out.strip()[-200:])
+        saved, detail = save_state()
+        self.send(200, {"ok": True, "port": port, "problems": problems,
+                        "saved": saved, "save_detail": "" if saved else detail})
+
     def api_pipe_key(self, body):
         key = (body.get("key") or "").strip()
         if not key or len(key) > 256 or any(c.isspace() for c in key):
@@ -3936,15 +4140,19 @@ class Handler(BaseHTTPRequestHandler):
             return self.err(500, str(e))
         u["hash"] = h
         write_users(users)
+        problems = []
         if u["name"] == "admin":
             # keep the legacy fallback credential in step — it is the
             # users.json-corruption escape hatch and must never go stale
             write_private(ADMIN_CONF, "HASH='%s'\n" % h)
+            why = assistant_pass_follow(new)
+            if why:
+                problems.append(why)
         if u.get("unix") and u.get("sudo"):
             run(["/usr/local/bin/pipeos-user", "set-hash", u["name"]],
                 input_text=h + "\n")
         saved, detail = save_state()
-        self.send(200, {"ok": True, "saved": saved, "save_detail": "" if saved else detail})
+        self.send(200, {"ok": True, "problems": problems, "saved": saved, "save_detail": "" if saved else detail})
 
     # -- users ----------------------------------------------------------------
 
@@ -4058,6 +4266,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.err(500, str(e))
             if u["name"] == "admin":
                 write_private(ADMIN_CONF, "HASH='%s'\n" % u["hash"])
+                why = assistant_pass_follow(body["password"])
+                if why:
+                    problems.append(why)
             if u.get("unix") and u.get("sudo"):
                 run(["/usr/local/bin/pipeos-user", "set-hash", u["name"]],
                     input_text=u["hash"] + "\n")

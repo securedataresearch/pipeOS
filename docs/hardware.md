@@ -6,19 +6,6 @@ on a USB port. This page is the firmware side of things the OS cannot do
 from inside — the settings an operator makes once with a keyboard plugged
 in, and how to tell from the box that they were made.
 
-## Wake on LAN (#241)
-
-A Machine that is off has no row in the live lobby, but its siblings
-remember it: the **Wake** button on the Network view (and `pipeos wake
-<name>` from any member) sends a magic packet to the MAC it last
-advertised. For that packet to start the box, two switches have to be on:
-
-1. **The NIC side** — the OS arms it at every boot (`pipeos-wol`, boot
-   runlevel, `ethtool -s eth0 wol g`). The root filesystem is RAM, so this
-   is a service, not a setting. `WOL=off` in the card disarms it.
-2. **The BIOS side** — the firmware decides whether a packet may start
-   the machine from soft-off (S5). The OS cannot flip this.
-
 ## The watchdog (#247)
 
 The M920q's chipset has a TCO timer (`iTCO_wdt`, autoloaded). Every boot,

@@ -16,8 +16,11 @@ these docs for the details and the settled bitrates.
 
 ## Assistant
 
-Pick the assistant backend the box runs (Claude or Hermes),
-chat with the box, and manage the browser terminal.
+Pick the assistant backend the box runs (Claude or Hermes) and open the
+browser terminal — the assistant's front door. It is on from the claim and
+takes the dashboard's own sign-in (`admin` and the same password); every
+browser and every user terminal lands in the one conversation. **Open
+terminal** in the sidebar goes there too.
 
 ## Files
 

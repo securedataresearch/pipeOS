@@ -490,7 +490,7 @@ def resolve(target):
         for pid, r in rows.items():
             if t and t in (pid, (r.get("name") or "").lower(), _norm(r.get("host"))) and r.get("ip"):
                 return r["ip"], int(r.get("tls_port") or port)
-    raise ClusterError("%s: not a Machine this box knows — pipeos wake --list" % target)
+    raise ClusterError("%s: not a Machine this box knows — pipeos cluster status" % target)
 
 
 def _https(ip, port, method, path, body, cafile, timeout, present=True):

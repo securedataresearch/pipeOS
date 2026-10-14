@@ -145,10 +145,10 @@ function lobby(state) {
 // One row per Machine the responder has heard — the lobby and the
 // dashboard's Network view draw the same list (Sam, 2026-09-10: claiming
 // the next box should start from the network page of the one you own).
-// An unclaimed Machine gets a Claim link straight to its wizard. A Machine
+// An unclaimed Machine gets a Claim link straight to its wizard, and — when
+// opts.admin (the Network view, an admin) — an Adopt button (#213). A Machine
 // on the roster but not answering (awake === false) is a grey row: last
-// seen, last address, and — when opts.wake (the Network view, an admin) —
-// a Wake button that sends the magic packet (#241).
+// seen, last address.
 function machineRows(ms, opts = {}) {
   return ms.map(m => {
     const label = m.name || (m.host || "").replace(/\.local$/, "") || m.ip || "?";
@@ -159,10 +159,8 @@ function machineRows(ms, opts = {}) {
     const pills = (m.self ? '<span class="pill">this one</span>' : "")
       + (m.claimed ? "" : '<span class="pill status-warn">unclaimed</span>')
       + `<span class="pill ${vcls}">${esc(vtxt)}</span>`;
-    const act = off
-      ? (opts.wake ? (m.mac ? `<button class="btn" type="button" data-wake="${esc(m.id)}">Wake</button>`
-                            : `<span class="note">no MAC on record</span>`) : "")
-      : (!m.claimed && !m.self && href) ? `<a class="btn" href="${esc(href)}" target="_blank" rel="noopener">Claim ↗</a>${opts.wake ? ` <button class="btn ghost" type="button" data-adopt="${esc(m.id)}">Adopt</button>` : ""}`
+    const act = off ? ""
+      : (!m.claimed && !m.self && href) ? `<a class="btn" href="${esc(href)}" target="_blank" rel="noopener">Claim ↗</a>${opts.admin ? ` <button class="btn ghost" type="button" data-adopt="${esc(m.id)}">Adopt</button>` : ""}`
       : (!m.self && href ? `<a class="btn ghost" href="${esc(href)}" target="_blank" rel="noopener">Open ↗</a>` : "");
     const desc = [m.model || "", m.ip || "", (m.host && m.ip) ? m.host : "", off && m.mac ? m.mac : ""].filter(Boolean);
     return `<div class="row${off ? " off" : ""}">
@@ -187,7 +185,7 @@ function agoShort(ts) {
 const SERVICES = [
   { key: "claude", name: "AI assistant", desc: "The box runs an agent you can put to work (Claude or Hermes — pick under Assistant).", def: true },
   { key: "stream", name: "Streaming", desc: "Restream video with ffmpeg (configure after setup).", def: false },
-  { key: "assistant", name: "Assistant terminal", desc: "A browser terminal into the box's assistant (set a password below).", def: false },
+  { key: "assistant", name: "Assistant terminal", desc: "A terminal into the box's assistant, in your browser. Same sign-in as this page.", def: true },
   { key: "pipe", name: "pipe messaging", desc: "Talk to the box by DM from anywhere, via pipe.online.", def: false },
   { key: "support", name: "Vendor support access", desc: "Let your vendor connect to help. Off unless you switch it on.", def: false },
   { key: "nas", name: "Network storage", desc: "Share folders over SMB on your local network (set up under Files).", def: false },
@@ -199,7 +197,7 @@ function wizard(state) {
 
 function step1(state) {
   const v = el(`<div>
-    <p class="steps">Step 1 of 4</p>
+    <p class="steps">Claim</p>
     <h1>Welcome — this box is yours to claim</h1>
     <p class="sub">Set an admin password. Whoever holds it manages ${esc(state.hostname)}.</p>
     <div class="card">
@@ -220,7 +218,7 @@ function step1(state) {
     busy(v.querySelector("#go"), true);
     try {
       const r = await api("/api/claim", { password: p1 });
-      if (!r.saved) alert("Claimed, but saving to the boot media failed:\n" + r.save_detail);
+      state.claimNotes = [].concat(r.saved ? [] : ["Claimed, but saving to the boot media failed: " + r.save_detail], r.problems || []);
       if (r.recovery_phrase) phraseStep(state, r.recovery_phrase, () => joinStep(state)); else joinStep(state);
     } catch (e) {
       err.textContent = e.message; err.hidden = false;
@@ -281,7 +279,7 @@ async function joinStep(state) {
 function step2(state) {
   const id = state.lan_name || state.hostname;
   const v = el(`<div>
-    <p class="steps">Step 2 of 4</p>
+    <p class="steps">Name</p>
     <h1>Name the box</h1>
     <p class="sub">A name of its own, on top of its permanent address.</p>
     <div class="card">
@@ -330,7 +328,7 @@ function step3() {
       <label class="switch"><input type="checkbox" data-k="${s.key}" ${s.def ? "checked" : ""}><span></span></label>
     </div>`).join("");
   const v = el(`<div>
-    <p class="steps">Step 3 of 4</p>
+    <p class="steps">Services</p>
     <h1>What should this box do?</h1>
     <p class="sub">Everything can be changed later from the dashboard.</p>
     <div class="card">${rows}
@@ -345,7 +343,7 @@ function step3() {
     busy(v.querySelector("#go"), true);
     try {
       const r = await api("/api/services", picked);
-      step4(r.services);
+      step4(r.services, [].concat(state.claimNotes || [], r.problems || []));
     } catch (e) {
       err.textContent = e.message; err.hidden = false;
       busy(v.querySelector("#go"), false);
@@ -442,12 +440,92 @@ function claudeCard(opts) {
   return v;
 }
 
-function step4(services) {
+/* The GitHub card: the same shape as the Claude card, one step shorter.
+   The Machine runs `gh auth login --web`, shows the one-time code it
+   prints, and the owner types that code at github.com/login/device on
+   any device; gh polls until GitHub says yes, then the box wires git and
+   saves. Nothing is pasted back. A fine-grained token is the fallback. */
+function githubCard(opts) {
+  const wiz = !!(opts && opts.wizard);
+  const v = el(`<div class="card">
+    <div class="cardhead"><h2${wiz ? ' style="margin-top:0"' : ""}>${wiz ? "Connect GitHub" : "GitHub"}</h2><span class="pill" id="ghstate">checking…</span></div>
+    <p class="note">So the assistant can clone, push and open pull requests on your repositories. Sign in from any phone or computer: the Machine shows you a code, you type it on GitHub.</p>
+    <div id="ghstart">
+      <button id="ghgo" type="button">Sign in with GitHub</button>
+    </div>
+    <div id="ghlink" hidden>
+      <p class="note">1. Open <a id="ghopen" href="https://github.com/login/device" target="_blank" rel="noopener">github.com/login/device</a> on any device and sign in. &nbsp;2. Type this code there. &nbsp;3. Wait — this page notices by itself.</p>
+      <pre class="report" id="ghcode" style="font-size:1.4rem;letter-spacing:.08em;user-select:all"></pre>
+      <button id="ghcancel" type="button" class="ghost">Start over</button>
+    </div>
+    <details style="margin-top:.7rem"><summary class="note">Have a GitHub token instead?</summary>
+      <p class="note">A fine-grained or classic personal access token from github.com → Settings → Developer settings. Give it the repositories the assistant should work on.</p>
+      <label for="ghtok">Token</label>
+      <input id="ghtok" type="password" autocomplete="off">
+      <button id="ghtokgo" type="button">Connect with this</button>
+    </details>
+    <p class="note" id="ghout" hidden><a id="ghoutgo" href="#">Sign out of GitHub on this box</a></p>
+    <p id="ghmsg" class="note" hidden></p>
+  </div>`);
+  const q = (sel) => v.querySelector(sel);
+  const msg = (t) => { const m = q("#ghmsg"); m.hidden = false; m.textContent = t; };
+  const pill = q("#ghstate");
+  let poll = null;
+  const stopPoll = () => { if (poll) { clearInterval(poll); poll = null; } };
+  const showStart = () => { q("#ghlink").hidden = true; q("#ghstart").hidden = false; stopPoll(); };
+  const refresh = async () => {
+    try {
+      const r = await api("/api/github");
+      pill.textContent = r.logged_in ? "signed in as " + r.login : (r.pending ? "waiting for GitHub…" : "not connected");
+      pill.className = "pill " + (r.logged_in ? "status-ok" : "status-warn");
+      q("#ghout").hidden = !r.logged_in;
+      return r;
+    } catch (e) { pill.textContent = "?"; pill.className = "pill"; return null; }
+  };
+  q("#ghgo").onclick = async () => {
+    busy(q("#ghgo"), true); msg("asking the Machine for a sign-in code…");
+    try {
+      const r = await api("/api/github-login/start", {});
+      q("#ghcode").textContent = r.code; q("#ghopen").href = r.url;
+      q("#ghstart").hidden = true; q("#ghlink").hidden = false; q("#ghmsg").hidden = true;
+      const t0 = Date.now();
+      stopPoll();
+      poll = setInterval(async () => {
+        if (!document.body.contains(v)) return stopPoll();
+        const st = await refresh();
+        if (st && st.logged_in) { showStart(); msg("Connected as " + st.login + " — the assistant can use GitHub now."); }
+        else if (st && !st.pending) { showStart(); msg(st.last_error ? "GitHub did not finish the sign-in: " + st.last_error : "The sign-in timed out — press Sign in with GitHub to try again."); }
+        else if (Date.now() - t0 > 600000) { showStart(); msg("The sign-in timed out — press Sign in with GitHub to try again."); }
+      }, 3000);
+    } catch (e) { msg(e.message); }
+    busy(q("#ghgo"), false);
+  };
+  q("#ghcancel").onclick = () => { showStart(); q("#ghmsg").hidden = true; };
+  q("#ghtokgo").onclick = async () => {
+    busy(q("#ghtokgo"), true); msg("checking with GitHub…");
+    try {
+      const r = await api("/api/github-token", { token: q("#ghtok").value.trim() });
+      q("#ghtok").value = "";
+      msg(r.logged_in ? "Connected as " + r.login + "." : "Stored, but GitHub did not recognise it.");
+      refresh();
+    } catch (e) { msg(e.message); }
+    busy(q("#ghtokgo"), false);
+  };
+  q("#ghoutgo").onclick = async (ev) => {
+    ev.preventDefault();
+    try { await api("/api/github-logout", {}); msg("signed out — the Machine has no GitHub credential now."); refresh(); }
+    catch (e) { msg(e.message); }
+  };
+  refresh();
+  return v;
+}
+
+function step4(services, problems) {
   const parts = [];
   if (services.pipe) parts.push(`
     <div class="card">
       <h2 style="margin-top:0">Sign in to pipe</h2>
-      <p class="note">Get a one-time key at <a href="https://pipe.online" target="_blank" rel="noopener">pipe.online</a> (valid ~15 minutes) and paste it here.</p>
+      <p class="note">Get a one-time key from the nicks page at <a href="https://pipe.online/nicks/" target="_blank" rel="noopener">pipe.online/nicks</a> ("log in a device", valid ~15 minutes) and paste it here.</p>
       <label for="pkey">One-time key</label>
       <input id="pkey" type="password" autocomplete="off">
       <button id="pgo">Sign in</button>
@@ -455,15 +533,18 @@ function step4(services) {
     </div>`);
   const any = services.claude || services.pipe;
   const v = el(`<div>
-    <p class="steps">Step 4 of 4</p>
+    <p class="steps">Connect</p>
     <h1>Connect your accounts</h1>
     <p class="sub">${any ? "Each step is optional — you can finish them later from the dashboard's Setup view." : "Nothing to connect for the services you chose."}</p>
+    ${(problems || []).length ? `<div class="card"><p class="note">${(problems || []).map(esc).join("<br>")}</p></div>` : ""}
     <div id="cslot"></div>
+    <div id="ghslot"></div>
     ${parts.join("")}
     <button id="done">Finish setup</button>
   </div>`);
-  const slot = v.querySelector("#cslot");
+  const slot = v.querySelector("#cslot"), ghslot = v.querySelector("#ghslot");
   if (services.claude) slot.replaceWith(claudeCard({ wizard: true })); else slot.remove();
+  if (services.claude) ghslot.replaceWith(githubCard({ wizard: true })); else ghslot.remove();
   const pgo = v.querySelector("#pgo");
   if (pgo) pgo.onclick = async () => {
     const msg = v.querySelector("#pmsg"); msg.hidden = false; msg.textContent = "Signing in…";
@@ -681,6 +762,7 @@ async function dashboard() {
       <div class="navfoot">
         <span class="note">up ${fmtUptime(st.uptime_s)} · ${st.work_pct == null ? "disk ?" : st.work_pct + "% disk"}${st.work_free_mb != null ? " · " + Math.round(st.work_free_mb / 1024) + " GB free" : ""}</span>
         <span class="note">${esc(st.user || "")}${st.role ? " · " + esc(st.role) : ""}</span>
+        ${st.services.assistant ? '<a id="termopen" class="btn" href="#" target="_blank" rel="noopener">Open terminal ↗</a>' : ""}
         <button id="logout" class="ghost" data-vok>Sign out</button>
       </div>
     </aside>
@@ -764,25 +846,18 @@ async function dashboard() {
           <div id="abchoices" class="note">loading…</div>
           <p class="note" id="abmsg" hidden></p>
         </div>
-        ${st.services.claude ? `
-        <div class="card">
-          <h2>Ask the box</h2>
-          <div id="chatlog" style="max-height:16rem;overflow-y:auto"></div>
-          <label for="chatmsg">Message</label>
-          <input id="chatmsg" type="text" autocomplete="off" placeholder="Ask your assistant anything">
-          <button id="chatgo">Send</button>
-          <p class="note" id="chatnote" hidden></p>
-        </div>` : ""}
         ${st.services.assistant ? `
         <div class="card">
-          <h2>Terminal</h2>
-          <p class="note">A full terminal into this box's assistant, in your browser — the same session as the chat.</p>
-          <label for="apass">Terminal password</label>
-          <input id="apass" type="password" autocomplete="off" placeholder="leave blank to keep the saved password">
-          <label for="aport">Port</label>
-          <input id="aport" type="text" placeholder="7681">
-          <button id="asave">Save & restart terminal</button>
-          <a id="aopen" class="btn ghost" href="#" target="_blank" rel="noopener" style="display:none">Open terminal ↗</a>
+          <div class="cardhead"><h2>Terminal</h2><a id="aopen" class="btn" href="#" target="_blank" rel="noopener" style="display:none">Open terminal ↗</a></div>
+          <p class="note">A full terminal into this box's one assistant session, in your browser. Sign in with <b>admin</b> and this page's password. Every browser and every user terminal shares the same conversation.</p>
+          <p class="note" id="anopass" hidden>The terminal has no password yet (the admin password has a ' or : in it, which the terminal cannot take). Set one here.</p>
+          <details><summary class="note">Terminal settings</summary>
+            <label for="apass">Terminal password</label>
+            <input id="apass" type="password" autocomplete="off" placeholder="leave blank to keep the dashboard password">
+            <label for="aport">Port</label>
+            <input id="aport" type="text" placeholder="7681">
+            <button id="asave" type="button">Save & restart terminal</button>
+          </details>
           <p class="note" id="amsg" hidden></p>
         </div>` : ""}
       </section>` : ""}
@@ -875,7 +950,7 @@ async function dashboard() {
             <div class="tile"><div class="k">Cohort</div><div class="val small" id="pcoh">…</div></div>
           </div>
           <div id="psignin" hidden>
-            <label for="pkey3">One-time key from <a href="https://pipe.online" target="_blank" rel="noopener">pipe.online</a></label>
+            <label for="pkey3">One-time key from <a href="https://pipe.online/nicks/" target="_blank" rel="noopener">pipe.online/nicks</a> ("log in a device")</label>
             <input id="pkey3" type="password" autocomplete="off">
             <button id="pgo3" type="button">Sign in</button>
           </div>
@@ -919,6 +994,10 @@ async function dashboard() {
           <p class="note">While this is on, the Machine dials <b>out</b> to your vendor's relay and holds a door open for them; nothing listens on your network. Switch it off and the door closes within seconds. To let them in the first time, send them this key (it is public) — they pin it to a port on their side and tell you the number.</p>
           <pre class="report" id="suppub"></pre>
           <p class="note" id="supdetail"></p>
+          <label for="support">Port your vendor gave you</label>
+          <input id="support" inputmode="numeric" autocomplete="off" placeholder="e.g. 42001">
+          <button id="supportgo" class="ghost small" type="button">Save port</button>
+          <p class="note" id="supmsg2" hidden></p>
         </div>
         ${st.services.pipe ? `
         <div class="card">
@@ -1006,6 +1085,14 @@ async function dashboard() {
           <div class="cardhead"><h2>What this Machine keeps</h2><span class="pill" id="secstate">…</span></div>
           <p class="note">Sealed to this hardware in one file; the services read it through memory only. The Claude token, support key, stream keys, terminal password and SMB logins are set from their own cards — this page lists them and can remove them.</p>
           <div id="seclist" class="note">loading…</div>
+          <div id="secreveal" hidden style="margin-top:.6rem">
+            <div class="cardhead"><h2 id="secrevname" style="font-size:1rem"></h2></div>
+            <label for="secrevpw">Your password, to show it</label>
+            <input id="secrevpw" type="password" autocomplete="current-password">
+            <button id="secrevgo" type="button" class="small">Show</button>
+            <button id="secrevhide" type="button" class="ghost small">Hide</button>
+            <pre class="report" id="secrevval" hidden style="user-select:all"></pre>
+          </div>
           <p class="err" id="secerr" hidden></p>
         </div>
         <div class="card" id="secreqcard" hidden>
@@ -1047,9 +1134,10 @@ async function dashboard() {
           <p class="note" id="sunmsg" hidden></p>
         </div>
         <div id="suclaude"></div>
+        <div id="sugithub"></div>
         <div class="card">
-          <div class="cardhead"><h2>pipe</h2><span class="pill" id="supstate">checking…</span></div>
-          <p class="note">Messaging for you and the box — it gets a nick of its own on the wire. Mint a one-time key on <a href="https://pipe.online" target="_blank" rel="noopener">pipe.online</a>.</p>
+          <div class="cardhead"><h2>pipe</h2><span class="pill" id="supipe">checking…</span></div>
+          <p class="note">Messaging for you and the box — it gets a nick of its own on the wire. Mint a one-time key on the nicks page at <a href="https://pipe.online/nicks/" target="_blank" rel="noopener">pipe.online/nicks</a> ("log in a device").</p>
           <label for="supkey">One-time key</label><input id="supkey" type="password" autocomplete="off">
           <button id="supgo" type="button">Connect pipe</button>
           <p class="note" id="supmsg" hidden></p>
@@ -1141,6 +1229,7 @@ async function dashboard() {
         <div class="card">
           <div class="cardhead"><h2>Machines on this network</h2><span class="note" id="nmnote"></span></div>
           <div id="nmrows" class="note">looking…</div>
+          <div id="adoptform"></div>
         </div>
         <div class="card">
           <div class="cardhead"><h2>Everything on this network</h2><span><span class="note" id="lannote"></span> <button id="lanrefresh" class="ghost small" type="button" data-vok>look again</button></span></div>
@@ -1238,8 +1327,21 @@ async function dashboard() {
       pill.className = "pill " + (r.connected ? "status-ok" : "status-warn");
       v.querySelector("#supdetail").textContent = r.configured
         ? "Relay " + r.relay + ", port " + r.port + "."
-        : "Relay " + (r.relay || "not set") + ". No port assigned yet: send the key above to your vendor; they reply with a port number, which goes in /etc/pipeos/support.conf as SUPPORT_PORT.";
+        : "Relay " + (r.relay || "not set") + ". No port assigned yet: send the key above to your vendor; they reply with a port number — type it below.";
+      if (r.port) v.querySelector("#support").placeholder = r.port;
     } catch (e) { card.hidden = true; }
+  };
+  const supgo = v.querySelector("#supportgo");
+  if (supgo) supgo.onclick = async () => {
+    const m = v.querySelector("#supmsg2"); m.hidden = false; m.textContent = "saving…";
+    busy(supgo, true);
+    try {
+      const r = await api("/api/support-port", { port: v.querySelector("#support").value.trim() });
+      m.textContent = r.problems && r.problems.length ? r.problems.join("; ") : "Saved — port " + r.port + ".";
+      v.querySelector("#support").value = "";
+      loadSupport();
+    } catch (e) { m.textContent = e.message; }
+    busy(supgo, false);
   };
   loadSupport();
   v.querySelectorAll("input[type=checkbox]").forEach(c => {
@@ -1281,8 +1383,13 @@ async function dashboard() {
     go.onclick = send;
     v.querySelector(msgId).addEventListener("keydown", e => { if (e.key === "Enter") send(); });
   };
-  wireChat("#chatgo", "#chatmsg", "#chatlog", "#chatnote");
   wireChat("#fchatgo", "#fchatmsg", "#fchatlog", "#fchatnote");
+  // the terminal is the assistant's front door (Sam, 2026-10-13): one
+  // button in the sidebar, the port from the assistant config
+  const termopen = v.querySelector("#termopen");
+  if (termopen) api("/api/assistant").then(a => {
+    termopen.href = location.protocol + "//" + location.hostname + ":" + (a.port || "7681") + "/";
+  }).catch(() => {});
   // ---- overview: attention strip + live tiles ----
   // The strip renders from a report + live state; "re-check now" swaps in a
   // fresh read-only selfcheck run, because the boot report is a snapshot of
@@ -1496,10 +1603,8 @@ async function dashboard() {
     };
     api("/api/assistant").then(a => {
       v.querySelector("#aport").value = a.port || "";
-      if (a.pass_set) {
-        v.querySelector("#apass").placeholder = "(a password is saved — blank keeps it)";
-        showOpen(a.port);
-      }
+      if (a.pass_set) showOpen(a.port);
+      else { const n = v.querySelector("#anopass"); if (n) n.hidden = false; }
     }).catch(() => {});
     asave.onclick = async () => {
       const msg = v.querySelector("#amsg"); msg.hidden = false; msg.textContent = "saving…";
@@ -1831,7 +1936,6 @@ async function dashboard() {
         if (r.truncated)
           flist.appendChild(el(`<p class="note">…listing truncated at 2000 entries.</p>`));
         v.querySelector("#fmkdir").disabled = v.querySelector("#fupbtn").disabled = !!r.roots;
-        syncMove();
       } catch (e) { fileErr(e.message); }
     };
     // ---- disks card ----
@@ -2305,26 +2409,42 @@ async function dashboard() {
       const rows = v.querySelector("#nmrows"), note = v.querySelector("#nmnote");
       const ms = r.machines || [];
       if (ms.length) {
-        rows.className = ""; rows.innerHTML = machineRows(ms, { wake: isAdmin });
-        rows.querySelectorAll("[data-adopt]").forEach(b => b.onclick = async () => {
-          // #213: claim it with THIS Machine's password, add it, name it — one step
-          const pw = prompt("Adopt this Machine into the cluster: it is claimed with this Machine's admin password (type it to confirm) and added. No second password.");
-          if (!pw) return;
-          const name = prompt("A name for it (letters, digits, dots, dashes) — or leave empty:") || "";
-          b.disabled = true; note.textContent = "adopting…";
-          try {
-            const r = await api("/api/cluster/adopt", { id: b.dataset.adopt, password: pw, name: name.trim() });
-            note.textContent = "adopted " + r.id + " — " + (Object.keys(r.pushed || {}).length ? "list pushed" : "cluster of two");
-            if (r.recovery_phrase) alert("Its recovery phrase, shown once — write it down with this Machine's:\n\n" + r.recovery_phrase);
-            pollNetwork();
-          } catch (e) { note.textContent = e.message; b.disabled = false; }
-        });
-        rows.querySelectorAll("[data-wake]").forEach(b => b.onclick = async () => {
-          b.disabled = true;
-          try {
-            const w = await api("/api/wake", { id: b.dataset.wake });
-            note.textContent = w.detail || "magic packet sent";
-          } catch (e) { note.textContent = e.message; b.disabled = false; }
+        rows.className = ""; rows.innerHTML = machineRows(ms, { admin: isAdmin });
+        rows.querySelectorAll("[data-adopt]").forEach(b => b.onclick = () => {
+          // #213: claim it with THIS Machine's password, add it, name it — one
+          // step. The form lives beside the list, not in it: the list redraws
+          // every five seconds.
+          const form = v.querySelector("#adoptform");
+          const id = b.dataset.adopt;
+          form.replaceChildren(el(`<div class="card" style="margin-top:.6rem">
+            <div class="cardhead"><h2>Adopt ${esc(id)}</h2></div>
+            <p class="note">It is claimed with <b>this</b> Machine's admin password and added to the cluster. No second password to remember.</p>
+            <label for="adpw">This Machine's admin password</label>
+            <input id="adpw" type="password" autocomplete="current-password">
+            <label for="adname">A name for it (optional)</label>
+            <input id="adname" autocomplete="off" placeholder="letters, digits, dots, dashes">
+            <button id="adgo" type="button">Adopt</button>
+            <button id="adcancel" type="button" class="ghost">Cancel</button>
+            <p class="note" id="admsg" hidden></p>
+          </div>`));
+          form.querySelector("#adcancel").onclick = () => form.replaceChildren();
+          form.querySelector("#adgo").onclick = async () => {
+            const m = form.querySelector("#admsg"), go = form.querySelector("#adgo");
+            m.hidden = false; m.textContent = "adopting…"; busy(go, true);
+            try {
+              const r = await api("/api/cluster/adopt", { id, password: form.querySelector("#adpw").value, name: form.querySelector("#adname").value.trim() });
+              note.textContent = "adopted " + r.id + " — " + (Object.keys(r.pushed || {}).length ? "list pushed" : "cluster of two");
+              form.replaceChildren(el(`<div class="card" style="margin-top:.6rem">
+                <h2>${esc(r.id)} is yours</h2>
+                <p class="note">Its recovery phrase, shown once — write it down next to this Machine's.</p>
+                <pre class="report" style="font-size:1.15rem;letter-spacing:.04em;user-select:all">${esc(r.recovery_phrase || "(no phrase came back)")}</pre>
+                <button id="addone" type="button">I wrote it down</button>
+              </div>`));
+              form.querySelector("#addone").onclick = () => form.replaceChildren();
+              pollNetwork();
+            } catch (e) { m.textContent = e.message; busy(go, false); }
+          };
+          form.querySelector("#adpw").focus();
         });
       }
       else { rows.className = "note"; rows.textContent = "No Machines answered yet."; }
@@ -2332,7 +2452,7 @@ async function dashboard() {
       const off = ms.filter(m => m.awake === false).length;
       note.textContent = !r.discovery_ok ? "discovery is not running here"
         : (un ? `${un} unclaimed — Claim opens its setup wizard`
-          : off ? `${off} off — Wake sends a magic packet` : `${ms.length} Machine${ms.length === 1 ? "" : "s"}`);
+          : off ? `${off} off` : `${ms.length} Machine${ms.length === 1 ? "" : "s"}`);
     } catch (e) {}
     try {
       const m = await api("/api/metrics");
@@ -2593,11 +2713,21 @@ async function dashboard() {
         } catch (e) { err.textContent = e.message; err.hidden = false; }
         loadSecrets();
       });
-      list.querySelectorAll("[data-reveal]").forEach(b => b.onclick = async () => {
-        const pw = prompt("Your password, to show " + b.dataset.reveal + ":");
-        if (!pw) return;
-        try { const w = await api("/api/secrets/reveal", { name: b.dataset.reveal, password: pw }); alert(b.dataset.reveal + ":\n\n" + w.value); }
-        catch (e) { err.textContent = e.message; err.hidden = false; }
+      list.querySelectorAll("[data-reveal]").forEach(b => b.onclick = () => {
+        // inline, not a browser dialog: the value sits in a selectable block
+        // until Hide, and the password box is right there
+        const box = v.querySelector("#secreveal"), val = v.querySelector("#secrevval");
+        box.hidden = false; val.hidden = true; val.textContent = "";
+        v.querySelector("#secrevname").textContent = b.dataset.reveal;
+        const pwEl = v.querySelector("#secrevpw"); pwEl.value = ""; pwEl.focus();
+        v.querySelector("#secrevhide").onclick = () => { box.hidden = true; val.textContent = ""; };
+        v.querySelector("#secrevgo").onclick = async () => {
+          err.hidden = true;
+          try {
+            const w = await api("/api/secrets/reveal", { name: b.dataset.reveal, password: pwEl.value });
+            val.textContent = w.value; val.hidden = false; pwEl.value = "";
+          } catch (e) { err.textContent = e.message; err.hidden = false; }
+        };
       });
       list.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
         if (!confirm("Delete " + b.dataset.del + "? The service that uses it stops working until it is set again.")) return;
@@ -2655,7 +2785,9 @@ async function dashboard() {
     v.querySelector("#suowner").value = st.owner || "";
     const slot = v.querySelector("#suclaude");
     if (slot) slot.replaceWith(claudeCard({}));
-    const ps = v.querySelector("#supstate");
+    const gslot = v.querySelector("#sugithub");
+    if (gslot) gslot.replaceWith(githubCard({}));
+    const ps = v.querySelector("#supipe");
     try {
       const p = await api("/api/pipe");
       ps.textContent = p.authed ? "signed in as " + (p.nick || "?") : (st.services.pipe ? "not signed in" : "off");
@@ -2773,7 +2905,7 @@ async function dashboard() {
         </div>`;
       }).join("");
       const off = pg.members.filter(m => !m.awake).length, diff = pg.members.filter(m => !m.in_sync).length;
-      note.textContent = `cluster ${c.cluster} · ${pg.members.length} member${pg.members.length === 1 ? "" : "s"}` + (off ? ` · ${off} off` : "") + (diff ? ` · ${diff} out of sync` : "") + (c.dropped && c.dropped.length ? ` · dropped ${c.dropped.join(", ")} (joined another cluster)` : "") + " · roles are editable once #214 lands";
+      note.textContent = `cluster ${c.cluster} · ${pg.members.length} member${pg.members.length === 1 ? "" : "s"}` + (off ? ` · ${off} off` : "") + (diff ? ` · ${diff} out of sync` : "") + (c.dropped && c.dropped.length ? ` · dropped ${c.dropped.join(", ")} (joined another cluster)` : "");
       const idsEl = v.querySelector("#clsvcids");
       if (idsEl && idsEl.childElementCount !== pg.members.length) idsEl.innerHTML = pg.members.map(m => `<label class="note" style="margin-right:.6rem"><input type="checkbox" data-clsvcid="${esc(m.id)}" checked> ${esc(m.name || m.id)}</label>`).join("");
       const onEl = v.querySelector("#clagon");

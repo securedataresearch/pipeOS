@@ -33,7 +33,7 @@ Release under test: `________`   Box: `________`   Date: `________`
 - [ ] Claim: the password rules were clear; time to the dashboard ____ s.
 - [ ] Name: renamed to `____`; `http://<name>.local/` answered within
       ____ s (mdnsd re-reads the hostname per query, no restart).
-- [ ] Services: the defaults matched the sheet (Claude on, the rest off).
+- [ ] Services: the defaults matched the sheet (Claude and the terminal on, the rest off).
 - [ ] **Claude sign-in**: link shown in ____ s; signed in on the phone;
       code pasted; "Claude answered — connected." in ____ s. Wording that
       confused: ____________________.
@@ -73,12 +73,6 @@ Release under test: `________`   Box: `________`   Date: `________`
       as two rows under Usage within a minute, costed; a $1 cap produced
       the 80% DM, then the pause banner and a skipped job; raising it
       lifted the pause.
-- [ ] **Wake** (#241, docs/hardware.md): shut one Machine down; on a
-      sibling's Network view it went grey ("off · last seen") in ____ s;
-      Wake → back in the lobby in ____ s. `pipeos wake <name>` from a
-      third Machine did the same. With Wake on LAN off in the BIOS the
-      boot report still read green and the packet did nothing (expected).
-
 ## First run — 2026-09-09, two Lenovo 10RR Machines, release 35f697b
 
 Timed from the workstation over the API, not from a phone; the phone pass

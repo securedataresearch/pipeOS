@@ -127,8 +127,8 @@ A pilot is an order we walk through the door with. Per pilot:
    on; the Services view shows the box's key and "waiting for a port";
    the client sends us the key (any channel — it is public); we pin it on
    the relay to the next free port (`docs/support-relay.md`, the ledger in
-   `authorized_keys`) and tell them the number; `SUPPORT_PORT=` goes in
-   `/etc/pipeos/support.conf` on the box and the pill goes "tunnel up"; we
+   `authorized_keys`) and tell them the number; the client types it into
+   the Services card ("Port your vendor gave you") and the pill goes "tunnel up"; we
    prove it with `ssh -J`; the client flips it **off** and we show the
    tunnel is gone. Then it stays off unless they need us.
 6. **Sign-off**: the filled acceptance sheet in `docs/acceptance/`, one

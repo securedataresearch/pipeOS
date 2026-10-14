@@ -27,15 +27,19 @@ its `pipeos-xxxx.local` name.
 1. **Claim** — the first visitor sets the admin password. The claim is saved
    to the media immediately, so it survives a reboot even if you stop here.
 2. **Name** — give the box a nick, and optionally your own nick as owner.
-3. **Services** — turn on what this box should run: Claude, pipe, streaming,
-   the assistant terminal.
+3. **Services** — turn on what this box should run. Claude and its browser
+   terminal are on; pipe, streaming, network storage and vendor support are
+   off until you say so.
 4. **Connect** — sign in with your Claude account: the Machine shows a
    link, you open it on any device and paste back the code it shows (or
-   paste an Anthropic API key or a setup-token instead). If pipe is on, a
-   one-time key from your pipe.online account page.
+   paste an Anthropic API key or a setup-token instead). Sign in with
+   GitHub the same way: the Machine shows a code, you type it at
+   github.com/login/device. If pipe is on, a one-time key from the nicks
+   page at pipe.online/nicks ("log in a device").
 
 After the wizard, the same address is the dashboard. Sign in with the
-password you set.
+password you set. **Open terminal** in the sidebar is the assistant: a
+terminal into the box's one Claude session, same sign-in as the page.
 
 ## SSH
 

@@ -139,7 +139,9 @@ fix.
 ## Status
 
 (Updated 2026-08-28.) The generator runs on the fleet and in CI
-(`check-cards.sh`); `pipebox-cohort-watch` is in the tree and deployed.
+(`check-cards.sh`); `pipebox-cohort-watch` is in the tree and deployed on
+fleet sticks (a client image, built without a card NICK, ships the script
+but not its crontab line, nor `pipebox-gh-notify`'s).
 `make stick CARD=docs/cards/<box>.card` bakes a box's card into the image at
 build time — card, derived files and the provisioned marker all ride the
 stick, so a named box boots as itself with autosave live. A plain

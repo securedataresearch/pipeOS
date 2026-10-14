@@ -67,6 +67,12 @@ if [ -r "$SECRETS/jobs.env" ]; then
     . "$SECRETS/jobs.env"
     set +a
 fi
+# the box's GitHub sign-in (the dashboard's Connect GitHub card): gh and git
+# already read it from /root; a job that calls the API by hand gets it as
+# the variable gh and most SDKs read. A jobs.gh_token from the vault wins.
+if [ -z "${GH_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
+    _ght=$(gh auth token 2>/dev/null) && [ -n "$_ght" ] && export GH_TOKEN="$_ght"
+fi
 [ -d /data/buildroot/usr/bin ] && export PATH="/data/buildroot/usr/bin:$PATH"
 # The generated shell environment: nothing on this path is a login shell
 # (crond -> tick -> this -> claude -p), so source it here like the listener.

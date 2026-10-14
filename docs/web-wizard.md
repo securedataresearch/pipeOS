@@ -54,10 +54,20 @@ default off; the pipe-first flow (`pipebox-setup`) remains for fleet boxes.
    and refreshes it (`/root/.claude/.credentials.json`, in lbu's list; the
    15-minute autosave persists a refresh). Or **paste** an Anthropic
    Console key (`sk-ant-api…` → `ANTHROPIC_API_KEY=`) or a `claude
-   setup-token` (→ `CLAUDE_CODE_OAUTH_TOKEN=`) into
-   `/etc/pipeos/claude-auth.env`. Either way one real `claude -p` call
-   proves it. The env file wins over the sign-in (claude reads the
-   variable every session), so a successful sign-in deletes it. Anthropic's
+   setup-token` (→ `CLAUDE_CODE_OAUTH_TOKEN=`), kept in the vault as
+   `claude_token` and exported to `/run/pipeos/secrets/claude.env`
+   (`/etc/pipeos/claude-auth.env` is the pre-vault path, read until the
+   first boot migrates it). Either way one real `claude -p` call proves
+   it. The env file wins over the sign-in (claude reads the variable every
+   session), so a successful sign-in deletes it. **GitHub** rides the same
+   step: `gh auth login --web` with its browser suppressed prints a
+   one-time code and github.com/login/device; the page shows the code,
+   the owner types it there on any device, and gh polls until GitHub
+   agrees. A finisher thread then runs `gh auth setup-git` (git's
+   credential helper → gh) and saves; the token lives where gh keeps it
+   (`/root/.config/gh/hosts.yml`, in lbu's list). A pasted token is the
+   fallback (`gh auth login --with-token`). `pipeos unclaim` removes both
+   files' credential content. Anthropic's
    SDK docs reserve claude.ai login in third-party products for approved
    partners; the Console-key path is the one those docs point at, and the
    card offers both — the owner's call. pipe: paste a one-time key from

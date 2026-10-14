@@ -83,19 +83,7 @@ ROLE) are named where the design reuses them.
   in the image and the dashboard renders its output.
 - The map is where the owner draws the cluster boundary (§3).
 
-- A Machine that is playing its part says so **on its own body**: while it is
-  a healthy member that can still see another member, it blinks its place in
-  the member list on its cabled network port's LED — one flash for the first
-  member, two for the second, a lighthouse characteristic. The Machine that is
-  NOT blinking is the one to walk over to: off, out of the cluster, unhealthy,
-  or cut off. The numbers need no configuring, because every member sorts the
-  same list, and `pipeos cluster status` prints them beside the members. The
-  front power light cannot do this: on these chassis it has no software
-  interface at all (`/sys/class/leds` is empty), so the light is the port's,
-  at the back. `pipeos blink status` says why this Machine is or is not
-  blinking; the card's `BLINK=off` turns it off.
-
-→ #217, #333
+→ #217
 
 ## 5. Sign-in and users — keys, not passwords; no propagation
 
@@ -272,7 +260,7 @@ another member two ways, both wanted:
 NIC is fitted only in Machines sold as a pipe Cluster; it is part of why a
 Cluster costs more than four Machines. A self-assembled cluster of four
 Machines runs on the on-board gigabit and every mode above works the same,
-slower. The no-wake-over-SFP+ caveat (docs/hardware.md) is therefore an
+slower. The SFP+ port's limits (docs/hardware.md) are therefore an
 owner-facing fact for Cluster buyers.
 
 - Built (#319): a job can say which secrets it needs — `needs` on the job

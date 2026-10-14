@@ -1,6 +1,6 @@
 ---
 name: pipeos-fleet
-description: Drive Sam's pipeOS Machines from this workstation — reach a box, deploy a merged commit, run the drills (schedule, cap, vault, wake, reboot), read the recovery phrase, set the assistant password — through the box's own verbs, never a hand edit. Use for "deploy to the boxes", "run the drills", "is zero up to date", "set the cap on two", "what's pending on the fleet".
+description: Drive Sam's pipeOS Machines from this workstation — reach a box, deploy a merged commit, run the drills (schedule, cap, vault, reboot), read the recovery phrase, set the assistant password — through the box's own verbs, never a hand edit. Use for "deploy to the boxes", "run the drills", "is zero up to date", "set the cap on two", "what's pending on the fleet".
 ---
 
 # pipeos-fleet — driving the Machines
@@ -29,7 +29,7 @@ KH=$SCRATCH/known_hosts
 ssh -o BatchMode=yes -o UserKnownHostsFile=$KH -o StrictHostKeyChecking=accept-new root@192.168.254.77 '...'
 ```
 
-A box that does not answer is off (see wake) or mid-reboot. Run the same
+A box that does not answer is off or mid-reboot. Run the same
 command on several boxes in parallel with `&`/`wait`, one output file each.
 
 ## First look at a box
@@ -92,8 +92,6 @@ pipeos selfupdate image on|off|status           # automatic image updates (defau
 printf '%s' PW | pipeos nas account NAME        # share-only account (no sign-in, no shell) + its SMB password; tick it on a share in Files → Network storage
 pipeos vault status|list|get|set|export         # the sealed store; set reads stdin: printf '%s' V | pipeos vault set NAME [CONSUMER]
 pipeos vault share NAME two | unshare NAME two   # copy a text secret to a member (it saves it as a copy from this box); unshare only forgets — the single exception to no-propagation, on the owner's tap (#301)
-pipeos wake NAME|ID|--all|--list                # magic packet to a Machine this box has seen
-pipeos blink status|test N|on|off              # the port-LED heartbeat (#333): a healthy cluster member blinks its member number on its cabled port; `status` says why it is or is not blinking, `test N` blinks N once. The power light is NOT drivable on these chassis (/sys/class/leds is empty) — the LED is on the NIC, at the back
 pipeos updates                                  # what changed on THIS Machine, newest first: every commit a deploy brought in with its title and description, and every released image it applied (#335)
 pipeos lan [--refresh]                          # the network map (#217): everything netgaze sees from this box, Machines and members marked; --refresh runs the pass now
 pipeos work status|flush|park|unpark            # the RAM-staged hot set; park = flush + /data read-only so the stick idles
@@ -110,7 +108,6 @@ Box clocks are UTC; cron expressions are box-local, so UTC.
 - **Scheduled job fires unattended:** `pipeos schedule add drill --cron "$M $H * * *" --prompt "Reply with exactly: drill ok"` three minutes out; after it, `pipeos schedule ls` shows `ok`, `pipeos schedule log drill` has the reply, `/data/.pipeos/schedule/runs.log` has the row, the owner got the DMs (notify on). Then `pipeos schedule rm drill`.
 - **Cap DM / pause:** `pipeos usage` for this month's spend; `pipeos usage cap N` with N below it → `enforce` prints paused, `/data/.pipeos/ledger/paused` exists, the owner gets the 100% DM, `pipeos schedule run X` is refused and the tick logs "paused". `pipeos usage cap none` (or a higher N) lifts it at once.
 - **Vault first boot / rehome:** `rc-service pipeos-vault status`, `pipeos vault status` (open), `pipeos vault list`; `pipeos secrets phrase` shows the migration's phrase until acked — give it to Sam, then `--ack`. Rehome = the stick in another chassis: dashboard Secrets → recovery phrase.
-- **Wake a sibling:** from a member, `pipeos wake one`. **Only the onboard 1GbE (eth1) supports WoL; the SFP+ eth0 does not.** Uncabled eth1 = no wake. selfcheck says which.
 - **Watchdog drill (#247):** `pipeos watchdog status` says armed 60 20; `echo c > /proc/sysrq-trigger` (a real panic — the box is gone for ~90 s); back up, the boot report says `went down: kernel panic — the watchdog rebooted us`, `pipeos-selfcheck` green, known-good untouched. `pipeos watchdog off` → status says off, no petter; `kernel` re-arms.
 - **Reboot drill:** `pipeos verify` PASS → `reboot` → wait ~90 s → `pipeos-selfcheck` green and `pipeos status` says known-good matches.
 

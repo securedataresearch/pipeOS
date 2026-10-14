@@ -59,7 +59,7 @@ import importlib.util, os, sys, threading
 from http.server import HTTPServer
 spec = importlib.util.spec_from_file_location("webd", sys.argv[1]); webd = importlib.util.module_from_spec(spec); spec.loader.exec_module(webd)
 d = sys.argv[2]
-for k in ("ADMIN_CONF", "SERVICES_CONF", "CARD", "PROVISIONED", "BOOT_REPORT", "HEALTH_LAST", "USERS_CONF", "SELFUPDATE_CONF", "SUPPORT_CONF", "NAS_CONF"):
+for k in ("ADMIN_CONF", "SERVICES_CONF", "CARD", "PROVISIONED", "BOOT_REPORT", "HEALTH_LAST", "USERS_CONF", "SELFUPDATE_CONF", "SUPPORT_CONF", "NAS_CONF", "ASSISTANT_CONF"):
     setattr(webd, k, os.path.join(d, k.lower()))
 webd.SESS_DIR = os.path.join(d, "sessions"); webd.MDNS_CACHE = os.path.join(d, "peers.json"); webd.MACHINES_ROSTER = os.path.join(d, "machines.json")
 webd.FLASH_IMAGE_TXT = os.path.join(d, "image.txt")
