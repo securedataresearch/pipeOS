@@ -126,7 +126,8 @@ awk -F: 'BEGIN{OFS=":"} $1=="root"{$7="/bin/bash"} {print}' \
 # Service accounts for the de-rooted daemons (fixed uids so files on /data
 # never change owner across reflashes). svc-stream renders arbitrary URLs in
 # chromium — the box's largest exposure — and needs video for VAAPI
-# (/dev/dri/renderD128 is group video under mdev). Their shadow field is '!'
+# (/dev/dri/renderD128 is group video under mdev) and audio for the page's
+# sound through the ALSA loopback (/dev/snd/* is group audio). Their shadow field is '!'
 # ON PURPOSE (never a login account, no ssh); the '*'-vs-'!' rule above is
 # about accounts that must keep pubkey auth, which these must not have.
 grep -q '^svc-stream:' "$STAGE/etc/passwd" || {
@@ -134,7 +135,7 @@ grep -q '^svc-stream:' "$STAGE/etc/passwd" || {
     echo 'svc-mdns:x:901:901:pipeos mdns:/var/empty:/sbin/nologin' >> "$STAGE/etc/passwd"
 }
 sudo cat "$CHROOT/etc/group" \
-    | awk -F: 'BEGIN{OFS=":"} $1=="video"{$4=($4=="" ? "svc-stream" : $4",svc-stream")} {print}' \
+    | awk -F: 'BEGIN{OFS=":"} $1=="video"||$1=="audio"{$4=($4=="" ? "svc-stream" : $4",svc-stream")} {print}' \
     > "$STAGE/etc/group"
 grep -q '^svc-stream:' "$STAGE/etc/group" || {
     echo 'svc-stream:x:900:' >> "$STAGE/etc/group"

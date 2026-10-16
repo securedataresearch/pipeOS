@@ -76,6 +76,16 @@ start_pre() {
 		fi
 		command -v chromium >/dev/null 2>&1 || { eerror "chromium is not installed on this image"; return 1; }
 		command -v Xvfb >/dev/null 2>&1 || { eerror "Xvfb is not installed on this image"; return 1; }
+		# the page's own sound (STREAM_AUDIO, default loopback): Chromium plays into one end of the ALSA
+		# loopback card and ffmpeg records the other. Without the card the stream carries silence, as before.
+		if [ "${STREAM_AUDIO:-loopback}" = loopback ]; then
+			[ -d /proc/asound/Loopback ] || modprobe snd-aloop pcm_substreams=1 2>/dev/null \
+				|| ewarn "no snd-aloop in this kernel: the stream will be silent"
+			# older media made svc-stream before it was in group audio
+			if [ -n "$(svc_user)" ] && ! id -nG svc-stream | grep -qw audio; then
+				addgroup svc-stream audio 2>/dev/null || ewarn "could not add svc-stream to group audio"
+			fi
+		fi
 	else
 		if [ -z "${STREAM_SRC:-}" ] || [ -z "${STREAM_DST:-}" ]; then
 			eerror "streaming is not configured (STREAM_SRC/STREAM_DST empty in $CONF) — fill it in from the web UI"
