@@ -120,6 +120,21 @@ else
 fi
 export XDG_CONFIG_HOME="$HOME/.config" XDG_CACHE_HOME="$HOME/.cache"
 
+# The page's sound (STREAM_AUDIO=loopback, the default; off = silence). The init
+# loads snd-aloop: Chromium's default ALSA device is the card's playback end
+# (hw:Loopback,0,0, via this HOME's .asoundrc; no PulseAudio on the box) and
+# ffmpeg records the capture end (hw:Loopback,1,0), both at 48 kHz stereo. No
+# card (an old kernel, STREAM_AUDIO=off): the silent anullsrc track, as before —
+# both platforms require an audio track either way.
+AUDIO_IN=(-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100)
+if [ "${STREAM_AUDIO:-loopback}" = loopback ] && [ -d /proc/asound/Loopback ]; then
+	cat > "$HOME/.asoundrc" <<'ASOUND'
+pcm.!default { type plug slave { pcm "hw:Loopback,0,0" rate 48000 channels 2 } }
+ctl.!default { type hw card Loopback }
+ASOUND
+	AUDIO_IN=(-thread_queue_size 1024 -f alsa -sample_rate 48000 -channels 2 -i "hw:Loopback,1,0")
+fi
+
 # Virtual framebuffer. Noise to /dev/null — ffmpeg's stderr is the signal the
 # health probe reads, and we don't want Xvfb/Chromium drowning it in the log.
 Xvfb ":$DPY" -screen 0 "${W}x${H}x24" -nolisten tcp >/dev/null 2>&1 &
@@ -181,7 +196,7 @@ sleep 8
 #     while the same bytes played smooth on Twitch (basho0, 2026-08-31).
 #   - default ~3.5 Mbps: two targets = ~7 Mbps up, kind to a home uplink; text
 #     streams clean at that. STREAM_BITRATE overrides.
-# anullsrc adds the silent audio track both platforms require.
+# AUDIO_IN (above) is the page's sound, or the silent track both platforms require.
 GOP=$((FPS * 2))
 NG=${#BR_GROUPS[@]}
 FIFO_OPTS="queue_size=1024:attempt_recovery=1:drop_pkts_on_overflow=1:recovery_wait_time=2:max_recovery_attempts=0"
@@ -203,7 +218,7 @@ venc_for() { # $1 = bitrate → prints encoder args (space-separated, no spaces 
 CMD=(ffmpeg -hide_banner -loglevel warning -stats -nostdin)
 [ "$USE_VAAPI" = 1 ] && CMD+=(-vaapi_device /dev/dri/renderD128)
 CMD+=(-thread_queue_size 1024 -probesize 64M -f x11grab -draw_mouse 0 -framerate "$FPS" -video_size "$RES" -i ":$DPY"
-	-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100)
+	"${AUDIO_IN[@]}")
 
 if [ "$NG" -eq 1 ]; then
 	# one bitrate: the original single-encode tee, unchanged in shape
